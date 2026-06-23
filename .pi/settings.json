@@ -1,0 +1,13 @@
+{
+  "githubOrchestrator": {
+    "owner": "Kwik-Dev",
+    "repo": "Calyx",
+    "projectNumber": 4,
+    "baseBranch": "main",
+    "backlogColumn": "Backlog",
+    "readyColumn": "Ready",
+    "inProgressColumn": "In Progress",
+    "inReviewColumn": "In Review",
+    "doneColumn": "Done"
+  }
+}
