@@ -11,10 +11,11 @@
 - Explored the existing IPC integration (Claude Code / Codex / OpenCode / Hermes config managers, MCP server, CLI `calyx browser`).
 - Investigated pi's extensibility model: pi has no built-in MCP client; the correct integration is a **pi skill** installed under `~/.pi/agent/skills/calyx-ipc/`.
 - Created a detailed implementation plan (see below).
-- Tried to create real GitHub issues with the environment PAT, but the token lacks `issue:write` to `Kwik-Dev/Calyx` (REST returned 403). GitHub GraphQL project access works, so **three draft items were added to project #4 "Calyx fork by kwiksher"** in the **Backlog** column:
+- Tried to create real GitHub issues with the environment PAT, but the token lacks `issue:write` to `Kwik-Dev/Calyx` (REST returned 403). GitHub GraphQL project access works, so **four draft items were added to project #4 "Calyx fork by kwiksher"** in the **Backlog** column:
   1. `Feature Request: Add pi coding agent support to AI Agent IPC`
-  2. `Set up Calyx build/development environment`
-  3. `Agent handoff: pi support plan & environment blockers`
+  2. `Feature Request: Add Charm Crush agent support to AI Agent IPC`
+  3. `Set up Calyx build/development environment`
+  4. `Agent handoff: pi support plan & environment blockers`
 - The `.pi/settings.json` already contains the GitHub orchestrator config pointing at `Kwik-Dev/Calyx` project 4.
 
 ---
