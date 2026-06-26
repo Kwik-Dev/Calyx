@@ -2514,6 +2514,63 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    // MARK: - Screen State Polling (Herdr Layer 2)
+
+    /// Starts the window-lifetime poll loop that feeds `ScreenStateClassifier`
+    /// results into `AgentRegistry.handleScreenClassification` — the
+    /// fallback for panes hooks haven't reported on (or aren't wired up
+    /// at all). Mirrors `AgentRegistry.sweepTask`'s `while !Task.isCancelled`
+    /// shape, but — unlike that task, started/stopped by IPC server
+    /// lifecycle — this one runs for the whole life of the window: there's
+    /// no property-observation hook on `WindowSession.sidebarMode` /
+    /// `showSidebar` to react to (they're mutated from many call sites:
+    /// palette commands, the sidebar's SwiftUI binding, toggles), so each
+    /// tick instead checks the relevant gates itself and skips the
+    /// (expensive — `ghostty_surface_read_text` is documented as costly)
+    /// per-surface read entirely unless warranted.
+    private func startScreenPollTask() {
+        screenPollTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                guard !Task.isCancelled else { return }
+                self?.pollScreenClassificationIfAgentsSidebarVisible()
+            }
+        }
+    }
+
+    /// Three gates, cheapest first, before the expensive per-surface
+    /// `ghostty_surface_read_text` call:
+    /// (a) `AgentRegistry.isServerRunning` — IPC disabled means no
+    ///     Agents sidebar row can be shown at all, so classifying screens
+    ///     into the registry in the background would only produce
+    ///     entries that immediately (and confusingly) populate the
+    ///     sidebar the moment IPC is re-enabled.
+    /// (b) Per-surface: a `.hooks`-sourced entry is authoritative —
+    ///     `handleScreenClassification` already no-ops for one, but
+    ///     skipping here avoids the read itself, not just its effect.
+    /// (c) `AgentRegistry.isAgentsSidebarVisibleAnywhere` (rather than
+    ///     this window's own `sidebarMode`/`showSidebar`) — see that
+    ///     property's doc comment for the cross-window gap this closes.
+    private func pollScreenClassificationIfAgentsSidebarVisible() {
+        guard AgentRegistry.shared.isServerRunning else { return }
+        guard AgentRegistry.shared.isAgentsSidebarVisibleAnywhere else { return }
+
+        for group in windowSession.groups {
+            for tab in group.tabs {
+                for surfaceID in tab.registry.allIDs {
+                    guard AgentRegistry.shared.entries[surfaceID]?.source != .hooks else { continue }
+                    guard let surface = tab.registry.controller(for: surfaceID)?.surface else { continue }
+                    guard let bottomText = GhosttySurfaceSelectionReader(surface: surface)
+                        .readActiveBottomText(rows: 12) else { continue }
+
+                    let kind = AgentRegistry.shared.entries[surfaceID]?.kind ?? AgentEntry.claudeCodeKind
+                    let state = ScreenStateClassifier.classify(bottomText: bottomText, kind: kind)
+                    AgentRegistry.shared.handleScreenClassification(surfaceID: surfaceID, state: state)
+                }
+            }
+        }
+    }
+
     // MARK: - Notification Handlers
 
     @objc private func handleNewSplitNotification(_ notification: Notification) {
@@ -5810,7 +5867,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - AI Agent Tab Detection
 
     /// Returns true if a terminal tab title indicates it is running one of the
-    /// supported AI agents (Claude Code, Codex, OpenCode, Hermes, Grok).
+    /// supported AI agents (Claude Code, Codex, OpenCode, Hermes, Grok, Crush).
     /// Centralizes the title-substring check used by both compose and review
     /// send paths. Keep the agent list in sync with `IPCConfigResult` axes.
     ///
@@ -5825,7 +5882,8 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         title.localizedCaseInsensitiveContains(AgentEntry.codexKind) ||
         title.localizedCaseInsensitiveContains(AgentEntry.openCodeKind) ||
         title.localizedCaseInsensitiveContains("hermes") ||
-        title.localizedCaseInsensitiveContains(AgentEntry.grokKind)
+        title.localizedCaseInsensitiveContains(AgentEntry.grokKind) ||
+        title.localizedCaseInsensitiveContains("crush")
     }
 
     private func sendReviewToAgent(_ payload: String) -> ReviewSendResult {
@@ -5836,7 +5894,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         }
 
         guard !agentTabs.isEmpty else {
-            showIPCAlert(title: "No AI Agent", message: "No terminal tabs running Claude Code, Codex, OpenCode, Hermes, or Grok found. Start an AI agent first.")
+            showIPCAlert(title: "No AI Agent", message: "No terminal tabs running Claude Code, Codex, OpenCode, Hermes, Grok, or Crush found. Start an AI agent first.")
             return .failed
         }
 

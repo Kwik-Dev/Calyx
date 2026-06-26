@@ -14,6 +14,12 @@ private let logger = Logger(subsystem: "com.calyx.terminal", category: "GlobalEv
 
 /// Singleton that installs a session-level CGEvent tap to intercept global key events
 /// and forward them to ghostty for global keybind matching.
+///
+/// Because the tap sits at the head of the session event stream, it sees key
+/// events before AppKit's menu-key-equivalent routing runs. When Calyx itself
+/// is active, standard menu shortcuts (e.g. Ctrl+Cmd+F for Toggle Full Screen)
+/// must take precedence over ghostty's app-level keybindings, which otherwise
+/// would consume the event first.
 class GlobalEventTap: @unchecked Sendable {
     nonisolated(unsafe) static let shared = GlobalEventTap()
 
@@ -160,6 +166,21 @@ private func globalKeyEventHandler(
     // Convert CGEvent to NSEvent.
     guard let event = NSEvent(cgEvent: cgEvent) else { return result }
 
+    // When Calyx is the active application, let standard menu key equivalents
+    // take precedence over ghostty's app-level keybindings. This prevents
+    // ghostty's default macOS bindings — most notably Toggle Full Screen on
+    // Ctrl+Cmd+F — from swallowing menu shortcuts before AppKit can dispatch
+    // them. The key equivalent is executed here and the event is consumed so
+    // AppKit does not dispatch it a second time.
+    if shouldPassEventToMainMenu(
+        event,
+        isActive: NSApp.isActive,
+        menu: NSApp.mainMenu
+    ) {
+        logger.info("Global key event routed to main menu: keyCode=\(event.keyCode)")
+        return nil
+    }
+
     // Translate to ghostty key event and check if it matches a global binding.
     let keyEvent = EventTranslator.translateKeyEvent(event, action: GHOSTTY_ACTION_PRESS)
     if GhosttyFFI.appKey(app, event: keyEvent) {
@@ -168,4 +189,19 @@ private func globalKeyEventHandler(
     }
 
     return result
+}
+
+// MARK: - Menu Key Equivalent Routing
+
+/// Testable helper that returns `true` when the event matches a key equivalent
+/// on the supplied menu. A matching event should be consumed by the caller so
+/// the menu action fires exactly once. When `isActive` is `false` the helper
+/// always returns `false`, leaving global keybindings for other apps intact.
+func shouldPassEventToMainMenu(
+    _ event: NSEvent,
+    isActive: Bool,
+    menu: NSMenu?
+) -> Bool {
+    guard isActive, let menu = menu else { return false }
+    return menu.performKeyEquivalent(with: event)
 }
