@@ -37,6 +37,7 @@ class ComposeOverlayView: NSView {
     private(set) var textView: NSTextView = ComposeTextView()
     private let placeholderLabel = NSTextField(labelWithString: "Type here...")
     private var scrollerStyleObserver: NSObjectProtocol?
+    private var configChangeObserver: NSObjectProtocol?
 
     var onSend: ((String) -> Bool)?
     var onDismiss: (() -> Void)?
@@ -90,8 +91,6 @@ class ComposeOverlayView: NSView {
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
         textView.font = .monospacedSystemFont(ofSize: 14, weight: .regular)
-        textView.textColor = .labelColor
-        textView.insertionPointColor = .labelColor
         textView.drawsBackground = false
         textView.backgroundColor = .clear
         textView.textContainerInset = NSSize(width: 8, height: 8)
@@ -116,7 +115,6 @@ class ComposeOverlayView: NSView {
         addSubview(scrollView)
 
         // Placeholder
-        placeholderLabel.textColor = .placeholderTextColor
         placeholderLabel.font = .monospacedSystemFont(ofSize: 14, weight: .regular)
         placeholderLabel.isBordered = false
         placeholderLabel.drawsBackground = false
@@ -148,6 +146,18 @@ class ComposeOverlayView: NSView {
                 self?.scrollView.scrollerStyle = .overlay
             }
         }
+
+        configChangeObserver = NotificationCenter.default.addObserver(
+            forName: .ghosttyConfigChange,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.applyTextColors()
+            }
+        }
+
+        applyTextColors()
     }
 
     deinit {
@@ -155,7 +165,17 @@ class ComposeOverlayView: NSView {
             if let scrollerStyleObserver {
                 NotificationCenter.default.removeObserver(scrollerStyleObserver)
             }
+            if let configChangeObserver {
+                NotificationCenter.default.removeObserver(configChangeObserver)
+            }
         }
+    }
+
+    private func applyTextColors() {
+        let color = GhosttyThemeProvider.shared.ghosttyForeground
+        textView.textColor = color
+        textView.insertionPointColor = color
+        placeholderLabel.textColor = color.withAlphaComponent(0.5)
     }
 
     func focusTextView() {
