@@ -2,8 +2,16 @@
 // Calyx
 //
 // Coordinates IPC config registration across Claude Code, Codex, OpenCode,
+<<<<<<< New base: Add Crush IPC issue to handoff
 // Hermes, and Grok, collecting results independently so one failure does not
 // block the others.
+||||||| Common ancestor
+// and Hermes, collecting results independently so one failure does not block
+// the others.
+=======
+// Hermes, pi, and Crush, collecting results independently so one failure
+// does not block the others.
+>>>>>>> Current commit: feat(ipc): add Crush & pi support and docs updatesIntroduce native Crush agent M
 
 import Foundation
 
@@ -22,6 +30,7 @@ struct IPCConfigResult: Sendable {
     let codex: ConfigStatus
     let openCode: ConfigStatus
     let hermes: ConfigStatus
+<<<<<<< New base: Add Crush IPC issue to handoff
     let grok: ConfigStatus
 
     /// Every axis paired with the label the alert renders for it, in
@@ -38,11 +47,30 @@ struct IPCConfigResult: Sendable {
             ("Grok config", grok),
         ]
     }
+||||||| Common ancestor
+=======
+    let pi: ConfigStatus
+    let crush: ConfigStatus
+>>>>>>> Current commit: feat(ipc): add Crush & pi support and docs updatesIntroduce native Crush agent M
 
     var anySucceeded: Bool {
+<<<<<<< New base: Add Crush IPC issue to handoff
         for axis in axes {
             if case .success = axis.status { return true }
         }
+||||||| Common ancestor
+        if case .success = claudeCode { return true }
+        if case .success = codex { return true }
+        if case .success = openCode { return true }
+        if case .success = hermes { return true }
+=======
+        if case .success = claudeCode { return true }
+        if case .success = codex { return true }
+        if case .success = openCode { return true }
+        if case .success = hermes { return true }
+        if case .success = pi { return true }
+        if case .success = crush { return true }
+>>>>>>> Current commit: feat(ipc): add Crush & pi support and docs updatesIntroduce native Crush agent M
         return false
     }
 
@@ -69,13 +97,27 @@ struct IPCConfigManager: Sendable {
         let codex = enableCodex(port: port, token: token)
         let openCode = enableOpenCode(port: port, token: token)
         let hermes = enableHermes(port: port, token: token)
+<<<<<<< New base: Add Crush IPC issue to handoff
         let grok = enableGrok(port: port, token: token)
+||||||| Common ancestor
+=======
+        let pi = enablePi()
+        let crush = enableCrush(port: port, token: token)
+>>>>>>> Current commit: feat(ipc): add Crush & pi support and docs updatesIntroduce native Crush agent M
         return IPCConfigResult(
             claudeCode: claudeCode,
             codex: codex,
             openCode: openCode,
+<<<<<<< New base: Add Crush IPC issue to handoff
             hermes: hermes,
             grok: grok
+||||||| Common ancestor
+            hermes: hermes
+=======
+            hermes: hermes,
+            pi: pi,
+            crush: crush
+>>>>>>> Current commit: feat(ipc): add Crush & pi support and docs updatesIntroduce native Crush agent M
         )
     }
 
@@ -86,24 +128,52 @@ struct IPCConfigManager: Sendable {
         let codex = disableCodex()
         let openCode = disableOpenCode()
         let hermes = disableHermes()
+<<<<<<< New base: Add Crush IPC issue to handoff
         let grok = disableGrok()
+||||||| Common ancestor
+=======
+        let pi = disablePi()
+        let crush = disableCrush()
+>>>>>>> Current commit: feat(ipc): add Crush & pi support and docs updatesIntroduce native Crush agent M
         return IPCConfigResult(
             claudeCode: claudeCode,
             codex: codex,
             openCode: openCode,
+<<<<<<< New base: Add Crush IPC issue to handoff
             hermes: hermes,
             grok: grok
+||||||| Common ancestor
+            hermes: hermes
+=======
+            hermes: hermes,
+            pi: pi,
+            crush: crush
+>>>>>>> Current commit: feat(ipc): add Crush & pi support and docs updatesIntroduce native Crush agent M
         )
     }
 
     /// Returns whether IPC is currently enabled in each tool's config.
+<<<<<<< New base: Add Crush IPC issue to handoff
     static func isIPCEnabled() -> (claudeCode: Bool, codex: Bool, openCode: Bool, hermes: Bool, grok: Bool) {
+||||||| Common ancestor
+    static func isIPCEnabled() -> (claudeCode: Bool, codex: Bool, openCode: Bool, hermes: Bool) {
+=======
+    static func isIPCEnabled() -> (claudeCode: Bool, codex: Bool, openCode: Bool, hermes: Bool, pi: Bool, crush: Bool) {
+>>>>>>> Current commit: feat(ipc): add Crush & pi support and docs updatesIntroduce native Crush agent M
         (
             claudeCode: ClaudeConfigManager.isIPCEnabled(),
             codex: CodexConfigManager.isIPCEnabled(),
             openCode: OpenCodeConfigManager.isIPCEnabled(),
+<<<<<<< New base: Add Crush IPC issue to handoff
             hermes: HermesConfigManager.isIPCEnabled(),
             grok: GrokConfigManager.isIPCEnabled()
+||||||| Common ancestor
+            hermes: HermesConfigManager.isIPCEnabled()
+=======
+            hermes: HermesConfigManager.isIPCEnabled(),
+            pi: PiConfigManager.isIPCEnabled(),
+            crush: CrushConfigManager.isIPCEnabled()
+>>>>>>> Current commit: feat(ipc): add Crush & pi support and docs updatesIntroduce native Crush agent M
         )
     }
 
@@ -199,6 +269,7 @@ struct IPCConfigManager: Sendable {
             return .failed(error)
         }
     }
+<<<<<<< New base: Add Crush IPC issue to handoff
 
     // MARK: - Private: Grok
 
@@ -222,4 +293,65 @@ struct IPCConfigManager: Sendable {
             return .failed(error)
         }
     }
+||||||| Common ancestor
+=======
+
+    // MARK: - Private: pi
+
+    private static func enablePi() -> ConfigStatus {
+        let piDir = NSHomeDirectory() + "/.pi/agent/skills"
+        guard directoryExists(at: piDir) else {
+            return .skipped(reason: "not installed")
+        }
+        do {
+            try PiConfigManager.enableIPC()
+            return .success
+        } catch {
+            return .failed(error)
+        }
+    }
+
+    private static func disablePi() -> ConfigStatus {
+        do {
+            try PiConfigManager.disableIPC()
+            return .success
+        } catch {
+            return .failed(error)
+        }
+    }
+
+    // MARK: - Private: Crush
+
+    private static func enableCrush(port: Int, token: String) -> ConfigStatus {
+        // Detect Crush like other agents: by the presence of its config directory.
+        // This avoids relying on PATH, which may not include Homebrew/bin when
+        // Calyx is launched from the GUI.
+        let crushDir = NSHomeDirectory() + "/.config/crush"
+        guard directoryExists(at: crushDir) else {
+            return .skipped(reason: "not installed")
+        }
+        do {
+            try CrushConfigManager.enableIPC(port: port, token: token)
+            return .success
+        } catch {
+            return .failed(error)
+        }
+    }
+
+    private static func disableCrush() -> ConfigStatus {
+        do {
+            try CrushConfigManager.disableIPC()
+            return .success
+        } catch {
+            return .failed(error)
+        }
+    }
+
+    /// Checks that a path exists and is a directory (not a file).
+    private static func directoryExists(at path: String) -> Bool {
+        var isDirectory: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+        return exists && isDirectory.boolValue
+    }
+>>>>>>> Current commit: feat(ipc): add Crush & pi support and docs updatesIntroduce native Crush agent M
 }

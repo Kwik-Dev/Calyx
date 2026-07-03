@@ -114,6 +114,26 @@ The CLI reads `~/.config/calyx/ipc.json` for URL/token and uses raw JSON-RPC ove
 
 ---
 
+## Crush agent support (new)
+
+Charm Crush (`charmbracelet/crush`) has native MCP client support via `http`, `stdio`, and `sse` transports in its `crush.json` config file. This makes it similar to OpenCode/Codex — Calyx can upsert a `calyx-ipc` MCP entry directly into Crush's config.
+
+### Config target
+
+- Primary: `~/.config/crush/crush.json`
+- MCP key: `mcp.calyx-ipc`
+- Entry type: `"http"`
+- URL: `http://localhost:PORT/mcp`
+- Headers: `{ "Authorization": "Bearer TOKEN" }`
+
+### Implementation (mirrors Codex/OpenCode pattern)
+
+- New file: `Calyx/Features/IPC/CrushConfigManager.swift`
+- Upsert/remove the entry under the `mcp` object in `crush.json`
+- Reuse `ConfigFileUtils.atomicWrite` + symlink rejection
+- Add `crush` axis to `IPCConfigResult`, `IPCConfigManager`, `isAIAgentTitle`, UI labels, README
+- Tests: `CalyxTests/IPC/CrushConfigManagerTests.swift`
+
 ## Next steps for the resuming session
 
 1. Install the tools listed above.

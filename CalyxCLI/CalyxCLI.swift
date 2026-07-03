@@ -12,7 +12,7 @@ struct CalyxCLI: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "calyx",
         abstract: "Calyx terminal CLI",
-        subcommands: [BrowserCommand.self]
+        subcommands: [BrowserCommand.self, IPCCommand.self]
     )
 }
 

@@ -39,7 +39,7 @@ Claude Code and Codex permission prompts, the tool calls of Grok sessions runnin
 
 ### Review code without leaving the terminal
 
-Inspect working changes and commit history in the Git sidebar, add comments to individual diff lines, and submit the complete review directly to a Claude Code, Codex, OpenCode, Hermes, or Grok pane.
+Inspect working changes and commit history in the Git sidebar, add comments to individual diff lines, and submit the complete review directly to a Claude Code, Codex, OpenCode, Hermes, Grok, pi, or Crush pane.
 
 ### Give agents a terminal they can understand
 
@@ -62,7 +62,7 @@ Calyx exposes panes, commands, captured output, browser tabs, language servers, 
 - **Git Source Control** -- working changes, staging state, commit graph, branch visualization, and inline diffs in the sidebar, as one collapsible section per repository the window can reach, including linked worktrees and checked-out submodules
 - **Commit Log Ref Picker** -- the commit graph uses an Auto scope modelled on VSCode's (the checked-out branch, its upstream, and the remote's default branch), with a per-repository picker for all references or any set of branches, remotes, and tags, and branch and tag badges on commit rows
 - **Diff Review Comments** -- comment on individual lines and submit a complete review directly to an agent pane ([demo video](https://www.youtube.com/watch?v=_O2Lr4oFf4c))
-- **AI Agent IPC** -- built-in MCP messaging lets agents discover and communicate with peers across tabs and panes ([demo video](https://www.youtube.com/watch?v=Xty0ad9gGcM))
+- **AI Agent IPC** -- built-in MCP messaging (Claude Code, Codex, OpenCode, Hermes, pi, and Crush) lets agents discover and communicate with peers across tabs and panes ([demo video](https://www.youtube.com/watch?v=Xty0ad9gGcM))
 - **LSP Proxy MCP** -- hover, definition, references, rename, diagnostics, and other language-server features for agents; missing servers can be installed from Settings
 
 ### Sessions and remote work
@@ -89,6 +89,40 @@ Calyx exposes panes, commands, captured output, browser tabs, language servers, 
 
 - **Browser Tabs** -- non-persistent WKWebView tabs alongside terminal tabs, limited to http and https with popups blocked
 - **Scriptable Browser** -- 25 bundled `calyx browser` commands for accessibility snapshots, clicking, filling, evaluation, screenshots, waits, and inspection
+- **libghostty terminal engine** -- Metal GPU-accelerated rendering via Ghostty v1.3.1 submodule
+- **Liquid Glass UI** -- native macOS 26 Tahoe design language with customizable theme color (8 presets + custom hex/color picker; Ghostty preset reads your Ghostty config's background color). Text color adapts automatically: Ghostty preset follows Ghostty's foreground config, other presets switch between white/black based on theme color luminance ([demo video](https://www.youtube.com/watch?v=cUYc7yzI_eM))
+- **Tab Groups** -- 10 color presets, collapsible/expandable sections with chevron toggle, double-click to rename groups or individual tabs, drag-to-reorder tabs in tab bar and sidebar
+- **Split Panes** -- horizontal and vertical splits with directional focus navigation
+- **Command Palette** -- search and execute all operations with `Cmd+Shift+P`
+- **Layout Restore** -- tabs, splits, and working directories auto-saved and restored on restart
+- **Persistent Sessions** -- opt-in daemon-backed sessions (`calyx-session`) that survive quit and crash; the toggle applies only to panes opened after it is enabled; reattach from the Session Browser (`Cmd+Shift+B`); a recovery bar offers the preserved session when auto-restore is skipped or fails; opt-in on-disk history
+- **Remote Sessions** -- persistent sessions on SSH hosts picked from `~/.ssh/config`; one-time daemon deploy via `calyx-session remote-install <host>`
+- **Agent Resume** -- reattached sessions can offer to resume the agent CLI conversation that was running (Settings -> Agents)
+- **Desktop Notifications** -- OSC 9/99/777 support with rate limiting
+- **Browser Integration** -- WKWebView tabs alongside terminal tabs (http/https only, non-persistent storage, popup blocking)
+- **Scrollback Search** -- `Cmd+F` to search terminal scrollback with match highlighting, `Cmd+G`/`Cmd+Shift+G` to navigate matches
+- **Drag and Drop** -- drag files, URLs, or text onto the terminal to insert content (file paths are shell-escaped)
+- **Smooth Scrolling** -- trackpad uses full smooth pixel scrolling via sub-row CALayer transform; notched mouse wheel adds a velocity-based animation for smoother transitions. Togglable in Settings
+- **Native Scrollbar** -- system overlay scrollbar for terminal scrollback
+- **Cursor Click-to-Move** -- click on a prompt line to reposition cursor (requires shell integration)
+- **Git Source Control** -- sidebar Changes view with working changes (staged/unstaged/untracked), commit graph with branch visualization, and inline diff viewer with review comments
+- **Diff Review Comments** -- click the gutter `+` button to add inline comments to diff lines, then Submit Review to send directly to a Claude Code, Codex, OpenCode, Hermes, pi, or Crush terminal tab
+([demo video](https://www.youtube.com/watch?v=_O2Lr4oFf4c))
+- **AI Agent IPC** -- MCP server for communication between AI agent instances (Claude Code, Codex CLI, OpenCode, Hermes, pi, Crush) across tabs and panes ([demo video](https://www.youtube.com/watch?v=Xty0ad9gGcM))
+- **Agents Sidebar** -- live status view for connected AI agents (Claude Code, Codex, OpenCode, Hermes) with per-agent state (blocked/working/idle/done), unread message badge, last-seen timestamp, and click-to-focus pane
+- **LSP Proxy MCP** -- exposes language server features such as hover, definition, references, rename, and diagnostics to AI agents over the same MCP server as AI Agent IPC. Missing servers can be auto-installed via Settings.
+- **Agent Cockpit** -- MCP tools that let agents drive Calyx: `pane_list`, `pane_split`, `tab_create` run immediately; `pane_run`, `pane_send_keys`, `palette_execute` require per-request approval via an in-window banner (opt-in auto-approve in Settings -> Agents)
+- **Approval Inbox** -- routes Claude Code / Codex tool-permission prompts into the same in-window approval banner across all panes: Allow / Deny per request, Always Allow scoped to one pane or all panes (session-only memory), safe fallback to the agent's own in-pane prompt on timeout; opt-in via Settings -> Agents
+- **Approval Queue Navigation** -- when multiple permission requests are pending, the banner shows prev/next chevrons and an "i / N" position label next to the action buttons; browse the queue and approve or deny any request out of order, and deciding one auto-advances to the nearest remaining request
+- **Command Log** -- records shell commands and their output (zsh/fish shell integration, auto-installed) and exposes `terminal_list_commands`, `terminal_read_output`, `terminal_await_command` MCP tools to agents; secrets (tokens, passwords, API keys) redacted before exposure; records stay in memory only
+- **Scriptable Browser** -- 25 CLI commands for browser automation (like cmux): snapshot, click, fill, eval, screenshot, wait, get-attribute, get-links, get-inputs, is-visible, hover, scroll. No enable step needed. `calyx` CLI bundled in the app
+- **Ghostty config compatibility** -- reads `~/.config/ghostty/config` (most keys hot-reload on save; see Settings for Calyx-managed keys)
+- **Ghostty keybind actions** -- bind Calyx operations to keys in your Ghostty config: `toggle_split_zoom`, `prompt_surface_title` (tab rename), `set_tab_title`, `copy_title_to_clipboard`, `move_tab`, `goto_window`, `close_all_windows`, `toggle_maximize`, `reset_window_size`, `toggle_command_palette`, `check_for_updates`
+- **Compose Overlay** -- floating text editor over the terminal for comfortable multiline input (`Cmd+Shift+E`), useful for writing long commands or AI prompts ([demo video](https://www.youtube.com/watch?v=qhwYnk8adF4))
+- **Quick Terminal** -- system-wide drop-down terminal toggled via global keybind
+- **Clipboard Confirmation** -- prompts before pasting potentially unsafe content (respects Ghostty's `clipboard-paste-protection` setting)
+- **Secure Keyboard Entry** -- prevents other apps from intercepting keystrokes (toggle via app menu)
+- **Auto-update** -- Sparkle-based updates for direct downloads (Homebrew installs use `brew upgrade`)
 
 ## Keyboard Shortcuts
 
@@ -156,15 +190,15 @@ Calyx exposes panes, commands, captured output, browser tabs, language servers, 
 
 ## IPC (Inter-Pane Communication)
 
-AI agent instances (Claude Code, Codex CLI, OpenCode, Hermes, Grok, pi) running in different Calyx tabs or panes can communicate with each other via a built-in MCP server.
+AI agent instances (Claude Code, Codex CLI, OpenCode, Hermes, Grok, pi, Crush) running in different Calyx tabs or panes can communicate with each other via a built-in MCP server.
 
 1. Open the command palette (`Cmd+Shift+P`) and run **Enable AI Agent IPC**
-2. Start agents (Claude Code, Codex, OpenCode, Hermes, Grok, or pi) in two or more terminal panes
+2. Start agents (Claude Code, Codex, OpenCode, Hermes, Grok, pi, or Crush) in two or more terminal panes
 3. Each instance automatically registers as a peer and can send/receive messages
 
-Config is auto-written to `~/.claude.json`, `~/.codex/config.toml`, `~/.config/opencode/{opencode.json,AGENTS.md}`, `~/.hermes/config.yaml`, and `~/.grok/config.toml` when the respective tool is installed. Restart running agent instances to pick up the new MCP server. If you install a supported agent later, run **Reconfigure AI Agent IPC** to write its config and hooks. It never restarts a server that is already running, so agents already connected keep working.
+Config is auto-written to `~/.claude.json`, `~/.codex/config.toml`, `~/.config/opencode/{opencode.json,AGENTS.md}`, `~/.hermes/config.yaml`, `~/.grok/config.toml`, `~/.config/crush/crush.json`, and a pi skill at `~/.pi/agent/skills/calyx-ipc/SKILL.md` when the respective tool is installed. Restart running agent instances to pick up the new MCP server. If you install a supported agent later, run **Reconfigure AI Agent IPC** to write its config and hooks. It never restarts a server that is already running, so agents already connected keep working.
 
-pi has no MCP client configuration file at all, so it reaches Calyx through a single TypeScript extension written to `~/.pi/agent/extensions/calyx.ts`, which pi auto-loads. It carries the whole integration: the sidebar row, the approval gate, and a `calyx` tool that bridges the MCP tools above (call it with `{"tool": "list"}` to enumerate them). A pi started outside Calyx, or inside a herdr pane, registers nothing.
+pi has no MCP client configuration file at all, so it reaches Calyx through a skill written to `~/.pi/agent/skills/calyx-ipc/` that teaches it the `calyx` IPC tools. A pi started outside Calyx, or inside a herdr pane, registers nothing.
 
 Available MCP tools: `register_peer`, `list_peers`, `send_message`, `broadcast`, `receive_messages`, `get_peer_status`. `receive_messages` deletes each message from the inbox as it returns it, so a message is only ever delivered once.
 

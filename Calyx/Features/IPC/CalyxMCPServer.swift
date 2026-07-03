@@ -82,6 +82,32 @@ final class CalyxMCPServer {
         self.agentEndpointDirectory = agentEndpointDirectory
     }
 
+    // MARK: - State File
+
+    /// Write connection info so the CLI and external tools can discover the IPC server.
+    private func writeStateFile() {
+        let configDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/calyx")
+        try? FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
+        let stateFile = configDir.appendingPathComponent("ipc.json")
+        let state: [String: Any] = [
+            "port": port,
+            "token": token,
+            "url": "http://localhost:\(port)/mcp",
+            "pid": ProcessInfo.processInfo.processIdentifier,
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: state, options: .prettyPrinted) {
+            try? data.write(to: stateFile)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: stateFile.path)
+        }
+    }
+
+    private func removeStateFile() {
+        let stateFile = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/calyx/ipc.json")
+        try? FileManager.default.removeItem(at: stateFile)
+    }
+
     /// For testing only — sets the token without starting the listener.
     func _testSetToken(_ token: String) {
         self.token = token
@@ -945,6 +971,26 @@ final class CalyxMCPServer {
                             "Failed to bind to 127.0.0.1:\(tryPort)",
                     ]
                 )
+                let nl = try NWListener(using: params)
+
+                nl.newConnectionHandler = { [weak self] connection in
+                    Task { @MainActor in
+                        self?.handleConnection(connection)
+                    }
+                }
+                nl.start(queue: .main)
+
+                self.listener = nl
+                self.port = tryPort
+                self.isRunning = true
+                writeStateFile()
+                self.peerRegistrationTask = Task {
+                    let peer = await self.store.registerPeer(name: "calyx-app", role: "review-ui")
+                    self.appPeerID = peer.id
+                }
+                return
+            } catch {
+                lastError = error
                 continue
             }
             if resolvedPort != tryPort {
@@ -1269,6 +1315,7 @@ final class CalyxMCPServer {
         // even if a future change starts resetting `token` here too.
         let stoppedPort = port
         let stoppedToken = token
+        removeStateFile()
         listener?.cancel()
         listener = nil
         isRunning = false
