@@ -150,8 +150,7 @@ struct PiConfigManager: Sendable {
 
         try ConfigFileUtils.atomicWrite(
             data: data,
-            to: skillFile,
-            lockPath: skillFile + ".lock"
+            to: skillFile
         )
     }
 

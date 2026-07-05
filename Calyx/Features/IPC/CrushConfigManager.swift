@@ -89,8 +89,7 @@ struct CrushConfigManager: Sendable {
 
         try ConfigFileUtils.atomicWrite(
             data: outputData,
-            to: configPath,
-            lockPath: configPath + ".lock"
+            to: configPath
         )
     }
 
@@ -131,8 +130,7 @@ struct CrushConfigManager: Sendable {
 
         try ConfigFileUtils.atomicWrite(
             data: outputData,
-            to: configPath,
-            lockPath: configPath + ".lock"
+            to: configPath
         )
     }
 
