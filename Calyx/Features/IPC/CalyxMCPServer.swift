@@ -971,26 +971,6 @@ final class CalyxMCPServer {
                             "Failed to bind to 127.0.0.1:\(tryPort)",
                     ]
                 )
-                let nl = try NWListener(using: params)
-
-                nl.newConnectionHandler = { [weak self] connection in
-                    Task { @MainActor in
-                        self?.handleConnection(connection)
-                    }
-                }
-                nl.start(queue: .main)
-
-                self.listener = nl
-                self.port = tryPort
-                self.isRunning = true
-                writeStateFile()
-                self.peerRegistrationTask = Task {
-                    let peer = await self.store.registerPeer(name: "calyx-app", role: "review-ui")
-                    self.appPeerID = peer.id
-                }
-                return
-            } catch {
-                lastError = error
                 continue
             }
             if resolvedPort != tryPort {
