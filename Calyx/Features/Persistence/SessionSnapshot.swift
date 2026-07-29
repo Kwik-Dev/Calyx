@@ -23,6 +23,18 @@ extension SessionSnapshot {
         // Just normalize the version number.
         return SessionSnapshot(schemaVersion: currentSchemaVersion, windows: snapshot.windows)
     }
+
+    /// Drops persisted windows that contain no persisted tabs, and drops
+    /// empty tab groups inside otherwise-restorable windows. This treats a
+    /// "window with zero tabs" the same as a truly empty snapshot: there is
+    /// nothing restorable there, and trying to restore it only creates a
+    /// transient window that immediately closes again.
+    func removingEmptyWindows() -> SessionSnapshot {
+        SessionSnapshot(
+            schemaVersion: schemaVersion,
+            windows: windows.compactMap { $0.removingEmptyTabGroups() }
+        )
+    }
 }
 
 struct WindowSnapshot: Codable, Equatable {
@@ -82,6 +94,23 @@ struct WindowSnapshot: Codable, Equatable {
         if f.maxX > screenFrame.maxX { f.origin.x = screenFrame.maxX - f.width }
         if f.maxY > screenFrame.maxY { f.origin.y = screenFrame.maxY - f.height }
         return WindowSnapshot(id: id, frame: f, groups: groups, activeGroupID: activeGroupID, showSidebar: showSidebar, sidebarWidth: sidebarWidth, isFullScreen: isFullScreen)
+    }
+
+    func removingEmptyTabGroups() -> WindowSnapshot? {
+        let nonEmptyGroups = groups.filter { !$0.tabs.isEmpty }
+        guard !nonEmptyGroups.isEmpty else { return nil }
+        let activeGroupStillExists = activeGroupID.map { id in
+            nonEmptyGroups.contains { $0.id == id }
+        } ?? false
+        return WindowSnapshot(
+            id: id,
+            frame: frame,
+            groups: nonEmptyGroups,
+            activeGroupID: activeGroupStillExists ? activeGroupID : nonEmptyGroups.first?.id,
+            showSidebar: showSidebar,
+            sidebarWidth: sidebarWidth,
+            isFullScreen: isFullScreen
+        )
     }
 }
 

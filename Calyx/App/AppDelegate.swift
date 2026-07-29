@@ -1410,7 +1410,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func buildSnapshot() -> SessionSnapshot {
         SessionSnapshot(
             windows: windowControllers.map { $0.windowSnapshot() }
-        )
+        ).removingEmptyWindows()
     }
 
     /// Extracted from applicationWillTerminate's save step so it is
@@ -1544,7 +1544,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         #else
         let actor = SessionPersistenceActor.shared
         #endif
-        guard let snapshot = await actor.loadPreservedSnapshot(), !snapshot.windows.isEmpty else {
+        guard let snapshot = await actor.loadPreservedSnapshot()?.removingEmptyWindows(),
+              !snapshot.windows.isEmpty else {
             await actor.clearPreservedSnapshot()
             hasPreservedSessionSnapshot = false
             broadcastHasPreservedSessionSnapshotToRecoveryBars()
@@ -1613,7 +1614,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         #endif
         Task {
             defer { isRecovering = false }
-            guard let snapshot = await actor.loadPreservedSnapshot() else {
+            guard let rawSnapshot = await actor.loadPreservedSnapshot() else {
                 // Nothing preserved, OR preserved but undecodable
                 // (corrupt/unknown schema) -- quarantine is a no-op in
                 // the former sub-case, so calling it unconditionally is
@@ -1623,6 +1624,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 broadcastHasPreservedSessionSnapshotToRecoveryBars()
                 return
             }
+            let snapshot = rawSnapshot.removingEmptyWindows()
             // Empty-snapshot fix: a decodable-but-empty preserved
             // snapshot has nothing to recover -- clear the useless file
             // and reset the flag (mirroring
@@ -1868,7 +1870,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             preserveDiscardedSessionIfAny()
             return false
         case .snapshot(let restored):
-            snapshot = restored
+            snapshot = restored.removingEmptyWindows()
         }
 
         guard !snapshot.windows.isEmpty else {

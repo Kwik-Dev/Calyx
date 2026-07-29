@@ -44,6 +44,53 @@ final class SessionPersistenceTests: XCTestCase {
         XCTAssertEqual(decoded.windows.count, 0)
     }
 
+    func test_removingEmptyWindows_dropsWindowWithNoGroups() {
+        let window = WindowSnapshot(
+            id: UUID(),
+            frame: CGRect(x: 0, y: 0, width: 800, height: 600),
+            groups: [],
+            activeGroupID: nil
+        )
+        let snapshot = SessionSnapshot(schemaVersion: 6, windows: [window])
+
+        let normalized = snapshot.removingEmptyWindows()
+
+        XCTAssertTrue(normalized.windows.isEmpty,
+                      "A saved window with no groups/tabs is not restorable and must behave like an empty snapshot")
+        XCTAssertEqual(normalized.schemaVersion, snapshot.schemaVersion)
+    }
+
+    func test_removingEmptyWindows_dropsEmptyGroupsAndRepairsActiveGroup() {
+        let emptyGroup = TabGroupSnapshot(
+            id: UUID(),
+            name: "Empty",
+            color: "blue",
+            tabs: [],
+            activeTabID: nil
+        )
+        let tab = TabSnapshot(id: UUID(), title: "Terminal", splitTree: SplitTree(leafID: UUID()))
+        let nonEmptyGroup = TabGroupSnapshot(
+            id: UUID(),
+            name: "Live",
+            color: "green",
+            tabs: [tab],
+            activeTabID: tab.id
+        )
+        let window = WindowSnapshot(
+            id: UUID(),
+            frame: CGRect(x: 0, y: 0, width: 800, height: 600),
+            groups: [emptyGroup, nonEmptyGroup],
+            activeGroupID: emptyGroup.id
+        )
+        let snapshot = SessionSnapshot(windows: [window])
+
+        let normalized = snapshot.removingEmptyWindows()
+
+        XCTAssertEqual(normalized.windows.count, 1)
+        XCTAssertEqual(normalized.windows[0].groups.map(\.id), [nonEmptyGroup.id])
+        XCTAssertEqual(normalized.windows[0].activeGroupID, nonEmptyGroup.id)
+    }
+
     func test_window_frame_clamped_to_screen() {
         let window = WindowSnapshot(
             id: UUID(),
