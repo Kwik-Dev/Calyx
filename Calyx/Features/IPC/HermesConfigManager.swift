@@ -354,32 +354,39 @@ struct HermesConfigManager: Sendable {
         }
     }
 
-    /// Removes well-formed managed blocks from `content`, including a single
-    /// leading and trailing newline immediately adjacent to the block (to
-    /// avoid leaving stray blank lines where the block used to be).
+    /// Removes well-formed managed blocks from `content`, including one
+    /// adjacent newline so surrounding user content remains line-separated.
     private static func stripValidManagedBlocks(from content: String) -> String {
         var working = content
         // Iterate by repeatedly searching for a fresh valid block, since each
         // removal invalidates previously-computed ranges.
         while let range = findValidManagedBlocks(in: working).first {
-            var lower = range.lowerBound
-            var upper = range.upperBound
-
-            // Eat one trailing newline if present.
-            if upper < working.endIndex, working[upper] == "\n" {
-                upper = working.index(after: upper)
-            }
-            // Eat one leading newline if present (so the deleted block doesn't
-            // leave behind a blank-line gap).
-            if lower > working.startIndex {
-                let prev = working.index(before: lower)
-                if working[prev] == "\n" {
-                    lower = prev
-                }
-            }
-            working.removeSubrange(lower..<upper)
+            working.removeSubrange(removalRangePreservingLineBoundary(for: range, in: working))
         }
         return working
+    }
+
+    /// Extends a managed-region range across exactly one adjacent newline.
+    /// Prefer the newline after the region so a preceding content line keeps
+    /// its separator from whatever follows. At EOF there is no trailing
+    /// newline to consume, so remove the preceding one instead.
+    private static func removalRangePreservingLineBoundary(
+        for range: Range<String.Index>,
+        in content: String
+    ) -> Range<String.Index> {
+        var lower = range.lowerBound
+        var upper = range.upperBound
+
+        if upper < content.endIndex, content[upper] == "\n" {
+            upper = content.index(after: upper)
+        } else if lower > content.startIndex {
+            let preceding = content.index(before: lower)
+            if content[preceding] == "\n" {
+                lower = preceding
+            }
+        }
+
+        return lower..<upper
     }
 
     /// Self-heal helper used during enableIPC: removes ANY BEGIN line through
@@ -391,34 +398,13 @@ struct HermesConfigManager: Sendable {
             let searchAfterBegin = beginRange.upperBound..<working.endIndex
             let upperBound = firstMatch(of: endLineRegex, in: working, range: searchAfterBegin)?.upperBound
                 ?? working.endIndex
-            var lower = beginRange.lowerBound
-            var upper = upperBound
-            if upper < working.endIndex, working[upper] == "\n" {
-                upper = working.index(after: upper)
-            }
-            if lower > working.startIndex {
-                let prev = working.index(before: lower)
-                if working[prev] == "\n" {
-                    lower = prev
-                }
-            }
-            working.removeSubrange(lower..<upper)
+            let range = beginRange.lowerBound..<upperBound
+            working.removeSubrange(removalRangePreservingLineBoundary(for: range, in: working))
         }
         // Self-heal also removes orphan END lines that have no matching BEGIN,
         // so a broken state does not leak into the freshly-written file.
         while let endRange = firstMatch(of: endLineRegex, in: working) {
-            var lower = endRange.lowerBound
-            var upper = endRange.upperBound
-            if upper < working.endIndex, working[upper] == "\n" {
-                upper = working.index(after: upper)
-            }
-            if lower > working.startIndex {
-                let prev = working.index(before: lower)
-                if working[prev] == "\n" {
-                    lower = prev
-                }
-            }
-            working.removeSubrange(lower..<upper)
+            working.removeSubrange(removalRangePreservingLineBoundary(for: endRange, in: working))
         }
         return working
     }

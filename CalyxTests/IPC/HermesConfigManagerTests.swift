@@ -263,6 +263,54 @@ final class HermesConfigManagerTests: XCTestCase {
                        "Old token should be gone")
     }
 
+    func test_enableIPC_repeatedUpdatePreservesFollowingTopLevelSection() throws {
+        let original = """
+        mcp_servers:
+          stripe:
+            url: "https://mcp.stripe.com"
+        toolsets:
+          - web
+        """
+        try writeConfig(original)
+
+        try HermesConfigManager.enableIPC(port: 41830, token: "first", configPath: configPath)
+        try HermesConfigManager.enableIPC(port: 55555, token: "second", configPath: configPath)
+
+        let expected = """
+        mcp_servers:
+          stripe:
+            url: "https://mcp.stripe.com"
+          # BEGIN CALYX IPC (managed by Calyx, do not edit)
+          calyx-ipc:
+            url: "http://127.0.0.1:55555/mcp"
+            headers:
+              Authorization: "Bearer second"
+          # END CALYX IPC
+        toolsets:
+          - web
+        """
+        XCTAssertEqual(readConfig(), expected)
+    }
+
+    func test_enableIPC_selfHealingOrphanEndPreservesFollowingTopLevelSection() throws {
+        let malformed = """
+        mcp_servers:
+          stripe:
+            url: "https://mcp.stripe.com"
+          # END CALYX IPC
+        toolsets:
+          - web
+        """
+        try writeConfig(malformed)
+
+        try HermesConfigManager.enableIPC(port: 41830, token: "fresh", configPath: configPath)
+
+        let content = readConfig()
+        XCTAssertTrue(content.contains("# END CALYX IPC\ntoolsets:"), content)
+        XCTAssertFalse(content.contains("stripe.com\"toolsets:"), content)
+        XCTAssertEqual(occurrences(of: endLine, in: content), 1)
+    }
+
     // MARK: - enableIPC: Unsupported YAML structure
 
     func test_enableIPC_throwsOnInlineMcpServersMap() throws {
@@ -529,6 +577,32 @@ final class HermesConfigManagerTests: XCTestCase {
                        "END line should be removed")
         XCTAssertFalse(content.contains("calyx-ipc:"),
                        "calyx-ipc key should be removed")
+    }
+
+    func test_disableIPC_restoresContentAroundMiddleManagedBlockExactly() throws {
+        let original = """
+        mcp_servers:
+          stripe:
+            url: "https://mcp.stripe.com"
+        toolsets:
+          - web
+        """
+        try writeConfig(original)
+        try HermesConfigManager.enableIPC(port: 41830, token: "tok", configPath: configPath)
+
+        try HermesConfigManager.disableIPC(configPath: configPath)
+
+        XCTAssertEqual(readConfig(), original)
+    }
+
+    func test_disableIPC_restoresCaseAWithSingleFinalNewline() throws {
+        let original = "agent_name: \"hermes\"\nmax_tokens: 4096\n"
+        try writeConfig(original)
+        try HermesConfigManager.enableIPC(port: 41830, token: "tok", configPath: configPath)
+
+        try HermesConfigManager.disableIPC(configPath: configPath)
+
+        XCTAssertEqual(readConfig(), original)
     }
 
     func test_disableIPC_keepsExistingMcpServers() throws {
