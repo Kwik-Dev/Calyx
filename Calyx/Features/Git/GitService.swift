@@ -58,12 +58,36 @@ enum GitService {
 
     static func commitLog(workDir: String, maxCount: Int, skip: Int) async throws -> [GitCommit] {
         let format = "%x1f%H%x1f%h%x1f%s%x1f%an%x1f%ar%x1f%P%x1e"
+        let linkedWorktree = try await isLinkedWorktree(workDir: workDir)
+        var args = ["log"]
+        // Linked worktrees share refs, so --all would include sibling branch history.
+        if !linkedWorktree {
+            args.append("--all")
+        }
+        args += ["--graph", "--format=\(format)",
+                 "--max-count=\(maxCount)", "--skip=\(skip)"]
+
         let output = try await run(
-            args: ["log", "--all", "--graph", "--format=\(format)",
-                   "--max-count=\(maxCount)", "--skip=\(skip)"],
+            args: args,
             workDir: workDir
         )
         return parseCommitLog(output)
+    }
+
+    private static func isLinkedWorktree(workDir: String) async throws -> Bool {
+        let output = try await run(
+            args: ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"],
+            workDir: workDir
+        )
+        let directories = output.split(whereSeparator: \.isNewline)
+        guard directories.count == 2 else {
+            throw GitError.commandFailed(
+                exitCode: -1,
+                stderr: "Unexpected git directory metadata",
+                command: "rev-parse"
+            )
+        }
+        return directories[0] != directories[1]
     }
 
     static func commitFiles(hash: String, workDir: String) async throws -> [CommitFileEntry] {
