@@ -42,6 +42,29 @@ enum GitService {
         return output.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    static func repositoryLocation(workDir: String) async throws -> GitRepositoryLocation {
+        let output = try await run(
+            args: [
+                "rev-parse", "--show-toplevel", "--path-format=absolute",
+                "--git-dir", "--git-common-dir",
+            ],
+            workDir: workDir
+        )
+        let paths = output.split(whereSeparator: \.isNewline).map(String.init)
+        guard paths.count == 3 else {
+            throw GitError.commandFailed(
+                exitCode: -1,
+                stderr: "Unexpected git repository metadata",
+                command: "rev-parse"
+            )
+        }
+        return GitRepositoryLocation(
+            workTree: paths[0],
+            gitDirectory: paths[1],
+            gitCommonDirectory: paths[2]
+        )
+    }
+
     static func isGitRepository(workDir: String) async -> Bool {
         do {
             _ = try await repoRoot(workDir: workDir)
@@ -75,19 +98,8 @@ enum GitService {
     }
 
     private static func isLinkedWorktree(workDir: String) async throws -> Bool {
-        let output = try await run(
-            args: ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"],
-            workDir: workDir
-        )
-        let directories = output.split(whereSeparator: \.isNewline)
-        guard directories.count == 2 else {
-            throw GitError.commandFailed(
-                exitCode: -1,
-                stderr: "Unexpected git directory metadata",
-                command: "rev-parse"
-            )
-        }
-        return directories[0] != directories[1]
+        let location = try await repositoryLocation(workDir: workDir)
+        return location.gitDirectory != location.gitCommonDirectory
     }
 
     static func commitFiles(hash: String, workDir: String) async throws -> [CommitFileEntry] {
@@ -213,6 +225,7 @@ enum GitService {
                         "LC_ALL": "C",
                         "GIT_PAGER": "cat",
                         "GIT_TERMINAL_PROMPT": "0",
+                        "GIT_OPTIONAL_LOCKS": "0",
                         "PATH": "/usr/bin:/usr/local/bin",
                         "HOME": NSHomeDirectory(),
                     ]

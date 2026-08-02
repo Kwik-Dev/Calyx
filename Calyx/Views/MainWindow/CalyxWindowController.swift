@@ -112,6 +112,8 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     private var diffStates: [UUID: DiffLoadState] = [:]
     private var diffTasks = KeyedTaskRegistry<UUID>()
     private var refreshTask: Task<Void, Never>?
+    private var gitChangesMonitor: GitChangesMonitor?
+    private var gitMonitorStopTask: Task<Void, Never>?
     private var loadMoreTask: Task<Void, Never>?
     /// Herdr layer-2 screen-classification poll (see
     /// `startScreenPollTask`). Runs for the window's lifetime, cancelled
@@ -495,9 +497,8 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
             self?.activeBrowserController?.reload()
         })
         commandRegistry.register(PaletteCommand(id: "git.showChanges", title: "Show Git Changes", category: "Git") { [weak self] in
-            self?.windowSession.sidebarMode = .changes
             self?.windowSession.showSidebar = true
-            self?.refreshGitStatus()
+            self?.setSidebarMode(.changes)
             self?.refreshHostingView()
         })
         commandRegistry.register(PaletteCommand(id: "git.refresh", title: "Refresh Git Changes", category: "Git") { [weak self] in
@@ -1063,12 +1064,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
             approvalBannerModel: approvalBannerModel,
             sidebarMode: Binding(
                 get: { [weak self] in self?.windowSession.sidebarMode ?? .tabs },
-                set: { [weak self] in
-                    self?.windowSession.sidebarMode = $0
-                    if $0 == .changes {
-                        self?.refreshGitStatus()
-                    }
-                }
+                set: { [weak self] in self?.setSidebarMode($0) }
             ),
             gitChangesState: windowSession.gitChangesState,
             gitEntries: windowSession.gitEntries,
@@ -1244,6 +1240,9 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
             break  // Diff tabs don't need special activation
         }
         retargetComposeOverlayIfNeeded()
+        if isGitChangesSidebarVisible {
+            refreshGitStatus()
+        }
     }
 
     private func deactivateCurrentTab() {
@@ -1853,6 +1852,11 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
 
     @objc func toggleSidebar() {
         windowSession.showSidebar.toggle()
+        if isGitChangesSidebarVisible {
+            refreshGitStatus()
+        } else {
+            stopGitChangesMonitoring()
+        }
         requestSave()
     }
 
@@ -3107,8 +3111,12 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         guard belongsToThisWindow(surfaceView) else { return }
         guard let pwd = notification.userInfo?["pwd"] as? String else { return }
         guard let (owningTab, _) = findTab(for: surfaceView) else { return }
+        let changed = owningTab.pwd != pwd
         owningTab.pwd = pwd
         requestSave()
+        if changed, owningTab.id == activeTab?.id, isGitChangesSidebarVisible {
+            refreshGitStatus()
+        }
     }
 
     @objc private func handleGotoTabNotification(_ notification: Notification) {
@@ -3674,6 +3682,9 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         childExitedTasks.cancelAll()
         reconnectEstablishGraceTasks.cancelAll()
         refreshTask?.cancel()
+        let gitChangesMonitor = gitChangesMonitor
+        gitMonitorStopTask?.cancel()
+        Task { await gitChangesMonitor?.stop() }
         loadMoreTask?.cancel()
         screenPollTask?.cancel()
 
@@ -3709,42 +3720,89 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - Git Source Control
 
-    private func refreshGitStatus() {
+    private var isGitChangesSidebarVisible: Bool {
+        windowSession.showSidebar && windowSession.sidebarMode == .changes
+    }
+
+    private func setSidebarMode(_ mode: SidebarMode) {
+        windowSession.sidebarMode = mode
+        if isGitChangesSidebarVisible {
+            refreshGitStatus()
+        } else {
+            stopGitChangesMonitoring()
+        }
+    }
+
+    private func refreshGitStatus(
+        kind: GitChangesRefreshKind = .repositoryMetadata,
+        showsLoadingState: Bool = true
+    ) {
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in
             guard let self else { return }
 
             let workDir = self.findWorkDir()
             guard let workDir else {
+                self.stopGitChangesMonitoring(cancelRefresh: false)
                 self.windowSession.gitChangesState = .error("No working directory found")
                 self.refreshHostingView()
                 return
             }
 
-            self.windowSession.gitChangesState = .loading
-            self.refreshHostingView()
+            if showsLoadingState {
+                self.windowSession.gitChangesState = .loading
+                self.refreshHostingView()
+            }
 
             do {
-                let repoRoot = try await GitService.repoRoot(workDir: workDir)
+                let repository = try await GitService.repositoryLocation(workDir: workDir)
                 guard !Task.isCancelled else { return }
 
-                self.windowSession.repoRoots[workDir] = repoRoot
+                self.windowSession.repoRoots[workDir] = repository.workTree
+                await self.startGitChangesMonitoring(repository: repository)
+                guard !Task.isCancelled else { return }
 
-                async let statusResult = GitService.gitStatus(workDir: repoRoot)
-                async let logResult = GitService.commitLog(workDir: repoRoot, maxCount: 100, skip: 0)
-
-                let (entries, commits) = try await (statusResult, logResult)
+                let entries: [GitFileEntry]
+                var commits: [GitCommit]?
+                if kind == .repositoryMetadata {
+                    let commitCount = showsLoadingState
+                        ? 100
+                        : max(100, self.windowSession.gitCommits.count)
+                    async let statusResult = GitService.gitStatus(workDir: repository.workTree)
+                    async let logResult = GitService.commitLog(
+                        workDir: repository.workTree,
+                        maxCount: commitCount,
+                        skip: 0
+                    )
+                    let (statusEntries, logCommits) = try await (statusResult, logResult)
+                    entries = statusEntries
+                    commits = logCommits
+                } else {
+                    entries = try await GitService.gitStatus(workDir: repository.workTree)
+                    commits = nil
+                }
                 guard !Task.isCancelled else { return }
 
                 self.windowSession.gitEntries = entries
-                self.windowSession.gitCommits = commits
-                self.hasMoreCommits = true
-                self.windowSession.expandedCommitIDs = []
-                self.windowSession.commitFiles = [:]
+                if let commits {
+                    self.windowSession.gitCommits = commits
+                    self.hasMoreCommits = true
+                    if showsLoadingState {
+                        self.windowSession.expandedCommitIDs = []
+                        self.windowSession.commitFiles = [:]
+                    } else {
+                        let visibleCommitIDs = Set(commits.map(\.id))
+                        self.windowSession.expandedCommitIDs.formIntersection(visibleCommitIDs)
+                        self.windowSession.commitFiles = self.windowSession.commitFiles.filter {
+                            visibleCommitIDs.contains($0.key)
+                        }
+                    }
+                }
                 self.windowSession.gitChangesState = .loaded
                 self.refreshHostingView()
             } catch let error as GitService.GitError {
                 guard !Task.isCancelled else { return }
+                self.stopGitChangesMonitoring(cancelRefresh: false)
                 if case .notARepository = error {
                     self.windowSession.gitChangesState = .notRepository
                 } else {
@@ -3753,9 +3811,48 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
                 self.refreshHostingView()
             } catch {
                 guard !Task.isCancelled else { return }
+                self.stopGitChangesMonitoring(cancelRefresh: false)
                 self.windowSession.gitChangesState = .error(error.localizedDescription)
                 self.refreshHostingView()
             }
+        }
+    }
+
+    private func startGitChangesMonitoring(repository: GitRepositoryLocation) async {
+        if let stopTask = gitMonitorStopTask {
+            await stopTask.value
+        }
+        guard !Task.isCancelled, isGitChangesSidebarVisible else { return }
+
+        let monitor: GitChangesMonitor
+        if let existingMonitor = gitChangesMonitor {
+            monitor = existingMonitor
+        } else {
+            monitor = GitChangesMonitor { @MainActor [weak self] kind in
+                guard let self, self.isGitChangesSidebarVisible else { return }
+                self.refreshGitStatus(kind: kind, showsLoadingState: false)
+            }
+            gitChangesMonitor = monitor
+        }
+
+        do {
+            try await monitor.watch(repository: repository)
+        } catch {
+            logger.error("Failed to start Git Changes monitor: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func stopGitChangesMonitoring(cancelRefresh: Bool = true) {
+        if cancelRefresh {
+            refreshTask?.cancel()
+        }
+        guard let monitor = gitChangesMonitor else { return }
+        let previousStopTask = gitMonitorStopTask
+        gitMonitorStopTask = Task {
+            if let previousStopTask {
+                await previousStopTask.value
+            }
+            await monitor.stop()
         }
     }
 

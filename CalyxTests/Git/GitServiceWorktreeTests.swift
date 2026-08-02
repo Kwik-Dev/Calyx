@@ -42,6 +42,11 @@ struct GitServiceWorktreeTests {
             in: siblingWorktree
         )
 
+        let location = try await GitService.repositoryLocation(workDir: currentWorktree.path)
+        #expect(location.workTree.hasSuffix("/current-worktree"))
+        #expect(location.gitDirectory.hasSuffix("/shared.git/worktrees/current-worktree"))
+        #expect(location.gitCommonDirectory.hasSuffix("/shared.git"))
+
         let commits = try await GitService.commitLog(
             workDir: currentWorktree.path,
             maxCount: 100,
@@ -74,6 +79,11 @@ struct GitServiceWorktreeTests {
             in: repository
         )
         try runGit(["checkout", "-q", "main"], in: repository)
+
+        let location = try await GitService.repositoryLocation(workDir: repository.path)
+        #expect(location.workTree.hasSuffix("/repository"))
+        #expect(location.gitDirectory == location.workTree + "/.git")
+        #expect(location.gitCommonDirectory == location.gitDirectory)
 
         let commits = try await GitService.commitLog(
             workDir: repository.path,
