@@ -1,0 +1,40 @@
+name: Close External Pull Requests
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+# pull_request_target is used deliberately: it runs in the context of the base
+# repository and receives a write-capable GITHUB_TOKEN, which is required to
+# close a pull request opened from a fork. The plain pull_request trigger would
+# only get a read-only token for fork pull requests and could not close them.
+#
+# Because that token is privileged, this workflow must NEVER check out or run
+# any code from the fork. That would turn an untrusted contribution into
+# arbitrary code execution with write access to this repository. There is no
+# actions/checkout step below, and one must never be added.
+
+permissions:
+  pull-requests: write
+
+jobs:
+  close:
+    # Only pull requests from a fork, and never from the owner or a
+    # collaborator, who may legitimately open one from a fork too.
+    if: >-
+      github.event.pull_request.head.repo.full_name != github.repository &&
+      github.event.pull_request.author_association != 'OWNER' &&
+      github.event.pull_request.author_association != 'MEMBER' &&
+      github.event.pull_request.author_association != 'COLLABORATOR'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment and close
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          cat > comment.md <<'EOF'
+          Calyx does not accept external pull requests, so this is being closed automatically. If there is a bug or an idea behind it, please open an issue instead. See [CONTRIBUTING.md](https://github.com/yuuichieguchi/Calyx/blob/main/CONTRIBUTING.md) for the full policy.
+          EOF
+          gh pr comment "$PR_URL" --body-file comment.md
+          gh pr close "$PR_URL"
