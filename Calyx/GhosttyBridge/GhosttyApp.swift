@@ -156,9 +156,33 @@ final class GhosttyAppController {
             return
         }
 
-        // Update ghostty's app-level config.
-        GhosttyFFI.appUpdateConfig(app, config: newConfig)
+        // Update ghostty's app-level config. The swap to `newConfigManager`
+        // happens BEFORE this call, not after (the original order):
+        // `ghostty_app_update_config` synchronously triggers
+        // GHOSTTY_ACTION_CONFIG_CHANGE (App.zig's `updateConfig` ->
+        // apprt.performAction -> ghosttyActionCallback, no queue, no async
+        // dispatch), which `NotificationCenter.default.post` then delivers
+        // to every `.ghosttyConfigChange` observer (`GhosttyThemeProvider`,
+        // `SurfaceScrollView`, `AppDelegate.refreshBellFeaturesCache`, ...)
+        // SYNCHRONOUSLY, still inside this call. If the swap ran after (as
+        // it used to), every one of those observers would read `self
+        // .configManager` while it was still the STALE, pre-reload
+        // instance, for the entire reload that was supposed to deliver the
+        // new value — a full generation behind, only picked up by
+        // whichever reload happens to occur next. `withExtendedLifetime`
+        // keeps the OLD `GhosttyConfigManager` (and the `ghostty_config_t`
+        // it owns — freed from `GhosttyConfigManager.deinit`) alive for the
+        // duration of this call despite `self.configManager` no longer
+        // referencing it, preserving the ORIGINAL intent behind "update
+        // config manager after updating so old config memory stays valid
+        // during update" without needing the assignment to stay literally
+        // last. Do not "simplify" this back to assign-then-call: that
+        // reintroduces the stale-read window this fix closes.
+        let previousConfigManager = self.configManager
         self.configManager = newConfigManager
+        withExtendedLifetime(previousConfigManager) {
+            GhosttyFFI.appUpdateConfig(app, config: newConfig)
+        }
 
         // Propagate to all surfaces.
         if !soft {
@@ -195,9 +219,19 @@ final class GhosttyAppController {
                 return nil
             }
 
-            GhosttyFFI.appUpdateConfig(app, config: newConfig)
-            // Set config manager after updating so old config memory stays valid during update.
+            // Swap BEFORE calling appUpdateConfig, then keep the old
+            // manager alive across that call via withExtendedLifetime --
+            // mirrors `reloadConfig(soft:)` above; see that call site's
+            // own comment for the full "why" (appUpdateConfig delivers
+            // GHOSTTY_ACTION_CONFIG_CHANGE synchronously, so every
+            // `.ghosttyConfigChange` observer must already see the fresh
+            // `configManager`, not a stale one, by the time this call
+            // returns). Do not reorder this back to assign-after.
+            let previousConfigManager = controller.configManager
             controller.configManager = newConfigManager
+            withExtendedLifetime(previousConfigManager) {
+                GhosttyFFI.appUpdateConfig(app, config: newConfig)
+            }
             controller.reloadGeneration += 1
             logger.info("Config reloaded from disk (generation \(controller.reloadGeneration))")
             return controller.reloadGeneration

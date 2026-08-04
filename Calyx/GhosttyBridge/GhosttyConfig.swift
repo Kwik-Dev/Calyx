@@ -402,6 +402,22 @@ final class GhosttyConfigManager {
         return found ? color : nil
     }
 
+    /// Get a path configuration value (e.g. `bell-audio-path`). Ghostty's
+    /// `config.Path` is a required-or-optional string union
+    /// (`ghostty/src/config/path.zig`), marshalled across the C boundary
+    /// as `ghostty_config_path_s` (`{ path: const char*, optional: bool }`,
+    /// `ghostty.h`). Returns just the path string, or `nil` if the key is
+    /// unset (mirrors `getString`'s nil-when-unset contract).
+    func getPath(_ key: String) -> String? {
+        guard let cfg = config else { return nil }
+        var value = ghostty_config_path_s()
+        let found = key.withCString { ptr in
+            GhosttyFFI.configGet(cfg, &value, ptr, UInt(key.utf8.count))
+        }
+        guard found, let cPath = value.path else { return nil }
+        return String(cString: cPath)
+    }
+
     /// Generic typed config access via pointer.
     /// - Parameters:
     ///   - key: The configuration key.

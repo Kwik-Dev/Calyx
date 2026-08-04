@@ -95,6 +95,33 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     #endif
     private var focusRequestID: UInt64 = 0
     private var isRestoring = false
+    /// Set once `applyInitialSize(_:)` has actually resized `window` (its
+    /// guards passed and `window?.setContentSize(size)` ran), and never
+    /// reset in production — see that method's own doc comment for why.
+    /// Seeded from `restoring` in `init`, NOT hardcoded `false`: a
+    /// restored/reattached window's size is already established by its
+    /// persisted frame (or, for `AppDelegate.attachWindow`'s reattach-to-
+    /// a-running-session case, by the same "not ghostty's job to size
+    /// this window" reasoning) by the time `activateRestoredSession()`
+    /// runs — so it must never ALSO apply ghostty's own initial size,
+    /// including a LATER re-fire (font-size keybind, config hot-reload)
+    /// after `isRestoring` has already flipped back to `false`. Without
+    /// this seeding, only the guard's `!isRestoring` half would protect a
+    /// restoring window, and only until the synchronous, one-shot
+    /// `INITIAL_SIZE` action fired during its surface creation had come
+    /// and gone -- exactly the class of gap `hasAppliedInitialSize` was
+    /// introduced to close for a FRESH window, left open for a restored
+    /// one otherwise. Every production caller of `restoring: true`
+    /// (`AppDelegate.makeRestoringWindowController`, used by both
+    /// `attachWindow` and `restoreWindow`) always eventually calls
+    /// `activateRestoredSession()`, so this seeding is exercised on every
+    /// real restore/reattach path, not just a hypothetical one.
+    /// `_setHasAppliedInitialSizeForTesting(_:)` (`#if DEBUG` below) lets
+    /// a test fixture that uses `restoring: true` purely to skip
+    /// `setupTerminalSurface` (no live ghostty surface in this test host)
+    /// while still wanting to represent a genuinely NEW, non-restored
+    /// window override this seeded value.
+    private var hasAppliedInitialSize = false
     var trackedFullScreen: Bool = false
     var preFullScreenFrame: NSRect? = nil
     /// R6-G (r6-fix-spec.md, round-5 review finding I2): despite the
@@ -411,12 +438,34 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     init(window: NSWindow, windowSession: WindowSession, restoring: Bool = false, initialHost: String? = nil) {
         self.windowSession = windowSession
         self.isRestoring = restoring
+        // A restored/reattached window's size is already spoken for (see
+        // `hasAppliedInitialSize`'s own doc comment) -- seed it alongside
+        // `isRestoring` so it stays true for this window's whole life,
+        // not just until `isRestoring` flips back to `false`.
+        self.hasAppliedInitialSize = restoring
         super.init(window: window)
         window.delegate = self
-        window.center()
         setupCommandRegistry()
         setupUI()
-        if !restoring { setupTerminalSurface(host: initialHost) }
+        if !restoring {
+            setupTerminalSurface(host: initialHost)
+            // Must run before window.center() below: a fresh window's
+            // initial content size (from ghostty's window-width/
+            // window-height config, applied here) can differ materially
+            // from the 800x600 `contentRect` this controller's
+            // `convenience init` constructed `window` with.
+            // `NSWindow.setContentSize(_:)` (inside applyInitialSize)
+            // does not itself re-center, so centering BEFORE this ran
+            // (the previous order) could leave a brand-new window
+            // slightly off-center once its real size took effect.
+            applyPendingInitialSizeFromFirstSurface()
+        }
+        // For a restoring window, nothing above this point in the
+        // `if !restoring` branch runs, so this executes at exactly the
+        // same point relative to `setupUI()` as before -- unchanged
+        // timing for that path, matching whatever frame the caller
+        // already set up via `contentRect:`.
+        window.center()
         registerNotificationObservers()
         startScreenPollTask()
     }
@@ -2092,6 +2141,21 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
                            name: .ghosttyShowChildExited, object: nil)
         center.addObserver(self, selector: #selector(handleConfirmingQuitDidEnd(_:)),
                            name: .calyxConfirmingQuitDidEnd, object: nil)
+        // Missing-observer investigation (see "MARK: - Keybind Actions"
+        // below): these five were posted by GhosttyActionRouter but never
+        // observed anywhere, silently defeating ghostty's default
+        // close_tab/close_window/toggle_fullscreen keybinds and the
+        // initial-window-size/renderer-health actions.
+        center.addObserver(self, selector: #selector(handleCloseTabNotification(_:)),
+                           name: .ghosttyCloseTab, object: nil)
+        center.addObserver(self, selector: #selector(handleCloseWindowNotification(_:)),
+                           name: .ghosttyCloseWindow, object: nil)
+        center.addObserver(self, selector: #selector(handleToggleFullscreenNotification(_:)),
+                           name: .ghosttyToggleFullscreen, object: nil)
+        center.addObserver(self, selector: #selector(handleInitialSizeNotification(_:)),
+                           name: .ghosttyInitialSize, object: nil)
+        center.addObserver(self, selector: #selector(handleRendererHealthNotification(_:)),
+                           name: .ghosttyRendererHealth, object: nil)
     }
 
     // MARK: - Screen State Polling (Herdr Layer 2)
@@ -2419,6 +2483,310 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
             await self.sessionReconnectCoordinator.childExited(surfaceID: surfaceID, isRemote: isRemote)
             self.childExitedTasks.removeValue(forKey: surfaceID)
         })
+    }
+
+    // MARK: - Keybind Actions (missing-observer investigation)
+    //
+    // `GhosttyActionRouter` posts `.ghosttyCloseTab` / `.ghosttyCloseWindow` /
+    // `.ghosttyToggleFullscreen` / `.ghosttyInitialSize` / `.ghosttyRendererHealth`
+    // (GhosttyAction.swift). Before this investigation NONE of the five had
+    // an `addObserver` anywhere in the app — the router's own handlers
+    // still returned `true` (libghostty saw "handled"), so ghostty's
+    // built-in keybinds for these (Ctrl+Cmd+F and Cmd+Enter =
+    // toggle_fullscreen, Cmd+Opt+W = close_tab, Cmd+Shift+W = close_window,
+    // etc.) were silently inert for every user who hadn't overridden them.
+    //
+    // Each `process*`/`apply*` method below now has a real body, and
+    // `registerNotificationObservers()` above registers a matching
+    // `@objc private func handleXxxNotification` for each — defined right
+    // next to its `process*`/`apply*` counterpart below. See the sibling
+    // test files (CalyxWindowControllerCloseTabTests,
+    // CalyxWindowControllerCloseWindowTests,
+    // CalyxWindowControllerToggleFullscreenTests,
+    // CalyxWindowControllerInitialSizeTests,
+    // CalyxWindowControllerRendererHealthTests) for the contract each
+    // satisfies.
+    //
+    // Destination resolution for every `handleXxxNotification` below uses
+    // `findTab(for:)`, not `belongsToThisWindow(_:)`: the latter checks
+    // `view.window === self.window`, which a `_testInsert`-only fixture
+    // SurfaceView (this codebase's established no-live-ghostty-surface
+    // test pattern) never satisfies, since it is never attached into a
+    // real window's view hierarchy. `findTab(for:)` walks `windowSession`
+    // instead, which DOES see a `_testInsert`-only surface.
+
+    /// `.ghosttyCloseTab` (`GHOSTTY_ACTION_CLOSE_TAB`, close_tab keybind)
+    /// receiver. `tab`/`group` are the pane's OWNING tab/group, already
+    /// resolved by `handleCloseTabNotification` below via `findTab(for:)`
+    /// — this method itself has no routing/ownership logic of its own,
+    /// only the close-mode fan-out.
+    ///
+    /// `mode` semantics (`ghostty_action_close_tab_mode_e`,
+    /// `GhosttyKit.xcframework/macos-arm64/Headers/ghostty.h`):
+    ///   - `GHOSTTY_ACTION_CLOSE_TAB_MODE_THIS`: close only `tab`.
+    ///   - `GHOSTTY_ACTION_CLOSE_TAB_MODE_OTHER`: close every OTHER tab in
+    ///     `group`, leaving only `tab`.
+    ///   - `GHOSTTY_ACTION_CLOSE_TAB_MODE_RIGHT`: close every tab in
+    ///     `group` positioned AFTER `tab` (tab-bar order).
+    ///
+    /// `OTHER`/`RIGHT` are scoped to `group.tabs` (the active GROUP's own
+    /// tab bar), not the whole window: ghostty has no concept of "group"
+    /// (a Calyx-only feature layered on top), so this matches what the
+    /// user actually sees as "the tab bar" for the pane that received the
+    /// keybind.
+    ///
+    /// IMPLEMENTATION NOTE (verified by
+    /// `CalyxWindowControllerCloseTabTests`): each victim tab closes via
+    /// the existing `closeTab(id:)`, which itself mutates `group.tabs`
+    /// (`WindowSession.removeTab` -> `TabGroup.removeTab(id:)` ->
+    /// `tabs.remove(at:)`). `OTHER`/`RIGHT` therefore snapshot the victim
+    /// tabs' `id`s into a plain `[UUID]` BEFORE calling `closeTab(id:)`
+    /// for any of them, and iterate that snapshot — iterating `group.tabs`
+    /// itself by a fixed `0..<group.tabs.count` index range while calling
+    /// `closeTab(id:)` inside the loop would index a shrinking array
+    /// against stale bounds and crash with an out-of-range index once 3+
+    /// tabs are involved.
+    func processCloseTab(tab: Tab, group: TabGroup, mode: ghostty_action_close_tab_mode_e) {
+        switch mode {
+        case GHOSTTY_ACTION_CLOSE_TAB_MODE_THIS:
+            closeTab(id: tab.id)
+
+        case GHOSTTY_ACTION_CLOSE_TAB_MODE_OTHER:
+            let victimIDs = group.tabs.map(\.id).filter { $0 != tab.id }
+            for victimID in victimIDs {
+                closeTab(id: victimID)
+            }
+
+        case GHOSTTY_ACTION_CLOSE_TAB_MODE_RIGHT:
+            guard let targetIndex = group.tabs.firstIndex(where: { $0.id == tab.id }) else { return }
+            let victimIDs = group.tabs[(targetIndex + 1)...].map(\.id)
+            for victimID in victimIDs {
+                closeTab(id: victimID)
+            }
+
+        default:
+            logger.warning("Unknown close_tab mode: \(mode.rawValue)")
+        }
+    }
+
+    @objc private func handleCloseTabNotification(_ notification: Notification) {
+        guard let surfaceView = notification.object as? SurfaceView else { return }
+        guard let (owningTab, owningGroup) = findTab(for: surfaceView) else { return }
+        guard let mode = notification.userInfo?["mode"] as? ghostty_action_close_tab_mode_e else { return }
+        processCloseTab(tab: owningTab, group: owningGroup, mode: mode)
+    }
+
+    #if DEBUG
+    /// Test seam: mirrors `AppDelegate`'s
+    /// `_focusWindowForExistingSessionShowHookForTesting` — a hook placed
+    /// immediately before the actually-unsafe-to-drive-in-tests call
+    /// (here, `window?.performClose(nil)`, which really closes the
+    /// window). `nil` (the default) leaves production behavior unchanged.
+    /// DO NOT use from production code.
+    var _processCloseWindowHookForTesting: (() -> Void)?
+    #endif
+
+    /// `.ghosttyCloseWindow` (`GHOSTTY_ACTION_CLOSE_WINDOW`, close_window
+    /// keybind) receiver. Takes no parameters: `handleCloseWindowNotification`
+    /// below decides whether THIS window should react (via `findTab(for:)`
+    /// on the posted surface, or key-window status for an app-targeted
+    /// broadcast with no surface at all) BEFORE ever calling this method.
+    ///
+    /// `window?.performClose(nil)`, NOT `window?.close()`: `performClose`
+    /// invokes the `windowShouldClose(_:)` delegate callback first, which
+    /// carries the confirm-quit gate and the unsent-review-comments guard
+    /// (`closeTab(id:)`'s own `NSAlert`) — `close()` skips both, silently
+    /// discarding unsaved user state.
+    func processCloseWindow() {
+        #if DEBUG
+        if let hook = _processCloseWindowHookForTesting {
+            hook()
+            return
+        }
+        #endif
+        window?.performClose(nil)
+    }
+
+    @objc private func handleCloseWindowNotification(_ notification: Notification) {
+        if let surfaceView = notification.object as? SurfaceView {
+            guard findTab(for: surfaceView) != nil else { return }
+        } else {
+            // App-targeted broadcast (GHOSTTY_TARGET_APP, no surface) —
+            // only the key window should react, mirroring
+            // handleEqualizeSplitsNotification's established nil-object
+            // passthrough shape (conditionally unwrap, guard inside).
+            guard window?.isKeyWindow == true else { return }
+        }
+        processCloseWindow()
+    }
+
+    #if DEBUG
+    /// Test seam: see `_processCloseWindowHookForTesting`'s doc comment —
+    /// same shape, guards `toggleFullScreen(nil)` (requires a real
+    /// `NSScreen`; see `CalyxWindowControllerFullScreenTests.swift`'s
+    /// header comment on why fullscreen transitions cannot be driven
+    /// directly in tests). DO NOT use from production code.
+    var _processToggleFullscreenHookForTesting: (() -> Void)?
+    #endif
+
+    /// `.ghosttyToggleFullscreen` (`GHOSTTY_ACTION_TOGGLE_FULLSCREEN`,
+    /// Ctrl+Cmd+F / Cmd+Enter keybind) receiver. `mode` is
+    /// `ghostty_action_fullscreen_e?` (optional: the notification handler
+    /// may not always find a `"mode"` key in `userInfo`). Calyx implements
+    /// only NATIVE fullscreen (`toggleFullScreen(nil)`, reusing the
+    /// existing menu-action wrapper below rather than calling
+    /// `window?.toggleFullScreen` directly, so both entry points share one
+    /// path) — `shouldUseNativeFullscreen(for:)` below is the pure,
+    /// directly testable decision of whether a given `mode` should still
+    /// trigger it; today that is unconditionally `true`, since there is no
+    /// non-native fallback implemented.
+    func processToggleFullscreen(mode: ghostty_action_fullscreen_e?) {
+        guard Self.shouldUseNativeFullscreen(for: mode) else { return }
+        #if DEBUG
+        if let hook = _processToggleFullscreenHookForTesting {
+            hook()
+            return
+        }
+        #endif
+        toggleFullScreen(nil)
+    }
+
+    @objc private func handleToggleFullscreenNotification(_ notification: Notification) {
+        guard let surfaceView = notification.object as? SurfaceView else { return }
+        guard findTab(for: surfaceView) != nil else { return }
+        let mode = notification.userInfo?["mode"] as? ghostty_action_fullscreen_e
+        processToggleFullscreen(mode: mode)
+    }
+
+    /// Pure decision function backing `processToggleFullscreen(mode:)`,
+    /// pulled out so the "non-native ghostty modes must still fall back
+    /// to Calyx's one native implementation" contract is
+    /// assertion-testable in one line, without a live `NSScreen`.
+    /// `ghostty_action_fullscreen_e` (ghostty.h) has four cases:
+    /// `GHOSTTY_FULLSCREEN_NATIVE`, `GHOSTTY_FULLSCREEN_MACOS_NON_NATIVE`,
+    /// `GHOSTTY_FULLSCREEN_MACOS_NON_NATIVE_VISIBLE_MENU`,
+    /// `GHOSTTY_FULLSCREEN_MACOS_NON_NATIVE_PADDED_NOTCH`. Calyx has no
+    /// non-native fullscreen presentation of its own, so EVERY mode
+    /// (including `nil`, an action with no mode at all) resolves to "yes,
+    /// use native" — the three non-native modes are logged (extension
+    /// point for when/if Calyx grows a non-native presentation of its own)
+    /// but still fall back to native rather than silently no-op'ing.
+    static func shouldUseNativeFullscreen(for mode: ghostty_action_fullscreen_e?) -> Bool {
+        if let mode, mode != GHOSTTY_FULLSCREEN_NATIVE {
+            logger.info("Non-native fullscreen mode \(mode.rawValue) requested; Calyx has no non-native fullscreen presentation, falling back to native fullscreen")
+        }
+        return true
+    }
+
+    /// `.ghosttyInitialSize` (`GHOSTTY_ACTION_INITIAL_SIZE`) receiver —
+    /// applies libghostty's requested initial content size to `window`.
+    /// Three guards gate the resize (see `CalyxWindowControllerInitialSizeTests`):
+    ///   - `!isRestoring`: during session restore, a persisted frame has
+    ///     already been applied; re-applying ghostty's own initial size on
+    ///     top would silently reset every user's restored window size on
+    ///     every launch (the regression this guard exists to prevent).
+    ///   - `!hasAppliedInitialSize`: `GHOSTTY_ACTION_INITIAL_SIZE` is not a
+    ///     one-shot-at-creation action the way the surrounding comments
+    ///     used to assume — ghostty's `recomputeInitialSize()`
+    ///     (`ghostty/src/Surface.zig`) also re-fires it from `setCellSize`,
+    ///     which `setFontSize` calls, which the default
+    ///     increase_font_size/decrease_font_size/reset_font_size keybinds
+    ///     AND every config hot-reload (`updateConfig`) both trigger.
+    ///     Without this guard, changing font size (or just saving the
+    ///     config file) on a single-pane window would silently snap a
+    ///     user's manual resize back to `window-width`/`window-height`.
+    ///     `hasAppliedInitialSize` is set once this method actually
+    ///     resizes, is seeded `true` (not `false`) for a restoring window
+    ///     (see its own doc comment), and is never otherwise reset in
+    ///     production — so it protects BOTH a fresh window (after its own
+    ///     first successful application) AND a restored/reattached one
+    ///     (from the moment it's constructed, before `isRestoring` even
+    ///     flips) from any later re-fire. Matches both other ghostty
+    ///     reference apprts, which apply this value exactly once, only
+    ///     pre-show (macOS: `TerminalController`/`Ghostty.App` read
+    ///     `surfaceView.initialSize` once while computing the window's
+    ///     `defaultSize`; GTK: `setDefaultSize` only affects an
+    ///     as-yet-unrealized window).
+    ///   - exactly one group, one tab, one pane
+    ///     (`tab.splitTree.allLeafIDs().count == 1`, `group.tabs.count ==
+    ///     1`, `windowSession.groups.count == 1`): a second tab/pane
+    ///     appearing later in the window's life must not cause the window
+    ///     to jump back to ghostty's single-surface initial size.
+    func applyInitialSize(_ size: NSSize) {
+        guard !isRestoring, !hasAppliedInitialSize else { return }
+        guard windowSession.groups.count == 1,
+              let group = windowSession.groups.first,
+              group.tabs.count == 1,
+              let tab = group.tabs.first,
+              tab.splitTree.allLeafIDs().count == 1 else { return }
+
+        window?.setContentSize(size)
+        hasAppliedInitialSize = true
+        requestSave()
+    }
+
+    /// Recovers the very first surface's `GHOSTTY_ACTION_INITIAL_SIZE`,
+    /// which `GhosttyActionRouter.handleInitialSize` fires synchronously
+    /// from inside `ghostty_surface_new` — i.e. from inside
+    /// `setupTerminalSurface` just above in `init` — before
+    /// `registerNotificationObservers()` has had a chance to register
+    /// `.ghosttyInitialSize`'s observer. Without this, a brand-new
+    /// window's initial size (as opposed to one restored from a
+    /// persisted frame, which never reaches this branch — see `init`'s
+    /// own `if !restoring` guard) would be silently dropped.
+    /// `GhosttyActionRouter.handleInitialSize` stores the requested size
+    /// onto the just-created `SurfaceView` itself (`SurfaceView
+    /// .initialSize`) precisely so it can be recovered here, mirroring
+    /// `handleCellSize`'s identical store-on-the-view-then-post-too shape
+    /// (`SurfaceView.cachedCellSize`). Delegates the actual decision to
+    /// `applyInitialSize(_:)`'s own guards (single group/tab/pane,
+    /// `!isRestoring`) so that contract lives in exactly one place; a
+    /// failed `setupTerminalSurface` (no surface ever created) is a safe
+    /// no-op via the `tab.registry.view(for:)` lookup below.
+    private func applyPendingInitialSizeFromFirstSurface() {
+        guard let tab = activeTab,
+              let leafID = tab.splitTree.allLeafIDs().first,
+              let surfaceView = tab.registry.view(for: leafID),
+              let size = surfaceView.initialSize else { return }
+        applyInitialSize(size)
+    }
+
+    @objc private func handleInitialSizeNotification(_ notification: Notification) {
+        guard let surfaceView = notification.object as? SurfaceView else { return }
+        guard findTab(for: surfaceView) != nil else { return }
+        guard let width = notification.userInfo?["width"] as? UInt32,
+              let height = notification.userInfo?["height"] as? UInt32 else { return }
+        applyInitialSize(NSSize(width: CGFloat(width), height: CGFloat(height)))
+    }
+
+    /// `.ghosttyRendererHealth` (`GHOSTTY_ACTION_RENDERER_HEALTH`)
+    /// receiver — mirrors `healthy` onto `surfaceView.isRendererHealthy`
+    /// (`SurfaceView.swift`) unconditionally (no ownership check of its
+    /// own, mirroring `processCloseSurface`'s identical shape: routing
+    /// lives in `handleRendererHealthNotification` below). When
+    /// unhealthy, additionally logs and — if this window can resolve the
+    /// surface's owning tab — surfaces a user-facing notification via
+    /// `NotificationManager`; pane-level overlay presentation is out of
+    /// scope for this pass.
+    func processRendererHealth(surfaceView: SurfaceView, healthy: Bool) {
+        surfaceView.isRendererHealthy = healthy
+        guard !healthy else { return }
+
+        logger.error("Renderer reported unhealthy for a surface")
+        guard let (tab, _) = findTab(for: surfaceView) else { return }
+        NotificationManager.shared.sendNotification(
+            title: "Rendering Issue",
+            body: "This pane's renderer reported a problem. Try resizing the window, or restart Calyx if " +
+                  "the display looks wrong.",
+            tabID: tab.id
+        )
+    }
+
+    @objc private func handleRendererHealthNotification(_ notification: Notification) {
+        guard let surfaceView = notification.object as? SurfaceView else { return }
+        guard findTab(for: surfaceView) != nil else { return }
+        guard let health = notification.userInfo?["health"] as? ghostty_action_renderer_health_e else { return }
+        processRendererHealth(surfaceView: surfaceView, healthy: health == GHOSTTY_RENDERER_HEALTH_HEALTHY)
     }
 
     /// R6-A (r6-fix-spec.md item 4): single choke point pairing the
@@ -3359,6 +3727,27 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         }
         activateCurrentTab()
     }
+
+    #if DEBUG
+    /// Test seam: overrides `hasAppliedInitialSize`, mirroring
+    /// `activateRestoredSession()`'s own reset of `isRestoring` just
+    /// above -- but deliberately NOT folded into that method, since
+    /// production callers of `activateRestoredSession()` (`AppDelegate
+    /// .attachWindow`/`.restoreWindow`, both via
+    /// `makeRestoringWindowController`) always want
+    /// `hasAppliedInitialSize` to STAY `true` (seeded from `restoring` in
+    /// `init`, see that property's own doc comment) once restore
+    /// completes; only a TEST fixture that used `restoring: true` purely
+    /// to skip `setupTerminalSurface` (no live ghostty surface in this
+    /// test host, see `SurfaceLocator.swift`'s header comment), while
+    /// wanting to represent a genuinely NEW, non-restored window for
+    /// exercising `applyInitialSize`'s first-application behavior, needs
+    /// to explicitly opt back out via this seam. DO NOT use from
+    /// production code.
+    func _setHasAppliedInitialSizeForTesting(_ value: Bool) {
+        hasAppliedInitialSize = value
+    }
+    #endif
 
     /// R12-C (r12-fix-spec.md): delegates TabSnapshot/TabGroupSnapshot
     /// construction to the tested `Tab.snapshot()`/`TabGroup.snapshot()`

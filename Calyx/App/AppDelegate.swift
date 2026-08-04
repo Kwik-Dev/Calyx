@@ -172,6 +172,127 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ShellIntegrationActivation.activateIfPossible(root: root)
     }
 
+    // MARK: - Bell
+
+    /// `.ghosttyRingBell` (`GHOSTTY_ACTION_RING_BELL`) receiver for a
+    /// surface-targeted bell (`GhosttyAction.swift`'s `handleRingBell` —
+    /// `RING_BELL` is always surface-targeted, see that method's own doc
+    /// comment). `features` mirrors the user's `bell-features` config
+    /// (`BellFeatures.swift`); `effects` is the injectable seam for the
+    /// actual side effects (`BellEffectHandlers.swift`), defaulted so
+    /// callers that don't care about observing individual effects (i.e.
+    /// every real call site) don't need to pass one explicitly.
+    /// `handleRingBellNotification` below is the real production caller,
+    /// with `cachedBellFeatures` and a `BellEffectHandlers` wired to real
+    /// system effects; `title`/`border` are left as `BellEffectHandlers`'
+    /// no-op defaults (see that call site's own doc comment) even though
+    /// the dispatch below still fires them when set, so a later pass can
+    /// wire real presentation in without touching this dispatch logic.
+    func processRingBell(features: BellFeatures, effects: BellEffectHandlers = BellEffectHandlers()) {
+        if features.contains(.system) { effects.performSystemBell() }
+        if features.contains(.audio) { effects.performAudioBell() }
+        if features.contains(.attention) { effects.requestAttention() }
+        if features.contains(.title) { effects.flashTitle() }
+        if features.contains(.border) { effects.flashBorder() }
+    }
+
+    /// Cached decode of the user's live `bell-features` config, refreshed
+    /// on `.ghosttyConfigChange` (`handleBellFeaturesConfigChange`/
+    /// `refreshBellFeaturesCache` below) rather than re-read via FFI on
+    /// every `.ghosttyRingBell` -- mirrors `GhosttyThemeProvider
+    /// .refreshFromConfig()`'s identical cache-on-config-change shape
+    /// (`GhosttyThemeProvider.swift`). Defaults to `BellFeatures
+    /// .ghosttyDefault` until the first refresh primes it
+    /// (`applicationDidFinishLaunching`, once `GhosttyAppController.shared`
+    /// is ready).
+    private var cachedBellFeatures: BellFeatures = .ghosttyDefault
+
+    /// `.ghosttyRingBell` notification handler -- the real production call
+    /// site for `processRingBell` above. Bell effects are app-wide (system
+    /// beep, custom audio, dock bounce), not scoped to any one window, so
+    /// this lives here rather than in `CalyxWindowController
+    /// .registerNotificationObservers`. `flashTitle`/`flashBorder` are
+    /// left as `BellEffectHandlers`' no-op defaults: prepending a bell
+    /// emoji to the alerted surface's title and flashing a border around
+    /// it are both out of scope for this pass -- `processRingBell` above
+    /// still correctly dispatches to them when `features` sets those
+    /// bits, only their actual presentation is unimplemented.
+    @objc private func handleRingBellNotification(_ notification: Notification) {
+        let effects = BellEffectHandlers(
+            performSystemBell: { NSSound.beep() },
+            performAudioBell: { [weak self] in self?.playBellAudio() },
+            requestAttention: { NotificationManager.shared.bounceDockIcon() }
+        )
+        processRingBell(features: cachedBellFeatures, effects: effects)
+    }
+
+    /// Refreshes `cachedBellFeatures` from the user's live `bell-features`
+    /// config. `bell-features` is ghostty's packed-bool-struct config
+    /// value (`Config.zig`'s `pub const BellFeatures = packed struct {
+    /// ... }`; see `BellFeatures.swift`'s own doc comment for the exact
+    /// bit layout), which `c_get.zig` marshals as a raw `c_uint` bit
+    /// pattern across the C boundary for any packed struct backed by <= a
+    /// C `int` -- Swift `CUnsignedInt` (4 bytes), NOT `GhosttyConfigManager
+    /// .getUInt`'s `UInt` (8 bytes, sized for a plain integer config
+    /// value, not a packed-struct's C ABI representation).
+    @objc private func handleBellFeaturesConfigChange(_ notification: Notification) {
+        refreshBellFeaturesCache()
+    }
+
+    private func refreshBellFeaturesCache() {
+        var raw: CUnsignedInt = 0
+        guard GhosttyAppController.shared.configManager.get("bell-features", value: &raw) else {
+            cachedBellFeatures = .ghosttyDefault
+            return
+        }
+        cachedBellFeatures = BellFeatures(rawValue: UInt32(raw))
+    }
+
+    /// Bell sounds currently playing. `NSSound` does not keep itself
+    /// alive for the duration of playback -- Apple provides
+    /// `NSSoundDelegate.sound(_:didFinishPlaying:)` precisely because the
+    /// CALLER is expected to own the object's lifetime across an async
+    /// playback, so a purely local `NSSound` (as `playBellAudio()` used
+    /// to have) can be deallocated, silently cutting playback short, the
+    /// moment `playBellAudio()` returns. An array, not a single scalar
+    /// property: `bell-features` places no rate limit of its own beyond
+    /// libghostty's 100ms bell throttle, so two bells can legitimately
+    /// overlap, and a scalar would drop (and thus prematurely release)
+    /// an earlier sound's only strong reference the moment a later bell
+    /// starts. Each entry removes itself once its own playback finishes.
+    private var activeBellSounds: [NSSound] = []
+
+    /// `.audio` bell effect: plays `bell-audio-path` at `bell-audio-volume`.
+    /// Read fresh via FFI rather than cached like `cachedBellFeatures`
+    /// above -- `.audio` is off in `BellFeatures.ghosttyDefault`, and even
+    /// when enabled fires far less often than a plain bell (gated behind
+    /// libghostty's own 100ms bell rate limit), so a dedicated FFI round
+    /// trip here is not a hot path worth caching.
+    private func playBellAudio() {
+        guard let path = GhosttyAppController.shared.configManager.getPath("bell-audio-path") else { return }
+        guard let sound = NSSound(contentsOfFile: path, byReference: true) else {
+            logger.warning("bell-audio-path did not resolve to a playable sound: \(path, privacy: .public)")
+            return
+        }
+        let volume = GhosttyAppController.shared.configManager.getDouble("bell-audio-volume", default: 0.5)
+        sound.volume = Float(volume)
+        activeBellSounds.append(sound)
+        sound.play()
+        // `sound.duration` is NSSound's own documented playback length --
+        // used instead of NSSoundDelegate so cleanup doesn't depend on a
+        // delegate callback actually firing (e.g. if playback is ever cut
+        // short some other way). DispatchQueue.main.asyncAfter's closure
+        // is not statically MainActor-isolated even though it always runs
+        // on the main thread, so `MainActor.assumeIsolated` here mirrors
+        // this codebase's own established pattern for that exact gap
+        // (CalyxWindowController.restoreWindow's FullScreenRestoreBox).
+        DispatchQueue.main.asyncAfter(deadline: .now() + sound.duration) { [weak self] in
+            MainActor.assumeIsolated {
+                self?.activeBellSounds.removeAll { $0 === sound }
+            }
+        }
+    }
+
     // MARK: - NSApplicationDelegate
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -234,6 +355,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         setupMainMenu()
         registerNotificationObservers()
+        refreshBellFeaturesCache()
         installKeyMonitor()
         installGlobalEventTap()
         SurfacePropertyStore.shared.startObserving()
@@ -435,6 +557,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let center = NotificationCenter.default
         center.addObserver(self, selector: #selector(handleNewTab(_:)), name: .ghosttyNewTab, object: nil)
         center.addObserver(self, selector: #selector(handleNewWindow(_:)), name: .ghosttyNewWindow, object: nil)
+        // `.ghosttyRingBell`'s effects (system beep, custom audio, dock
+        // bounce) are app-wide, not scoped to any one window, so its
+        // observer lives here rather than in `CalyxWindowController
+        // .registerNotificationObservers` (missing-observer investigation
+        // -- see `processRingBell`'s own doc comment). `.ghosttyConfigChange`
+        // keeps `cachedBellFeatures` in sync with the user's live config.
+        center.addObserver(self, selector: #selector(handleRingBellNotification(_:)), name: .ghosttyRingBell, object: nil)
+        center.addObserver(
+            self, selector: #selector(handleBellFeaturesConfigChange(_:)), name: .ghosttyConfigChange, object: nil
+        )
     }
 
     @objc private func handleNewTab(_ notification: Notification) {

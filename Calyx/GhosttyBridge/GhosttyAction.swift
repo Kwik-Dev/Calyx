@@ -402,6 +402,14 @@ enum GhosttyActionRouter {
     ) -> Bool {
         guard let surfaceView = surfaceView(from: target) else { return false }
 
+        // Store on the view (mirrors handleCellSize's cachedCellSize
+        // shape) so CalyxWindowController.init can recover this for a
+        // brand-new window's first surface, whose INITIAL_SIZE fires
+        // synchronously from inside ghostty_surface_new -- before
+        // registerNotificationObservers() has registered this action's
+        // observer. See SurfaceView.initialSize's own doc comment.
+        surfaceView.initialSize = NSSize(width: CGFloat(value.width), height: CGFloat(value.height))
+
         NotificationCenter.default.post(
             name: .ghosttyInitialSize,
             object: surfaceView,
@@ -410,6 +418,16 @@ enum GhosttyActionRouter {
         return true
     }
 
+    /// Deliberately has no `CalyxWindowController` observer for
+    /// `.ghosttySizeLimit` — NOT a missing-observer bug (unlike the six
+    /// notifications the missing-observer investigation exists to fix).
+    /// Ghostty's own macOS app documents this action as "known but
+    /// unimplemented" too (`Ghostty.App.swift:659-664`). Calyx additionally
+    /// layers tabs, splits, and a sidebar on top of any one surface, so a
+    /// single SURFACE's requested min/max size has no coherent meaning at
+    /// the WINDOW level. `CalyxWindow.minSize = NSSize(width: 400, height:
+    /// 300)` (`CalyxWindow.swift`) is this app's real, window-level
+    /// minimum-size constraint.
     private static func handleSizeLimit(
         _ app: ghostty_app_t,
         target: ghostty_target_s,
@@ -469,6 +487,22 @@ enum GhosttyActionRouter {
         return true
     }
 
+    /// Deliberately has no `CalyxWindowController` observer for
+    /// `.ghosttyColorChange` — NOT a missing-observer bug (unlike the six
+    /// notifications the missing-observer investigation exists to fix).
+    /// OSC 4/10/11/12's actual foreground/background/palette color change
+    /// is already applied by libghostty itself before this action even
+    /// fires (`ghostty/src/termio/stream_handler.zig:1225-1255`);
+    /// `COLOR_CHANGE` is only apprt's cue to keep ITS OWN chrome in sync —
+    /// in every other ghostty frontend that means recoloring the window's
+    /// title bar/decorations to match. Calyx's chrome color is instead
+    /// owned entirely by the Glass UI layer (`ThemeColorPreset` /
+    /// `GhosttyThemeProvider`, plus `GhosttyConfigManager.managedKeys`'
+    /// `foreground` override), which reads config directly rather than
+    /// tracking this per-surface action — and `GhosttyThemeProvider` is a
+    /// single app-wide singleton, while `COLOR_CHANGE` fires per SURFACE,
+    /// a mismatch that would make consuming it here semantically wrong
+    /// even setting the ownership question aside.
     private static func handleColorChange(
         _ app: ghostty_app_t,
         target: ghostty_target_s,
@@ -566,11 +600,19 @@ enum GhosttyActionRouter {
         return true
     }
 
+    /// `RING_BELL` is always surface-targeted — ghostty's own `ring_bell`
+    /// handling (`ghostty/src/Surface.zig`) always calls `performAction(
+    /// .{ .surface = self }, .ring_bell, {})`, never an app-targeted
+    /// broadcast — so `surfaceView(from: target)` is always non-nil here
+    /// in practice. No app-level fallback is implemented: an
+    /// `NSSound.beep()` here would both be unreachable dead code and,
+    /// even if reachable, would map to `BellFeatures.system`, which is
+    /// OFF by default (`BellFeatures.ghosttyDefault`) — the opposite of
+    /// what "always beep regardless of the user's bell-features" would
+    /// imply. See `AppDelegate.processRingBell` for the real
+    /// bell-features-driven dispatch.
     private static func handleRingBell(_ app: ghostty_app_t, target: ghostty_target_s) -> Bool {
-        guard let surfaceView = surfaceView(from: target) else {
-            NSSound.beep()
-            return true
-        }
+        guard let surfaceView = surfaceView(from: target) else { return false }
 
         NotificationCenter.default.post(
             name: .ghosttyRingBell,

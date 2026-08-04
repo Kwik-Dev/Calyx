@@ -59,6 +59,17 @@ class SurfaceView: NSView {
     /// surfaceController is nil during ghostty_surface_new.
     var cachedCellSize: NSSize = .zero
 
+    /// The size requested by libghostty's last `GHOSTTY_ACTION_INITIAL_SIZE`
+    /// for this surface. Stored directly on the view (mirroring
+    /// `cachedCellSize` above) because that action fires synchronously
+    /// from inside `ghostty_surface_new`, before `CalyxWindowController
+    /// .registerNotificationObservers()` has run for a brand-new window's
+    /// very first surface -- `CalyxWindowController.init` reads this
+    /// property directly right after `setupTerminalSurface()` to cover
+    /// that timing gap (see `applyPendingInitialSizeFromFirstSurface()`).
+    /// `nil` means no `INITIAL_SIZE` action has fired for this surface yet.
+    var initialSize: NSSize?
+
     /// Whether the surface is on a password input. Detected by ghostty's secure input action.
     var passwordInput: Bool = false {
         didSet {
@@ -76,6 +87,14 @@ class SurfaceView: NSView {
 
     /// Nonisolated mirror of passwordInput for deinit cleanup.
     nonisolated(unsafe) private var _hasSecureInput = false
+
+    /// Whether ghostty's renderer last reported this surface as healthy
+    /// (`GHOSTTY_ACTION_RENDERER_HEALTH`, ghostty.h:
+    /// `GHOSTTY_RENDERER_HEALTH_HEALTHY` / `_UNHEALTHY`). Defaults to
+    /// `true` (optimistic: a freshly created surface has not yet reported
+    /// anything unhealthy). Set by `CalyxWindowController
+    /// .processRendererHealth(surfaceView:healthy:)`.
+    var isRendererHealthy: Bool = true
 
     /// Accumulator for text generated during a keyDown event.
     /// Non-nil when we are inside a keyDown handler.
