@@ -135,6 +135,17 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// never this flag alone. Every reader was re-audited against this
     /// meaning in round 5; see each reader's own doc comment.
     var isClosingForShutdown: Bool = false
+    /// Injection point for `processCopyTitleToClipboard(tab:)`
+    /// (`.ghosttyCopyTitleToClipboard` / `GHOSTTY_ACTION_COPY_TITLE_TO_CLIPBOARD`
+    /// receiver, second missing-observer investigation) -- mirrors
+    /// `SelectionEditHandler`'s own `ClipboardWriting` seam
+    /// (`GhosttyBridge/SelectionEditHandler.swift`) rather than a new
+    /// protocol, so `CalyxWindowControllerCopyTitleToClipboardTests` can
+    /// reuse `SelectionEditHandlerTests.FakeClipboardWriter` instead of a
+    /// second fake with an identical shape. Production default is a real
+    /// `SystemClipboardWriter`, so nothing besides that test target ever
+    /// needs to touch this property.
+    var clipboardWriter: ClipboardWriting = SystemClipboardWriter()
     private var browserControllers: [UUID: BrowserTabController] = [:]
     private var diffStates: [UUID: DiffLoadState] = [:]
     private var diffTasks = KeyedTaskRegistry<UUID>()
@@ -422,12 +433,23 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - Initialization
 
+    /// The default content size for a brand-new (non-restored, non-quick-
+    /// terminal) window, before ghostty's own `window-width`/`window-height`
+    /// config (applied via `applyPendingInitialSizeFromFirstSurface()`) or a
+    /// persisted frame takes over. Shared by this file's own `convenience
+    /// init` below and `AppDelegate.attachWindow`'s `makeRestoringWindowController`
+    /// call, which previously duplicated this literal. NOT the QuickTerminal's
+    /// 800x400 default (`QuickTerminalController.swift`), a visually and
+    /// behaviorally distinct window that just happens to share this window's
+    /// width.
+    static let defaultContentSize = NSSize(width: 800, height: 600)
+
     /// `initialHost` (P5, remote sessions): forwarded to
     /// `setupTerminalSurface(host:)` for this window's first tab --
     /// see that method's own doc comment.
     convenience init(windowSession: WindowSession, initialHost: String? = nil) {
         let window = CalyxWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+            contentRect: NSRect(origin: .zero, size: Self.defaultContentSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -2156,6 +2178,23 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
                            name: .ghosttyInitialSize, object: nil)
         center.addObserver(self, selector: #selector(handleRendererHealthNotification(_:)),
                            name: .ghosttyRendererHealth, object: nil)
+        // Second missing-observer investigation: these six were posted by
+        // GhosttyActionRouter (GhosttyAction.swift's own "MARK: - Second
+        // Missing-Observer Investigation") but, until this pass, never
+        // observed anywhere -- exactly the same silently-inert-keybind bug
+        // as the five above, just discovered later.
+        center.addObserver(self, selector: #selector(handleSetTabTitleNotification(_:)),
+                           name: .ghosttySetTabTitle, object: nil)
+        center.addObserver(self, selector: #selector(handleCopyTitleToClipboardNotification(_:)),
+                           name: .ghosttyCopyTitleToClipboard, object: nil)
+        center.addObserver(self, selector: #selector(handleToggleCommandPaletteNotification(_:)),
+                           name: .ghosttyToggleCommandPalette, object: nil)
+        center.addObserver(self, selector: #selector(handleMoveTabNotification(_:)),
+                           name: .ghosttyMoveTab, object: nil)
+        center.addObserver(self, selector: #selector(handleToggleMaximizeNotification(_:)),
+                           name: .ghosttyToggleMaximize, object: nil)
+        center.addObserver(self, selector: #selector(handleResetWindowSizeNotification(_:)),
+                           name: .ghosttyResetWindowSize, object: nil)
     }
 
     // MARK: - Screen State Polling (Herdr Layer 2)
@@ -2787,6 +2826,160 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         guard findTab(for: surfaceView) != nil else { return }
         guard let health = notification.userInfo?["health"] as? ghostty_action_renderer_health_e else { return }
         processRendererHealth(surfaceView: surfaceView, healthy: health == GHOSTTY_RENDERER_HEALTH_HEALTHY)
+    }
+
+    // MARK: - Keybind Actions (second missing-observer investigation)
+    //
+    // A second batch of GHOSTTY_ACTION_* cases: SET_TAB_TITLE,
+    // COPY_TITLE_TO_CLIPBOARD, TOGGLE_COMMAND_PALETTE, MOVE_TAB,
+    // TOGGLE_MAXIMIZE, RESET_WINDOW_SIZE. `GhosttyActionRouter` fully
+    // routes and posts all six (GhosttyAction.swift's own "MARK: - Second
+    // Missing-Observer Investigation"), and each `process*` method below
+    // has a real body -- but until this pass NONE of the six had an
+    // `addObserver` anywhere in the app, exactly the first investigation's
+    // bug (above) recurring: ghostty's default set_tab_title /
+    // copy_title_to_clipboard / toggle_command_palette / move_tab /
+    // toggle_maximize / reset_window_size keybinds were all silently inert
+    // regardless of `process*` being fully implemented, since nothing ever
+    // called it from a real notification post.
+    //
+    // `registerNotificationObservers()` above now registers a matching
+    // `@objc private func handleXxxNotification` for each -- defined right
+    // next to its `process*` counterpart below, mirroring the first
+    // investigation's own resolved shape. See the sibling test files
+    // (CalyxWindowControllerSetTabTitleTests, CopyTitleToClipboardTests,
+    // ToggleCommandPaletteTests, MoveTabTests, ToggleMaximizeTests,
+    // ResetWindowSizeTests) for the contract each satisfies -- both the
+    // direct `process*` call and, in each file's own "Notification post
+    // (Tactic A)" section, the end-to-end notification-post path -- and
+    // `TabGroup.moveTab(fromIndex:by:)` for the pure wrap arithmetic
+    // `processMoveTab` delegates to.
+    //
+    // Destination resolution for every `handleXxxNotification` below again
+    // uses `findTab(for:)`, not `belongsToThisWindow(_:)` -- see the first
+    // investigation's own header comment above for why.
+
+    /// `.ghosttySetTabTitle` (`GHOSTTY_ACTION_SET_TAB_TITLE`) receiver,
+    /// reusing `ghostty_action_set_title_s` (ghostty.h: `set_tab_title` and
+    /// `set_title` share one payload type, just a different union tag).
+    /// Sets `tab.titleOverride` to `title`, or `nil` for an empty string
+    /// (mirrors ghostty's own prompt_surface_title "empty clears back to
+    /// the default" convention). `refreshHostingView()` is required (not
+    /// automatic — see this file's own "mutate observable state, then
+    /// explicitly refresh" convention on `refreshRecoveryBar()`'s doc
+    /// comment): the TabBar/Sidebar read `titleOverride ?? title`.
+    /// `requestSave()` persists it into `TabSnapshot.titleOverride`.
+    func processSetTabTitle(tab: Tab, title: String) {
+        tab.titleOverride = title.isEmpty ? nil : title
+        refreshHostingView()
+        requestSave()
+    }
+
+    @objc private func handleSetTabTitleNotification(_ notification: Notification) {
+        guard let surfaceView = notification.object as? SurfaceView else { return }
+        guard let (owningTab, _) = findTab(for: surfaceView) else { return }
+        guard let title = notification.userInfo?["title"] as? String else { return }
+        processSetTabTitle(tab: owningTab, title: title)
+    }
+
+    /// `.ghosttyCopyTitleToClipboard` (`GHOSTTY_ACTION_COPY_TITLE_TO_CLIPBOARD`)
+    /// receiver. Copies `tab.titleOverride ?? tab.title` via
+    /// `clipboardWriter`, writing nothing when that resolved title is
+    /// empty (an empty clipboard write would silently clobber whatever
+    /// the user last copied, for no useful payload).
+    func processCopyTitleToClipboard(tab: Tab) {
+        let resolvedTitle = tab.titleOverride ?? tab.title
+        guard !resolvedTitle.isEmpty else { return }
+        clipboardWriter.copyToClipboard(resolvedTitle)
+    }
+
+    @objc private func handleCopyTitleToClipboardNotification(_ notification: Notification) {
+        guard let surfaceView = notification.object as? SurfaceView else { return }
+        guard let (owningTab, _) = findTab(for: surfaceView) else { return }
+        processCopyTitleToClipboard(tab: owningTab)
+    }
+
+    /// `.ghosttyToggleCommandPalette` (`GHOSTTY_ACTION_TOGGLE_COMMAND_PALETTE`)
+    /// receiver. Delegates to the existing `toggleCommandPalette()`, which
+    /// already performs its own `refreshHostingView()`-free toggle (its
+    /// existing menu-item and key-monitor entry points both already work
+    /// without one).
+    func processToggleCommandPalette() {
+        toggleCommandPalette()
+    }
+
+    @objc private func handleToggleCommandPaletteNotification(_ notification: Notification) {
+        guard let surfaceView = notification.object as? SurfaceView else { return }
+        guard findTab(for: surfaceView) != nil else { return }
+        processToggleCommandPalette()
+    }
+
+    /// `.ghosttyMoveTab` (`GHOSTTY_ACTION_MOVE_TAB`) receiver. `tab`/`group`
+    /// are the pane's owning tab/group, already resolved by
+    /// `handleMoveTabNotification` below via `findTab(for:)` — this method
+    /// itself has no routing/ownership logic of its own, mirroring
+    /// `processCloseTab`'s identical shape. `amount` is
+    /// `ghostty_action_move_tab_s.amount` (`ssize_t`, ghostty.h). Resolves
+    /// `tab`'s current index within `group.tabs` (a no-op if `tab` is
+    /// somehow not a member of `group`) and delegates to `group.moveTab
+    /// (fromIndex:by:)` for the actual reorder (wrap, not clamp — see that
+    /// method's own doc comment). `refreshHostingView()` + `requestSave()`
+    /// mirror `processCloseTab`'s sibling `closeTab(id:)` call chain's own
+    /// eventual UI refresh/persistence.
+    func processMoveTab(tab: Tab, group: TabGroup, amount: Int) {
+        guard let fromIndex = group.tabs.firstIndex(where: { $0.id == tab.id }) else { return }
+        group.moveTab(fromIndex: fromIndex, by: amount)
+        refreshHostingView()
+        requestSave()
+    }
+
+    @objc private func handleMoveTabNotification(_ notification: Notification) {
+        guard let surfaceView = notification.object as? SurfaceView else { return }
+        guard let (owningTab, owningGroup) = findTab(for: surfaceView) else { return }
+        guard let amount = notification.userInfo?["amount"] as? Int else { return }
+        processMoveTab(tab: owningTab, group: owningGroup, amount: amount)
+    }
+
+    /// `.ghosttyToggleMaximize` (`GHOSTTY_ACTION_TOGGLE_MAXIMIZE`) receiver.
+    /// Calls `window?.performZoom(nil)`, guarded on both `!trackedFullScreen`
+    /// (this controller's own tracked state) AND `!styleMask.contains
+    /// (.fullScreen)` (the live AppKit state) — macOS zoom and fullscreen
+    /// are mutually confusing to combine, and `performZoom` has no
+    /// well-defined target frame while already fullscreen. Mirrors
+    /// `CalyxWindow`'s own identical double-guard on its double-click-to-
+    /// zoom title bar handler (`CalyxWindow.swift`).
+    func processToggleMaximize() {
+        guard !trackedFullScreen else { return }
+        guard !(window?.styleMask.contains(.fullScreen) ?? false) else { return }
+        window?.performZoom(nil)
+    }
+
+    @objc private func handleToggleMaximizeNotification(_ notification: Notification) {
+        guard let surfaceView = notification.object as? SurfaceView else { return }
+        guard findTab(for: surfaceView) != nil else { return }
+        processToggleMaximize()
+    }
+
+    /// `.ghosttyResetWindowSize` (`GHOSTTY_ACTION_RESET_WINDOW_SIZE`)
+    /// receiver. Calls `window?.setContentSize(Self.defaultContentSize)`
+    /// followed by `window?.center()`, mirroring this controller's own
+    /// fresh-window `convenience init` default. Guarded identically to
+    /// `processToggleMaximize` above (`trackedFullScreen` AND
+    /// `styleMask.contains(.fullScreen)`): resizing the content area while
+    /// natively fullscreen has no well-defined meaning either.
+    /// `requestSave()` persists the new frame.
+    func processResetWindowSize() {
+        guard !trackedFullScreen else { return }
+        guard !(window?.styleMask.contains(.fullScreen) ?? false) else { return }
+        window?.setContentSize(Self.defaultContentSize)
+        window?.center()
+        requestSave()
+    }
+
+    @objc private func handleResetWindowSizeNotification(_ notification: Notification) {
+        guard let surfaceView = notification.object as? SurfaceView else { return }
+        guard findTab(for: surfaceView) != nil else { return }
+        processResetWindowSize()
     }
 
     /// R6-A (r6-fix-spec.md item 4): single choke point pairing the

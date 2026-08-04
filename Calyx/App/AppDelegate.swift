@@ -827,7 +827,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let windowSession = WindowSession(initialTab: tab)
         let (window, wc) = makeRestoringWindowController(
-            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+            contentRect: NSRect(origin: .zero, size: CalyxWindowController.defaultContentSize),
             windowSession: windowSession
         )
 

@@ -38,6 +38,12 @@ enum GhosttyActionRouter {
         case GHOSTTY_ACTION_SET_TITLE:
             return handleSetTitle(app, target: target, value: action.action.set_title)
 
+        case GHOSTTY_ACTION_SET_TAB_TITLE:
+            return handleSetTabTitle(app, target: target, value: action.action.set_tab_title)
+
+        case GHOSTTY_ACTION_COPY_TITLE_TO_CLIPBOARD:
+            return handleCopyTitleToClipboard(app, target: target)
+
         case GHOSTTY_ACTION_PWD:
             return handlePwd(app, target: target, value: action.action.pwd)
 
@@ -71,6 +77,9 @@ enum GhosttyActionRouter {
         case GHOSTTY_ACTION_INITIAL_SIZE:
             return handleInitialSize(app, target: target, value: action.action.initial_size)
 
+        case GHOSTTY_ACTION_RESET_WINDOW_SIZE:
+            return handleResetWindowSize(app, target: target)
+
         case GHOSTTY_ACTION_SIZE_LIMIT:
             return handleSizeLimit(app, target: target, value: action.action.size_limit)
 
@@ -94,6 +103,9 @@ enum GhosttyActionRouter {
 
         case GHOSTTY_ACTION_TOGGLE_FULLSCREEN:
             return handleToggleFullscreen(app, target: target, mode: action.action.toggle_fullscreen)
+
+        case GHOSTTY_ACTION_TOGGLE_MAXIMIZE:
+            return handleToggleMaximize(app, target: target)
 
         case GHOSTTY_ACTION_OPEN_CONFIG:
             return handleOpenConfig(app)
@@ -137,6 +149,9 @@ enum GhosttyActionRouter {
         case GHOSTTY_ACTION_GOTO_TAB:
             return handleGotoTab(app, target: target, tab: action.action.goto_tab)
 
+        case GHOSTTY_ACTION_MOVE_TAB:
+            return handleMoveTab(app, target: target, value: action.action.move_tab)
+
         case GHOSTTY_ACTION_KEY_SEQUENCE:
             logger.debug("Key sequence action (stub)")
             return true
@@ -150,12 +165,12 @@ enum GhosttyActionRouter {
         case GHOSTTY_ACTION_TOGGLE_QUICK_TERMINAL:
             return handleToggleQuickTerminal(app, target: target)
 
+        case GHOSTTY_ACTION_TOGGLE_COMMAND_PALETTE:
+            return handleToggleCommandPalette(app, target: target)
+
         case GHOSTTY_ACTION_CLOSE_ALL_WINDOWS,
-             GHOSTTY_ACTION_TOGGLE_TAB_OVERVIEW,
              GHOSTTY_ACTION_TOGGLE_WINDOW_DECORATIONS,
-             GHOSTTY_ACTION_TOGGLE_MAXIMIZE,
              GHOSTTY_ACTION_TOGGLE_SPLIT_ZOOM,
-             GHOSTTY_ACTION_TOGGLE_COMMAND_PALETTE,
              GHOSTTY_ACTION_TOGGLE_VISIBILITY,
              GHOSTTY_ACTION_PRESENT_TERMINAL,
              GHOSTTY_ACTION_QUIT_TIMER,
@@ -163,15 +178,57 @@ enum GhosttyActionRouter {
              GHOSTTY_ACTION_PROMPT_TITLE,
              GHOSTTY_ACTION_INSPECTOR,
              GHOSTTY_ACTION_RENDER_INSPECTOR,
-             GHOSTTY_ACTION_SHOW_GTK_INSPECTOR,
-             GHOSTTY_ACTION_MOVE_TAB,
-             GHOSTTY_ACTION_RESET_WINDOW_SIZE,
              GHOSTTY_ACTION_CHECK_FOR_UPDATES,
              GHOSTTY_ACTION_UNDO,
-             GHOSTTY_ACTION_REDO,
-             GHOSTTY_ACTION_SHOW_ON_SCREEN_KEYBOARD:
+             GHOSTTY_ACTION_REDO:
             logger.info("Known but unimplemented action: \(action.tag.rawValue)")
             return false
+
+        // MARK: - Intentional No-Ops
+        //
+        // Unlike the "Known but unimplemented" group above, each of these
+        // four is a deliberate decision, not a placeholder for later work.
+        // Each still returns `true`: a `false` here tells libghostty the
+        // keybind that triggered the action was NOT consumed, so it falls
+        // through and the raw key sequence gets sent to the shell instead
+        // (see `ghostty_runtime_action_cb`'s doc comment in ghostty.h) --
+        // exactly the wrong outcome for a keybind Calyx has consciously
+        // decided has nothing to do here.
+
+        case GHOSTTY_ACTION_TOGGLE_TAB_OVERVIEW:
+            // AdwTabOverview (GTK's tab grid) only exists when GTK's
+            // libadwaita is >= 1.4 -- a GTK/Linux-only surface. Calyx
+            // already provides an always-available tab overview via its
+            // own TabBar/Sidebar UI, so there is no missing capability
+            // to route this to.
+            return true
+
+        case GHOSTTY_ACTION_SHOW_GTK_INSPECTOR:
+            // The GTK Inspector is a GTK-only debugging tool with no
+            // AppKit equivalent to route it to.
+            return true
+
+        case GHOSTTY_ACTION_SHOW_ON_SCREEN_KEYBOARD:
+            // On-screen-keyboard toggling only applies to GTK's touch
+            // input and iOS; a physical-keyboard-first macOS terminal has
+            // no on-screen keyboard concept to toggle.
+            return true
+
+        case GHOSTTY_ACTION_COMMAND_FINISHED:
+            // Calyx already has its own shell-integration hook (POST
+            // /command-event -> CommandLogStore.ingest) instead of
+            // ghostty's OSC 133 command-finished: CommandLogStore.swift
+            // documents that ghostty's own signal reports an unreliable
+            // exit code (always 0 for "unknown", indistinguishable from a
+            // real success), so it was dropped entirely in favor of the
+            // shell-integration hook's own start/end timestamps and exit
+            // code. This action is also currently unreachable in
+            // practice: Calyx never sets GHOSTTY_RESOURCES_DIR, so
+            // libghostty's shell-integration scripts that would emit the
+            // OSC 133 markers behind this action are never injected into
+            // the user's shell in the first place (see
+            // GhosttyResourcesDirResolverTests / architecture.md).
+            return true
 
         default:
             logger.warning("Unknown action: \(action.tag.rawValue)")
@@ -822,6 +879,123 @@ enum GhosttyActionRouter {
     ) -> Bool {
         guard let appDelegate = NSApp.delegate as? AppDelegate else { return false }
         appDelegate.toggleQuickTerminal()
+        return true
+    }
+
+    // MARK: - Second Missing-Observer Investigation
+    //
+    // `GHOSTTY_ACTION_SET_TAB_TITLE` / `COPY_TITLE_TO_CLIPBOARD` /
+    // `TOGGLE_COMMAND_PALETTE` / `MOVE_TAB` / `TOGGLE_MAXIMIZE` /
+    // `RESET_WINDOW_SIZE`. Every handler below is a thin adapter, exactly
+    // like `handleCloseTab`/`handleToggleFullscreen` above: extract the
+    // payload (if any), post the matching `.ghostty*` notification with
+    // the `SurfaceView` as `object`, return `true`. No ownership/decision
+    // logic lives here — `CalyxWindowController`'s `findTab(for:)`-based
+    // observers own that (see CalyxWindowController.swift's own "MARK: -
+    // Keybind Actions (second missing-observer investigation)").
+    // `surfaceView(from:)` dereferences `target.target.surface` via
+    // `GhosttyAppController.surfaceView(from:)` (`Unmanaged<SurfaceView>
+    // .fromOpaque(...).takeUnretainedValue()`), which traps for a fake
+    // pointer — there is no safe way to unit test this file's own half of
+    // these six wire-ups; see each Swift-side `CalyxWindowController*Tests`
+    // suite instead.
+
+    /// `GHOSTTY_ACTION_SET_TAB_TITLE`. Reuses `ghostty_action_set_title_s`
+    /// (ghostty.h: `set_title` and `set_tab_title` share one payload
+    /// shape, just a different union tag) — mirrors `handleSetTitle`'s own
+    /// structure exactly, except `String(validatingCString:) ?? ""`
+    /// instead of `String(cString:)`: `set_tab_title` arrives via OSC, so
+    /// the byte sequence is not guaranteed valid UTF-8, and `String
+    /// (cString:)` traps on invalid input.
+    private static func handleSetTabTitle(
+        _ app: ghostty_app_t,
+        target: ghostty_target_s,
+        value: ghostty_action_set_title_s
+    ) -> Bool {
+        guard let surfaceView = surfaceView(from: target) else { return false }
+        guard let titlePtr = value.title else { return false }
+        let title = String(validatingCString: titlePtr) ?? ""
+
+        NotificationCenter.default.post(
+            name: .ghosttySetTabTitle,
+            object: surfaceView,
+            userInfo: ["title": title]
+        )
+        return true
+    }
+
+    /// `GHOSTTY_ACTION_COPY_TITLE_TO_CLIPBOARD`. No payload (not a member
+    /// of `ghostty_action_u`) — mirrors `handleEqualizeSplits`'s/
+    /// `handleRingBell`'s no-payload shape.
+    private static func handleCopyTitleToClipboard(
+        _ app: ghostty_app_t,
+        target: ghostty_target_s
+    ) -> Bool {
+        guard let surfaceView = surfaceView(from: target) else { return false }
+
+        NotificationCenter.default.post(
+            name: .ghosttyCopyTitleToClipboard,
+            object: surfaceView
+        )
+        return true
+    }
+
+    /// `GHOSTTY_ACTION_TOGGLE_COMMAND_PALETTE`. No payload.
+    private static func handleToggleCommandPalette(
+        _ app: ghostty_app_t,
+        target: ghostty_target_s
+    ) -> Bool {
+        guard let surfaceView = surfaceView(from: target) else { return false }
+
+        NotificationCenter.default.post(
+            name: .ghosttyToggleCommandPalette,
+            object: surfaceView
+        )
+        return true
+    }
+
+    /// `GHOSTTY_ACTION_MOVE_TAB`. `ghostty_action_move_tab_s.amount` is
+    /// `ssize_t` -> Swift `Int`.
+    private static func handleMoveTab(
+        _ app: ghostty_app_t,
+        target: ghostty_target_s,
+        value: ghostty_action_move_tab_s
+    ) -> Bool {
+        guard let surfaceView = surfaceView(from: target) else { return false }
+
+        NotificationCenter.default.post(
+            name: .ghosttyMoveTab,
+            object: surfaceView,
+            userInfo: ["amount": Int(value.amount)]
+        )
+        return true
+    }
+
+    /// `GHOSTTY_ACTION_TOGGLE_MAXIMIZE`. No payload.
+    private static func handleToggleMaximize(
+        _ app: ghostty_app_t,
+        target: ghostty_target_s
+    ) -> Bool {
+        guard let surfaceView = surfaceView(from: target) else { return false }
+
+        NotificationCenter.default.post(
+            name: .ghosttyToggleMaximize,
+            object: surfaceView
+        )
+        return true
+    }
+
+    /// `GHOSTTY_ACTION_RESET_WINDOW_SIZE`. No payload.
+    private static func handleResetWindowSize(
+        _ app: ghostty_app_t,
+        target: ghostty_target_s
+    ) -> Bool {
+        guard let surfaceView = surfaceView(from: target) else { return false }
+
+        NotificationCenter.default.post(
+            name: .ghosttyResetWindowSize,
+            object: surfaceView
+        )
         return true
     }
 

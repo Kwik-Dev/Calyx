@@ -65,4 +65,40 @@ class TabGroup: Identifiable {
         let tab = tabs.remove(at: fromIndex)
         tabs.insert(tab, at: toIndex)
     }
+
+    /// Moves the tab at `fromIndex` by a relative `amount`, wrapping
+    /// cyclically within the tab list rather than clamping at the ends --
+    /// `GHOSTTY_ACTION_MOVE_TAB`'s intended receiver
+    /// (`CalyxWindowController.processMoveTab(tab:group:amount:)`). Mirrors
+    /// ghostty's own `move_tab` keybind semantics (`ghostty/src/input/
+    /// Binding.zig`: "Positive values move the tab forwards, and negative
+    /// values move it backwards. If the new position is out of bounds, it
+    /// is wrapped around cyclically within the tab list.") and the GTK
+    /// apprt's own reference implementation (`apprt/gtk/class/window.zig`'s
+    /// `moveTab`). Deliberately NOT the same as macOS ghostty's own
+    /// (`macos/Sources/Features/Terminal/TerminalController.swift`'s
+    /// `onMoveTab`), which CLAMPS at the ends instead of wrapping -- that
+    /// is a mismatch against `Binding.zig`'s own documented contract, not
+    /// a precedent to follow.
+    ///
+    /// A no-op if `fromIndex` is out of range, or if the wrapped target
+    /// index equals `fromIndex` (`amount == 0`, `amount` a multiple of
+    /// `tabs.count`, or `tabs.count <= 1`).
+    ///
+    /// `count`/`fromIndex` are read BEFORE the wrap computation (not
+    /// re-read from `tabs` after some partial mutation), so the
+    /// `((fromIndex + amount) % count + count) % count` result is always
+    /// computed against the pre-move array. The result is always a valid
+    /// index into the sibling `moveTab(fromIndex:toIndex:)`'s `toIndex`
+    /// (that method's own doc comment: "the tab's final position in the
+    /// array after removal") — delegating to it here means `activeTabID`
+    /// (ID-based) is preserved automatically, with no explicit
+    /// reassignment needed, exactly like that method's own contract. See
+    /// `TabGroupMoveTabTests` for the exhaustive contract this satisfies.
+    func moveTab(fromIndex: Int, by amount: Int) {
+        guard tabs.count > 1, amount != 0, tabs.indices.contains(fromIndex) else { return }
+        let count = tabs.count
+        let target = ((fromIndex + amount) % count + count) % count
+        moveTab(fromIndex: fromIndex, toIndex: target)
+    }
 }

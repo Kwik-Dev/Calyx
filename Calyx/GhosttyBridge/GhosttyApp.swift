@@ -562,4 +562,32 @@ extension Notification.Name {
     /// `false` for `REMOVE`/`ERROR`/`PAUSE`.
     static let ghosttyProgressReport = Notification.Name("com.calyx.ghostty.progressReport")
     static let smoothScrollSettingChanged = Notification.Name("com.calyx.smoothScrollSettingChanged")
+
+    // MARK: - Second Missing-Observer Investigation
+    //
+    // `GHOSTTY_ACTION_SET_TAB_TITLE` / `COPY_TITLE_TO_CLIPBOARD` /
+    // `TOGGLE_COMMAND_PALETTE` / `MOVE_TAB` / `TOGGLE_MAXIMIZE` /
+    // `RESET_WINDOW_SIZE`, all posted by `GhosttyActionRouter` and
+    // observed by `CalyxWindowController.registerNotificationObservers()`.
+
+    /// `GHOSTTY_ACTION_SET_TAB_TITLE`. `object` is the triggering
+    /// `SurfaceView`; `userInfo["title"]` is a `String` (may be empty,
+    /// meaning "clear back to the default").
+    static let ghosttySetTabTitle = Notification.Name("com.calyx.ghostty.setTabTitle")
+    /// `GHOSTTY_ACTION_COPY_TITLE_TO_CLIPBOARD`. `object` is the
+    /// triggering `SurfaceView`; no `userInfo`.
+    static let ghosttyCopyTitleToClipboard = Notification.Name("com.calyx.ghostty.copyTitleToClipboard")
+    /// `GHOSTTY_ACTION_TOGGLE_COMMAND_PALETTE`. `object` is the
+    /// triggering `SurfaceView`; no `userInfo`.
+    static let ghosttyToggleCommandPalette = Notification.Name("com.calyx.ghostty.toggleCommandPalette")
+    /// `GHOSTTY_ACTION_MOVE_TAB`. `object` is the triggering
+    /// `SurfaceView`; `userInfo["amount"]` is an `Int`
+    /// (`ghostty_action_move_tab_s.amount`, `ssize_t`).
+    static let ghosttyMoveTab = Notification.Name("com.calyx.ghostty.moveTab")
+    /// `GHOSTTY_ACTION_TOGGLE_MAXIMIZE`. `object` is the triggering
+    /// `SurfaceView`; no `userInfo`.
+    static let ghosttyToggleMaximize = Notification.Name("com.calyx.ghostty.toggleMaximize")
+    /// `GHOSTTY_ACTION_RESET_WINDOW_SIZE`. `object` is the triggering
+    /// `SurfaceView`; no `userInfo`.
+    static let ghosttyResetWindowSize = Notification.Name("com.calyx.ghostty.resetWindowSize")
 }
