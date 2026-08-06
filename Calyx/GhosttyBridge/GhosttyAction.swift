@@ -180,12 +180,14 @@ enum GhosttyActionRouter {
         case GHOSTTY_ACTION_CHECK_FOR_UPDATES:
             return handleCheckForUpdates(app)
 
+        case GHOSTTY_ACTION_PROMPT_TITLE:
+            return handlePromptTitle(app, target: target, value: action.action.prompt_title)
+
         case GHOSTTY_ACTION_TOGGLE_WINDOW_DECORATIONS,
              GHOSTTY_ACTION_TOGGLE_SPLIT_ZOOM,
              GHOSTTY_ACTION_TOGGLE_VISIBILITY,
              GHOSTTY_ACTION_QUIT_TIMER,
              GHOSTTY_ACTION_FLOAT_WINDOW,
-             GHOSTTY_ACTION_PROMPT_TITLE,
              GHOSTTY_ACTION_INSPECTOR,
              GHOSTTY_ACTION_RENDER_INSPECTOR,
              GHOSTTY_ACTION_UNDO,
@@ -1075,6 +1077,38 @@ enum GhosttyActionRouter {
         NotificationCenter.default.post(
             name: .ghosttyResetWindowSize,
             object: surfaceView
+        )
+        return true
+    }
+
+    // MARK: - Prompt Title (GitHub issue #42)
+
+    /// `GHOSTTY_ACTION_PROMPT_TITLE` (`prompt_tab_title`/
+    /// `prompt_surface_title` keybinds). Unlike `handleSetTabTitle`'s
+    /// `ghostty_action_set_title_s` (a struct with a `const char* title`
+    /// pointer), `ghostty_action_prompt_title_e` (ghostty.h) is a plain
+    /// two-case C enum with no pointer payload to extract or validate.
+    /// Converted to `TitlePromptScope`'s `String` raw value
+    /// (`"surface"`/`"tab"`) before posting, rather than forwarded as the
+    /// raw C enum through `userInfo` (contrast `handleCloseTab`'s
+    /// `["mode": mode]`): `CalyxWindowController.handlePromptTitleNotification`
+    /// reconstructs `TitlePromptScope` via `TitlePromptScope(rawValue:)`,
+    /// so the C type never needs to cross the notification boundary —
+    /// consumers stay decoupled from `GhosttyKit`, matching this router's
+    /// role as the one place libghostty's C payloads get translated into
+    /// Swift-native notifications.
+    private static func handlePromptTitle(
+        _ app: ghostty_app_t,
+        target: ghostty_target_s,
+        value: ghostty_action_prompt_title_e
+    ) -> Bool {
+        guard let surfaceView = surfaceView(from: target) else { return false }
+        let scope = (value == GHOSTTY_PROMPT_TITLE_SURFACE) ? "surface" : "tab"
+
+        NotificationCenter.default.post(
+            name: .ghosttyPromptTitle,
+            object: surfaceView,
+            userInfo: ["scope": scope]
         )
         return true
     }

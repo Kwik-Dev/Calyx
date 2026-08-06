@@ -414,10 +414,12 @@ private struct TabItemButton: View {
                             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                             tab.titleOverride = trimmed.isEmpty ? nil : trimmed
                             isEditing = false
+                            tab.renameRequest = nil
                             onTabRenamed?()
                         },
                         onCancel: {
                             isEditing = false
+                            tab.renameRequest = nil
                         }
                     )
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -458,6 +460,25 @@ private struct TabItemButton: View {
             ))
         }
         .onHover { isHovering = $0 }
+        // GHOSTTY_ACTION_PROMPT_TITLE (`CalyxWindowController
+        // .processPromptTitle`) routing: only open THIS host's editor.
+        // Checking `host` is not optional -- `TabRowItemView` in the
+        // sidebar renders the SAME `tab` and carries its own, separate
+        // `isEditing`; if both views opened on every `renameRequest`
+        // change, the two `InlineTextField`s' independent `NSEvent`
+        // click-outside monitors would each try to commit on their own,
+        // and the SECOND one to commit would clobber the first with its
+        // own (stale) text -- see `TabRenameHost`'s own doc comment.
+        // Re-requesting the SAME host while already editing (`isEditing
+        // == true`) is a harmless idempotent reassignment: the
+        // `InlineTextField`'s `NSViewRepresentable` identity does not
+        // change, so the existing editor just stays open rather than
+        // being torn down and rebuilt.
+        .onChange(of: tab.renameRequest) { _, newValue in
+            if newValue?.host == .tabBar {
+                isEditing = true
+            }
+        }
         // The tab body is hosted inside an `NSHostingView` (via
         // `TabClickContainer`), whose AppKit subtree owns the
         // accessibility children. Without an explicit container element a

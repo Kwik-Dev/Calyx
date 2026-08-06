@@ -608,10 +608,12 @@ private struct TabRowItemView: View {
                             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                             tab.titleOverride = trimmed.isEmpty ? nil : trimmed
                             isEditing = false
+                            tab.renameRequest = nil
                             onTabRenamed?()
                         },
                         onCancel: {
                             isEditing = false
+                            tab.renameRequest = nil
                         }
                     )
                 } else {
@@ -647,6 +649,15 @@ private struct TabRowItemView: View {
             ))
         }
         .onAssumeInsideHover($isHovering)
+        // See `TabItemButton`'s identical `.onChange`
+        // (TabBarContentView.swift) for the full double-open-hazard
+        // rationale -- this is its sidebar mirror image, gated on
+        // `.sidebar` instead of `.tabBar`.
+        .onChange(of: tab.renameRequest) { _, newValue in
+            if newValue?.host == .sidebar {
+                isEditing = true
+            }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AccessibilityID.Sidebar.tab(tab.id))
         // The title `Text` lives inside the `TabClickContainer`'s

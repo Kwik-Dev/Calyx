@@ -590,4 +590,15 @@ extension Notification.Name {
     /// `GHOSTTY_ACTION_RESET_WINDOW_SIZE`. `object` is the triggering
     /// `SurfaceView`; no `userInfo`.
     static let ghosttyResetWindowSize = Notification.Name("com.calyx.ghostty.resetWindowSize")
+
+    // MARK: - Prompt Title (GitHub issue #42)
+
+    /// `GHOSTTY_ACTION_PROMPT_TITLE` (`prompt_tab_title`/
+    /// `prompt_surface_title` keybinds). `object` is the triggering
+    /// `SurfaceView`; `userInfo["scope"]` is a `String` — `TitlePromptScope`'s
+    /// raw value (`"surface"` or `"tab"`), not the raw
+    /// `ghostty_action_prompt_title_e` (`GhosttyActionRouter.handlePromptTitle`
+    /// converts it before posting so the C type never crosses the
+    /// notification boundary).
+    static let ghosttyPromptTitle = Notification.Name("com.calyx.ghostty.promptTitle")
 }

@@ -38,6 +38,22 @@ enum ReconnectGraceProbeResult: Sendable, Equatable {
     case notEstablished
 }
 
+/// `GHOSTTY_ACTION_PROMPT_TITLE`'s `ghostty_action_prompt_title_e` payload
+/// (`GHOSTTY_PROMPT_TITLE_SURFACE` / `_TAB`, ghostty.h) mapped onto a
+/// Swift-native enum rather than passed through as the raw C type (contrast
+/// `processCloseTab(tab:group:mode: ghostty_action_close_tab_mode_e)`,
+/// which DOES take its C enum directly): v1 has no per-pane title UI
+/// (`SurfacePropertyStore.title(for:)` is Cockpit's read-only `pane_list`
+/// projection, not an editor), so `processPromptTitle` collapses both
+/// cases onto the same tab-level rename — see that method's own doc
+/// comment. Kept as a distinct type (not reused for anything else) so the
+/// day a pane-level title editor exists, only `processPromptTitle`'s own
+/// switch needs a new case, not every call site.
+enum TitlePromptScope: String, Sendable {
+    case surface
+    case tab
+}
+
 @MainActor
 class CalyxWindowController: NSWindowController, NSWindowDelegate {
     private(set) var windowSession: WindowSession
@@ -2195,6 +2211,11 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
                            name: .ghosttyToggleMaximize, object: nil)
         center.addObserver(self, selector: #selector(handleResetWindowSizeNotification(_:)),
                            name: .ghosttyResetWindowSize, object: nil)
+        // GHOSTTY_ACTION_PROMPT_TITLE (GitHub issue #42): the same
+        // missing-observer shape as the two batches above, fixed the same
+        // way -- see "MARK: - Prompt Title" below.
+        center.addObserver(self, selector: #selector(handlePromptTitleNotification(_:)),
+                           name: .ghosttyPromptTitle, object: nil)
     }
 
     // MARK: - Screen State Polling (Herdr Layer 2)
@@ -2980,6 +3001,102 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         guard let surfaceView = notification.object as? SurfaceView else { return }
         guard findTab(for: surfaceView) != nil else { return }
         processResetWindowSize()
+    }
+
+    // MARK: - Prompt Title (GHOSTTY_ACTION_PROMPT_TITLE, GitHub issue #42)
+    //
+    // prompt_tab_title/prompt_surface_title keybinds. `GhosttyActionRouter
+    // .handlePromptTitle` (GhosttyAction.swift) posts `.ghosttyPromptTitle`
+    // for `GHOSTTY_ACTION_PROMPT_TITLE`, `registerNotificationObservers()`
+    // above registers `handlePromptTitleNotification` for it, and both
+    // methods below have real bodies -- exactly the missing-observer shape
+    // the two investigations above fixed for their own actions, closed the
+    // same way here. See `CalyxWindowControllerPromptTitleTests` for the
+    // direct-call contract and that file's own "Notification post (Tactic
+    // A)" section for the end-to-end wiring test.
+
+    /// Which of the two independent, per-`Tab` `@State isEditing` rename
+    /// UIs (`TabBarContentView`'s `TabItemButton`, `SidebarContentView`'s
+    /// `TabRowItemView` — both can render the SAME `tab` at once, see
+    /// `TabRenameHost`'s own doc comment) should handle `tab`'s inline
+    /// rename, or `nil` if neither currently renders it. Reads only
+    /// `windowSession.activeGroupID`/`showSidebar`/`sidebarMode` plus the
+    /// passed-in `group`'s own `isCollapsed` — no other `self` access, so
+    /// this is directly unit-testable against a bare `tab`/`group` pair
+    /// that need not even be members of `windowSession.groups`.
+    ///
+    /// Not `private`: mirrors `processChildExited`'s own "Not `private`"
+    /// doc comment — `CalyxWindowControllerPromptTitleTests` calls this
+    /// directly.
+    ///
+    /// The active-group check runs FIRST so it wins even when the sidebar
+    /// ALSO renders the same `tab` at once — see `TabRenameHost`'s own doc
+    /// comment on the double-open hazard a wrong ordering (or a caller
+    /// passing a `tab`/`group` pair that doesn't actually match) would
+    /// otherwise risk.
+    ///
+    /// `sidebarMode == .tabs` is required, not just `windowSession
+    /// .showSidebar && !group.isCollapsed`: `SidebarContentView`'s
+    /// group/tab tree (where `TabRowItemView` lives) only renders inside
+    /// `switch sidebarMode { case .tabs: ... }` — while `sidebarMode` is
+    /// `.changes` or `.agents`, the sidebar shows `GitChangesView`/
+    /// `AgentStatusView` instead, and no `TabRowItemView` exists for `tab`
+    /// at all regardless of `showSidebar`/`isCollapsed`. Every current
+    /// caller reaches this method for the keybind-focused surface, which
+    /// is always the active group's active tab (so it always resolves via
+    /// the `.tabBar` branch above and never reaches this check) — but
+    /// `renameHost` is a general `tab`/`group` function, not itself
+    /// focus-scoped, so a future caller (e.g. a sidebar row's own "Rename"
+    /// context-menu item) must not have its request silently dropped just
+    /// because the sidebar happens to be showing Git changes or Agents at
+    /// that moment.
+    func renameHost(for tab: Tab, in group: TabGroup) -> TabRenameHost? {
+        if group.id == windowSession.activeGroupID {
+            return .tabBar
+        }
+        if windowSession.showSidebar && !group.isCollapsed && windowSession.sidebarMode == .tabs {
+            return .sidebar
+        }
+        return nil
+    }
+
+    /// `.ghosttyPromptTitle` (`GHOSTTY_ACTION_PROMPT_TITLE`, `prompt_title`
+    /// union member: `GHOSTTY_PROMPT_TITLE_SURFACE` / `_TAB`) receiver, via
+    /// `handlePromptTitleNotification` below. `scope` mirrors that C enum
+    /// via `TitlePromptScope` (see its own doc comment for why v1 collapses
+    /// both cases onto the same tab-level rename — this method does not
+    /// switch on `scope` at all; it is threaded through only so a future
+    /// per-pane title editor has a single call site to add a case to).
+    ///
+    /// Not `private` (mirrors `processChildExited`'s own "Not `private`"
+    /// doc comment): `CalyxWindowControllerPromptTitleTests` calls this
+    /// directly with a `_testInsert`-only `SurfaceView` never attached to a
+    /// real window. Ownership is enforced by `findTab(for:)` below either
+    /// way — there is no separate `belongsToThisWindow` guard to bypass
+    /// (see `handlePromptTitleNotification`'s own doc comment for why).
+    ///
+    /// No `requestSave()`: `renameRequest` is transient UI-routing state,
+    /// deliberately excluded from `Tab.snapshot()` (see its own doc
+    /// comment), so persisting it here would be a bug, not an omission.
+    func processPromptTitle(surfaceView: SurfaceView, scope: TitlePromptScope) {
+        guard let (tab, group) = findTab(for: surfaceView) else { return }
+        guard let host = renameHost(for: tab, in: group) else { return }
+        tab.renameRequest = TabRenameRequest(id: UUID(), host: host)
+        refreshHostingView()
+    }
+
+    /// Destination resolution uses `findTab(for:)` (inside
+    /// `processPromptTitle` above), not `belongsToThisWindow(_:)` — mirrors
+    /// every other handler in both missing-observer investigations above
+    /// (their own header comments explain why). A `SurfaceView` this
+    /// window doesn't own resolves to `findTab(for:) == nil` inside
+    /// `processPromptTitle`, which already no-ops, so a second ownership
+    /// check here would be redundant.
+    @objc private func handlePromptTitleNotification(_ notification: Notification) {
+        guard let surfaceView = notification.object as? SurfaceView else { return }
+        let scope = (notification.userInfo?["scope"] as? String)
+            .flatMap(TitlePromptScope.init(rawValue:)) ?? .tab
+        processPromptTitle(surfaceView: surfaceView, scope: scope)
     }
 
     /// R6-A (r6-fix-spec.md item 4): single choke point pairing the
