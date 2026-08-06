@@ -127,8 +127,21 @@ final class AppDelegateEmptyPreservedSnapshotTests: XCTestCase {
         return SessionPersistenceActor()
     }
 
+    /// A window with no groups/tabs is not restorable content -- see
+    /// `SessionSnapshot.removingEmptyWindows()` (SessionSnapshot.swift)
+    /// and its regression test
+    /// `SessionPersistenceTests.test_removingEmptyWindows_dropsWindowWithNoGroups`,
+    /// which both treat that shape identically to an empty snapshot.
+    /// `initializeHasPreservedSessionSnapshotFlag()` normalizes through
+    /// `removingEmptyWindows()` too, so this fixture must include an
+    /// actual group/tab to be genuinely non-empty, matching every other
+    /// call site's contract.
     private func makeNonEmptySnapshot(windowID: UUID = UUID()) -> SessionSnapshot {
-        SessionSnapshot(windows: [WindowSnapshot(id: windowID, frame: CGRect(x: 0, y: 0, width: 800, height: 600))])
+        let tab = TabSnapshot(id: UUID(), title: "Terminal", splitTree: SplitTree(leafID: UUID()))
+        let group = TabGroupSnapshot(id: UUID(), tabs: [tab], activeTabID: tab.id)
+        return SessionSnapshot(windows: [
+            WindowSnapshot(id: windowID, frame: CGRect(x: 0, y: 0, width: 800, height: 600), groups: [group], activeGroupID: group.id)
+        ])
     }
 
     // MARK: - (a) initializeHasPreservedSessionSnapshotFlag()
