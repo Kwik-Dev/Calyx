@@ -1783,43 +1783,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return box.value.didPreserve ? .preserved : .notPreserved
     }
 
-    /// Synchronously bridges the async hasRunningPersistentSessions()
-    /// into restoreSession()'s own synchronous body. Unlike
-    /// attemptSessionRestoreFromDisk(deadline:)/
-    /// attemptPreserveDiscardedSessionOnDisk(deadline:) above, this uses
-    /// a plain (non-detached) `Task { }`, not SyncBridgeBox/Task.detached:
-    /// hasRunningPersistentSessions() is itself MainActor-isolated (this
-    /// class's default), so a detached task calling back into it would
-    /// need to re-acquire MainActor's turn -- exactly the deadlock
-    /// SyncBridgeBox's own doc comment describes -- reintroducing the
-    /// same bug this bridge exists to avoid. This is safe as the plain,
-    /// inherited-isolation form ONLY because restoreSession() (this
-    /// method's sole caller) is itself reached exclusively from
-    /// applicationDidFinishLaunching, a genuinely synchronous call stack
-    /// with no enclosing MainActor Task already occupying a turn -- if
-    /// this is ever driven from an async test caller the way
-    /// attemptSessionRestoreFromDisk's sibling tests are, it needs the
-    /// same SyncBridgeBox treatment first. The generous default deadline
-    /// comfortably exceeds SessionDaemonClient.daemonQueryBoundTimeoutSeconds's
-    /// own default bound, so a merely-slow (not unreachable) daemon
-    /// still gets a real chance to answer; if it doesn't, this
-    /// conservatively reports `false` -- the same "no evidence of an
-    /// anomaly" default hasRunningPersistentSessions() itself already
-    /// reports for a probe failure.
-    private func hasRunningPersistentSessionsBridged(deadline: TimeInterval = 6.0) -> Bool {
-        var result = false
-        var done = false
-        Task {
-            result = await hasRunningPersistentSessions()
-            done = true
-        }
-        let deadlineDate = Date().addingTimeInterval(deadline)
-        while !done, Date() < deadlineDate {
-            RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.01))
-        }
-        return result
-    }
-
     /// Bug 3a/3b wiring shared by restoreSession()'s empty-outcome,
     /// timed-out, and restoredAny-false branches: moves whatever is
     /// currently on disk aside into the recovery file (a harmless no-op
@@ -1843,6 +1806,48 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         case .timedOut:
             logger.warning("Timed out attempting to preserve a discarded session snapshot")
         }
+    }
+
+    /// Extracted from restoreSession()'s empty-snapshot guard for the
+    /// same reason attemptSessionRestoreFromDisk(deadline:)/
+    /// attemptPreserveDiscardedSessionOnDisk(deadline:)/
+    /// scheduleRecoveryCounterResetAfterStableLaunch(delay:) were each
+    /// already extracted (see AppDelegateRecoveryCounterResetTests' own
+    /// header): restoreSession() itself stays private and, past this
+    /// guard, still reaches GhosttyAppController.shared/real window
+    /// creation, so it remains unsafe to drive directly from a unit
+    /// test; this extracted method is the safe PREFIX that never
+    /// reaches that code.
+    ///
+    /// C4 REVERSAL: a decodable, genuinely empty restored snapshot is
+    /// now unconditionally "nothing to restore" -- never preserved,
+    /// never notified about, regardless of what the daemon's session
+    /// ledger reports. This guard used to query that ledger and treat
+    /// an empty snapshot alongside a still-RUNNING persistent session
+    /// as evidence of a lost snapshot, but that premise stopped holding
+    /// once closing the last window stopped terminating the app: with
+    /// applicationShouldTerminateAfterLastWindowClosed now
+    /// returning `false`, removeWindowController(_:) deliberately calls
+    /// saveImmediately() the instant windowControllers reaches zero,
+    /// synchronously writing a genuinely empty snapshot to disk ON
+    /// PURPOSE. A persistent session can also legitimately stay RUNNING
+    /// in the daemon's ledger with no window attached to it at all --
+    /// e.g. session.detach deliberately leaves one running for later
+    /// reattachment -- so a running ledger entry is no longer evidence
+    /// that anything was lost. A GENUINE loss of the snapshot itself
+    /// (decode failure, no file at all, or the crash-loop counter
+    /// exceeding maxRecoveryAttempts) never reaches this method at all:
+    /// it still falls into attemptSessionRestoreFromDisk()'s separate
+    /// .empty/.timedOut branches above this guard in restoreSession(),
+    /// whose own preserveDiscardedSessionIfAny() handling is unchanged
+    /// by this reversal.
+    ///
+    /// Not private: called directly on a bare AppDelegate() by
+    /// AppDelegateEmptySnapshotNotAnomalyTests, exactly like
+    /// notifyPreviousSessionNotRestored()'s own precedent.
+    func handleEmptyRestoredSnapshot() -> Bool {
+        logger.info("No session to restore")
+        return false
     }
 
     private func restoreSession() -> Bool {
@@ -1877,24 +1882,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         guard !snapshot.windows.isEmpty else {
-            // C4: with close=kill semantics, a genuinely empty on-disk
-            // snapshot from a deliberate "closed every window" quit
-            // should never coexist with the daemon still reporting a
-            // running persistent session -- when it does, this is much
-            // more likely a bug/race (see hasRunningPersistentSessions's
-            // own doc comment) than a deliberate quit, so route through
-            // preserve+notify instead of silently accepting it.
-            if hasRunningPersistentSessionsBridged() {
-                logger.warning("Empty session snapshot restored alongside a running persistent session; treating as an anomaly")
-                preserveDiscardedSessionIfAny()
-                notifyPreviousSessionNotRestored()
-                return false
-            }
-            // The user deliberately closed every window before their
-            // last quit -- not a loss to recover from, so this branch
-            // does not preserve or notify.
-            logger.info("No session to restore")
-            return false
+            return handleEmptyRestoredSnapshot()
         }
 
         // F10 (V11, WARNING, r4-fix-spec.md): one listAll() subprocess
@@ -2479,29 +2467,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // will read.
         guard !Task.isCancelled else { return [:] }
         return Dictionary(sessions.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
-    }
-
-    /// True when the daemon's ledger currently reports at least one
-    /// RUNNING persistent session. Reuses listAllSessionsBounded(client:)
-    /// exactly as fetchSessionsForAgentResume() already does -- bounded,
-    /// best-effort; a probe failure (daemon unreachable/timeout) surfaces
-    /// as an empty ledger, which this method treats as "no evidence of
-    /// any anomaly" (current, unchanged behavior for that case).
-    /// Consulted by restoreSession()'s empty-snapshot branch: with
-    /// close=kill semantics, a genuinely empty snapshot from a deliberate
-    /// "closed every window" quit should never coexist with a still-
-    /// running persistent session.
-    func hasRunningPersistentSessions() async -> Bool {
-        #if DEBUG
-        let client = _sessionDaemonClientForTesting ?? SessionDaemonClient.shared
-        #else
-        let client = SessionDaemonClient.shared
-        #endif
-        let sessions = await AppDelegate.listAllSessionsBounded(client: client)
-        return sessions.values.contains { session in
-            if case .running = session.state { return true }
-            return false
-        }
     }
 
     /// P4: once a reattached persistent-session surface exists, checks
