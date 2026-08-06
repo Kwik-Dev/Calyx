@@ -17,18 +17,10 @@ import AppKit
 
 @MainActor
 class ConfirmQuitMockAppDelegate: AppDelegate {
-    /// Reports `true` unconditionally, driving every close path under
-    /// test through to its terminal arm regardless of this test
-    /// process's real `windowControllers` (which the fixture's
-    /// contrived controller was never added to).
-    override func closingWouldTerminate(_ controller: CalyxWindowController) -> Bool {
-        true
-    }
-
     /// A no-op purely as test-process safety: a confirmed teardown
     /// empties the fixture's window for real, calling `window?.close()`
     /// -> `windowWillClose` -> `AppDelegate.removeWindowController`,
-    /// whose real implementation calls `NSApp.terminate(nil)` once its
+    /// whose real implementation calls `saveImmediately()` once its
     /// (private) `windowControllers` list is empty.
     override func removeWindowController(_ controller: CalyxWindowController) {}
 }

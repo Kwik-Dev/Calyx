@@ -85,10 +85,10 @@ final class CalyxWindowControllerNonLastWindowCloseTests: XCTestCase {
     /// R8-G item G3 (r8-fix-spec.md; verified behavior-neutral):
     /// subclasses `ConfirmQuitMockAppDelegate` (R6-J) instead of
     /// `AppDelegate` directly, consolidating this file's mock with the
-    /// rest of the suite's shared base. `ConfirmQuitMockAppDelegate`'s
-    /// `closingWouldTerminate` override (always `true`) is inert for
-    /// every test in this file: none of them drive `windowShouldClose`,
-    /// only `windowWillClose` directly, which never calls it.
+    /// rest of the suite's shared base -- purely for its
+    /// `removeWindowController` no-op override (test-process safety);
+    /// none of this file's tests drive any confirm-quit path at all,
+    /// only `windowWillClose` directly.
     private final class NoTerminateAppDelegate: ConfirmQuitMockAppDelegate {}
 
     private func withMockAppDelegate(_ mock: NoTerminateAppDelegate, _ body: () -> Void) {
@@ -169,8 +169,8 @@ final class CalyxWindowControllerNonLastWindowCloseTests: XCTestCase {
     /// R8-C (r8-fix-spec.md; consolidates r7-verdicts.md's I1/A2/C2
     /// dormant discriminator-mismatch finding): windowWillClose's outer
     /// loop gates on isAppActuallyTerminating (app-level:
-    /// AppDelegate.isApplicationTerminating || isTerminationConfirmed),
-    /// but killSessionIfPersistent's inner SessionCloseKillPolicy call
+    /// AppDelegate.isApplicationTerminating), but killSessionIfPersistent's
+    /// inner SessionCloseKillPolicy call
     /// passes isTerminating: isClosingForShutdown, this window's own,
     /// narrower flag. No production call path sets isClosingForShutdown
     /// true while the app is genuinely not terminating today (see
@@ -189,7 +189,6 @@ final class CalyxWindowControllerNonLastWindowCloseTests: XCTestCase {
         fixture.controller.isClosingForShutdown = true
 
         XCTAssertFalse(mock.isApplicationTerminating, "Precondition: the app is not terminating in this scenario")
-        XCTAssertFalse(mock.isTerminationConfirmed, "Precondition: termination has not been confirmed either")
 
         withMockAppDelegate(mock) {
             fixture.controller.windowWillClose(Notification(name: NSWindow.willCloseNotification))

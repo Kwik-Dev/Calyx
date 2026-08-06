@@ -20,7 +20,7 @@
 //  (hasPreservedSessionSnapshot), read via the established
 //  `NSApp.delegate as? AppDelegate` pattern this codebase already uses
 //  throughout CalyxWindowController for every other AppDelegate-level
-//  query (isTerminating, closingWouldTerminate(_:), etc.) -- mirrored
+//  query (isApplicationTerminating, isConfirmingQuit, etc.) -- mirrored
 //  here exactly, not a new access pattern.
 //
 //  NOTE ON THE LABEL: the task brief asked for "a Japanese label

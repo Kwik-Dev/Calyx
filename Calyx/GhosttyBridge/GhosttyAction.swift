@@ -951,8 +951,8 @@ enum GhosttyActionRouter {
     }
 
     /// `GHOSTTY_ACTION_CLOSE_ALL_WINDOWS`. See `AppDelegate
-    /// .closeAllWindows`'s own doc comment for the confirm-once / close /
-    /// restore-flag contract.
+    /// .closeAllWindows`'s own doc comment for the close contract (no
+    /// confirmation any more — see that method's doc comment for why).
     private static func handleCloseAllWindows(_ app: ghostty_app_t) -> Bool {
         guard let appDelegate = NSApp.delegate as? AppDelegate else { return false }
         appDelegate.closeAllWindows()

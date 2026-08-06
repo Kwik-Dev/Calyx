@@ -14,7 +14,7 @@
 //    and a command matching SessionCommandSynthesizer's contract
 //  - Enabled, .quickTerminal origin -> still .passthrough (QuickTerminal
 //    panes are excluded from persistent sessions by default)
-//  - cwd inheritance priority: inheritedCwd ?? cwd ?? home
+//  - cwd fallback: an unset `cwd` resolves to the home directory
 //
 //  The tests that inspect the synthesized `.persistent` command's cwd
 //  (matching-command, and all three cwd-priority tests) run it through
@@ -205,39 +205,31 @@ final class SessionSpawnPlannerTests: XCTestCase {
                        "QuickTerminal panes must default to .passthrough even when the feature is enabled")
     }
 
-    // MARK: - cwd inheritance priority (fix round, item 6)
+    // MARK: - cwd fallback (issue #43 fix removed cwd-priority)
     //
-    // Effective cwd must be `inheritedCwd ?? cwd ?? home`: a new split
-    // should land in the directory it was split from (inheritedCwd),
-    // even when the tab's own last-persisted pwd (cwd) is stale or
-    // absent.
-
-    func test_plan_inheritedCwdAndCwdBothSet_inheritedCwdTakesPriority() throws {
-        SessionSettings.persistentSessionsEnabled = true
-        let context = SessionSpawnContext(cwd: "/Users/dev/stale-repo", inheritedCwd: "/Users/dev/split-origin", origin: .tab)
-
-        let cwdArgument = try capturedCwdArgument(for: context)
-
-        XCTAssertEqual(cwdArgument, "/Users/dev/split-origin",
-                       "inheritedCwd must take priority over the tab's own (possibly stale) cwd")
-    }
+    // Effective cwd is `cwd ?? home`. `SessionSpawnContext.inheritedCwd`
+    // is gone -- see SessionSpawnPlanner.swift's own doc comment --
+    // because `context.cwd` now arrives already fully resolved by the
+    // caller (CalyxWindowController.createManagedSurface); landing a new
+    // split/tab in the directory it was split from is the CALLER's job
+    // now, via `sessionFallbackCwd`/`livePaneCwd`, not this planner's.
 
     func test_plan_onlyCwdSet_cwdIsUsed() throws {
         SessionSettings.persistentSessionsEnabled = true
-        let context = SessionSpawnContext(cwd: "/Users/dev/repo", inheritedCwd: nil, origin: .tab)
+        let context = SessionSpawnContext(cwd: "/Users/dev/repo", origin: .tab)
 
         let cwdArgument = try capturedCwdArgument(for: context)
 
-        XCTAssertEqual(cwdArgument, "/Users/dev/repo", "With no inheritedCwd, the tab's own cwd must be used")
+        XCTAssertEqual(cwdArgument, "/Users/dev/repo", "With cwd set, it must be used as the effective cwd")
     }
 
-    func test_plan_neitherCwdNorInheritedCwdSet_homeDirectoryIsUsed() throws {
+    func test_plan_noCwdSet_homeDirectoryIsUsed() throws {
         SessionSettings.persistentSessionsEnabled = true
-        let context = SessionSpawnContext(cwd: nil, inheritedCwd: nil, origin: .tab)
+        let context = SessionSpawnContext(cwd: nil, origin: .tab)
 
         let cwdArgument = try capturedCwdArgument(for: context)
 
         XCTAssertEqual(cwdArgument, NSHomeDirectory(),
-                       "With neither cwd nor inheritedCwd set, the effective cwd must fall back to the home directory")
+                       "With no cwd set, the effective cwd must fall back to the home directory")
     }
 }

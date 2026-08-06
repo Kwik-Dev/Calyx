@@ -34,12 +34,15 @@
 //  fix batch. The tests above (two-pane fixture) are untouched and
 //  their coverage/behavior is unchanged.
 //
-//  - F1/T1: `.giveUp` on a pane that is last-pane-everywhere AND
-//    `closingWouldTerminate` must NOT close the pane and must NOT
-//    consult the confirm-quit gate at all, detach bookkeeping only,
-//    leaving the leaf in the split tree (contrast with the two-pane
-//    tests above, whose `.giveUp` DOES close the pane, that multi-pane
-//    behavior is explicitly unchanged by F1).
+//  - F1/T1: `.giveUp` on a pane that is last-pane-everywhere must NOT
+//    close the pane and must NOT consult the confirm-quit gate at all,
+//    detach bookkeeping only, leaving the leaf in the split tree
+//    (contrast with the two-pane tests above, whose `.giveUp` DOES close
+//    the pane, that multi-pane behavior is explicitly unchanged by F1).
+//    Window-lifetime redesign: this now reacts to `isLastPaneEverywhere`
+//    alone (the original `&& closingWouldTerminate` half of the
+//    condition, and the confirm-quit gate itself, are both gone along
+//    with every close-path confirm-quit prompt).
 //  - F2/T2 (`handleReconnectGiveUp`'s own insert, not
 //    `closeFocusedSessionSurface`'s, see `SessionCommandPaletteTests`
 //    for that one): the multi-pane close branch must insert `tab.id`
@@ -81,15 +84,18 @@
 //  ROUND-6 FIX ADDITIONS (RED phase, r6-fix-spec.md R6-A): round-4's F4
 //  defer mechanism above is itself unsafe (r5-verdicts.md V1/V5):
 //  synchronous, nested replay with no shutdown awareness. Covers the
-//  unified, asynchronous-drain redesign: a decision deferred mid-modal
-//  during a CANCELLED close must still be applied once the caller's own
-//  post-modal bookkeeping has run, not lost (V1 cancel path); a deferred
-//  event must NOT be replayed while the app is actually terminating (V5);
-//  a replay landing during a second, already-active modal must re-defer,
-//  not apply early (item 4); and `handleCloseSurfaceNotification` must
-//  defer (not immediately tear down) a close_surface notification the
-//  same way (items 1/2, V2/V3). See each test's own doc comment for its
-//  specific CURRENT-code failure mode.
+//  unified, asynchronous-drain redesign: a deferred event must NOT be
+//  replayed while the app is actually terminating (V5); a replay landing
+//  during a second, already-active modal must re-defer, not apply early
+//  (item 4); and `handleCloseSurfaceNotification` must defer (not
+//  immediately tear down) a close_surface notification the same way
+//  (items 1/2, V2/V3). See each test's own doc comment for its specific
+//  CURRENT-code failure mode. (The V1 cancel-path case this round also
+//  fixed, tied to the close-path confirm-quit prompt's own
+//  `windowShouldClose`-driven `closingTabIDs` bookkeeping, no longer has
+//  a production mechanism to exercise: the window-lifetime redesign
+//  deletes that prompt and `windowShouldClose` itself entirely, see
+//  `AppDelegateLastWindowClosedDoesNotTerminateTests`.)
 //
 
 import XCTest
@@ -212,24 +218,18 @@ final class SessionReconnectGiveUpTests: XCTestCase {
         return SinglePaneFixture(controller: controller, tab: tab, leafID: leafID, sessionID: sessionID)
     }
 
-    /// `AppDelegate` subclass reporting `closingWouldTerminate == true`
-    /// unconditionally (so `isLastPaneEverywhere && closingWouldTerminate`
-    /// is satisfied for `SinglePaneFixture`) and counting
-    /// `confirmQuitIfNeeded` calls, F1's redesigned last-pane-everywhere
-    /// `.giveUp` branch must never reach it at all. `removeWindowController`
-    /// is a no-op purely as test-process safety, matching
-    /// `SessionCommandPaletteTests.MockConfirmQuitAppDelegate`'s reasoning:
-    /// if F1 is NOT yet implemented, `.giveUp` still closes the pane here
-    /// (the current, pre-fix behavior), which empties the window and
-    /// calls `window?.close()` -> `windowWillClose` -> `removeWindowController`.
+    /// `AppDelegate` subclass counting `confirmQuitIfNeeded` calls, since
+    /// F1's redesigned last-pane-everywhere `.giveUp` branch must never
+    /// reach it at all. `removeWindowController` is a no-op purely as
+    /// test-process safety, matching `SessionCommandPaletteTests
+    /// .MockConfirmQuitAppDelegate`'s reasoning: if F1 is NOT yet
+    /// implemented, `.giveUp` still closes the pane here (the current,
+    /// pre-fix behavior), which empties the window and calls
+    /// `window?.close()` -> `windowWillClose` -> `removeWindowController`.
     private final class LastPaneGiveUpMockAppDelegate: AppDelegate {
         private(set) var confirmQuitCallCount = 0
 
-        override func closingWouldTerminate(_ controller: CalyxWindowController) -> Bool {
-            true
-        }
-
-        override func confirmQuitIfNeeded(_ mode: ConfirmQuitMode = .killProcesses) -> Bool {
+        override func confirmQuitIfNeeded() -> Bool {
             confirmQuitCallCount += 1
             return true
         }
@@ -262,6 +262,64 @@ final class SessionReconnectGiveUpTests: XCTestCase {
         XCTAssertEqual(fixture.tab.splitTree.allLeafIDs(), [fixture.leafID],
                        "The pane must remain in the split tree, .giveUp must leave the leaf in place, " +
                        "not close it")
+        XCTAssertNil(fixture.tab.sessionRefs[fixture.leafID],
+                    "Detach bookkeeping must still clear tab.sessionRefs for the given-up leaf")
+        XCTAssertNil(SessionSurfaceMap.shared.sessionID(for: fixture.leafID),
+                    "Detach bookkeeping must still clear SessionSurfaceMap's entry for the given-up leaf")
+        XCTAssertEqual(fixture.controller.windowSession.groups.count, 1,
+                       "The group/tab must remain in place, the window must not be emptied or closed")
+    }
+
+    // MARK: - Window-lifetime redesign: isLastPaneEverywhere alone, not && closingWouldTerminate
+
+    /// `AppDelegate` subclass mirroring `LastPaneGiveUpMockAppDelegate`
+    /// above, distinguished only by also overriding `requestSave` to a
+    /// no-op: exercises the same last-pane-everywhere `.giveUp` branch,
+    /// but if the redesigned `isLastPaneEverywhere`-alone condition is
+    /// NOT yet implemented, `.giveUp` falls through to actually closing
+    /// the pane here, which reaches `closeSurfaceAndCleanUp`'s own
+    /// `requestSave()` call on its way out -- left unmocked, that would
+    /// reach the REAL `AppDelegate.requestSave()` and risk writing to
+    /// the developer's actual `~/.calyx` (confirmed by observation:
+    /// running this suite without this override left a real, if empty,
+    /// write behind). `removeWindowController` is a no-op for the same
+    /// test-process-safety reason as that sibling mock.
+    private final class ClosingWouldNotTerminateGiveUpMockAppDelegate: AppDelegate {
+        private(set) var confirmQuitCallCount = 0
+
+        override func requestSave() {}
+
+        override func confirmQuitIfNeeded() -> Bool {
+            confirmQuitCallCount += 1
+            return true
+        }
+
+        override func removeWindowController(_ controller: CalyxWindowController) {}
+    }
+
+    /// Window-lifetime redesign: the last-pane-everywhere `.giveUp`
+    /// branch must react to `isLastPaneEverywhere` ALONE -- another
+    /// window staying open elsewhere must not change the "leave the
+    /// pane, show the overlay" outcome for a pane that is nonetheless
+    /// the last one in ITS OWN window (this fixture's single window).
+    func test_giveUp_lastPaneInWindow_closingWouldNotTerminate_stillDoesNotCloseOrConsultConfirmQuitGate() {
+        let fixture = makeSinglePaneFixture()
+        let mock = ClosingWouldNotTerminateGiveUpMockAppDelegate()
+        let originalDelegate = NSApp.delegate
+        NSApp.delegate = mock
+        defer { NSApp.delegate = originalDelegate }
+
+        withExtendedLifetime(mock) {
+            fixture.controller.handleSessionReconnectDecision(surfaceID: fixture.leafID, decision: .giveUp)
+        }
+
+        XCTAssertEqual(mock.confirmQuitCallCount, 0,
+                       "The redesigned last-pane-everywhere .giveUp branch must never consult the " +
+                       "confirm-quit gate at all, no modal, since the pane isn't being closed -- even " +
+                       "when closingWouldTerminate is false")
+        XCTAssertEqual(fixture.tab.splitTree.allLeafIDs(), [fixture.leafID],
+                       "The pane must remain in the split tree even though another window staying open " +
+                       "means closingWouldTerminate is false for THIS window")
         XCTAssertNil(fixture.tab.sessionRefs[fixture.leafID],
                     "Detach bookkeeping must still clear tab.sessionRefs for the given-up leaf")
         XCTAssertNil(SessionSurfaceMap.shared.sessionID(for: fixture.leafID),
@@ -432,82 +490,6 @@ final class SessionReconnectGiveUpTests: XCTestCase {
     // the main run loop with a bounded deadline rather than assuming a
     // synchronous effect, since the fix is expected to make the drain
     // genuinely asynchronous.
-
-    /// `AppDelegate` subclass simulating a red-button/last-window close
-    /// that the user CANCELS, with a `.giveUp` decision arriving mid-modal
-    /// (e.g. from `SessionReconnectCoordinator`'s background `Task`):
-    /// the exact CONFIRMED collision in r5-verdicts.md V1's cancel-path
-    /// sub-claim. `confirmQuitIfNeeded` here stands in for the real
-    /// method's `isConfirmingQuit = true; alert.runModal(); isConfirmingQuit
-    /// = false` bracket (driven via the `_setConfirmingQuitForTesting` seam,
-    /// since a real blocking `NSAlert.runModal()` can't run in this test
-    /// host; same reasoning as F4's test above), firing the deferred
-    /// decision partway through, then returning `false` (Cancel) exactly
-    /// like `windowShouldClose`'s own cancel path expects.
-    private final class CancelPathReplayAppDelegate: AppDelegate {
-        weak var controller: CalyxWindowController?
-        var surfaceIDToDefer: UUID?
-
-        override func closingWouldTerminate(_ controller: CalyxWindowController) -> Bool { true }
-
-        override func confirmQuitIfNeeded(_ mode: ConfirmQuitMode = .killProcesses) -> Bool {
-            _setConfirmingQuitForTesting(true)
-            if let surfaceIDToDefer {
-                controller?.handleSessionReconnectDecision(surfaceID: surfaceIDToDefer, decision: .giveUp)
-            }
-            _setConfirmingQuitForTesting(false)
-            return false
-        }
-
-        override func removeWindowController(_ controller: CalyxWindowController) {}
-    }
-
-    /// R6-A item 6, first bullet (r5-verdicts.md V1 cancel-path): drives
-    /// the REAL `windowShouldClose(_:)`, which pre-populates
-    /// `closingTabIDs` with every tab in the window (F3) BEFORE calling
-    /// `confirmQuitIfNeeded`, our mock fires the deferred `.giveUp`
-    /// WHILE `closingTabIDs` still contains this tab (mid-modal), then
-    /// cancels. `windowShouldClose` only subtracts `closingTabIDs` AFTER
-    /// `confirmQuitIfNeeded` returns.
-    ///
-    /// Against the CURRENT code, the drain runs SYNCHRONOUSLY inside the
-    /// mock's `confirmQuitIfNeeded` (nested inside the `isConfirmingQuit
-    /// = false` assignment), i.e. BEFORE `windowShouldClose`'s own
-    /// `closingTabIDs.subtract` has run, so the replayed decision hits
-    /// `handleReconnectGiveUp`'s reentrancy guard (`closingTabIDs` still
-    /// contains this tab) and is silently dropped, never re-deferred.
-    /// The fixed (asynchronous) drain must instead run on a fresh
-    /// MainActor turn, after `windowShouldClose` has fully unwound and
-    /// removed this tab from `closingTabIDs`, so the replay finds the
-    /// guard clear and actually applies the decision.
-    func test_giveUp_deferredDuringWindowShouldCloseCancelPath_isAppliedAfterClosingTabIDsSubtract_notLost() throws {
-        let fixture = makeFixture()
-        let mock = CancelPathReplayAppDelegate()
-        mock.controller = fixture.controller
-        mock.surfaceIDToDefer = fixture.trackedLeafID
-        let window = try XCTUnwrap(fixture.controller.window)
-
-        let originalDelegate = NSApp.delegate
-        NSApp.delegate = mock
-        defer { NSApp.delegate = originalDelegate }
-
-        let shouldClose = withExtendedLifetime(mock) {
-            fixture.controller.windowShouldClose(window)
-        }
-        XCTAssertFalse(shouldClose, "Cancelling the confirm-quit prompt must return false")
-
-        pumpRunLoop(timeout: 1.0) {
-            !fixture.tab.splitTree.allLeafIDs().contains(fixture.trackedLeafID)
-        }
-
-        XCTAssertEqual(fixture.tab.splitTree.allLeafIDs(), [fixture.siblingLeafID],
-                       "A .giveUp decision deferred mid-modal during a CANCELLED close must still be " +
-                       "applied once windowShouldClose's own closingTabIDs.subtract has run, losing it " +
-                       "silently downgrades the pane's eventual keypress-close to kill semantics instead " +
-                       "of the intended detach (see r5-verdicts.md V1)")
-        XCTAssertNil(SessionSurfaceMap.shared.sessionID(for: fixture.trackedLeafID),
-                    "The eventually-applied decision must still run detach bookkeeping")
-    }
 
     /// R6-A item 3 (shutdown suppression, r5-verdicts.md V5): while the
     /// app is actually terminating (`AppDelegate.isApplicationTerminating`,

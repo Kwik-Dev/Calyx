@@ -16,7 +16,7 @@
 // to a later Green phase -- see
 // CalyxTests/Cockpit/CockpitAppAccessSeamTests.swift, which instead
 // drives the CalyxWindowController seams (performSplit,
-// resolveNewTabSpawnCwd, cockpitSendCommand) this type will eventually
+// normalizedCwdOverride, cockpitSendCommand) this type will eventually
 // call, since LiveCockpitAppAccess itself has no app to drive in this
 // unit-test host.
 

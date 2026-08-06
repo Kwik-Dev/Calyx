@@ -12,16 +12,15 @@
 //    calyx-session/crates/cli/src/cli.rs, which has no --id flag)
 //  - cwd containing a space, a single quote, and Japanese characters
 //    survives /bin/sh -c intact
-//  - `--name` appended when provided, omitted when nil
 //  - binaryPath itself containing a space is still exec'd correctly
 //  - sessionID itself must also survive /bin/sh -c intact, as defense
 //    in depth against a corrupted/malicious persisted
 //    SessionRef.sessionID reaching this function
 //  - A raw newline (`\n`) OR a CRLF pair (`\r\n`) embedded in
-//    cwd/name/sessionID must never be able to break out and inject a
+//    cwd/sessionID must never be able to break out and inject a
 //    second shell statement
 //
-//  The five "shape" tests (basic form, cwd escaping, name, binaryPath,
+//  The four "shape" tests (basic form, cwd escaping, binaryPath,
 //  sessionID metacharacters) verify behavior by actually running the
 //  synthesized command through a real `/bin/sh -c` and capturing the
 //  argv a stand-in dumper script receives in place of the real
@@ -152,43 +151,6 @@ final class SessionCommandSynthesizerTests: XCTestCase {
                        "/bin/sh -c parsing byte-for-byte, regardless of the escaping strategy used")
     }
 
-    // MARK: - name presence
-
-    func test_attachCommand_withName_appendsNameArgumentIntact() throws {
-        let name = "my session"
-        let binaryPath = uniqueTempPath("calyx-session-dumper")
-        let outputPath = uniqueTempPath("calyx-argv-capture")
-        defer {
-            try? FileManager.default.removeItem(atPath: binaryPath)
-            try? FileManager.default.removeItem(atPath: outputPath)
-        }
-        try makeArgvDumperScript(at: binaryPath, outputPath: outputPath)
-
-        let command = SessionCommandSynthesizer.attachCommand(
-            binaryPath: binaryPath, sessionID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", cwd: "/Users/dev/repo", name: name
-        )
-        let argv = try runAndCaptureArgv(command, outputPath: outputPath)
-        let expectedRoot = SessionRootResolver().resolve()
-
-        XCTAssertEqual(
-            argv,
-            ["--runtime-dir", expectedRoot + "/.calyx/run", "--state-dir", expectedRoot + "/.calyx/state",
-             "attach", "01ARZ3NDEKTSV4RRFFQ69G5FAV", "--create", "--cwd", "/Users/dev/repo", "--name", name],
-            "A non-nil name must append --name <name> at the end, surviving /bin/sh -c intact"
-        )
-    }
-
-    func test_attachCommand_withoutName_omitsNameFlagEntirely() {
-        let command = SessionCommandSynthesizer.attachCommand(
-            binaryPath: "/usr/local/bin/calyx-session",
-            sessionID: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-            cwd: "/Users/dev/repo",
-            name: nil
-        )
-
-        XCTAssertFalse(command.contains("--name"), "A nil name must not add a --name flag at all")
-    }
-
     // MARK: - binaryPath
 
     func test_attachCommand_binaryPathWithSpace_isInvokedCorrectly() throws {
@@ -253,7 +215,7 @@ final class SessionCommandSynthesizerTests: XCTestCase {
     // MARK: - Newline / CRLF command-injection regression (final review must-fix)
     //
     // ShellEscape.escape's special-character set has no newline/CR, so a
-    // raw newline in cwd/name/sessionID can pass straight through into
+    // raw newline in cwd/sessionID can pass straight through into
     // the command handed to `/bin/sh -c`, where it acts as a statement
     // separator exactly like `;` does — a structural command-injection
     // gap. Verified by actually running the synthesized command through
@@ -267,7 +229,7 @@ final class SessionCommandSynthesizerTests: XCTestCase {
     // The injected payload is a bare path to a small executable script
     // (letters/digits/`/`/`-`/`_`/`.` only), not `echo ...`/`>marker`:
     // ShellEscape.escape's special set includes space AND `<`/`>`, and
-    // since escaping applies to the WHOLE cwd/name/sessionID string —
+    // since escaping applies to the WHOLE cwd/sessionID string —
     // injected payload included — anything using those characters gets
     // ITS OWN escaping applied too (`echo PWNED` -> `echo\ PWNED`,
     // `>marker` -> `\>marker`), harmlessly neutralizing the payload
@@ -289,11 +251,10 @@ final class SessionCommandSynthesizerTests: XCTestCase {
     // whatever the plain (non-newline-aware) escaping path does.
 
     private enum InjectionField: CustomStringConvertible {
-        case cwd, name, sessionID
+        case cwd, sessionID
         var description: String {
             switch self {
             case .cwd: return "cwd"
-            case .name: return "name"
             case .sessionID: return "sessionID"
             }
         }
@@ -332,13 +293,6 @@ final class SessionCommandSynthesizerTests: XCTestCase {
                 sessionID: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
                 cwd: "/tmp/foo\(separator)\(script)"
             )
-        case .name:
-            command = SessionCommandSynthesizer.attachCommand(
-                binaryPath: "/usr/local/bin/calyx-session",
-                sessionID: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-                cwd: "/Users/dev/repo",
-                name: "my-session\(separator)\(script)"
-            )
         case .sessionID:
             command = SessionCommandSynthesizer.attachCommand(
                 binaryPath: "/usr/local/bin/calyx-session",
@@ -360,20 +314,12 @@ final class SessionCommandSynthesizerTests: XCTestCase {
         try assertCannotInject(separator: "\n", into: .cwd)
     }
 
-    func test_attachCommand_nameWithNewline_cannotInjectASecondShellStatement() throws {
-        try assertCannotInject(separator: "\n", into: .name)
-    }
-
     func test_attachCommand_sessionIDWithNewline_cannotInjectASecondShellStatement() throws {
         try assertCannotInject(separator: "\n", into: .sessionID)
     }
 
     func test_attachCommand_cwdWithCRLF_cannotInjectASecondShellStatement() throws {
         try assertCannotInject(separator: "\r\n", into: .cwd)
-    }
-
-    func test_attachCommand_nameWithCRLF_cannotInjectASecondShellStatement() throws {
-        try assertCannotInject(separator: "\r\n", into: .name)
     }
 
     func test_attachCommand_sessionIDWithCRLF_cannotInjectASecondShellStatement() throws {
@@ -425,13 +371,6 @@ final class SessionCommandSynthesizerTests: XCTestCase {
                 sessionID: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
                 cwd: "/tmp/x\(payload)"
             )
-        case .name:
-            command = SessionCommandSynthesizer.attachCommand(
-                binaryPath: "/usr/local/bin/calyx-session",
-                sessionID: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-                cwd: "/Users/dev/repo",
-                name: "my-session\(payload)"
-            )
         case .sessionID:
             command = SessionCommandSynthesizer.attachCommand(
                 binaryPath: "/usr/local/bin/calyx-session",
@@ -451,10 +390,6 @@ final class SessionCommandSynthesizerTests: XCTestCase {
 
     func test_attachCommand_cwdWithApostropheFollowedByCombiningCharacter_cannotEscapeQuoting() throws {
         try assertApostropheFollowedByCombiningCharacterCannotEscapeQuote(into: .cwd)
-    }
-
-    func test_attachCommand_nameWithApostropheFollowedByCombiningCharacter_cannotEscapeQuoting() throws {
-        try assertApostropheFollowedByCombiningCharacterCannotEscapeQuote(into: .name)
     }
 
     func test_attachCommand_sessionIDWithApostropheFollowedByCombiningCharacter_cannotEscapeQuoting() throws {

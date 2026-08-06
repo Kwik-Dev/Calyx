@@ -13,45 +13,25 @@
 //
 //  FIX CONTRACT: createManagedSurface gains a `host: String? = nil`
 //  parameter (default preserves every one of its 4 existing call sites --
-//  setupTerminalSurface, createNewTab, createNewGroup, and the split
-//  handler -- unchanged, all still local). Passes `host` into the
+//  setupTerminalSurface, performCreateNewTab, performCreateNewGroup, and
+//  performSplit -- unchanged, all still local). Passes `host` into the
 //  SessionSpawnContext it builds, and reads the plan's own `host` (not
 //  its own parameter directly -- see SessionSpawnPlannerHostPropagationTests,
 //  contract 3a, for why the plan itself is the source of truth) when
 //  constructing SessionRef.
 //
-//  PROPOSED FIX (createManagedSurface):
-//
-//    private func createManagedSurface(
-//        tab: Tab, app: ghostty_app_t, config: ghostty_surface_config_s,
-//        passthroughPwd: String?, spawnCwd: String, inheritedCwd: String? = nil,
-//        origin: SessionSpawnOrigin, host: String? = nil
-//    ) -> UUID? {
-//        let context = SessionSpawnContext(cwd: spawnCwd, inheritedCwd: inheritedCwd, host: host, origin: origin)
-//        switch SessionSpawnPlanner.plan(for: context) {
-//        case .passthrough:
-//            #if DEBUG
-//            if let hook = _createManagedSurfaceHookForTesting { return hook() }
-//            #endif
-//            return tab.registry.createSurface(app: app, config: config, pwd: passthroughPwd)
-//        case .persistent(let sessionID, let command, let planHost):
-//            let ghosttyPwd = inheritedCwd ?? spawnCwd
-//            #if DEBUG
-//            if let hook = _createManagedSurfaceHookForTesting {
-//                guard let surfaceID = hook() else { return nil }
-//                tab.sessionRefs[surfaceID] = SessionRef(sessionID: sessionID, host: planHost)
-//                SessionSurfaceMap.shared.register(sessionID: sessionID, surfaceID: surfaceID)
-//                return surfaceID
-//            }
-//            #endif
-//            guard let surfaceID = tab.registry.createSurface(app: app, config: config, pwd: ghosttyPwd, command: command) else {
-//                return nil
-//            }
-//            tab.sessionRefs[surfaceID] = SessionRef(sessionID: sessionID, host: planHost)
-//            SessionSurfaceMap.shared.register(sessionID: sessionID, surfaceID: surfaceID)
-//            return surfaceID
-//        }
-//    }
+//  THE FIX (createManagedSurface): threads `host` into the
+//  `SessionSpawnContext` it builds, and reads the plan's OWN `host` (not
+//  this parameter directly) when constructing the `SessionRef` it stores
+//  in `tab.sessionRefs` -- see SessionSpawnPlannerHostPropagationTests,
+//  contract 3a, for why the plan itself (not the caller's raw `host`
+//  argument) is the source of truth. This file's own contract: the
+//  stored `SessionRef` carries exactly the plan's `host`, whichever
+//  branch of `createManagedSurface` reaches it. (Deliberately NOT a
+//  copy of the method body here -- a verbatim body copy in a header is
+//  a doc-rot generator once the body's own parameters change, as issue
+//  #43's cwd-parameter collapse subsequently proved; read the method's
+//  own doc comment for its current shape.)
 //
 //  NOT `private` any more (mirrors closeAllTabsInGroup(id:)/
 //  processChildExited/handleSessionReconnectDecision's own identical
@@ -145,7 +125,7 @@ final class CalyxWindowControllerCreateManagedSurfaceRemoteHostTests: XCTestCase
 
         let surfaceID = controller.createManagedSurface(
             tab: tab, app: dummyApp, config: GhosttyFFI.surfaceConfigNew(),
-            passthroughPwd: nil, spawnCwd: "/home/dev/repo", origin: .tab, host: "devbox.example.com"
+            explicitCwd: nil, sessionFallbackCwd: "/home/dev/repo", origin: .tab, host: "devbox.example.com"
         )
         defer {
             if let sessionID = surfaceID.flatMap({ tab.sessionRefs[$0]?.sessionID }) {
@@ -168,7 +148,7 @@ final class CalyxWindowControllerCreateManagedSurfaceRemoteHostTests: XCTestCase
 
         let surfaceID = controller.createManagedSurface(
             tab: tab, app: dummyApp, config: GhosttyFFI.surfaceConfigNew(),
-            passthroughPwd: nil, spawnCwd: "/home/dev/repo", origin: .tab
+            explicitCwd: nil, sessionFallbackCwd: "/home/dev/repo", origin: .tab
         )
         defer {
             if let sessionID = surfaceID.flatMap({ tab.sessionRefs[$0]?.sessionID }) {

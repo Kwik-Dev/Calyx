@@ -35,17 +35,15 @@
 //      happen to also have the LOCAL binary installed.
 //    - The command must be built via
 //      `SessionCommandSynthesizer.remoteAttachCommand(host:sessionID:cwd:)`
-//      instead of `attachCommand(binaryPath:sessionID:cwd:name:)`.
+//      instead of `attachCommand(binaryPath:sessionID:cwd:)`.
 //      `remoteAttachCommand` never returns nil (SSHBinaryResolver always
 //      resolves to a path, see its own doc comment), so a remote
 //      `.persistent` plan can never itself fail to produce a command the
 //      way a local one degrading to `.passthrough` can.
-//    - The fresh-ULID-per-call and cwd-priority
-//      (`inheritedCwd ?? cwd ?? home`) contracts
-//      SessionSpawnPlannerTests already covers for the local path apply
-//      identically to the remote path -- no new sessionID-generation or
-//      cwd-selection logic, only which command-synthesis function and
-//      which gate are used.
+//    - The fresh-ULID-per-call contract SessionSpawnPlannerTests already
+//      covers for the local path applies identically to the remote path
+//      -- no new sessionID-generation logic, only which command-
+//      synthesis function and which gate are used.
 //    - `SessionSpawnOrigin.quickTerminal`'s existing exclusion is
 //      untouched: it must still win over a remote host being set, for
 //      the exact same reason it wins over the feature being enabled at
@@ -150,21 +148,5 @@ final class SessionSpawnPlannerRemoteHostTests: XCTestCase {
             return
         }
         XCTAssertNotEqual(firstID, secondID, "Each new remote surface must get its own freshly generated session ID")
-    }
-
-    func test_plan_remoteHostAndInheritedCwdBothSet_inheritedCwdTakesPriority() {
-        SessionSettings.persistentSessionsEnabled = true
-        let context = SessionSpawnContext(
-            cwd: "/home/dev/stale-repo", inheritedCwd: "/home/dev/split-origin", host: "devbox.example.com", origin: .tab
-        )
-
-        guard case .persistent(_, let command, _) = SessionSpawnPlanner.plan(for: context, resolver: FakeBinaryResolver(path: nil)) else {
-            XCTFail("A remote-host context must produce .persistent")
-            return
-        }
-        XCTAssertTrue(command.contains("/home/dev/split-origin"),
-                     "inheritedCwd must take priority over the tab's own (possibly stale) cwd, matching the " +
-                     "existing local-path cwd-priority contract, unchanged for the remote path")
-        XCTAssertFalse(command.contains("/home/dev/stale-repo"))
     }
 }

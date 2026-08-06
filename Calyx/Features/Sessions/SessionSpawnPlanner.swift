@@ -26,16 +26,15 @@ enum SessionSpawnOrigin: Sendable, Equatable {
 }
 
 struct SessionSpawnContext: Sendable, Equatable {
-    /// The tab's own last-known working directory (`Tab.pwd` /
-    /// `TabSnapshot.pwd`), `nil` if never set.
+    /// The resolved spawn cwd handed down by `CalyxWindowController
+    /// .createManagedSurface` — already that method's own `explicitCwd
+    /// ?? sessionFallbackCwd` (see its doc comment for why cwd
+    /// resolution collapsed to those two parameters), so `plan(for:)`
+    /// has exactly one cwd value to consider, never a priority to
+    /// adjudicate between two. `nil` only when the caller resolved
+    /// neither and is relying on this type's own `?? NSHomeDirectory()`
+    /// fallback below.
     let cwd: String?
-    /// The cwd inherited from the pane a new split was created from
-    /// (e.g. the origin pane's live pwd at split time), which takes
-    /// priority over `cwd` when present — a new split should land in
-    /// the directory it was split from, even if the tab's own
-    /// last-persisted pwd is stale.
-    let inheritedCwd: String?
-    let name: String?
     /// The remote ssh host to spawn this session against, `nil` for a
     /// local session (every existing call site, unchanged). Non-nil
     /// makes `plan(for:)` synthesize via
@@ -45,10 +44,8 @@ struct SessionSpawnContext: Sendable, Equatable {
     let host: String?
     let origin: SessionSpawnOrigin
 
-    init(cwd: String? = nil, inheritedCwd: String? = nil, name: String? = nil, host: String? = nil, origin: SessionSpawnOrigin = .tab) {
+    init(cwd: String? = nil, host: String? = nil, origin: SessionSpawnOrigin = .tab) {
         self.cwd = cwd
-        self.inheritedCwd = inheritedCwd
-        self.name = name
         self.host = host
         self.origin = origin
     }
@@ -77,10 +74,14 @@ enum SessionSpawnPlanner {
     /// must not fall back to a hardcoded `"calyx-session"` literal that
     /// assumes `PATH` availability -- see `SessionBinaryResolver`'s doc
     /// comment). Otherwise generates a fresh ULID session ID and the
-    /// matching attach command, using `inheritedCwd ?? cwd ?? home` as
-    /// the effective working directory (a new split should land in the
-    /// directory it was split from, even when the tab's own
-    /// last-persisted `cwd` is stale or absent).
+    /// matching attach command, using `cwd ?? home` as the effective
+    /// working directory -- `context.cwd` already IS the caller's fully
+    /// resolved spawn cwd (see `SessionSpawnContext.cwd`'s doc comment),
+    /// so this planner has no priority left to adjudicate between two
+    /// candidates; landing a new split/tab in the right directory (e.g.
+    /// the pane it was split from) is entirely the CALLER's job now
+    /// (`CalyxWindowController.createManagedSurface`'s
+    /// `explicitCwd`/`sessionFallbackCwd`).
     ///
     /// P5 (remote sessions): `context.host != nil` skips the LOCAL
     /// binary-resolvability guard entirely -- a remote session's daemon
@@ -92,22 +93,20 @@ enum SessionSpawnPlanner {
     /// (`SSHBinaryResolver` always resolves to a path, see its own doc
     /// comment), so a remote `.persistent` plan can never itself fail to
     /// produce a command the way a local one degrading to `.passthrough`
-    /// can. The fresh-ULID and cwd-priority contracts apply identically
-    /// to both paths.
+    /// can. The fresh-ULID contract applies identically to both paths.
     static func plan(for context: SessionSpawnContext, resolver: SessionBinaryResolverProtocol = SessionBinaryResolver()) -> SpawnPlan {
         guard SessionSettings.persistentSessionsEnabled, context.origin != .quickTerminal else {
             return .passthrough
         }
 
         let sessionID = ULID.generate()
-        let effectiveCwd = context.inheritedCwd ?? context.cwd ?? NSHomeDirectory()
+        let effectiveCwd = context.cwd ?? NSHomeDirectory()
 
         if let host = context.host {
             let command = SessionCommandSynthesizer.remoteAttachCommand(
                 host: host,
                 sessionID: sessionID,
-                cwd: effectiveCwd,
-                name: context.name
+                cwd: effectiveCwd
             )
             return .persistent(sessionID: sessionID, command: command, host: host)
         }
@@ -118,8 +117,7 @@ enum SessionSpawnPlanner {
         let command = SessionCommandSynthesizer.attachCommand(
             binaryPath: binaryPath,
             sessionID: sessionID,
-            cwd: effectiveCwd,
-            name: context.name
+            cwd: effectiveCwd
         )
         return .persistent(sessionID: sessionID, command: command, host: nil)
     }

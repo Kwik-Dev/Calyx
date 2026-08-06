@@ -31,16 +31,14 @@
 //  THE FIX must gate this save on the SAME canonical "is the app
 //  actually terminating" discriminator windowWillClose's own destroy
 //  loop already uses two lines below it (`isAppActuallyTerminating`, a
-//  thin forward to `AppDelegate.isTerminating`, R8-C's doc comment) --
-//  NOT on the per-window `isClosingForShutdown` flag alone:
-//  `closeLastWindow` sets that flag even for a non-terminating close (a
-//  quick terminal keeps the app alive, see that flag's own doc
-//  comment), so gating on it directly would incorrectly skip the save
-//  for that legitimate case too -- exactly the discriminator-mismatch
-//  class round 6-8's fix rounds already fought (see
-//  isAppActuallyTerminating's own doc comment). Test 2 below is the
-//  trap that catches a fix which gates on isClosingForShutdown instead
-//  of isAppActuallyTerminating.
+//  thin forward to `AppDelegate.isApplicationTerminating`, that
+//  property's own doc comment) -- NOT on the per-window
+//  `isClosingForShutdown` flag alone: `closeLastWindow` sets that flag
+//  even for a non-terminating close (a quick terminal keeps the app
+//  alive, see that flag's own doc comment), so gating on it directly
+//  would incorrectly skip the save for that legitimate case too --
+//  exactly the discriminator-mismatch class round 6-8's fix rounds
+//  already fought (see isAppActuallyTerminating's own doc comment).
 //
 //  Drives windowWillClose(_:) directly with a bare Notification, mirrors
 //  CalyxWindowControllerNonLastWindowCloseTests' established pattern
@@ -50,22 +48,33 @@
 //  CalyxWindowControllerCloseArmsTests' makeSingleTabFixture), NSApp
 //  .delegate swapped for a removeWindowController-no-op AppDelegate
 //  subclass (ConfirmQuitMockAppDelegate) for test-process safety, with
-//  isClosingLastManagedWindow and saveImmediately further overridden so
-//  this file can force the "last managed window" branch without
-//  touching AppDelegate's private windowControllers array, and observe
-//  the save call without hitting the real SessionPersistenceActor.shared
-//  (which would write to the developer's actual ~/.calyx).
+//  saveImmediately further overridden to observe the save call without
+//  hitting the real SessionPersistenceActor.shared (which would write to
+//  the developer's actual ~/.calyx).
+//
+//  Window-lifetime redesign (see AppDelegateLastWindowClosedDoesNotTerminateTests):
+//  the fix this file originally drove moved AGAIN, from windowWillClose's
+//  own gated save into AppDelegate.removeWindowController, once the
+//  controller is actually removed from windowControllers -- windowWillClose
+//  must now never call saveImmediately() at all, in any scenario. The
+//  narrative above is kept as the root-cause history that motivated
+//  gating on isAppActuallyTerminating in the first place; only the save
+//  call's OWN location moved, not that underlying discriminator lesson.
 //
 //  Coverage:
-//  - genuinely terminating (isApplicationTerminating true): the
-//    windowWillClose save must be SKIPPED entirely (RED: today it
-//    always fires)
+//  - genuinely terminating (isApplicationTerminating true, with
+//    isClosingForShutdown also true -- the real state every controller
+//    is in by then, see markAllControllersClosingForShutdown): the
+//    windowWillClose save must be SKIPPED entirely
 //  - NOT terminating, but isClosingForShutdown is (unconditionally, per
 //    closeLastWindow) true anyway (quick-terminal-alive case): the save
-//    must still fire, exactly as today (regression guard AND the
-//    discriminator trap described above)
-//  - not the last managed window: the save must never fire (regardless
-//    of termination state) -- unaffected by this fix, sanity guard
+//    must ALSO be skipped now (window-lifetime redesign; this used to be
+//    the opposite -- a regression guard AND discriminator trap for the
+//    windowWillClose-based fix -- see the superseded test this one
+//    replaced, deleted along with this comment's own update)
+//  - an ordinary close (neither terminating nor isClosingForShutdown
+//    set): sanity guard, unaffected by this fix -- the save must never
+//    fire in this, the most common, case either
 //
 
 import XCTest
@@ -101,21 +110,11 @@ final class CalyxWindowControllerLastWindowCloseSaveTests: XCTestCase {
 
     // MARK: - Mock
 
-    /// Forces `isClosingLastManagedWindow` to a test-controlled value
-    /// (the real implementation reads AppDelegate's private
-    /// `windowControllers`, which this fixture's contrived controller is
-    /// deliberately never added to, mirroring
-    /// CalyxWindowControllerNonLastWindowCloseTests' own reasoning), and
-    /// spies on `saveImmediately()` WITHOUT calling through to the real
+    /// Spies on `saveImmediately()` WITHOUT calling through to the real
     /// implementation, which would hit SessionPersistenceActor.shared
     /// and write to the developer's actual ~/.calyx.
     private final class SaveOnCloseSpyAppDelegate: ConfirmQuitMockAppDelegate {
-        var isClosingLastManagedWindowOverride = true
         private(set) var saveImmediatelyCallCount = 0
-
-        override func isClosingLastManagedWindow(_ controller: CalyxWindowController) -> Bool {
-            isClosingLastManagedWindowOverride
-        }
 
         override func saveImmediately() {
             saveImmediatelyCallCount += 1
@@ -133,15 +132,17 @@ final class CalyxWindowControllerLastWindowCloseSaveTests: XCTestCase {
 
     // MARK: - Tests
 
-    /// PRIMARY RED-proving assertion: against the CURRENT code,
-    /// windowWillClose's save-gate consults only
-    /// isClosingLastManagedWindow, never whether the app is actually
-    /// terminating, so this call fires even while the app IS genuinely
-    /// quitting.
+    /// While the app is genuinely terminating -- `isApplicationTerminating`
+    /// true, with `isClosingForShutdown` also true, the real state
+    /// `markAllControllersClosingForShutdown` puts every controller in
+    /// before termination begins (see that method's own doc comment) --
+    /// `windowWillClose` must not call `saveImmediately()` at all: the
+    /// last periodic save already on disk must survive untouched, so the
+    /// next launch can reattach every detached session instead of
+    /// creating fresh ones.
     func test_windowWillClose_terminating_doesNotSaveImmediately() {
         let fixture = makeFixture()
         let mock = SaveOnCloseSpyAppDelegate()
-        mock.isClosingLastManagedWindowOverride = true
         mock._setApplicationTerminatingForTesting(true)
         fixture.controller.isClosingForShutdown = true
 
@@ -156,49 +157,61 @@ final class CalyxWindowControllerLastWindowCloseSaveTests: XCTestCase {
                       "creating fresh ones")
     }
 
-    /// Discriminator trap: `isClosingForShutdown` is unconditionally set
-    /// true by `closeLastWindow` even when the app is NOT terminating (a
-    /// quick terminal keeps it alive, see that flag's own doc comment).
-    /// A fix that naively gates the save on `isClosingForShutdown`
-    /// instead of the canonical `isAppActuallyTerminating` would
-    /// incorrectly skip this legitimate, non-terminating save too. This
-    /// currently passes against BOTH the buggy code (which never checks
-    /// either flag) and any CORRECT fix; it exists to catch an
-    /// INCORRECT fix, not to prove today's code is broken.
-    func test_windowWillClose_notTerminatingButClosingForShutdownSet_stillSavesImmediately() {
+    /// Window-lifetime redesign: the last-window save this file's header
+    /// describes has moved OUT of `windowWillClose` entirely, into
+    /// `AppDelegate.removeWindowController` instead, once the controller
+    /// is actually removed from the (now-empty) `windowControllers` list
+    /// (see `AppDelegateLastWindowClosedDoesNotTerminateTests`).
+    /// `windowWillClose` must never call `saveImmediately()` at all, in
+    /// ANY scenario -- including "not terminating, isClosingForShutdown
+    /// set" (a quick terminal keeps the app alive, see that flag's own
+    /// doc comment), which a since-deleted sibling test used to protect
+    /// with the OPPOSITE expectation (count 1) before this move.
+    func test_windowWillClose_neverCallsSaveImmediately_savingMovesToRemoveWindowController() {
         let fixture = makeFixture()
         let mock = SaveOnCloseSpyAppDelegate()
-        mock.isClosingLastManagedWindowOverride = true
         fixture.controller.isClosingForShutdown = true
 
         XCTAssertFalse(mock.isApplicationTerminating, "Precondition: the app is not terminating in this scenario")
-        XCTAssertFalse(mock.isTerminationConfirmed, "Precondition: termination has not been confirmed either")
-
-        withMockAppDelegate(mock) {
-            fixture.controller.windowWillClose(Notification(name: NSWindow.willCloseNotification))
-        }
-
-        XCTAssertEqual(mock.saveImmediatelyCallCount, 1,
-                      "Closing the last managed window while the app stays alive (e.g. a quick terminal " +
-                      "keeps it running) must still save the reduced (now window-less) state exactly as " +
-                      "today, even though isClosingForShutdown happens to be true")
-    }
-
-    /// Sanity guard: unaffected by this fix -- a close that is not the
-    /// last managed window must never trigger this save, regardless of
-    /// termination state.
-    func test_windowWillClose_notLastManagedWindow_neverSavesImmediately() {
-        let fixture = makeFixture()
-        let mock = SaveOnCloseSpyAppDelegate()
-        mock.isClosingLastManagedWindowOverride = false
-        mock._setApplicationTerminatingForTesting(true)
 
         withMockAppDelegate(mock) {
             fixture.controller.windowWillClose(Notification(name: NSWindow.willCloseNotification))
         }
 
         XCTAssertEqual(mock.saveImmediatelyCallCount, 0,
-                      "A close that is not the last managed window must never trigger windowWillClose's " +
-                      "save-on-last-window path")
+                      "windowWillClose must never call saveImmediately directly any more -- saving the " +
+                      "now-window-less state is AppDelegate.removeWindowController's job once this " +
+                      "controller is actually removed from windowControllers, not windowWillClose's")
+    }
+
+    /// Sanity guard: an ordinary window close -- not terminating, and
+    /// `isClosingForShutdown` left at its natural default (`false`) --
+    /// must never trigger this save either. This replaces what used to be
+    /// a "not the last managed window" scenario, driven by forcing
+    /// `AppDelegate.isClosingLastManagedWindow` to return false: that
+    /// mechanism (and the base method it overrode) is gone along with
+    /// `windowWillClose`'s own last-window save gate (see
+    /// `test_windowWillClose_neverCallsSaveImmediately_savingMovesToRemoveWindowController`),
+    /// so it is no longer a state this fixture can distinguish. This is
+    /// the one (isTerminating, isClosingForShutdown) corner the two tests
+    /// above don't already cover, and the only one reachable in
+    /// practice -- `markAllControllersClosingForShutdown` always sets
+    /// every controller's `isClosingForShutdown` before
+    /// `isApplicationTerminating` flips true, so "terminating but not
+    /// closing-for-shutdown" is not a real state.
+    func test_windowWillClose_ordinaryClose_neverSavesImmediately() {
+        let fixture = makeFixture()
+        let mock = SaveOnCloseSpyAppDelegate()
+
+        XCTAssertFalse(mock.isApplicationTerminating, "Precondition: the app is not terminating in this scenario")
+        XCTAssertFalse(fixture.controller.isClosingForShutdown, "Precondition: this controller is not closing for shutdown in this scenario")
+
+        withMockAppDelegate(mock) {
+            fixture.controller.windowWillClose(Notification(name: NSWindow.willCloseNotification))
+        }
+
+        XCTAssertEqual(mock.saveImmediatelyCallCount, 0,
+                      "An ordinary window close -- not terminating, not closing for shutdown -- must never " +
+                      "trigger windowWillClose's save path either")
     }
 }

@@ -5,13 +5,14 @@
 //  TDD Red Phase for the CalyxWindowController seams Cockpit's
 //  LiveCockpitAppAccess (Calyx/Features/Cockpit/CockpitAppAccess.swift)
 //  will call: performSplit(surfaceID:direction:app:) (extracted from
-//  handleNewSplitNotification) and resolveNewTabSpawnCwd(override:)
-//  (factored out of createNewTab's inline spawnCwd expression, backing
-//  its future spawnCwdOverride parameter). LiveCockpitAppAccess itself
-//  is untested here -- see CockpitAppAccess.swift's header for why.
+//  handleNewSplitNotification) and
+//  CalyxWindowController.normalizedCwdOverride(_:) (factored out of
+//  createNewTab's inline spawnCwd expression, backing its future
+//  spawnCwdOverride parameter). LiveCockpitAppAccess itself is untested
+//  here -- see CockpitAppAccess.swift's header for why.
 //
-//  DEVIATIONS FROM THE ORIGINAL P3 SPEC (both forced by this test
-//  host's existing constraints, already documented in
+//  DEVIATIONS FROM THE ORIGINAL P3 SPEC (forced by this test host's
+//  existing constraints, already documented in
 //  CalyxWindowControllerCreateManagedSurfaceRemoteHostTests'/
 //  AppDelegateSpawnRemoteSessionTabWindowLookupTests' own headers --
 //  not new discoveries):
@@ -20,15 +21,25 @@
 //    GhosttyAppController.shared.app internally -- that global is nil
 //    in this test host, so an internally-resolving performSplit could
 //    never be driven by a unit test even once correctly implemented.
-//  - createNewTab's spawnCwd override is exercised through a new,
-//    directly-testable pure helper, resolveNewTabSpawnCwd(override:),
-//    rather than driving createNewTab(...) itself end-to-end --
-//    createNewTab's own pre-existing `guard let app =
-//    GhosttyAppController.shared.app ... else { return }` (same nil
-//    constraint) would make the whole call silently no-op before ever
-//    reaching the spawnCwd computation, exactly the trap
-//    AppDelegateSpawnRemoteSessionTabWindowLookupTests' own header
-//    already called out for this identical guard.
+//
+//  Issue #43 fix (round, item 4): `resolveNewTabSpawnCwd(override:)`
+//  became `static func normalizedCwdOverride(_ override: String?) ->
+//  String?` -- it no longer reads `activeTab?.pwd` at all (that
+//  fallback moved to the caller's own `sessionFallbackCwd` argument,
+//  see `createManagedSurface`'s doc comment), so it is now a pure,
+//  static, directly-testable helper with nothing left to fake an active
+//  tab for. This supersedes the deviation this section used to
+//  document: this file used to route around `createNewTab`'s own `guard
+//  let app = GhosttyAppController.shared.app ... else { return }` (nil
+//  in this test host) by testing `resolveNewTabSpawnCwd` in isolation
+//  instead of driving `createNewTab` end-to-end -- Stage B's
+//  `performCreateNewTab(app:...)` seam falsified the premise that
+//  `createNewTab` can't be driven end-to-end at all (it takes `app`
+//  directly, sidestepping that same guard); `CockpitTabCreateCwdWiringTests`
+//  now drives the full override-to-spawned-shell path through it. This
+//  file keeps `normalizedCwdOverride(_:)`'s own unit tests only because
+//  it remains a distinct, independently-testable pure function, not
+//  because `createNewTab` remains undrivable.
 //
 //  Coverage:
 //  - performSplit(direction: .horizontal) inserts a new split node
@@ -42,16 +53,17 @@
 //    forced to fail here
 //  - performSplit(direction: .vertical) does the same shape with a
 //    vertical split
-//  - resolveNewTabSpawnCwd(override:) with a non-nil override returns
-//    exactly that override, taking priority over the active tab's own
-//    pwd; with a nil override, returns the active tab's own pwd
-//    unchanged (regression pin for createNewTab's pre-Cockpit
-//    behavior, folded into the same test as the override case for the
-//    same "stub coincidentally already correct" reason as above); an
-//    empty or whitespace-only override is treated the same as nil
-//    (P3 review F5); a newline-only override also falls back, and a
-//    leading/trailing-whitespace-or-newline override is trimmed
-//    before use (P3 final gate W2)
+//  - CalyxWindowController.normalizedCwdOverride(_:): a non-nil,
+//    non-blank override returns the trimmed-and-tilde-expanded path;
+//    `nil`, an empty string, a whitespace-only string, and a
+//    newline-only string all return `nil` (P3 review F5; P3 final gate
+//    W2 for the newline case) -- NOT the active tab's own pwd any more,
+//    since this helper is `static` and reads no instance state. The
+//    pre-fix "with no override, the active tab's own pwd must still be
+//    used" pin no longer lives here: it moved to
+//    `CockpitTabCreateCwdWiringTests` (cases b and e), which drives the
+//    actual fallback (`sessionFallbackCwd`/`livePaneCwd`) at the
+//    `createManagedSurface` level instead.
 //  - cockpitExecutePaletteCommand(id:) (P3 review F1): an unavailable
 //    command is found but not executed (handler never called); an
 //    available command is executed and its handler called exactly
@@ -140,25 +152,25 @@ final class CockpitAppAccessSeamTests: XCTestCase {
         }
     }
 
-    // MARK: - resolveNewTabSpawnCwd
+    // MARK: - normalizedCwdOverride
 
-    func test_resolveNewTabSpawnCwd_overrideTakesPriority_defaultPathUnchanged() {
-        let (controller, tab) = makeController()
-        tab.pwd = "/Users/dev/existing-tab-pwd"
+    func test_normalizedCwdOverride_nonBlankReturnsNormalizedPath_blankOrNilReturnsNil() {
+        XCTAssertNil(CalyxWindowController.normalizedCwdOverride(nil),
+                     "regression pin: with no override, this must return nil -- the active tab's own pwd " +
+                     "fallback moved to the caller's own sessionFallbackCwd argument (see " +
+                     "CockpitTabCreateCwdWiringTests cases b and e)")
 
-        XCTAssertEqual(controller.resolveNewTabSpawnCwd(override: nil), "/Users/dev/existing-tab-pwd",
-                       "regression pin: with no override, the active tab's own pwd must still be used, unchanged")
-
-        XCTAssertEqual(controller.resolveNewTabSpawnCwd(override: "/Users/dev/custom-cwd"), "/Users/dev/custom-cwd",
-                       "an explicit Cockpit-supplied cwd override must take priority over the active tab's own pwd")
+        XCTAssertEqual(CalyxWindowController.normalizedCwdOverride("/Users/dev/custom-cwd"), "/Users/dev/custom-cwd",
+                       "an explicit Cockpit-supplied cwd override must be returned unchanged")
 
         // P3 review (F5): an empty or whitespace-only override must fall
-        // back exactly like `nil` -- an MCP caller passing "" almost
-        // certainly means "no override", not "spawn at the empty path".
-        XCTAssertEqual(controller.resolveNewTabSpawnCwd(override: ""), "/Users/dev/existing-tab-pwd",
-                       "an empty-string override must be treated the same as no override")
-        XCTAssertEqual(controller.resolveNewTabSpawnCwd(override: "   "), "/Users/dev/existing-tab-pwd",
-                       "a whitespace-only override must be treated the same as no override")
+        // back to nil exactly like a nil override -- an MCP caller
+        // passing "" almost certainly means "no override", not "spawn
+        // at the empty path".
+        XCTAssertNil(CalyxWindowController.normalizedCwdOverride(""),
+                     "an empty-string override must be treated the same as no override")
+        XCTAssertNil(CalyxWindowController.normalizedCwdOverride("   "),
+                     "a whitespace-only override must be treated the same as no override")
 
         // P3 final gate (W2): .whitespaces alone doesn't cover newlines
         // -- a newline-only override must ALSO fall back, and a
@@ -166,9 +178,9 @@ final class CockpitAppAccessSeamTests: XCTestCase {
         // from an agent-constructed payload built from raw shell
         // output, e.g. `$(pwd)`) must be trimmed before use, not passed
         // through raw.
-        XCTAssertEqual(controller.resolveNewTabSpawnCwd(override: "\n"), "/Users/dev/existing-tab-pwd",
-                       "a newline-only override must be treated the same as no override")
-        XCTAssertEqual(controller.resolveNewTabSpawnCwd(override: "  /tmp \n"), "/tmp",
+        XCTAssertNil(CalyxWindowController.normalizedCwdOverride("\n"),
+                     "a newline-only override must be treated the same as no override")
+        XCTAssertEqual(CalyxWindowController.normalizedCwdOverride("  /tmp \n"), "/tmp",
                        "a trailing/leading-whitespace-or-newline override must be trimmed before use")
     }
 

@@ -280,6 +280,29 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// DO NOT use from production code.
     var _createManagedSurfaceHookForTesting: (() -> UUID?)?
 
+    /// Test seam (issue #43, tab-create cwd): when non-nil, called with
+    /// the pwd this call hands to `SurfaceRegistry.createSurface` --
+    /// `explicitCwd` on the `.passthrough` branch below, `sessionCwd`
+    /// on the `.persistent` branch (branch-dependent; a reader must not
+    /// assume one meaning) -- immediately before that call, in BOTH
+    /// branches, and BEFORE the existing `_createManagedSurfaceHookForTesting`
+    /// short-circuit (that hook `return`s early, so an observer placed
+    /// after it would never fire under a hook-installed test). A second,
+    /// independent observer rather than a change to
+    /// `_createManagedSurfaceHookForTesting`'s signature -- mirrors
+    /// `_performReconnectCommandObserverForTesting`'s exact "observe
+    /// right before the real (tracked, fire-and-forget) work; the real
+    /// work still runs unmodified" style (see that property's own doc
+    /// comment) and `AppDelegate
+    /// ._createSurfaceWithPwdCommandObserverForTesting`'s identical
+    /// precedent: `_createManagedSurfaceHookForTesting` is `(() ->
+    /// UUID?)?` and has no way to observe a pwd, and every existing
+    /// caller of it only ever needs the resulting surfaceID, so widening
+    /// its arity would force every unrelated test file that installs it
+    /// to churn. `nil` (the default) leaves production behavior
+    /// unchanged. DO NOT use from production code.
+    var _createManagedSurfacePwdObserverForTesting: ((String?) -> Void)?
+
     /// Test seam (P5, remote sessions, contract 1b): when non-nil,
     /// called with `(sessionID, host)` immediately before
     /// `killSessionIfPersistent`'s `SessionKillTracker.track` dispatch --
@@ -339,20 +362,18 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         isClosingForShutdown || isAppActuallyTerminating
     }
 
-    /// R6-D (r6-fix-spec.md): true once the app is genuinely quitting,
-    /// not just this window closing. A thin forward (R8-C, r8-fix-
-    /// spec.md) to `AppDelegate.isTerminating`, the one canonical query
-    /// (see its own doc comment for why both of its component flags
-    /// participate): round-5 review (I2) found the per-window
-    /// `isClosingForShutdown` flag alone is not a safe "app terminating"
-    /// discriminator (`closeLastWindow` sets it even for a non-
-    /// terminating close, see that flag's own doc comment). Used by
-    /// `windowWillClose`'s destroy loop to decide whether to run the
-    /// normal kill/detach close policy (app not terminating) or preserve
-    /// tracking state into the snapshot exactly as before (app
-    /// terminating).
+    /// True once the app is genuinely quitting, not just this window
+    /// closing. A thin forward to `AppDelegate.isApplicationTerminating`,
+    /// the one canonical "is the app actually terminating" query: the
+    /// per-window `isClosingForShutdown` flag alone is not a safe "app
+    /// terminating" discriminator (`closeLastWindow` sets it for every
+    /// close that empties this one window, terminating or not, see that
+    /// flag's own doc comment). Used by `windowWillClose`'s destroy loop
+    /// to decide whether to run the normal kill/detach close policy (app
+    /// not terminating) or preserve tracking state into the snapshot
+    /// exactly as before (app terminating).
     private var isAppActuallyTerminating: Bool {
-        (NSApp.delegate as? AppDelegate)?.isTerminating ?? false
+        (NSApp.delegate as? AppDelegate)?.isApplicationTerminating ?? false
     }
 
     // MARK: - Computed Properties
@@ -695,7 +716,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         // (and initialized at launch from any file preserved by a
         // previous run) -- mirrors every other AppDelegate-level query
         // this codebase already reads via `NSApp.delegate as? AppDelegate`
-        // (isTerminating, closingWouldTerminate(_:), etc.).
+        // (isApplicationTerminating, hasPreservedSessionSnapshot, etc.).
         commandRegistry.register(PaletteCommand(
             id: "session.recoverPreviousSession",
             title: "Recover Previous Session",
@@ -779,7 +800,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
 
         guard let surfaceID = createManagedSurface(
             tab: tab, app: app, config: config,
-            passthroughPwd: tab.pwd, spawnCwd: tab.pwd ?? NSHomeDirectory(), origin: .tab, host: host
+            explicitCwd: tab.pwd, sessionFallbackCwd: nil, origin: .tab, host: host
         ) else {
             logger.error("Failed to create initial surface")
             return
@@ -798,27 +819,69 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - Session Persistence
 
+    /// Calyx's own reconstruction of the directory libghostty would inherit
+    /// for a new surface: the source pane's own live OSC 7 report, degrading
+    /// to the owning tab's last-known `pwd` when that pane hasn't reported
+    /// one yet (e.g. a snapshot-restored pane before its first OSC 7, or any
+    /// surface created before `SurfacePropertyStore.startObserving()`).
+    private func livePaneCwd(of surfaceID: UUID?, in tab: Tab?) -> String? {
+        surfaceID.flatMap { SurfacePropertyStore.shared.cwd(for: $0) } ?? tab?.pwd
+    }
+
     /// Applies `SessionSpawnPlanner`'s decision for a freshly-created
     /// terminal surface. `.passthrough` (the default — feature off, or
     /// `origin == .quickTerminal`) creates the surface exactly as
-    /// before this feature existed, via `passthroughPwd` — every
-    /// existing call site's pre-feature `pwd` argument, unchanged, so
-    /// the OFF path has zero observable difference. `.persistent`
-    /// creates it with the synthesized attach command instead, and
-    /// records the new session in `tab.sessionRefs` (persisted into
-    /// `TabSnapshot.sessionRefs` at save time) and
+    /// before this feature existed, via `explicitCwd` — every existing
+    /// call site's pre-feature `pwd` argument, unchanged, so the OFF
+    /// path has zero observable difference. `.persistent` creates it
+    /// with the synthesized attach command instead, using `sessionCwd`
+    /// (below), and records the new session in `tab.sessionRefs`
+    /// (persisted into `TabSnapshot.sessionRefs` at save time) and
     /// `SessionSurfaceMap.shared` (so `/agent-event` routing, the
     /// close=kill path below, and `SessionReconnectCoordinator` can all
-    /// find it later). `spawnCwd`/`inheritedCwd` are only read when a
-    /// plan actually turns out `.persistent`; they have no effect while
-    /// the feature is off. `inheritedCwd` (only ever non-nil from
-    /// `handleNewSplitNotification`) takes priority — see
-    /// `SessionSpawnContext`'s doc comment — since ghostty has no
-    /// surface-level pwd getter (only the async `GHOSTTY_ACTION_PWD` ->
-    /// `.ghosttySetPwd` report this codebase already tracks into
-    /// `tab.pwd`), so `tab.pwd` is the best available approximation of
-    /// the split's specific origin surface, not necessarily its exact
-    /// live cwd if the tab has multiple panes in different directories.
+    /// find it later).
+    ///
+    /// Issue #43 root cause: cwd used to arrive as THREE independently-
+    /// settable parameters (`passthroughPwd`, `spawnCwd`, `inheritedCwd`)
+    /// -- every pre-fix call site hardcoded `passthroughPwd: nil`
+    /// unconditionally while threading its real cwd only into
+    /// `spawnCwd`, so an explicit override wired the `.persistent`
+    /// branch but silently never reached `.passthrough`, the default (an
+    /// MCP `tab_create` cwd override was dropped whenever persistent
+    /// sessions were off). Collapsed here to two, combined ONCE into a
+    /// single `sessionCwd = explicitCwd ?? sessionFallbackCwd ??
+    /// NSHomeDirectory()` fed to BOTH branches below -- a caller can no
+    /// longer wire one branch and forget the other, because neither
+    /// branch has its own independent cwd parameter left to forget.
+    ///
+    /// - `explicitCwd`: an explicit directive, honored by both branches
+    ///   when non-nil. `nil` means "no directive": `.passthrough` passes
+    ///   it straight through as `pwd` (i.e. leaves ghostty's
+    ///   `working_directory` unset), so libghostty inherits the FOCUSED
+    ///   surface's own LIVE OSC 7 pwd
+    ///   (`window-inherit-working-directory`'s default `true`,
+    ///   `ghostty/src/apprt/surface.zig`'s `newConfig`) -- the correct
+    ///   behavior for an ordinary override-less Cmd+T, more accurate
+    ///   than anything Calyx could resolve independently.
+    /// - `sessionFallbackCwd`: deliberately ignored by `.passthrough`,
+    ///   which has real FFI-level inheritance to fall back on instead.
+    ///   Exists only to give a `.persistent` plan a concrete `--cwd`
+    ///   when there is no explicit directive -- the spawned
+    ///   `calyx-session attach --create` command's cwd is fixed at spawn
+    ///   time, with nothing equivalent to libghostty's live inheritance.
+    ///
+    /// `performCreateNewTab`/`performSplit`/`performCreateNewGroup` all pass
+    /// `sessionFallbackCwd: livePaneCwd(of:in:)` rather than `tab.pwd`
+    /// directly: turning persistent sessions on must not change which
+    /// directory a new tab or split opens in relative to `.passthrough`,
+    /// which gets the FOCUSED pane's live OSC 7 cwd straight from
+    /// libghostty, not Calyx's own possibly-stale `Tab.pwd` snapshot --
+    /// with multiple panes in a tab, `tab.pwd` can be a sibling pane's
+    /// directory. (Calyx does have a surface-level pwd getter now --
+    /// `SurfacePropertyStore.cwd(for:)`, fed by the same
+    /// `.ghosttySetPwd` notification `Tab.pwd` is -- `livePaneCwd`
+    /// prefers it for exactly this reason.)
+    ///
     /// `host` (P5, remote sessions): the remote ssh host to spawn this
     /// surface's session against, `nil` for every existing call site
     /// (unchanged, all still local). Passed into the
@@ -837,24 +900,25 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         tab: Tab,
         app: ghostty_app_t,
         config: ghostty_surface_config_s,
-        passthroughPwd: String?,
-        spawnCwd: String,
-        inheritedCwd: String? = nil,
+        explicitCwd: String?,
+        sessionFallbackCwd: String?,
         origin: SessionSpawnOrigin,
         host: String? = nil
     ) -> UUID? {
-        let context = SessionSpawnContext(cwd: spawnCwd, inheritedCwd: inheritedCwd, host: host, origin: origin)
+        let sessionCwd = explicitCwd ?? sessionFallbackCwd ?? NSHomeDirectory()
+        let context = SessionSpawnContext(cwd: sessionCwd, host: host, origin: origin)
         switch SessionSpawnPlanner.plan(for: context) {
         case .passthrough:
             #if DEBUG
+            _createManagedSurfacePwdObserverForTesting?(explicitCwd)
             if let hook = _createManagedSurfaceHookForTesting {
                 return hook()
             }
             #endif
-            return tab.registry.createSurface(app: app, config: config, pwd: passthroughPwd)
+            return tab.registry.createSurface(app: app, config: config, pwd: explicitCwd)
         case .persistent(let sessionID, let command, let planHost):
-            let ghosttyPwd = inheritedCwd ?? spawnCwd
             #if DEBUG
+            _createManagedSurfacePwdObserverForTesting?(sessionCwd)
             if let hook = _createManagedSurfaceHookForTesting {
                 guard let surfaceID = hook() else { return nil }
                 tab.sessionRefs[surfaceID] = SessionRef(sessionID: sessionID, host: planHost)
@@ -862,7 +926,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
                 return surfaceID
             }
             #endif
-            guard let surfaceID = tab.registry.createSurface(app: app, config: config, pwd: ghosttyPwd, command: command) else {
+            guard let surfaceID = tab.registry.createSurface(app: app, config: config, pwd: sessionCwd, command: command) else {
                 return nil
             }
             tab.sessionRefs[surfaceID] = SessionRef(sessionID: sessionID, host: planHost)
@@ -888,10 +952,13 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// `performReconnect` (which destroys the OLD surface to make room
     /// for the reconnected one — must not self-kill) and
     /// `windowWillClose`/quit teardown (must detach, not kill, so the
-    /// session survives to be reattached on next launch; `isTerminating`
-    /// reuses `isClosingForShutdown`, which `AppDelegate
-    /// .markAllControllersClosingForShutdown()` / `windowShouldClose`
-    /// both set before any surface is destroyed).
+    /// session survives to be reattached on next launch; `windowWillClose`
+    /// passes its own already-computed `isAppActuallyTerminating` as
+    /// `isTerminating` — the app-wide discriminator `AppDelegate
+    /// .applicationShouldTerminate`/`applicationWillTerminate` set, NOT
+    /// the per-window `isClosingForShutdown` that `markAllControllersClosingForShutdown()`
+    /// sets — see `closeSurfaceAndCleanUp`'s doc comment below for why
+    /// the two flags must not be conflated).
     ///
     /// `isTerminating` (R8-C, r8-fix-spec.md; consolidates r7-
     /// verdicts.md's I1/A2/C2 dormant discriminator-mismatch finding):
@@ -904,10 +971,13 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// parameter straight through for `closeTab`/`closeActiveGroup`/
     /// `closeAllTabsInGroup` (always `false`) and `windowWillClose`
     /// (its own already-computed discriminator); `closeSurfaceAndCleanUp`
-    /// now passes this window's own `isClosingForShutdown` explicitly
-    /// too, so the outer "is the app actually terminating" gate and this
-    /// policy call always visibly agree, with no caller left relying on
-    /// an implicit default.
+    /// now passes the app-wide `isAppActuallyTerminating` explicitly too
+    /// (window-lifetime redesign: it used to pass this window's own
+    /// `isClosingForShutdown`, no longer safe now that a non-terminating
+    /// close can set that flag — see that method's own doc comment), so
+    /// the outer "is the app actually terminating" gate and this policy
+    /// call always visibly agree, with no caller left relying on an
+    /// implicit default.
     /// `host` (P5, remote sessions): read from `tab.sessionRefs[surfaceID]
     /// ?.host` BEFORE this method's own `tab.sessionRefs[surfaceID] = nil`
     /// clears the entry two lines later -- exactly like `performReconnect`'s
@@ -963,13 +1033,20 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     ///
     /// R10-C item 3 (r10-fix-spec.md): unlike `killSessionIfPersistent`,
     /// takes no `isTerminating` parameter, since every call site left it
-    /// at its default, so it was dead: this always reads this window's own
-    /// `isClosingForShutdown` directly instead.
+    /// at its default, so it was dead: this always reads the app-wide
+    /// `isAppActuallyTerminating` directly instead, matching what
+    /// `closeSurfaceAndCleanUp` now passes `killSessionIfPersistent`'s own
+    /// `isTerminating` explicitly below (window-lifetime redesign: reading
+    /// this window's own `isClosingForShutdown` here instead, as before,
+    /// would misread an ordinary non-terminating close of one of several
+    /// open windows as app termination and wrongly detach rather than kill
+    /// — see `closeSurfaceAndCleanUp`'s doc comment for why the two flags
+    /// must not be conflated).
     private func detachSessionIfPersistent(tab: Tab, surfaceID: UUID) {
         let sessionID = SessionSurfaceMap.shared.sessionID(for: surfaceID)
         guard SessionCloseKillPolicy.shouldDetach(
             hasSession: sessionID != nil,
-            isTerminating: isClosingForShutdown,
+            isTerminating: isAppActuallyTerminating,
             isReconnectSwap: reconnectingSurfaceIDs.contains(surfaceID)
         ), let sessionID else {
             return
@@ -997,78 +1074,33 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// Pre-teardown quit-confirmation gate shared by every close path
-    /// that can empty the last managed window: bails out early (with
-    /// `true`, nothing to confirm) unless `AppDelegate.closingWouldTerminate`
-    /// says closing this window would terminate the app AND the quit
-    /// hasn't already been confirmed once (`isTerminationConfirmed`) —
-    /// avoids double-prompting when, e.g., a Cmd+Q already confirmed
-    /// termination and this close path is now running as part of that
-    /// same teardown. `mode` selects `confirmQuitIfNeeded`'s wording for
-    /// whichever semantics this particular close uses (kill vs. detach).
-    /// Returns `false` only when the user cancelled the prompt.
-    private func confirmQuitBeforeCloseIfWouldTerminate(mode: AppDelegate.ConfirmQuitMode = .killProcesses) -> Bool {
-        guard let appDelegate = NSApp.delegate as? AppDelegate,
-              appDelegate.closingWouldTerminate(self),
-              !appDelegate.isTerminationConfirmed else {
-            return true
-        }
-        return appDelegate.confirmQuitIfNeeded(mode)
-    }
-
-    /// Marks `AppDelegate.isTerminationConfirmed` so the subsequent
-    /// `windowShouldClose` -> `applicationShouldTerminate` cascade
-    /// triggered by `window?.close()` doesn't prompt a second time for
-    /// the same already-confirmed quit. A no-op unless closing this
-    /// window would actually terminate the app (see `closingWouldTerminate`).
-    private func markTerminationConfirmedIfWouldTerminate() {
-        guard let appDelegate = NSApp.delegate as? AppDelegate,
-              appDelegate.closingWouldTerminate(self) else { return }
-        appDelegate.isTerminationConfirmed = true
-    }
-
-    /// R10-C item 4 (r10-fix-spec.md): the two-statement pair shared,
-    /// identically, by `closeLastWindow`'s default
-    /// (`markTerminationConfirmed: true`) path and `windowShouldClose`'s
-    /// success path. Marks termination already confirmed (a no-op
-    /// unless closing this window would actually terminate the app, see
-    /// `markTerminationConfirmedIfWouldTerminate`), THEN sets
-    /// `isClosingForShutdown`. Order matters: `isClosingForShutdown`
-    /// must be set eagerly, before `window?.close()` (or the caller's
-    /// own subsequent teardown) runs, see `closeLastWindow`'s own doc
-    /// comment for why.
-    private func markTerminationConfirmedAndSetClosingForShutdown() {
-        markTerminationConfirmedIfWouldTerminate()
+    /// Shared close body for the four close paths that can empty the
+    /// last managed window (`closeTab`, `closeActiveGroup`,
+    /// `closeAllTabsInGroup`, `closeSurfaceAndCleanUp`): sets
+    /// `isClosingForShutdown` eagerly, then closes the window.
+    /// `isClosingForShutdown` must be set BEFORE `window?.close()`:
+    /// without this, `windowDidExitFullScreen`'s stale-snapshot guard
+    /// (which checks `isClosingForShutdown`) is dead code during this
+    /// teardown, and the fullscreen tracking flags/frame get incorrectly
+    /// cleared mid-close. Window-lifetime redesign: emptying the last
+    /// managed window this way no longer terminates the app at all (see
+    /// `AppDelegate.applicationShouldTerminateAfterLastWindowClosed`), so
+    /// there is nothing left to confirm or mark confirmed here — AppKit's
+    /// own default `windowShouldClose` (this controller no longer
+    /// overrides it) just closes the window.
+    private func closeLastWindow() {
         isClosingForShutdown = true
-    }
-
-    /// Shared `.windowShouldClose` case body (F7/F8, r4-fix-spec.md) for
-    /// the four close paths that can empty the last managed window
-    /// (`closeTab`, `closeActiveGroup`, `closeAllTabsInGroup`,
-    /// `closeSurfaceAndCleanUp`): marks termination confirmed (when
-    /// `markTerminationConfirmed`, a no-op unless closing this window
-    /// would actually terminate the app, see `markTerminationConfirmedIfWouldTerminate`),
-    /// sets `isClosingForShutdown` eagerly, then closes the window.
-    /// `isClosingForShutdown` must be set BEFORE `window?.close()`,
-    /// exactly like `windowShouldClose`'s own eager set: without this,
-    /// `windowDidExitFullScreen`'s stale-snapshot guard (which checks
-    /// `isClosingForShutdown`) is dead code during this teardown, and
-    /// the fullscreen tracking flags/frame get incorrectly cleared
-    /// mid-close.
-    private func closeLastWindow(markTerminationConfirmed: Bool = true) {
-        if markTerminationConfirmed {
-            markTerminationConfirmedAndSetClosingForShutdown()
-        } else {
-            isClosingForShutdown = true
-        }
         window?.close()
     }
 
     /// True when `tab` is the sole tab of the sole group of this window
     /// AND has exactly one pane (a single, unsplit leaf) — i.e. closing
     /// this one pane empties the tab, the group, and the window all at
-    /// once. Used by `closeFocusedSessionSurface`/`handleReconnectGiveUp`
-    /// to decide whether their pre-teardown confirm-quit gate applies.
+    /// once. Used by `handleReconnectGiveUp` (window-lifetime redesign:
+    /// alone now, no longer `&& AppDelegate.closingWouldTerminate`,
+    /// deleted along with the close-path confirm-quit prompt, see that
+    /// method's own doc comment) to decide whether to leave the pane in
+    /// place instead of closing it.
     private func isLastPaneEverywhere(tab: Tab, group: TabGroup) -> Bool {
         !tab.splitTree.isEmpty && !tab.splitTree.isSplit
             && group.tabs.count == 1
@@ -1091,25 +1123,21 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// untracked pane between the palette listing this command and the
     /// user invoking it).
     ///
-    /// When this is the last pane everywhere (`isLastPaneEverywhere`),
-    /// gates on `confirmQuitBeforeCloseIfWouldTerminate` BEFORE tearing
-    /// anything down — cancelling leaves the pane/session untouched.
-    /// The flag itself is not set here (see `closeSurfaceAndCleanUp`'s
-    /// `markTerminationConfirmedOnWindowClose` parameter): it's set only
-    /// once teardown actually reaches the `.windowShouldClose` case, so
-    /// a reentrant/interrupted teardown that doesn't reach that point
-    /// never leaves `isTerminationConfirmed` stuck `true`.
+    /// Window-lifetime redesign: closing the last pane/tab/group/window
+    /// no longer terminates the app, so there is nothing left to confirm
+    /// here — the confirm-quit gate this doc comment used to describe,
+    /// and the `isLastPaneEverywhere` check that decided whether to
+    /// consult it, are both gone.
     ///
     /// F2 (V02, CRITICAL, r4-fix-spec.md): inserts `tab.id` into
-    /// `closingTabIDs` BEFORE consulting the confirm-quit gate (mirroring
-    /// `closeTab`'s own insert-then-confirm-then-remove-on-cancel
-    /// pattern), so a synchronous reentrant `close_surface` callback for
-    /// this same tab, whether firing mid-modal or from inside
-    /// `closeSurfaceAndCleanUp`'s own `destroySurface` call below, hits
-    /// that method's reentrancy guard instead of tearing the tab down a
-    /// second time. `closeSurfaceAndCleanUp` is told
-    /// `callerAlreadyClaimedClosingTabIDs: true` since this method (not
-    /// that one) owns the insert/remove lifecycle for this call.
+    /// `closingTabIDs` before tearing the surface down (mirroring
+    /// `closeTab`'s own insert-then-remove-on-cancel pattern), so a
+    /// synchronous reentrant `close_surface` callback for this same tab,
+    /// firing from inside `closeSurfaceAndCleanUp`'s own `destroySurface`
+    /// call below, hits that method's reentrancy guard instead of
+    /// tearing the tab down a second time. `closeSurfaceAndCleanUp` is
+    /// told `callerAlreadyClaimedClosingTabIDs: true` since this method
+    /// (not that one) owns the insert/remove lifecycle for this call.
     private func closeFocusedSessionSurface(killSessions: Bool) {
         guard let group = windowSession.activeGroup,
               let tab = group.activeTab,
@@ -1119,18 +1147,9 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
 
         closingTabIDs.insert(tab.id)
 
-        let isLastPane = isLastPaneEverywhere(tab: tab, group: group)
-        if isLastPane {
-            guard confirmQuitBeforeCloseIfWouldTerminate(mode: killSessions ? .killProcesses : .detachOnly) else {
-                closingTabIDs.remove(tab.id)
-                return
-            }
-        }
-
         closeSurfaceAndCleanUp(
             tab: tab, group: group, surfaceID: surfaceID,
             killSessions: killSessions,
-            markTerminationConfirmedOnWindowClose: isLastPane,
             callerAlreadyClaimedClosingTabIDs: true
         )
         closingTabIDs.remove(tab.id)
@@ -1348,14 +1367,64 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// parameter existed. Reached by `AppDelegate.spawnRemoteSessionTab
     /// (host:)` when a key window controller already exists.
     ///
-    /// `spawnCwd` (Cockpit `tab_create`): forwarded to
-    /// `resolveNewTabSpawnCwd(override:)`, which returns the pre-Cockpit
-    /// `activeTab?.pwd ?? NSHomeDirectory()` expression unchanged when
-    /// `nil` (every existing caller's shape).
+    /// `spawnCwd` (Cockpit `tab_create`, issue #43): normalized via
+    /// `Self.normalizedCwdOverride(_:)` into `createManagedSurface`'s
+    /// `explicitCwd` argument, so a non-nil override now reaches the
+    /// spawned shell's pwd in BOTH the `.passthrough` and `.persistent`
+    /// branches -- the bug this fixed was `.passthrough` silently
+    /// dropping it (see `createManagedSurface`'s doc comment). `nil`
+    /// (every existing caller's shape) still yields `explicitCwd: nil`,
+    /// so libghostty performs its own live-OSC-7-based inheritance
+    /// exactly as before this parameter existed.
+    ///
+    /// Thin wrapper resolving `GhosttyAppController.shared.app` and
+    /// delegating everything else to `performCreateNewTab` -- same split,
+    /// same reason, as `handleNewSplitNotification`/`performSplit`: that
+    /// global is `nil` in the unit-test host, so a version of this method
+    /// that resolves `app` internally could never be driven end-to-end by
+    /// a test. See `performCreateNewTab`'s doc comment for the actual
+    /// tab-creation body and its two load-bearing orderings.
     func createNewTab(inheritedConfig: Any? = nil, host: String? = nil, spawnCwd: String? = nil) {
-        guard let app = GhosttyAppController.shared.app,
-              let window = self.window,
-              let group = windowSession.activeGroup else { return }
+        guard let app = GhosttyAppController.shared.app else { return }
+        performCreateNewTab(app: app, inheritedConfig: inheritedConfig, host: host, spawnCwd: spawnCwd)
+    }
+
+    /// `createNewTab`'s body, taking `app` directly instead of resolving
+    /// `GhosttyAppController.shared.app` internally -- see that method's
+    /// doc comment for why, and `performSplit`'s identical precedent
+    /// (down to `handleNewSplitNotification` resolving `app` before
+    /// calling it). Not `private` (test access; mirrors `performSplit`'s/
+    /// `createManagedSurface`'s own "un-privated for direct test access"
+    /// precedent) -- a `CalyxWindowController` unit test can drive this
+    /// directly with a dummy `ghostty_app_t` pointer even though
+    /// `createNewTab` itself cannot. `inheritedConfig`/`host`/`spawnCwd`
+    /// are forwarded straight through unchanged; see `createNewTab`'s doc
+    /// comment for their semantics.
+    ///
+    /// CRITICAL ordering (issue #43 fix design): the `createManagedSurface
+    /// (...)` call below MUST stay above `group.addTab(tab)`/
+    /// `group.activeTabID = tab.id`. Its `sessionFallbackCwd:` argument
+    /// calls `livePaneCwd(of: activeTab?.splitTree.focusedLeafID, in:
+    /// activeTab)`, which falls back to `activeTab?.pwd` -- and
+    /// `activeTab` reads `windowSession.activeGroup?.activeTab`, so it
+    /// MUST still resolve to the OLD active tab at the point
+    /// `createManagedSurface` runs. Hoisting the tab-wiring (`addTab`/
+    /// `activeTabID =`) above `createManagedSurface` would silently make
+    /// that same read resolve to the brand-new tab instead (which has no
+    /// focused leaf and a `nil` `pwd`, no surface having reported one
+    /// yet), regressing every override-less new tab's spawn cwd from the
+    /// previous tab's directory back to `$HOME`.
+    ///
+    /// `self.window` is resolved INSIDE this method, not in the
+    /// `createNewTab` wrapper above -- mirrors `performSplit`'s own `if
+    /// let window = self.window`. It's used only for `config
+    /// .scale_factor`, and the unit-test host DOES construct a real
+    /// `CalyxWindow` (unlike `GhosttyAppController.shared.app`), so
+    /// keeping the resolution in here, rather than requiring it as a
+    /// parameter from the caller, is what makes this method drivable by
+    /// a test in the first place.
+    func performCreateNewTab(app: ghostty_app_t, inheritedConfig: Any? = nil, host: String? = nil, spawnCwd: String? = nil) {
+        guard let window = self.window, let group = windowSession.activeGroup else { return }
 
         let tab = Tab()
 
@@ -1369,7 +1438,9 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
 
         guard let surfaceID = createManagedSurface(
             tab: tab, app: app, config: config,
-            passthroughPwd: nil, spawnCwd: resolveNewTabSpawnCwd(override: spawnCwd), origin: .tab, host: host
+            explicitCwd: Self.normalizedCwdOverride(spawnCwd),
+            sessionFallbackCwd: livePaneCwd(of: activeTab?.splitTree.focusedLeafID, in: activeTab),
+            origin: .tab, host: host
         ) else {
             logger.error("Failed to create surface for new tab")
             return
@@ -1418,6 +1489,19 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// surface's font size/theme exactly as before this method was
     /// extracted -- a trailing defaulted parameter rather than dropping
     /// that behavior, since no test exercises it either way.
+    ///
+    /// `explicitCwd: nil` -- a split carries no user-supplied cwd
+    /// directive of its own (unlike Cockpit `tab_create`'s optional
+    /// override), so this always leaves it unset to preserve
+    /// `.passthrough`'s live OSC-7-based inheritance (see
+    /// `createManagedSurface`'s doc comment). `sessionFallbackCwd:
+    /// livePaneCwd(of: surfaceID, in: tab)` -- only ever consulted by a
+    /// `.persistent` plan, since `.passthrough` ignores it -- prefers
+    /// the SOURCE pane's own live cwd (`surfaceID`, the leaf being split,
+    /// not just "the tab") over `tab.pwd`: a new split should land in
+    /// the directory it was split from, even when the tab's own
+    /// last-persisted pwd is stale or reflects a different pane
+    /// entirely.
     func performSplit(
         surfaceID: UUID,
         direction: SplitDirection,
@@ -1433,7 +1517,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
 
         guard let newSurfaceID = createManagedSurface(
             tab: tab, app: app, config: resolvedConfig,
-            passthroughPwd: nil, spawnCwd: tab.pwd ?? NSHomeDirectory(), inheritedCwd: tab.pwd, origin: .tab
+            explicitCwd: nil, sessionFallbackCwd: livePaneCwd(of: surfaceID, in: tab), origin: .tab
         ) else {
             return nil
         }
@@ -1450,27 +1534,30 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         return newSurfaceID
     }
 
-    /// Factored out of `createNewTab`'s inline `spawnCwd:` argument
-    /// (`activeTab?.pwd ?? NSHomeDirectory()`) so Cockpit's `tab_create`
-    /// cwd override is directly unit-testable without
-    /// `GhosttyAppController.shared.app` (nil in this test host --
-    /// `createNewTab` itself can't be driven end-to-end here, same
-    /// constraint `AppDelegateSpawnRemoteSessionTabWindowLookupTests`
-    /// already documented for this identical guard). `override` is
-    /// trimmed of leading/trailing whitespace AND newlines first (an
-    /// agent-constructed payload built from raw shell output, e.g.
-    /// `$(pwd)`, plausibly carries a trailing `\n`); a non-nil override
-    /// takes priority UNLESS the trimmed result is empty (an MCP caller
-    /// passing `""`/`"\n"` almost certainly means "no override", not
-    /// "spawn at the empty path" -- treated the same as `nil`), then
-    /// expanded via `expandingTildeInPath` since it comes straight from
-    /// an MCP caller rather than already-resolved UI state; a nil (or
-    /// blank) override preserves createNewTab's pre-Cockpit behavior
-    /// exactly. Does not validate the resulting path exists -- P4's job.
-    func resolveNewTabSpawnCwd(override: String?) -> String {
-        guard let override else { return activeTab?.pwd ?? NSHomeDirectory() }
+    /// Normalizes Cockpit's `tab_create` `cwd` argument into the
+    /// `explicitCwd` `createManagedSurface` expects: `nil` when
+    /// `override` is `nil` or blank (an MCP caller passing `""`/`"\n"`
+    /// almost certainly means "no override", not "spawn at the empty
+    /// path"), otherwise the trimmed-and-tilde-expanded path. `static`
+    /// because it no longer reads any instance state -- the pre-fix `??
+    /// activeTab?.pwd ?? NSHomeDirectory()` fallback half is now carried
+    /// entirely by the caller's own `sessionFallbackCwd` argument plus
+    /// `createManagedSurface`'s own `?? NSHomeDirectory()` (see that
+    /// method's doc comment), so this helper has nothing left to resolve
+    /// beyond the override itself.
+    ///
+    /// `override` is trimmed of leading/trailing whitespace AND newlines
+    /// first (an agent-constructed payload built from raw shell output,
+    /// e.g. `$(pwd)`, plausibly carries a trailing `\n`); a non-nil
+    /// override takes priority UNLESS the trimmed result is empty,
+    /// treated the same as `nil`, then expanded via
+    /// `expandingTildeInPath` since it comes straight from an MCP caller
+    /// rather than already-resolved UI state. Does not validate the
+    /// resulting path exists -- P4's job.
+    static func normalizedCwdOverride(_ override: String?) -> String? {
+        guard let override else { return nil }
         let trimmed = override.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return activeTab?.pwd ?? NSHomeDirectory() }
+        guard !trimmed.isEmpty else { return nil }
         return NSString(string: trimmed).expandingTildeInPath
     }
 
@@ -1681,15 +1768,6 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
 
         closingTabIDs.insert(tabID)
 
-        // Quit confirmation: if this is the last tab in the last group, closing it
-        // would terminate the app. Confirm BEFORE destroying anything.
-        if group.tabs.count == 1 && windowSession.groups.count == 1 {
-            guard confirmQuitBeforeCloseIfWouldTerminate() else {
-                closingTabIDs.remove(tabID)
-                return
-            }
-        }
-
         // Check for unsent review comments
         if let store = reviewStores[tabID], store.hasUnsubmittedComments {
             let alert = NSAlert()
@@ -1766,8 +1844,37 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - Group Operations
 
     func createNewGroup() {
-        guard let app = GhosttyAppController.shared.app,
-              let window = self.window else { return }
+        guard let app = GhosttyAppController.shared.app else { return }
+        performCreateNewGroup(app: app)
+    }
+
+    /// `createNewGroup`'s body, taking `app` directly instead of
+    /// resolving `GhosttyAppController.shared.app` internally --
+    /// mirrors `performCreateNewTab`'s and `performSplit`'s identical
+    /// precedent: that global is documented throughout this test target
+    /// (see e.g. `CockpitAppAccessSeamTests.swift`'s and
+    /// `CockpitTabCreateCwdWiringTests.swift`'s own headers) as ALWAYS
+    /// `nil` in the `CalyxTests` process, so a version of this method
+    /// that resolved it internally could never be driven end-to-end by a
+    /// test even once correctly implemented -- exactly the gap
+    /// `CockpitSplitAndGroupCwdWiringTests.swift`'s header reports
+    /// upstream for `createNewGroup` before this extraction existed. Not
+    /// `private` (test access; mirrors `performCreateNewTab`'s/
+    /// `performSplit`'s/`createManagedSurface`'s own "un-privated for
+    /// direct test access" precedent) -- a `CalyxWindowController` unit
+    /// test can drive this directly with a dummy `ghostty_app_t` pointer
+    /// even though `createNewGroup` itself cannot.
+    ///
+    /// `self.window` is resolved INSIDE this method, not in the
+    /// `createNewGroup` wrapper above -- mirrors `performCreateNewTab`'s/
+    /// `performSplit`'s own identical `self.window` resolution. It's
+    /// used only for `config.scale_factor`, and the unit-test host DOES
+    /// construct a real `CalyxWindow` (unlike `GhosttyAppController
+    /// .shared.app`), so keeping the resolution in here, rather than
+    /// requiring it as a parameter from the caller, is what makes this
+    /// method drivable by a test in the first place.
+    func performCreateNewGroup(app: ghostty_app_t) {
+        guard let window = self.window else { return }
 
         let tab = Tab()
 
@@ -1776,7 +1883,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
 
         guard let surfaceID = createManagedSurface(
             tab: tab, app: app, config: config,
-            passthroughPwd: nil, spawnCwd: activeTab?.pwd ?? NSHomeDirectory(), origin: .tab
+            explicitCwd: nil, sessionFallbackCwd: livePaneCwd(of: activeTab?.splitTree.focusedLeafID, in: activeTab), origin: .tab
         ) else {
             logger.error("Failed to create surface for new group")
             return
@@ -1814,17 +1921,6 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         let tabIDs = group.tabs.map { $0.id }
         for tabID in tabIDs {
             closingTabIDs.insert(tabID)
-        }
-
-        // Quit confirmation: if this is the last group, closing it would terminate
-        // the app. Confirm BEFORE destroying anything.
-        if windowSession.groups.count == 1 {
-            guard confirmQuitBeforeCloseIfWouldTerminate() else {
-                for tabID in tabIDs {
-                    closingTabIDs.remove(tabID)
-                }
-                return
-            }
         }
 
         // Clean up browser controllers for all tabs in this group
@@ -1877,17 +1973,6 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         let tabIDs = group.tabs.map { $0.id }
         for tabID in tabIDs {
             closingTabIDs.insert(tabID)
-        }
-
-        // Quit confirmation: if this is the last group, closing it would terminate
-        // the app. Confirm BEFORE destroying anything.
-        if windowSession.groups.count == 1 {
-            guard confirmQuitBeforeCloseIfWouldTerminate() else {
-                for tabID in tabIDs {
-                    closingTabIDs.remove(tabID)
-                }
-                return
-            }
         }
 
         if wasActiveGroup {
@@ -2370,14 +2455,21 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// `session.kill` command palette actions, either semantics per
     /// which command fired).
     ///
-    /// Quit confirmation, when needed, is the caller's responsibility
-    /// BEFORE calling this method (see `confirmQuitBeforeCloseIfWouldTerminate`
-    /// and each caller above) — this method only marks
-    /// `AppDelegate.isTerminationConfirmed` (via
-    /// `markTerminationConfirmedOnWindowClose`, when the caller already
-    /// confirmed) once teardown actually reaches the `.windowShouldClose`
-    /// case below, so a reentrant/interrupted teardown that never
-    /// reaches that point never leaves the flag stuck `true`.
+    /// Window-lifetime redesign: closing the last tab/group/window no
+    /// longer terminates the app or needs confirming, so this method no
+    /// longer marks any "termination confirmed" flag once teardown
+    /// reaches the `.windowShouldClose` case below — it just calls
+    /// `closeLastWindow()`.
+    ///
+    /// The kill/detach decision below reads `isAppActuallyTerminating`
+    /// (the app-wide discriminator), NOT this window's own
+    /// `isClosingForShutdown`: `isClosingForShutdown` means only "this
+    /// window is tearing down" (see that flag's own doc comment), which
+    /// is also true for an ordinary, non-terminating close of one of
+    /// several open windows — reading it here would misread that as "the
+    /// app is quitting" and wrongly detach, rather than kill, a session
+    /// whose pane's process exits while this window happens to be
+    /// mid-close for an unrelated reason.
     ///
     /// `callerAlreadyClaimedClosingTabIDs` (F2, r4-fix-spec.md): set by
     /// `closeFocusedSessionSurface`/`handleReconnectGiveUp`, the two
@@ -2407,7 +2499,6 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         group: TabGroup,
         surfaceID: UUID,
         killSessions: Bool = true,
-        markTerminationConfirmedOnWindowClose: Bool = false,
         callerAlreadyClaimedClosingTabIDs: Bool = false
     ) {
         // If closeTab/closeActiveGroup/closeAllTabsInGroup is already
@@ -2429,9 +2520,12 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
 
         if killSessions {
             // R10-C item 3 (r10-fix-spec.md): isTerminating is now
-            // required, passed explicitly rather than relying on the
-            // (removed) default of this window's own isClosingForShutdown.
-            killSessionIfPersistent(tab: tab, surfaceID: surfaceID, isTerminating: isClosingForShutdown)
+            // required, passed explicitly rather than relying on a
+            // default. Window-lifetime redesign: reads the app-wide
+            // isAppActuallyTerminating, not this window's own
+            // isClosingForShutdown (see this method's own doc comment
+            // for why the two must not be conflated).
+            killSessionIfPersistent(tab: tab, surfaceID: surfaceID, isTerminating: isAppActuallyTerminating)
         } else {
             detachSessionIfPersistent(tab: tab, surfaceID: surfaceID)
         }
@@ -2448,7 +2542,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
                 case .switchedTab, .switchedGroup:
                     activateCurrentTab()
                 case .windowShouldClose:
-                    closeLastWindow(markTerminationConfirmed: markTerminationConfirmedOnWindowClose)
+                    closeLastWindow()
                 }
             } else {
                 refreshHostingView()
@@ -3132,14 +3226,18 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     ///
     /// R6-A (r6-fix-spec.md items 2/3, r5-verdicts.md V1/V5): scheduled
     /// on a fresh MainActor turn (rather than run synchronously inside
-    /// the `didSet`) so the caller's own stack (e.g.
-    /// `confirmQuitIfNeeded` -> `windowShouldClose`) has fully unwound,
-    /// and its own post-modal bookkeeping (e.g. `closingTabIDs.subtract`)
-    /// has run, before any replay lands. A deferred event whose surface
-    /// no longer resolves in this window (closed some other way while
-    /// the gate was up) is a safe no-op: `findTab`/`findTabAndGroup`
-    /// (reached via `processChildExited`/`handleSessionReconnectDecision`'s
-    /// own existing lookups) already treat a stale ID that way.
+    /// the `didSet`) so the caller's own stack — e.g.
+    /// `applicationShouldTerminate` -> `confirmQuitIfNeeded` ->
+    /// `alert.runModal()` returning once the user cancels Cmd+Q — has
+    /// fully unwound, and `applicationShouldTerminate`'s own handling of
+    /// that `false` return (returning `.terminateCancel`, with neither
+    /// `markAllControllersClosingForShutdown()` nor `isApplicationTerminating`
+    /// ever set) has finished, before any replay lands. A deferred event
+    /// whose surface no longer resolves in this window (closed some
+    /// other way while the gate was up) is a safe no-op: `findTab`/
+    /// `findTabAndGroup` (reached via `processChildExited`/
+    /// `handleSessionReconnectDecision`'s own existing lookups) already
+    /// treat a stale ID that way.
     @objc private func handleConfirmingQuitDidEnd(_ notification: Notification) {
         Task { @MainActor [weak self] in
             self?.drainDeferredReconnectEvents()
@@ -3257,33 +3355,25 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// deterministically here keeps cascade timing consistent with
     /// every other session-ending path.
     ///
-    /// When this would empty the last tab/group/window, gates on
-    /// `confirmQuitBeforeCloseIfWouldTerminate(mode: .detachOnly)` BEFORE
-    /// tearing anything down, exactly like `closeFocusedSessionSurface` —
-    /// cancelling leaves this (already-dead) pane in place rather than
-    /// forcing the app closed. `.detachOnly` wording, since the session
-    /// survives in the daemon either way.
-    ///
-    /// F1 (V01, CRITICAL, r4-fix-spec.md): the confirm-quit gate above
-    /// is structurally a no-op for THIS specific surface. ghostty
-    /// always reports a `.giveUp`-triggering surface as already
-    /// `child_exited`, so `ghostty_app_needs_confirm_quit` can never be
-    /// true for it (see r4-verdicts.md V01), meaning that when this
-    /// surface is the last pane app-wide, the gate would silently let
-    /// termination proceed with no modal ever shown at all. So when
-    /// `isLastPaneEverywhere` AND closing it would actually terminate
-    /// the app, this method no longer consults the gate or closes the
-    /// pane at all: it does detach bookkeeping only (clearing
-    /// `SessionSurfaceMap`/`tab.sessionRefs` tracking) and leaves the
-    /// leaf in the split tree. The surface still shows ghostty's own
-    /// child-exited state; a later keypress on it closes it through the
-    /// ordinary `handleCloseSurfaceNotification` path, with
-    /// `hasSession` now `false`, so no kill call and no data loss, and
-    /// app termination at that point is the user's own, explicit choice
-    /// (the same UX as ghostty's built-in wait-after-command). The
+    /// F1 (V01, CRITICAL, r4-fix-spec.md; window-lifetime redesign:
+    /// condition simplified to `isLastPaneEverywhere` alone — the
+    /// `&& AppDelegate.closingWouldTerminate` half of the original
+    /// condition, and the confirm-quit gate this comment used to
+    /// describe, are both gone along with the close-path confirm-quit
+    /// prompt itself): closing this pane deterministically, the way the
+    /// two-pane case below always has, is wrong specifically when it is
+    /// the LAST pane app-wide — that would silently close the user's
+    /// only remaining window with no trace of why, right as they were
+    /// waiting for a reconnect. So when `isLastPaneEverywhere`, this
+    /// method does not close the pane at all: it does detach bookkeeping
+    /// only (clearing `SessionSurfaceMap`/`tab.sessionRefs` tracking) and
+    /// leaves the leaf in the split tree. The surface still shows
+    /// ghostty's own child-exited state; a later keypress on it closes it
+    /// through the ordinary `handleCloseSurfaceNotification` path, with
+    /// `hasSession` now `false`, so no kill call and no data loss. The
     /// two-pane (and any other non-last-pane-everywhere) case below is
-    /// unchanged: closing deterministically is safe there because it
-    /// can never empty the window.
+    /// unchanged: closing deterministically is safe there because it can
+    /// never empty the window.
     ///
     /// F2 (V02, CRITICAL): the remaining close branch inserts `tab.id`
     /// into `closingTabIDs` before tearing the surface down, mirroring
@@ -3299,35 +3389,22 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// and potentially future callers, not only via that dispatcher).
     ///
     /// R6-B (r6-fix-spec.md): the kept-pane (last-pane-everywhere)
-    /// branch now also shows a persistent in-pane overlay (see
+    /// branch also shows a persistent in-pane overlay (see
     /// `showReconnectGiveUpOverlay`'s doc comment): the macOS
     /// notification alone can silently vanish (permission not granted),
     /// and ghostty's own child-exited text is suppressed for this
     /// surface, leaving no other in-app signal.
-    ///
-    /// R6-K (r6-fix-spec.md): the two sequential `if isLastPane` checks
-    /// (F1's closingWouldTerminate special case, then the ordinary
-    /// confirm-quit gate) are merged into one, since the first always
-    /// returns, so the second only ever ran when the first didn't fire.
     private func handleReconnectGiveUp(surfaceID: UUID) {
         guard !isShuttingDown else { return }
         guard let (tab, group) = findTabAndGroup(surfaceID: surfaceID) else { return }
         guard !closingTabIDs.contains(tab.id) else { return }
 
-        let isLastPane = isLastPaneEverywhere(tab: tab, group: group)
-
-        if isLastPane {
-            if (NSApp.delegate as? AppDelegate)?.closingWouldTerminate(self) == true {
-                logger.info("Reconnect exhausted for last pane app-wide; detaching without closing (see F1)")
-                detachSessionIfPersistent(tab: tab, surfaceID: surfaceID)
-                showReconnectGiveUpOverlay(tab: tab, surfaceID: surfaceID)
-                sendReconnectGiveUpNotification(tabID: tab.id)
-                return
-            }
-            guard confirmQuitBeforeCloseIfWouldTerminate(mode: .detachOnly) else {
-                logger.info("User cancelled quit prompt for exhausted-reconnect pane; leaving pane in place")
-                return
-            }
+        if isLastPaneEverywhere(tab: tab, group: group) {
+            logger.info("Reconnect exhausted for last pane app-wide; detaching without closing (see F1)")
+            detachSessionIfPersistent(tab: tab, surfaceID: surfaceID)
+            showReconnectGiveUpOverlay(tab: tab, surfaceID: surfaceID)
+            sendReconnectGiveUpNotification(tabID: tab.id)
+            return
         }
 
         closingTabIDs.insert(tab.id)
@@ -3338,7 +3415,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
 
         closeSurfaceAndCleanUp(
             tab: tab, group: group, surfaceID: surfaceID,
-            killSessions: false, markTerminationConfirmedOnWindowClose: isLastPane,
+            killSessions: false,
             callerAlreadyClaimedClosingTabIDs: true
         )
         closingTabIDs.remove(tab.id)
@@ -4292,76 +4369,6 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         refreshApprovalBanner()
     }
 
-    /// Last-window pre-close prompt path: if closing this window would
-    /// terminate the app (`AppDelegate.closingWouldTerminate`), runs the
-    /// confirm-quit gate BEFORE returning `true`, i.e. before AppKit
-    /// proceeds to tear the window down — cancelling here leaves the
-    /// window (and everything in it) untouched. On success, marks
-    /// `isTerminationConfirmed` so the `applicationShouldTerminate` this
-    /// close eventually cascades into (via `windowWillClose` ->
-    /// `removeWindowController` -> `NSApp.terminate(nil)`) doesn't
-    /// prompt a second time. Not gated when this isn't the last managed
-    /// window, or a quick terminal is open, or the quit was already
-    /// confirmed elsewhere (e.g. Cmd+Q racing this same close).
-    ///
-    /// F3 (V03, HIGH, r4-fix-spec.md): pre-populates `closingTabIDs`
-    /// with every tab in this window BEFORE `confirmQuitIfNeeded` can run
-    /// its modal: the one close path that didn't already do this. An
-    /// unrelated pane's process can exit synchronously mid-modal
-    /// (ghostty's `close_surface` callback, delivered via a main-queue
-    /// dispatch that runs while `NSAlert.runModal()` pumps the run
-    /// loop), and without this, `closeSurfaceAndCleanUp`'s reentrancy
-    /// guard is empty and doesn't fire (see r4-verdicts.md V03).
-    /// Removed again on the cancel path; left in place on success, since
-    /// `windowWillClose` (which runs right after) re-populates it anyway
-    /// as part of its own teardown.
-    func windowShouldClose(_ sender: NSWindow) -> Bool {
-        guard let appDelegate = NSApp.delegate as? AppDelegate,
-              appDelegate.closingWouldTerminate(self) else {
-            return true
-        }
-
-        let allTabIDs = windowSession.groups.flatMap { $0.tabs.map(\.id) }
-        closingTabIDs.formUnion(allTabIDs)
-
-        // Already confirmed (from Cmd+Q → applicationShouldTerminate)
-        if appDelegate.isTerminationConfirmed {
-            isClosingForShutdown = true
-            return true
-        }
-
-        // Last-window close via X button: run confirmations
-        if !appDelegate.confirmQuitIfNeeded() {
-            closingTabIDs.subtract(allTabIDs)
-            return false
-        }
-
-        // R8-A (r8-fix-spec.md; r7-verdicts.md R7-V1): re-checks
-        // closingWouldTerminate instead of trusting this method's own
-        // entry-time result above, a global event tap can toggle the
-        // quick terminal mid-modal (confirmQuitIfNeeded just ran one),
-        // making this close no longer terminating by the time control
-        // returns here. A no-op when it no longer would (see
-        // markTerminationConfirmedIfWouldTerminate's own doc comment);
-        // the window still closes either way (isClosingForShutdown/
-        // return true below are unaffected), only whether a LATER
-        // Cmd+Q silently skips its own confirm-quit prompt changes.
-        //
-        // Product decision (user-ratified): reaching this point means
-        // closing this window terminates the app (closingWouldTerminate
-        // above), so this red-button close deliberately keeps the exact
-        // same quit/detach semantics as Cmd+Q -- sessions are preserved
-        // for restore on the next launch (applicationWillTerminate's
-        // saveForTermination(), not an unconditional kill), simply
-        // because the close originated from the window's own close
-        // button rather than the app menu. An explicit close that does
-        // NOT terminate the app (another window or a quick terminal
-        // stays open) still kills this window's own persistent
-        // sessions via windowWillClose's teardown loop.
-        markTerminationConfirmedAndSetClosingForShutdown()
-        return true
-    }
-
     func windowDidChangeBackingProperties(_ notification: Notification) {
         guard let window = self.window, let tab = activeTab else { return }
         let scale = window.backingScaleFactor
@@ -4383,23 +4390,6 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        // Gated on `isAppActuallyTerminating` (the same R8-C canonical
-        // discriminator the destroy loop below reads), NOT on
-        // `isClosingForShutdown`: `closeLastWindow` sets that flag even for a
-        // non-terminating close (a quick terminal keeps the app alive), so
-        // gating on it alone would wrongly skip this save for that
-        // legitimate case too. On a genuinely terminating close, the only
-        // legitimate snapshot writer is `applicationWillTerminate`'s
-        // protected `saveAtTermination`; an unguarded save here would record
-        // the already-reduced (window-less) state and destroy the restore
-        // target for the next launch.
-        if let appDelegate = NSApp.delegate as? AppDelegate,
-           appDelegate.isClosingLastManagedWindow(self),
-           !isAppActuallyTerminating {
-            // Persist current session before this final window is removed from AppDelegate.
-            appDelegate.saveImmediately()
-        }
-
         // Mark all tabs as closing to prevent notification handler interference
         for group in windowSession.groups {
             for tab in group.tabs {
