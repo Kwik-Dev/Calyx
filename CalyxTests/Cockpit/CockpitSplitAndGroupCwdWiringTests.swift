@@ -6,9 +6,9 @@
 //  livePaneCwd(of:in:)` wiring (Calyx/Views/MainWindow/
 //  CalyxWindowController.swift's `createManagedSurface`) at the TWO
 //  call sites `CockpitTabCreateCwdWiringTests.swift` does not cover:
-//  `performSplit` (CalyxWindowController.swift:1468) and
-//  `performCreateNewGroup` (:1859). Sibling file rather than an extension of
-//  that one: its header/structure is built entirely around its own
+//  `performSplit` and `performCreateNewGroup`. Sibling file rather than
+//  an extension of that one: its header/structure is built entirely
+//  around its own
 //  five-case (a-e) `performCreateNewTab`-specific table, tightly
 //  cross-referenced by letter; folding two more call sites into it
 //  would force either an awkward re-lettering or a second, unrelated
@@ -39,101 +39,139 @@
 //  crash/hang reason documented in `CockpitTabCreateCwdWiringTests`'s/
 //  `AppDelegateAttachWindowTests`' headers.
 //
-//  REACHING `.persistent` HERE -- CLOSED GAP: this file used to report
-//  `.persistent` as unreachable, and each call site's `sessionFallbackCwd`
-//  distinction as unobservable even in principle, for BOTH call sites
-//  below. No longer true. What is STILL true, unchanged by the fix:
-//  neither `performSplit` nor `performCreateNewGroup` has a `host:`
-//  parameter at all -- grep confirms no call site anywhere in this
-//  codebase passes one to either (`performSplit`'s only two production
-//  call sites: CockpitAppAccess.swift:190,
-//  CalyxWindowController.swift:2336; `performCreateNewGroup`'s only
-//  caller: `createNewGroup()`'s own thin wrapper, :1811), and neither
-//  has a remote-host entry point analogous to `performCreateNewTab`'s
-//  own `AppDelegate.spawnRemoteSessionTab(host:)` to justify adding
-//  one. So every `SessionSpawnContext` either method builds is still
-//  unconditionally LOCAL (`context.host == nil`), and
+//  REACHING `.persistent` HERE -- CLOSED GAP, VIA AN ENV VAR, NOT A
+//  PRODUCTION PARAMETER: this file used to report `.persistent` as
+//  unreachable, and each call site's `sessionFallbackCwd` distinction
+//  as unobservable even in principle, for BOTH call sites below. Still
+//  true, unchanged by anything below: neither `performSplit` nor
+//  `performCreateNewGroup` has a `host:` parameter at all -- grep
+//  confirms no call site anywhere in this codebase passes one to either
+//  (`performSplit`'s only two production call sites:
+//  `LiveCockpitAppAccess.splitPane`,
+//  `CalyxWindowController.handleNewSplitNotification`;
+//  `performCreateNewGroup`'s only caller: `createNewGroup()`'s own thin
+//  wrapper), and neither has a remote-host entry point analogous to
+//  `performCreateNewTab`'s own `AppDelegate.spawnRemoteSessionTab(host:)`
+//  to justify adding one. So every `SessionSpawnContext` either method
+//  builds is still unconditionally LOCAL (`context.host == nil`), and
 //  `SessionSpawnPlanner.plan` still always evaluates its LOCAL-only
 //  `guard let binaryPath = resolver.resolve() else { return
 //  .passthrough }` for both -- UNCHANGED.
 //
-//  What changed is WHICH resolver that guard consults. Both methods now
-//  take a `resolver: SessionBinaryResolverProtocol = SessionBinaryResolver()`
-//  parameter (`performSplit`: CalyxWindowController.swift:1468;
-//  `performCreateNewGroup`: :1859), forwarded verbatim into their own
-//  `createManagedSurface(resolver:)` call, which forwards it again into
-//  `SessionSpawnPlanner.plan(for:resolver:)` -- the exact same
-//  already-established defaulted-protocol seam `SessionSpawnPlannerTests`/
-//  `SessionSpawnPlannerRemoteHostTests`/`SessionBinaryResolverTests`
-//  already drive with fakes (read those first; see `createManagedSurface`'s
-//  own doc comment in CalyxWindowController.swift for the full
-//  rationale of extending that seam up to this level, not restated
-//  here). The always-DEFAULTED `SessionBinaryResolver()` still ALWAYS
-//  resolves `nil` in the `CalyxTests` host (no `CALYX_SESSION_BIN`, no
-//  bundled `Resources/bin/calyx-session`; see
-//  `CockpitTabCreateCwdWiringTests`'s header for the full reasoning,
-//  identical here) -- but a test overriding the new `resolver:`
-//  parameter with a `FakeBinaryResolver` (reused below from
-//  `SessionSpawnPlannerTests`'/`SessionBinaryResolverTests`' identical
-//  private fake -- see those files first) that DOES resolve now
-//  satisfies that LOCAL guard directly, with no `host:` involved at
-//  all. This is a DIFFERENT seam than `CockpitTabCreateCwdWiringTests`'
-//  tests d/e use to reach the same `.persistent` branch for
-//  `performCreateNewTab`: those give `context.host` a non-nil value
-//  instead, which skips the local-resolver guard entirely (see
-//  `SessionSpawnPlanner.plan`'s own doc comment) -- not an option here,
-//  since neither method below has a `host:` parameter to set. `host:`
-//  was deliberately NOT added to either method purely for test
-//  reachability -- rejected for the identical reason
-//  `createManagedSurface`'s own doc comment gives for that same
-//  rejected alternative: no production caller would ever supply one, so
-//  it would be a permanently-defaulted, never-argued parameter, unlike
-//  a resolver, which is the real dependency this decision already has,
-//  merely un-injectable one level too high before this change.
+//  What DID change, twice. First attempt (since reverted): this gap was
+//  closed by giving `performSplit`/`performCreateNewGroup` (and
+//  `createManagedSurface`) their own defaulted `resolver:
+//  SessionBinaryResolverProtocol = SessionBinaryResolver()` parameter,
+//  forwarded verbatim down into `SessionSpawnPlanner.plan(for:resolver:)`
+//  -- the same already-established defaulted-protocol seam
+//  `SessionSpawnPlannerTests`/`SessionSpawnPlannerRemoteHostTests`/
+//  `SessionBinaryResolverTests` drive directly with fakes. That
+//  parameter has SINCE BEEN REMOVED from production, and this file's
+//  two `.persistent` tests below no longer use it: `resolver` genuinely
+//  is `SessionSpawnPlanner.plan`'s own real dependency at THAT layer
+//  (and remains defaulted there, untouched, for exactly those three
+//  files to keep driving), but no production caller of
+//  `performSplit`/`performCreateNewGroup` ever supplied anything but
+//  the default two/three layers further up -- exactly the same shape a
+//  `host:` parameter added to these two methods purely for test
+//  reachability would have been (see the paragraph above), regardless
+//  of whether the injected type happens to be "real" one layer down. A
+//  parameter no production caller ever passes is production code
+//  written for tests, which this project's rules forbid.
+//
+//  The two `.persistent` tests below instead reach it the way several
+//  other files in this suite already do (this file's own two tests
+//  copy `SessionReconnectAttemptResetTimingTests`'s exact save/restore
+//  shape): a `CALYX_SESSION_BIN` environment-variable override,
+//  `setenv` before driving the call and restored via `defer`
+//  immediately after. This needs NO changes to `createManagedSurface`
+//  at all -- it already calls `SessionSpawnPlanner.plan(for: context)`
+//  using that method's own defaulted `resolver:` parameter above, and
+//  the concrete `SessionBinaryResolver()` that default constructs reads
+//  `environment["CALYX_SESSION_BIN"]` first (`environment` itself
+//  defaulting to `ProcessInfo.processInfo.environment`), which observes
+//  a same-process `setenv()` call live -- no construction-time
+//  injection required. Unlike the removed `resolver:` parameter,
+//  `CALYX_SESSION_BIN` is not a seam invented for this test file at
+//  all: it is `SessionBinaryResolver`'s own pre-existing, documented
+//  PRODUCTION capability (its own doc comment: "dev workflow / test
+//  injection"), so overriding it here drives `performSplit`/
+//  `performCreateNewGroup` through genuinely real, unmodified
+//  production code all the way down to the actual resolver
+//  construction -- the test merely exercises an existing knob, rather
+//  than the production code exposing one that only a test would ever
+//  turn. The path need not exist: exactly like every other file using
+//  this idiom, `_createManagedSurfaceHookForTesting`'s short-circuit
+//  (installed in every test below) means nothing synthesized from it
+//  ever actually runs. `host:` remains, as before, deliberately NOT
+//  added to either method purely for test reachability: neither method
+//  has one to give `context.host` a non-nil value the way
+//  `CockpitTabCreateCwdWiringTests` tests d/e do for
+//  `performCreateNewTab` -- the `CALYX_SESSION_BIN` override above is
+//  the only route to `.persistent` available here.
 //
 //  CRITICAL, exactly like `CockpitTabCreateCwdWiringTests`'s identical
 //  warning about its own host/settings combination: reaching
-//  `.persistent` below needs BOTH `SessionSettings
-//  .persistentSessionsEnabled = true` AND an injected resolver that
-//  resolves -- either alone still silently falls back to
-//  `.passthrough`. Unlike that file's own risk (an assertion that would
-//  pass VACUOUSLY on the wrong branch), a misconfigured test here would
-//  still FAIL, just for a less specific reason: `.passthrough`'s
-//  observer call receives `explicitCwd`, unconditionally `nil` for both
-//  call sites, which matches neither of the distinct seeded values the
-//  two `.persistent` tests below set up. Even so, each one additionally
-//  asserts a `sessionRefs` entry was actually recorded for the new
-//  surface before trusting the observed pwd, so a real failure is
-//  diagnosed as "never reached .persistent" rather than a confusing pwd
-//  mismatch -- do not rely on the pwd assertion alone to catch a
-//  missing `persistentSessionsEnabled = true` or a non-resolving
-//  resolver.
+//  `.persistent` below still needs BOTH `SessionSettings
+//  .persistentSessionsEnabled = true` AND `CALYX_SESSION_BIN` actually
+//  resolving to a non-empty path for the duration of the call -- either
+//  alone still silently falls back to `.passthrough`. Unlike that
+//  file's own risk (an assertion that would pass VACUOUSLY on the wrong
+//  branch), a misconfigured test here would still FAIL, just for a less
+//  specific reason: `.passthrough`'s observer call receives
+//  `explicitCwd`, unconditionally `nil` for both call sites, which
+//  matches neither of the distinct seeded values the two `.persistent`
+//  tests below set up. Even so, each one additionally asserts a
+//  `sessionRefs` entry was actually recorded for the new surface before
+//  trusting the observed pwd, so a real failure is diagnosed as "never
+//  reached .persistent" rather than a confusing pwd mismatch -- do not
+//  rely on the pwd assertion alone to catch a missing
+//  `persistentSessionsEnabled = true` or a `CALYX_SESSION_BIN` override
+//  that didn't take effect.
+//
+//  That `sessionRefs` precondition matters MORE here than it did under
+//  the removed `resolver:` DI seam: a directly constructed
+//  `FakeBinaryResolver` either resolved or it didn't, deterministically,
+//  by construction -- there was no live external state that had to
+//  successfully propagate for that. An environment variable is
+//  different: a same-process, mutable, ambient global that this file's
+//  own `setenv()` call (below, in each `.persistent` test) has to
+//  actually reach `SessionBinaryResolver`'s live
+//  `ProcessInfo.processInfo.environment` read for `.persistent` to be
+//  reachable at all. If that `setenv()` call somehow failed to take
+//  effect, `SessionBinaryResolver().resolve()` would quietly return
+//  `nil`, `SessionSpawnPlanner.plan` would quietly fall back to
+//  `.passthrough`, and -- exactly as the paragraph above already
+//  establishes for any misconfiguration -- the pwd assertion would
+//  still fail (observing `nil` instead of the expected live-pane cwd),
+//  but non-specifically. The `sessionRefs` assertion is what turns that
+//  failure into an unambiguous "never reached .persistent" diagnosis
+//  instead of a confusing pwd mismatch, which is exactly why it must
+//  never be weakened or removed.
 //
 //  Coverage:
 //  - performSplit(explicitCwd: nil, sessionFallbackCwd:
-//    livePaneCwd(of: surfaceID, in: tab)) -- CalyxWindowController
-//    .swift:1484.
+//    livePaneCwd(of: surfaceID, in: tab)).
 //    - `.passthrough` (persistentSessionsEnabled = false):
 //      `test_passthroughBranch_split_explicitCwdStaysNil_preservesLibghosttyInheritance`.
 //      `explicitCwd` must stay `nil` for an ordinary split, exactly
 //      like an override-less new tab, preserving `.passthrough`'s live
 //      OSC-7-based inheritance.
-//    - `.persistent` (persistentSessionsEnabled = true, injected
-//      resolving resolver -- CLOSED GAP, see above):
+//    - `.persistent` (persistentSessionsEnabled = true, `CALYX_SESSION_BIN`
+//      override resolving -- CLOSED GAP, see above):
 //      `test_persistentBranch_split_usesSourcePaneLiveCwd_notStaleTabPwd`.
 //      Pins the same distinction `CockpitTabCreateCwdWiringTests` case
 //      (e) pins for `performCreateNewTab`: the observed pwd must be the
 //      SOURCE leaf being split (`surfaceID`, not just "the tab")'s own
 //      live `SurfacePropertyStore` cwd, not the owning tab's stale
 //      `pwd` field.
-//  - performCreateNewGroup -- CalyxWindowController.swift:1811
-//    (`createNewGroup()`'s thin wrapper), :1859 (the extracted body),
-//    :1872 (its `explicitCwd`/`sessionFallbackCwd` call). Previously
-//    untestable at all: `createNewGroup()` used to guard directly on
-//    `GhosttyAppController.shared.app` (always `nil` in `CalyxTests`)
-//    and return before ever reaching `createManagedSurface` -- this gap
-//    closed once `createNewGroup()` gained this `performCreateNewGroup
-//    (app: ghostty_app_t, resolver:)` sibling, mirroring
+//  - performCreateNewGroup (`createNewGroup()`'s thin wrapper, and the
+//    extracted body's own `explicitCwd`/`sessionFallbackCwd` call).
+//    Previously untestable at all: `createNewGroup()` used to guard
+//    directly on `GhosttyAppController.shared.app` (always `nil` in
+//    `CalyxTests`) and return before ever reaching `createManagedSurface`
+//    -- this gap closed once `createNewGroup()` gained this
+//    `performCreateNewGroup(app: ghostty_app_t)` sibling, mirroring
 //    `performCreateNewTab`'s/`performSplit`'s own "un-privated,
 //    app-taking extraction; `self.window` still resolved internally"
 //    precedent.
@@ -141,8 +179,8 @@
 //      `test_passthroughBranch_createNewGroup_explicitCwdStaysNil_preservesLibghosttyInheritance`.
 //      `explicitCwd` must stay `nil` for a new group's first pane,
 //      exactly like `performSplit`'s.
-//    - `.persistent` (persistentSessionsEnabled = true, injected
-//      resolving resolver -- CLOSED GAP, see above):
+//    - `.persistent` (persistentSessionsEnabled = true, `CALYX_SESSION_BIN`
+//      override resolving -- CLOSED GAP, see above):
 //      `test_persistentBranch_createNewGroup_usesFocusedPaneLiveCwd_notStaleTabPwd`.
 //      Pins the identical distinction, sourced from the OLD active
 //      tab's FOCUSED leaf (`activeTab?.splitTree.focusedLeafID`) rather
@@ -155,19 +193,6 @@ import XCTest
 import AppKit
 import GhosttyKit
 @testable import Calyx
-
-/// Reused verbatim from `SessionSpawnPlannerTests`'/
-/// `SessionBinaryResolverTests`' identical private fake (see either for
-/// precedent) -- the `.persistent`-branch tests below only need
-/// `resolve()` to return non-nil to satisfy `SessionSpawnPlanner.plan`'s
-/// LOCAL-context guard, exactly like those files' own usage; nothing
-/// here executes the synthesized command (`_createManagedSurfaceHookForTesting`
-/// short-circuits before that), so `path` need not point at a real
-/// binary.
-private struct FakeBinaryResolver: SessionBinaryResolverProtocol {
-    let path: String?
-    func resolve() -> String? { path }
-}
 
 @MainActor
 final class CockpitSplitAndGroupCwdWiringTests: XCTestCase {
@@ -245,12 +270,12 @@ final class CockpitSplitAndGroupCwdWiringTests: XCTestCase {
         controller.windowSession.activeGroup?.activeTab?.sessionRefs[surfaceID]?.sessionID
     }
 
-    // MARK: - performSplit (see file header for how the resolver: DI
-    // seam closed .persistent's reachability gap for this call site)
+    // MARK: - performSplit (see file header for how the CALYX_SESSION_BIN
+    // env-var override closes .persistent's reachability gap for this call site)
 
-    /// Pins `performSplit`'s `explicitCwd: nil` (CalyxWindowController
-    /// .swift:1433): a split carries no user-supplied cwd directive of
-    /// its own, so it must always leave `explicitCwd` unset, exactly
+    /// Pins `performSplit`'s `explicitCwd: nil`: a split carries no
+    /// user-supplied cwd directive of its own, so it must always leave
+    /// `explicitCwd` unset, exactly
     /// like an override-less new tab (`CockpitTabCreateCwdWiringTests`
     /// case b) -- preserving `.passthrough`'s live OSC-7-based
     /// inheritance for the new pane. `tab.pwd` and the SOURCE surface's
@@ -303,14 +328,14 @@ final class CockpitSplitAndGroupCwdWiringTests: XCTestCase {
     }
 
     /// Pins `performSplit`'s `.persistent`-branch `sessionFallbackCwd:
-    /// livePaneCwd(of: surfaceID, in: tab)` (CalyxWindowController
-    /// .swift:1484) -- CLOSED GAP, see file header for the `resolver:`
-    /// DI seam that made this reachable at all. `SessionSettings
-    /// .persistentSessionsEnabled = true` plus an injected resolver that
-    /// DOES resolve (`FakeBinaryResolver`, reused above from
-    /// `SessionSpawnPlannerTests`'/`SessionBinaryResolverTests`'
-    /// identical private fake) makes `SessionSpawnPlanner.plan` return
-    /// `.persistent` for this LOCAL (`context.host == nil`) split, so
+    /// livePaneCwd(of: surfaceID, in: tab)` -- CLOSED GAP, see file
+    /// header for the `CALYX_SESSION_BIN` env-var override that makes
+    /// this reachable at all. `SessionSettings.persistentSessionsEnabled
+    /// = true` plus the `CALYX_SESSION_BIN` override below (which the
+    /// default `SessionBinaryResolver()` `createManagedSurface` hands
+    /// `SessionSpawnPlanner.plan` resolves to a non-nil path) makes
+    /// `SessionSpawnPlanner.plan` return `.persistent` for this LOCAL
+    /// (`context.host == nil`) split, so
     /// `_createManagedSurfacePwdObserverForTesting` now fires with
     /// `sessionCwd` -- `explicitCwd ?? sessionFallbackCwd ??
     /// NSHomeDirectory()`, with `explicitCwd` always `nil` for a split
@@ -343,6 +368,25 @@ final class CockpitSplitAndGroupCwdWiringTests: XCTestCase {
         XCTAssertEqual(SurfacePropertyStore.shared.cwd(for: sourceSurfaceID), "/Users/dev/live-source-pane-cwd",
                        "precondition: the source leaf's own live cwd must be recorded before driving performSplit")
 
+        // CALYX_SESSION_BIN env override (SessionBinaryResolver's own
+        // documented production test-injection seam, see file header)
+        // makes the default SessionBinaryResolver() createManagedSurface
+        // hands SessionSpawnPlanner.plan resolve to a non-nil path,
+        // without which this LOCAL split would silently fall back to
+        // .passthrough -- the sessionRefs precondition below exists
+        // precisely to catch that if it ever happens. The path need not
+        // exist: _createManagedSurfaceHookForTesting below intercepts
+        // before any command is ever actually executed.
+        let originalBinPath = ProcessInfo.processInfo.environment["CALYX_SESSION_BIN"]
+        setenv("CALYX_SESSION_BIN", "/usr/bin/true", 1)
+        defer {
+            if let originalBinPath {
+                setenv("CALYX_SESSION_BIN", originalBinPath, 1)
+            } else {
+                unsetenv("CALYX_SESSION_BIN")
+            }
+        }
+
         let newSurfaceID = UUID()
         controller._createManagedSurfaceHookForTesting = { newSurfaceID }
         var observerCallCount = 0
@@ -352,10 +396,7 @@ final class CockpitSplitAndGroupCwdWiringTests: XCTestCase {
             observedPwd = pwd
         }
 
-        let result = controller.performSplit(
-            surfaceID: sourceSurfaceID, direction: .horizontal, app: dummyApp,
-            resolver: FakeBinaryResolver(path: "/dummy/calyx-session")
-        )
+        let result = controller.performSplit(surfaceID: sourceSurfaceID, direction: .horizontal, app: dummyApp)
         defer {
             if let sessionID = tab.sessionRefs[newSurfaceID]?.sessionID {
                 SessionSurfaceMap.shared.unregister(sessionID: sessionID)
@@ -367,7 +408,7 @@ final class CockpitSplitAndGroupCwdWiringTests: XCTestCase {
         XCTAssertEqual(observerCallCount, 1,
                        "precondition: performSplit must reach createManagedSurface exactly once for an ordinary split")
         XCTAssertNotNil(tab.sessionRefs[newSurfaceID],
-                        "precondition: the injected resolving resolver must actually reach the .persistent branch " +
+                        "precondition: the CALYX_SESSION_BIN override must actually reach the .persistent branch " +
                         "(recording a sessionRefs entry) -- otherwise this test silently exercises .passthrough " +
                         "instead and proves nothing about sessionFallbackCwd")
         XCTAssertEqual(observedPwd, "/Users/dev/live-source-pane-cwd",
@@ -376,12 +417,11 @@ final class CockpitSplitAndGroupCwdWiringTests: XCTestCase {
                     "value above)")
     }
 
-    // MARK: - createNewGroup (see file header for how the resolver: DI
-    // seam closed .persistent's reachability gap for this call site)
+    // MARK: - createNewGroup (see file header for how the CALYX_SESSION_BIN
+    // env-var override closes .persistent's reachability gap for this call site)
 
-    /// Pins `performCreateNewGroup`'s `explicitCwd: nil`
-    /// (CalyxWindowController.swift:1799): a new group's first pane
-    /// carries no user-supplied cwd directive of its own, so it must
+    /// Pins `performCreateNewGroup`'s `explicitCwd: nil`: a new group's
+    /// first pane carries no user-supplied cwd directive of its own, so it must
     /// always leave `explicitCwd` unset, exactly like an override-less
     /// new tab (`CockpitTabCreateCwdWiringTests` case b) or an ordinary
     /// split (`test_passthroughBranch_split_explicitCwdStaysNil_...`
@@ -441,14 +481,14 @@ final class CockpitSplitAndGroupCwdWiringTests: XCTestCase {
 
     /// Pins `performCreateNewGroup`'s `.persistent`-branch
     /// `sessionFallbackCwd: livePaneCwd(of: activeTab?.splitTree
-    /// .focusedLeafID, in: activeTab)` (CalyxWindowController.swift:1872)
-    /// -- CLOSED GAP, see file header for the `resolver:` DI seam that
-    /// made this reachable at all. Same setup shape as the split test
-    /// above, sourced from the OLD active tab's FOCUSED leaf rather than
-    /// a split's own source surface -- exactly mirroring
+    /// .focusedLeafID, in: activeTab)` -- CLOSED GAP, see file header
+    /// for the `CALYX_SESSION_BIN` env-var override that made this
+    /// reachable at all. Same setup shape as the split test above,
+    /// sourced from the OLD active tab's FOCUSED leaf rather than a
+    /// split's own source surface -- exactly mirroring
     /// `CockpitTabCreateCwdWiringTests` case (e)'s identical
-    /// `performCreateNewTab` setup, just reaching `.persistent` via an
-    /// injected resolver instead of a non-nil `host`
+    /// `performCreateNewTab` setup, just reaching `.persistent` via a
+    /// `CALYX_SESSION_BIN` override instead of a non-nil `host`
     /// (`performCreateNewGroup` has no `host:` parameter -- see file
     /// header). The OLD active tab's `pwd` and its FOCUSED leaf's own
     /// live `SurfacePropertyStore` cwd are seeded to distinct, non-nil
@@ -473,6 +513,21 @@ final class CockpitSplitAndGroupCwdWiringTests: XCTestCase {
         XCTAssertEqual(SurfacePropertyStore.shared.cwd(for: focusedSurfaceID), "/Users/dev/live-focused-pane-cwd",
                        "precondition: the focused leaf's own live cwd must be recorded before driving performCreateNewGroup")
 
+        // CALYX_SESSION_BIN env override -- see the split test above and
+        // the file header for the full mechanism and why this replaced
+        // the removed resolver: DI parameter. The path need not exist:
+        // _createManagedSurfaceHookForTesting below intercepts before
+        // any command is ever actually executed.
+        let originalBinPath = ProcessInfo.processInfo.environment["CALYX_SESSION_BIN"]
+        setenv("CALYX_SESSION_BIN", "/usr/bin/true", 1)
+        defer {
+            if let originalBinPath {
+                setenv("CALYX_SESSION_BIN", originalBinPath, 1)
+            } else {
+                unsetenv("CALYX_SESSION_BIN")
+            }
+        }
+
         let newSurfaceID = UUID()
         controller._createManagedSurfaceHookForTesting = { newSurfaceID }
         var observerCallCount = 0
@@ -483,7 +538,7 @@ final class CockpitSplitAndGroupCwdWiringTests: XCTestCase {
         }
 
         let groupCountBefore = controller.windowSession.groups.count
-        controller.performCreateNewGroup(app: dummyApp, resolver: FakeBinaryResolver(path: "/dummy/calyx-session"))
+        controller.performCreateNewGroup(app: dummyApp)
         defer {
             if let sessionID = createdSessionID(controller: controller, surfaceID: newSurfaceID) {
                 SessionSurfaceMap.shared.unregister(sessionID: sessionID)
@@ -495,7 +550,7 @@ final class CockpitSplitAndGroupCwdWiringTests: XCTestCase {
         XCTAssertEqual(observerCallCount, 1,
                        "precondition: performCreateNewGroup must reach createManagedSurface exactly once for an ordinary new group")
         XCTAssertNotNil(createdSessionID(controller: controller, surfaceID: newSurfaceID),
-                        "precondition: the injected resolving resolver must actually reach the .persistent branch " +
+                        "precondition: the CALYX_SESSION_BIN override must actually reach the .persistent branch " +
                         "(recording a sessionRefs entry) -- otherwise this test silently exercises .passthrough " +
                         "instead and proves nothing about sessionFallbackCwd")
         XCTAssertEqual(observedPwd, "/Users/dev/live-focused-pane-cwd",

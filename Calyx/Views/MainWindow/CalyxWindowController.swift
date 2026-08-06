@@ -803,36 +803,6 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// directly -- see `SessionSpawnPlannerHostPropagationTests` for why
     /// the plan itself is the source of truth for a caller applying it).
     ///
-    /// `resolver`: threaded straight into `SessionSpawnPlanner
-    /// .plan(for:resolver:)`, which ALREADY exposes exactly this
-    /// defaulted-protocol seam -- `SessionSpawnPlannerTests`/
-    /// `SessionSpawnPlannerRemoteHostTests`/`SessionBinaryResolverTests`
-    /// already drive it with fakes (read those first). This parameter
-    /// just extends that same established seam one level up, to the
-    /// method that OWNS the passthrough-vs-persistent decision for a
-    /// real surface, so a `CalyxWindowController` test can exercise the
-    /// `.persistent` branch for a LOCAL context: the default
-    /// `SessionBinaryResolver().resolve()` always returns `nil` in the
-    /// `CalyxTests` host (no `CALYX_SESSION_BIN` -- only `CalyxUITests`
-    /// propagates that, see `project.yml` -- and no bundled
-    /// `calyx-session` resource, since this target has no `TEST_HOST`),
-    /// so every LOCAL context used to hit `plan(for:)`'s own
-    /// `guard let binaryPath = resolver.resolve() else { return
-    /// .passthrough }` and the `.persistent` branch below was
-    /// unreachable from any test -- meaning `performSplit`'s/
-    /// `performCreateNewGroup`'s `sessionFallbackCwd:
-    /// livePaneCwd(of:in:)` (above) could never actually be observed
-    /// reaching a `.persistent` plan; a revert of either back to plain
-    /// `tab.pwd` would compile and leave the whole suite green.
-    /// Defaults to `SessionBinaryResolver()`, so all 4 existing call
-    /// sites keep working untouched. Rejected alternative: a `host:`
-    /// parameter added to `performSplit`/`performCreateNewGroup` purely
-    /// for test reachability -- no production caller would ever pass
-    /// one, so it would be a nonsensical, permanently-defaulted,
-    /// never-argued parameter. A resolver is not that: it is the real
-    /// dependency this decision already has, merely un-injectable one
-    /// level too high before this change.
-    ///
     /// Not `private` any more (P5; mirrors `closeAllTabsInGroup(id:)`'s/
     /// `processChildExited`'s/`handleSessionReconnectDecision`'s own
     /// identical "un-privated for direct test access" precedent):
@@ -846,12 +816,11 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         explicitCwd: String?,
         sessionFallbackCwd: String?,
         origin: SessionSpawnOrigin,
-        host: String? = nil,
-        resolver: SessionBinaryResolverProtocol = SessionBinaryResolver()
+        host: String? = nil
     ) -> UUID? {
         let sessionCwd = explicitCwd ?? sessionFallbackCwd ?? NSHomeDirectory()
         let context = SessionSpawnContext(cwd: sessionCwd, host: host, origin: origin)
-        switch SessionSpawnPlanner.plan(for: context, resolver: resolver) {
+        switch SessionSpawnPlanner.plan(for: context) {
         case .passthrough:
             #if DEBUG
             _createManagedSurfacePwdObserverForTesting?(explicitCwd)
@@ -1446,31 +1415,11 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// the directory it was split from, even when the tab's own
     /// last-persisted pwd is stale or reflects a different pane
     /// entirely.
-    ///
-    /// `resolver`: forwarded straight into `createManagedSurface
-    /// (resolver:)` above -- see that parameter's own doc paragraph for
-    /// the full rationale, not restated here. In short, it exists so a
-    /// unit test can reach the `.persistent` branch for a LOCAL context
-    /// (the real resolver never resolves in the `CalyxTests` host -- no
-    /// `CALYX_SESSION_BIN`, which only the `CalyxUITests` scheme
-    /// propagates per `project.yml`, and no bundled binary, since this
-    /// target has no `TEST_HOST`), which is the only way to observe the
-    /// `sessionFallbackCwd:` argument above reaching anything at all --
-    /// the `.passthrough` branch only ever hands `explicitCwd` to
-    /// `SurfaceRegistry.createSurface`. Unlike `performCreateNewTab`,
-    /// this method has no `host:` parameter that could reach
-    /// `.persistent` some other way: a non-nil `host` short-circuits
-    /// `SessionSpawnPlanner.plan` before the resolver guard, which is
-    /// exactly why `performCreateNewTab` doesn't need this parameter and
-    /// this method does. Defaults to `SessionBinaryResolver()`, so both
-    /// existing callers (`handleNewSplitNotification`,
-    /// `LiveCockpitAppAccess.splitPane`) keep working untouched.
     func performSplit(
         surfaceID: UUID,
         direction: SplitDirection,
         app: ghostty_app_t,
-        config: ghostty_surface_config_s? = nil,
-        resolver: SessionBinaryResolverProtocol = SessionBinaryResolver()
+        config: ghostty_surface_config_s? = nil
     ) -> UUID? {
         guard let tab = findTab(bySplitLeaf: surfaceID) else { return nil }
 
@@ -1481,8 +1430,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
 
         guard let newSurfaceID = createManagedSurface(
             tab: tab, app: app, config: resolvedConfig,
-            explicitCwd: nil, sessionFallbackCwd: livePaneCwd(of: surfaceID, in: tab), origin: .tab,
-            resolver: resolver
+            explicitCwd: nil, sessionFallbackCwd: livePaneCwd(of: surfaceID, in: tab), origin: .tab
         ) else {
             return nil
         }
@@ -1838,28 +1786,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// .shared.app`), so keeping the resolution in here, rather than
     /// requiring it as a parameter from the caller, is what makes this
     /// method drivable by a test in the first place.
-    ///
-    /// `resolver`: forwarded straight into `createManagedSurface
-    /// (resolver:)` above -- see that parameter's own doc paragraph for
-    /// the full rationale, not restated here. In short, it exists so a
-    /// unit test can reach the `.persistent` branch for a LOCAL context
-    /// (the real resolver never resolves in the `CalyxTests` host -- no
-    /// `CALYX_SESSION_BIN`, which only the `CalyxUITests` scheme
-    /// propagates per `project.yml`, and no bundled binary, since this
-    /// target has no `TEST_HOST`), which is the only way to observe the
-    /// `sessionFallbackCwd:` argument above reaching anything at all --
-    /// the `.passthrough` branch only ever hands `explicitCwd` to
-    /// `SurfaceRegistry.createSurface`. Unlike `performCreateNewTab`,
-    /// this method has no `host:` parameter that could reach
-    /// `.persistent` some other way: a non-nil `host` short-circuits
-    /// `SessionSpawnPlanner.plan` before the resolver guard, which is
-    /// exactly why `performCreateNewTab` doesn't need this parameter and
-    /// this method does. Defaults to `SessionBinaryResolver()`, so
-    /// `createNewGroup`, its only caller, keeps working untouched.
-    func performCreateNewGroup(
-        app: ghostty_app_t,
-        resolver: SessionBinaryResolverProtocol = SessionBinaryResolver()
-    ) {
+    func performCreateNewGroup(app: ghostty_app_t) {
         guard let window = self.window else { return }
 
         let tab = Tab()
@@ -1869,8 +1796,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
 
         guard let surfaceID = createManagedSurface(
             tab: tab, app: app, config: config,
-            explicitCwd: nil, sessionFallbackCwd: livePaneCwd(of: activeTab?.splitTree.focusedLeafID, in: activeTab), origin: .tab,
-            resolver: resolver
+            explicitCwd: nil, sessionFallbackCwd: livePaneCwd(of: activeTab?.splitTree.focusedLeafID, in: activeTab), origin: .tab
         ) else {
             logger.error("Failed to create surface for new group")
             return

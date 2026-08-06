@@ -125,11 +125,16 @@
 //  both call sites: unlike this file's own tests d/e, which reach
 //  `.persistent` by giving `context.host` a non-nil value (neither
 //  method has a `host:` parameter to do the same), that file's own
-//  `.persistent` coverage for both instead reaches it via a `resolver:
-//  SessionBinaryResolverProtocol` parameter each method has since
-//  gained, forwarded into `createManagedSurface(resolver:)` exactly
-//  like this file's `host:` is forwarded into `createManagedSurface
-//  (host:)` -- see that file's own header for the full mechanism.
+//  `.persistent` coverage for both instead reaches it via a
+//  `CALYX_SESSION_BIN` environment-variable override -- the same
+//  production `SessionBinaryResolver` test-injection idiom several
+//  other files in this suite already rely on -- rather than a `host:`
+//  argument, since neither method has one. (An earlier version of that
+//  file's coverage instead gave `performSplit`/`performCreateNewGroup`
+//  their own `resolver:` DI parameter; that parameter existed on no
+//  production call path and has since been removed, exactly the kind
+//  of test-only production surface this project's rules forbid.) See
+//  that file's own header for the full mechanism.
 //
 //  Coverage (table from the issue #43 investigation; a/c/e were the RED
 //  cases -- all now pass, and pin the fix against regression):
