@@ -1105,6 +1105,20 @@ final class SplitTreeTests: XCTestCase {
     /// STILL split afterward, must PRESERVE zoom. `remove`'s current,
     /// unmodified body doesn't thread `zoomedLeafID` through at all, so
     /// today this always comes back `nil` instead of `idA`.
+    ///
+    /// CODE REVIEW fix (CRITICAL 2): also asserts `result.focusedLeafID`
+    /// AND the returned `focusTarget` tuple value (previously discarded
+    /// as `_`) — this is exactly where the original bug hid. `remove`'s
+    /// pre-fix body preserved `zoomedLeafID` correctly here but still
+    /// unconditionally reassigned focus to the removed leaf's sibling
+    /// (idB), regardless of whether idB was the zoomed/visible pane —
+    /// `closeSurfaceAndCleanUp` (the sole production caller) keys its
+    /// `window?.makeFirstResponder(_:)` call off `focusTarget`, NOT off
+    /// `result.focusedLeafID`, so a fix that only touched the tree's own
+    /// field without also fixing `focusTarget` would leave the real,
+    /// observable AppKit bug (keystrokes silently routed to hidden idB)
+    /// completely unfixed despite `result.focusedLeafID` looking correct
+    /// in isolation. Both must equal idA.
     func test_should_preserve_zoom_when_removing_an_unrelated_leaf_from_a_three_leaf_tree() {
         let idA = UUID()
         let idB = UUID()
@@ -1123,11 +1137,20 @@ final class SplitTreeTests: XCTestCase {
         ))
         let tree = SplitTree(root: root, focusedLeafID: idA, zoomedLeafID: idA)
 
-        let (result, _) = tree.remove(idC)
+        let (result, focusTarget) = tree.remove(idC)
 
         XCTAssertEqual(result.zoomedLeafID, idA,
                        "Removing a leaf unrelated to the zoomed one, when the tree is still split " +
                        "afterward, must preserve zoom")
+        XCTAssertEqual(result.focusedLeafID, idA,
+                       "Removing a leaf unrelated to the currently-focused/zoomed one must NOT move " +
+                       "focus onto its sibling (idB) -- idB is hidden behind the still-zoomed idA, " +
+                       "so moving focus there would silently route keystrokes to a pane the user " +
+                       "cannot see")
+        XCTAssertEqual(focusTarget, idA,
+                       "The returned focusTarget (what closeSurfaceAndCleanUp actually passes to " +
+                       "window?.makeFirstResponder(_:)) must also stay idA, not just result.focusedLeafID " +
+                       "-- these two must never diverge")
     }
 
     /// REGRESSION GUARD: unlike the "unrelated leaf, still split" case

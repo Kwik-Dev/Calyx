@@ -146,11 +146,26 @@ struct SplitTree: Codable, Equatable, Sendable {
             return (SplitTree(), nil)
         }
 
-        // Find the sibling in the tree (the node that shares a parent split with the leaf)
-        let focusTarget = Self.findSiblingLeaf(in: root, of: leafID)
+        // A leaf ID this tree doesn't actually contain is a complete
+        // no-op: nothing to remove, so neither focus nor zoom may change
+        // either. Mirrors togglingZoom(at:)'s own identical
+        // containsLeaf guard/reasoning ("a stale/unknown id can never
+        // fabricate a zoom"). CalyxWindowController.performReconnect's
+        // own doc comment relies on exactly this — its reentrant
+        // close_surface callback for an already-remapped-away
+        // oldSurfaceID depends on remove(_:) being a true no-op here,
+        // returning a nil focusTarget so its own tail's
+        // window?.makeFirstResponder(_:) call is skipped.
+        guard Self.containsLeaf(root, id: leafID) else { return (self, nil) }
+
+        // The leftmost leaf of the removed leaf's own sibling subtree —
+        // the candidate replacement focus target, used below ONLY when
+        // the removed leaf itself held focus (see newFocused). Guaranteed
+        // non-nil: leafID is confirmed present in `root` above, and every
+        // real leaf of a still-`.split` tree has a sibling.
+        let siblingOfRemoved = Self.findSiblingLeaf(in: root, of: leafID)
 
         let newRoot = Self.removeNode(from: root, leafID: leafID)
-        let newFocused = focusTarget ?? focusedLeafID
 
         // zoomedLeafID: cleared if the removed leaf WAS the zoomed one, or
         // if the removal collapsed the tree so it's no longer split (a
@@ -167,9 +182,33 @@ struct SplitTree: Codable, Equatable, Sendable {
         }
         let newZoomed: UUID? = (leafID == zoomedLeafID || !stillSplitAfterRemoval) ? nil : zoomedLeafID
 
+        // focusedLeafID: moved to the removed leaf's sibling ONLY when the
+        // REMOVED leaf itself held focus (CODE REVIEW fix, CRITICAL 2).
+        // Mirrors upstream ghostty's own discipline
+        // (BaseTerminalController.removeSurfaceNode only ever recomputes
+        // focus `if node.contains(where: { $0 == focusedSurface })`,
+        // never for an incidental removal of some OTHER, unrelated leaf —
+        // confirmed against ghostty/macos/Sources/Features/Terminal/
+        // BaseTerminalController.swift:450-458). Removing a leaf that
+        // ISN'T focused — e.g. a background persistent session's shell
+        // exiting in a pane the user isn't even looking at — must never
+        // silently steal focus (and, since this type's own invariant is
+        // that zoomedLeafID, whenever non-nil, always equals
+        // focusedLeafID — enforced by settingFocus/togglingZoom — the
+        // keyboard) away from wherever the user actually is, onto some
+        // other, possibly still-hidden, pane.
+        //
+        // The returned `focusTarget` label is always this SAME value,
+        // deliberately never the raw `siblingOfRemoved` above: the sole
+        // production caller (`closeSurfaceAndCleanUp`) keys its
+        // `window?.makeFirstResponder(_:)` call off THIS tuple field, not
+        // off `focusedLeafID` on the returned tree, so the two must never
+        // be allowed to diverge.
+        let newFocused: UUID? = (leafID == focusedLeafID) ? (siblingOfRemoved ?? focusedLeafID) : focusedLeafID
+
         return (
             SplitTree(root: newRoot, focusedLeafID: newRoot == nil ? nil : newFocused, zoomedLeafID: newZoomed),
-            focusTarget
+            newFocused
         )
     }
 

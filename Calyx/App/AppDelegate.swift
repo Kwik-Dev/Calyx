@@ -119,6 +119,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     #endif
 
     #if DEBUG
+    /// Test seam: `quickTerminalController` is `private`, and its only
+    /// production writer is `toggleQuickTerminal()`, which also opens a
+    /// REAL window — unsafe to call from a unit test (see this file's own
+    /// close-path test suites' shared warning about the `NSApp.terminate`
+    /// cascade a real window close can trigger in the XCTest host). Lets
+    /// `closeAllWindows()`'s `willTerminate` branch (CODE REVIEW fix,
+    /// CRITICAL 1) be exercised without ever calling `toggleQuickTerminal()`
+    /// for real — a plain `QuickTerminalController()` is safe to construct
+    /// directly, since its `init` only registers a config-change observer
+    /// and neither creates a window nor a ghostty surface (both deferred
+    /// to `animateIn()`/`ensureSurface()`, never called here). DO NOT use
+    /// from production code.
+    func _setQuickTerminalControllerForTesting(_ controller: QuickTerminalController?) {
+        quickTerminalController = controller
+    }
+    #endif
+
+    #if DEBUG
     /// Test seam: overrides the resources root
     /// `applyGhosttyResourcesDirEnvironmentIfNeeded()` resolves against,
     /// instead of `Bundle.main.resourceURL`. DO NOT use from production
@@ -1141,38 +1159,59 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// so iterating the live property directly would skip entries as it
     /// shrinks out from under the loop.
     ///
+    /// `willTerminate` mirrors `closingWouldTerminate(_:)`'s own
+    /// `quickTerminalController == nil` half (CODE REVIEW fix): every
+    /// OTHER close path in this file — `closingWouldTerminate` itself,
+    /// `confirmQuitBeforeCloseIfWouldTerminate`/
+    /// `markTerminationConfirmedIfWouldTerminate`, `windowShouldClose` —
+    /// already gates on whether a quick terminal would keep the app
+    /// alive; this method used to be the one call site that claimed
+    /// app-termination semantics unconditionally.
+    ///
     /// `isTerminationConfirmed = true` is set BEFORE either loop, not
-    /// after. `CalyxWindowController.windowWillClose`'s pre-teardown save
-    /// only skips its own synchronous `saveImmediately()` call when
-    /// `isAppActuallyTerminating` (-> `AppDelegate.isTerminating` ->
-    /// this flag) already reads `true`. Left `false` here, the last
-    /// window closed by the loop below would see "closing the last
-    /// managed window, app NOT terminating" and synchronously overwrite
-    /// the on-disk snapshot — with every OTHER window in this batch
-    /// already torn down and removed from `windowControllers` by that
-    /// point, that write would silently collapse the snapshot to just
-    /// one window, corrupting the NEXT launch's restore. This mirrors
-    /// exactly why `applicationShouldTerminate`'s own Cmd+Q path sets
-    /// this flag ahead of `markAllControllersClosingForShutdown`.
+    /// after, but ONLY when `willTerminate`.
+    /// `CalyxWindowController.windowWillClose`'s pre-teardown save only
+    /// skips its own synchronous `saveImmediately()` call — and its
+    /// destroy loop only preserves, instead of killing, persistent
+    /// sessions — when `isAppActuallyTerminating` (->
+    /// `AppDelegate.isTerminating` -> this flag) already reads `true`.
+    /// When a quick terminal IS open, the app does NOT actually
+    /// terminate once every regular window closes, so `willTerminate` is
+    /// `false` and this flag is left alone: each closed window must run
+    /// its ordinary, non-terminating close policy — synchronously saving
+    /// the reduced snapshot and killing (never leaking) its own
+    /// persistent sessions — exactly as if the user had closed every
+    /// window individually. Only when `willTerminate` is `true` would
+    /// leaving the flag `false` let the last window closed by the loop
+    /// below wrongly see "closing the last managed window, app NOT
+    /// terminating" and synchronously overwrite the on-disk snapshot —
+    /// with every OTHER window in this batch already torn down and
+    /// removed from `windowControllers` by that point, that write would
+    /// silently collapse the snapshot to just one window, corrupting the
+    /// NEXT launch's restore. This mirrors exactly why
+    /// `applicationShouldTerminate`'s own Cmd+Q path sets this flag ahead
+    /// of `markAllControllersClosingForShutdown`.
     ///
     /// The trailing check restores the flag back to `false` unless the
-    /// app is genuinely gone (e.g. a quick terminal is still open, so
-    /// `removeWindowController` never reached its own `NSApp.terminate`
-    /// branch, or some window otherwise declined to close and survived).
-    /// Leaving it `true` in that case would make the NEXT Cmd+Q take
-    /// `applicationShouldTerminate`'s "already confirmed" branch and
-    /// terminate immediately, skipping the confirm-quit prompt for
-    /// whatever is still actually running.
+    /// app is genuinely gone (some window declined to close and
+    /// survived, so `windowControllers` isn't actually empty despite
+    /// `willTerminate` predicting it would be). Leaving it `true` in that
+    /// case would make the NEXT Cmd+Q take `applicationShouldTerminate`'s
+    /// "already confirmed" branch and terminate immediately, skipping the
+    /// confirm-quit prompt for whatever is still actually running.
     func closeAllWindows() {
         let targets = windowControllers
         guard !targets.isEmpty else { return }
         guard confirmQuitIfNeeded() else { return }
 
-        isTerminationConfirmed = true
+        let willTerminate = quickTerminalController == nil
+        if willTerminate {
+            isTerminationConfirmed = true
+        }
         for wc in targets { wc.isClosingForShutdown = true }
         for wc in targets { wc.window?.close() }
 
-        if !windowControllers.isEmpty || quickTerminalController != nil {
+        if willTerminate, !windowControllers.isEmpty {
             isTerminationConfirmed = false
         }
     }
