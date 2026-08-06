@@ -7,7 +7,7 @@
 // `ghostty/src/config/Config.zig`'s `command` doc comment), so every
 // token below must be shell-safe on its own — `shSafeToken(_:)` is
 // applied to each argument that can contain attacker/user-controlled
-// text (the binary path, sessionID, cwd, and name).
+// text (the binary path, sessionID, and cwd).
 //
 // Pure function group — no I/O, no actor isolation required.
 
@@ -72,10 +72,9 @@ enum SessionCommandSynthesizer {
     }
 
     /// Builds `<binaryPath> --runtime-dir <root>/.calyx/run --state-dir
-    /// <root>/.calyx/state attach <sessionID> --create --cwd <cwd>
-    /// [--name <name>]`. `sessionID` is positional, matching the P2
-    /// CLI's `AttachArgs` (`calyx-session/crates/cli/src/cli.rs`), which
-    /// has no `--id` flag.
+    /// <root>/.calyx/state attach <sessionID> --create --cwd <cwd>`.
+    /// `sessionID` is positional, matching the P2 CLI's `AttachArgs`
+    /// (`calyx-session/crates/cli/src/cli.rs`), which has no `--id` flag.
     ///
     /// Ghostty does not hand this string to a shell unmodified; it wraps
     /// whatever `command` we configure itself, as `/bin/bash --noprofile
@@ -115,7 +114,7 @@ enum SessionCommandSynthesizer {
     /// process's own lifetime.
     ///
     /// `sessionID` must be shell-escaped via `shSafeToken(_:)` exactly
-    /// like `binaryPath`/`cwd`/`name`, as defense in depth against a
+    /// like `binaryPath`/`cwd`, as defense in depth against a
     /// corrupted or otherwise attacker-controlled persisted
     /// `SessionRef.sessionID` reaching this function on the restore
     /// path (see `SessionRef.isValidULID(_:)`, which restore should
@@ -128,15 +127,10 @@ enum SessionCommandSynthesizer {
         binaryPath: String,
         sessionID: String,
         cwd: String,
-        name: String? = nil,
         rootResolver: SessionRootResolverProtocol = SessionRootResolver()
     ) -> String {
         let root = rootResolver.resolve()
-        var command = "\(shSafeToken(binaryPath)) --runtime-dir \(shSafeToken(root + "/.calyx/run")) --state-dir \(shSafeToken(root + "/.calyx/state")) attach \(shSafeToken(sessionID)) --create --cwd \(shSafeToken(cwd))"
-        if let name {
-            command += " --name \(shSafeToken(name))"
-        }
-        return command
+        return "\(shSafeToken(binaryPath)) --runtime-dir \(shSafeToken(root + "/.calyx/run")) --state-dir \(shSafeToken(root + "/.calyx/state")) attach \(shSafeToken(sessionID)) --create --cwd \(shSafeToken(cwd))"
     }
 
     /// Builds the attach command for re-attaching to an *existing*
@@ -153,7 +147,7 @@ enum SessionCommandSynthesizer {
     ///
     /// `rootResolver` defaults to `SessionRootResolver()` (real
     /// production use); see `attachCommand(binaryPath:sessionID:cwd:
-    /// name:rootResolver:)`'s doc comment for why the `--runtime-dir`/
+    /// rootResolver:)`'s doc comment for why the `--runtime-dir`/
     /// `--state-dir` flags exist.
     static func reattachCommand(
         sessionID: String,
@@ -167,8 +161,8 @@ enum SessionCommandSynthesizer {
 
     /// Builds `<sshPath> -t -- <host> <remoteCommand>`, where
     /// `remoteCommand` is the single shell-safe word `$HOME/.calyx/bin/
-    /// calyx-session attach <sessionID> --create --cwd <cwd> [--name
-    /// <name>]`, with `sshPath` resolved via `sshResolver`.
+    /// calyx-session attach <sessionID> --create --cwd <cwd>`, with
+    /// `sshPath` resolved via `sshResolver`.
     ///
     /// TWO SHELL LAYERS: exactly like `attachCommand`, ghostty wraps
     /// whatever `command` string this returns in its own `/bin/sh -c
@@ -181,7 +175,7 @@ enum SessionCommandSynthesizer {
     /// like `attachCommand`'s own `binaryPath` contract. `ssh` then
     /// transmits its own trailing "command" argv word to the remote
     /// sshd, which invokes some POSIX shell remotely as that shell's own
-    /// `-c` argument (LAYER 2). `sessionID`/`cwd`/`name` are each wrapped
+    /// `-c` argument (LAYER 2). `sessionID`/`cwd` are each wrapped
     /// in their own `shSafeToken` call scoped for THAT remote shell's
     /// parsing, and the entire `remoteCommand` string is then wrapped in
     /// one more `shSafeToken` call scoped for the LOCAL shell (LAYER 1)
@@ -217,13 +211,9 @@ enum SessionCommandSynthesizer {
         host: String,
         sessionID: String,
         cwd: String,
-        name: String? = nil,
         sshResolver: SSHBinaryResolverProtocol = SSHBinaryResolver()
     ) -> String {
-        var remoteCommand = "$HOME/.calyx/bin/calyx-session attach \(shSafeToken(sessionID)) --create --cwd \(shSafeToken(cwd))"
-        if let name {
-            remoteCommand += " --name \(shSafeToken(name))"
-        }
+        let remoteCommand = "$HOME/.calyx/bin/calyx-session attach \(shSafeToken(sessionID)) --create --cwd \(shSafeToken(cwd))"
         return "\(shSafeToken(sshResolver.resolve())) -t -- \(shSafeToken(host)) \(shSafeToken(remoteCommand))"
     }
 }

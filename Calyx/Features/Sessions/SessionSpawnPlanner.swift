@@ -35,7 +35,6 @@ struct SessionSpawnContext: Sendable, Equatable {
     /// neither and is relying on this type's own `?? NSHomeDirectory()`
     /// fallback below.
     let cwd: String?
-    let name: String?
     /// The remote ssh host to spawn this session against, `nil` for a
     /// local session (every existing call site, unchanged). Non-nil
     /// makes `plan(for:)` synthesize via
@@ -45,9 +44,8 @@ struct SessionSpawnContext: Sendable, Equatable {
     let host: String?
     let origin: SessionSpawnOrigin
 
-    init(cwd: String? = nil, name: String? = nil, host: String? = nil, origin: SessionSpawnOrigin = .tab) {
+    init(cwd: String? = nil, host: String? = nil, origin: SessionSpawnOrigin = .tab) {
         self.cwd = cwd
-        self.name = name
         self.host = host
         self.origin = origin
     }
@@ -108,8 +106,7 @@ enum SessionSpawnPlanner {
             let command = SessionCommandSynthesizer.remoteAttachCommand(
                 host: host,
                 sessionID: sessionID,
-                cwd: effectiveCwd,
-                name: context.name
+                cwd: effectiveCwd
             )
             return .persistent(sessionID: sessionID, command: command, host: host)
         }
@@ -120,8 +117,7 @@ enum SessionSpawnPlanner {
         let command = SessionCommandSynthesizer.attachCommand(
             binaryPath: binaryPath,
             sessionID: sessionID,
-            cwd: effectiveCwd,
-            name: context.name
+            cwd: effectiveCwd
         )
         return .persistent(sessionID: sessionID, command: command, host: nil)
     }

@@ -39,7 +39,7 @@
 //  shSafeToken'd word for the LOCAL shell layer only -- that outer local
 //  quoting is stripped away by the LOCAL shell before ssh ever transmits
 //  the bytes onward, so it never touches how the REMOTE shell later
-//  parses $HOME. sessionID/cwd/name are each wrapped in their OWN
+//  parses $HOME. sessionID/cwd are each wrapped in their OWN
 //  shSafeToken call, scoped for the REMOTE shell's parsing (the second,
 //  inner quoting layer), so they survive as single arguments to the
 //  remote calyx-session binary without needing to be shell-safe in any
@@ -79,9 +79,9 @@
 //    line, run through a second /bin/sh -c with $HOME pointed at a
 //    fixture directory containing a stub calyx-session, actually
 //    invokes that stub (proving $HOME expansion works) with sessionID/
-//    cwd/name surviving both layers intact
+//    cwd surviving both layers intact
 //  - metacharacter torture (spaces, quotes, Japanese, $(), backticks,
-//    semicolons) in cwd/name/sessionID survives both layers intact and
+//    semicolons) in cwd/sessionID survives both layers intact and
 //    is never itself executed as a second remote shell statement
 //
 
@@ -182,7 +182,7 @@ final class SessionCommandSynthesizerRemoteAttachTests: XCTestCase {
     /// containing a stub calyx-session (LAYER 2), and returns what that
     /// remote stub itself observed.
     private func roundTripRemoteAttachCommand(
-        host: String, sessionID: String, cwd: String, name: String? = nil
+        host: String, sessionID: String, cwd: String
     ) throws -> (remoteSelfPath: String, remoteArgv: [String]) {
         let sshStubPath = uniqueTempPath("ssh-argv-dumper")
         let sshOutputPath = uniqueTempPath("ssh-argv-capture")
@@ -199,7 +199,7 @@ final class SessionCommandSynthesizerRemoteAttachTests: XCTestCase {
         try makeSelfPathAndArgvDumperScript(at: remoteCalyxSessionPath, outputPath: remoteOutputPath)
 
         let command = SessionCommandSynthesizer.remoteAttachCommand(
-            host: host, sessionID: sessionID, cwd: cwd, name: name,
+            host: host, sessionID: sessionID, cwd: cwd,
             sshResolver: FakeSSHResolver(path: sshStubPath)
         )
         try runShCEmulatingGhosttyWrapping(command)
@@ -349,17 +349,15 @@ final class SessionCommandSynthesizerRemoteAttachTests: XCTestCase {
         let result = try roundTripRemoteAttachCommand(
             host: "build-box.example.com",
             sessionID: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-            cwd: "/home/dev/repo",
-            name: "my session"
+            cwd: "/home/dev/repo"
         )
         XCTAssertTrue(result.remoteSelfPath.hasSuffix("/.calyx/bin/calyx-session"),
                        "The remote stub must have been found and exec'd via the $HOME-expanded path " +
                        "(proving $HOME resolved against the fixture remote home, not this test process's " +
                        "own ambient $HOME)")
         XCTAssertEqual(result.remoteArgv,
-                       ["attach", "01ARZ3NDEKTSV4RRFFQ69G5FAV", "--create", "--cwd", "/home/dev/repo",
-                        "--name", "my session"],
-                       "sessionID/cwd/name must survive both the local-layer and remote-layer quoting " +
+                       ["attach", "01ARZ3NDEKTSV4RRFFQ69G5FAV", "--create", "--cwd", "/home/dev/repo"],
+                       "sessionID/cwd must survive both the local-layer and remote-layer quoting " +
                        "intact as their own argv words, with no --runtime-dir/--state-dir flags present")
     }
 
@@ -373,19 +371,6 @@ final class SessionCommandSynthesizerRemoteAttachTests: XCTestCase {
         XCTAssertEqual(result.remoteArgv, ["attach", "01ARZ3NDEKTSV4RRFFQ69G5FAV", "--create", "--cwd", cwd],
                        "cwd containing spaces, a single quote, and Japanese characters must survive BOTH " +
                        "the local /bin/sh -c layer and the remote shell layer byte-for-byte")
-    }
-
-    func test_remoteAttachCommand_execution_nameWithSpacesQuoteAndJapaneseSurvivesBothLayersIntact() throws {
-        let name = "私の session's \"name\""
-        let result = try roundTripRemoteAttachCommand(
-            host: "build-box.example.com", sessionID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", cwd: "/home/dev/repo",
-            name: name
-        )
-        XCTAssertEqual(result.remoteArgv,
-                       ["attach", "01ARZ3NDEKTSV4RRFFQ69G5FAV", "--create", "--cwd", "/home/dev/repo",
-                        "--name", name],
-                       "name containing spaces, a single quote, a double quote, and Japanese characters " +
-                       "must survive both layers intact")
     }
 
     func test_remoteAttachCommand_execution_sessionIDWithSemicolonCannotInjectASecondRemoteShellStatement() throws {

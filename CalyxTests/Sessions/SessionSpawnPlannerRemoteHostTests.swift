@@ -35,7 +35,7 @@
 //      happen to also have the LOCAL binary installed.
 //    - The command must be built via
 //      `SessionCommandSynthesizer.remoteAttachCommand(host:sessionID:cwd:)`
-//      instead of `attachCommand(binaryPath:sessionID:cwd:name:)`.
+//      instead of `attachCommand(binaryPath:sessionID:cwd:)`.
 //      `remoteAttachCommand` never returns nil (SSHBinaryResolver always
 //      resolves to a path, see its own doc comment), so a remote
 //      `.persistent` plan can never itself fail to produce a command the
