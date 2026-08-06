@@ -226,6 +226,29 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// DO NOT use from production code.
     var _createManagedSurfaceHookForTesting: (() -> UUID?)?
 
+    /// Test seam (issue #43, tab-create cwd): when non-nil, called with
+    /// the pwd this call hands to `SurfaceRegistry.createSurface` --
+    /// `explicitCwd` on the `.passthrough` branch below, `sessionCwd`
+    /// on the `.persistent` branch (branch-dependent; a reader must not
+    /// assume one meaning) -- immediately before that call, in BOTH
+    /// branches, and BEFORE the existing `_createManagedSurfaceHookForTesting`
+    /// short-circuit (that hook `return`s early, so an observer placed
+    /// after it would never fire under a hook-installed test). A second,
+    /// independent observer rather than a change to
+    /// `_createManagedSurfaceHookForTesting`'s signature -- mirrors
+    /// `_performReconnectCommandObserverForTesting`'s exact "observe
+    /// right before the real (tracked, fire-and-forget) work; the real
+    /// work still runs unmodified" style (see that property's own doc
+    /// comment) and `AppDelegate
+    /// ._createSurfaceWithPwdCommandObserverForTesting`'s identical
+    /// precedent: `_createManagedSurfaceHookForTesting` is `(() ->
+    /// UUID?)?` and has no way to observe a pwd, and every existing
+    /// caller of it only ever needs the resulting surfaceID, so widening
+    /// its arity would force every unrelated test file that installs it
+    /// to churn. `nil` (the default) leaves production behavior
+    /// unchanged. DO NOT use from production code.
+    var _createManagedSurfacePwdObserverForTesting: ((String?) -> Void)?
+
     /// Test seam (P5, remote sessions, contract 1b): when non-nil,
     /// called with `(sessionID, host)` immediately before
     /// `killSessionIfPersistent`'s `SessionKillTracker.track` dispatch --
@@ -690,7 +713,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
 
         guard let surfaceID = createManagedSurface(
             tab: tab, app: app, config: config,
-            passthroughPwd: tab.pwd, spawnCwd: tab.pwd ?? NSHomeDirectory(), origin: .tab, host: host
+            explicitCwd: tab.pwd, sessionFallbackCwd: nil, origin: .tab, host: host
         ) else {
             logger.error("Failed to create initial surface")
             return
@@ -709,27 +732,69 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - Session Persistence
 
+    /// Calyx's own reconstruction of the directory libghostty would inherit
+    /// for a new surface: the source pane's own live OSC 7 report, degrading
+    /// to the owning tab's last-known `pwd` when that pane hasn't reported
+    /// one yet (e.g. a snapshot-restored pane before its first OSC 7, or any
+    /// surface created before `SurfacePropertyStore.startObserving()`).
+    private func livePaneCwd(of surfaceID: UUID?, in tab: Tab?) -> String? {
+        surfaceID.flatMap { SurfacePropertyStore.shared.cwd(for: $0) } ?? tab?.pwd
+    }
+
     /// Applies `SessionSpawnPlanner`'s decision for a freshly-created
     /// terminal surface. `.passthrough` (the default — feature off, or
     /// `origin == .quickTerminal`) creates the surface exactly as
-    /// before this feature existed, via `passthroughPwd` — every
-    /// existing call site's pre-feature `pwd` argument, unchanged, so
-    /// the OFF path has zero observable difference. `.persistent`
-    /// creates it with the synthesized attach command instead, and
-    /// records the new session in `tab.sessionRefs` (persisted into
-    /// `TabSnapshot.sessionRefs` at save time) and
+    /// before this feature existed, via `explicitCwd` — every existing
+    /// call site's pre-feature `pwd` argument, unchanged, so the OFF
+    /// path has zero observable difference. `.persistent` creates it
+    /// with the synthesized attach command instead, using `sessionCwd`
+    /// (below), and records the new session in `tab.sessionRefs`
+    /// (persisted into `TabSnapshot.sessionRefs` at save time) and
     /// `SessionSurfaceMap.shared` (so `/agent-event` routing, the
     /// close=kill path below, and `SessionReconnectCoordinator` can all
-    /// find it later). `spawnCwd`/`inheritedCwd` are only read when a
-    /// plan actually turns out `.persistent`; they have no effect while
-    /// the feature is off. `inheritedCwd` (only ever non-nil from
-    /// `handleNewSplitNotification`) takes priority — see
-    /// `SessionSpawnContext`'s doc comment — since ghostty has no
-    /// surface-level pwd getter (only the async `GHOSTTY_ACTION_PWD` ->
-    /// `.ghosttySetPwd` report this codebase already tracks into
-    /// `tab.pwd`), so `tab.pwd` is the best available approximation of
-    /// the split's specific origin surface, not necessarily its exact
-    /// live cwd if the tab has multiple panes in different directories.
+    /// find it later).
+    ///
+    /// Issue #43 root cause: cwd used to arrive as THREE independently-
+    /// settable parameters (`passthroughPwd`, `spawnCwd`, `inheritedCwd`)
+    /// -- every pre-fix call site hardcoded `passthroughPwd: nil`
+    /// unconditionally while threading its real cwd only into
+    /// `spawnCwd`, so an explicit override wired the `.persistent`
+    /// branch but silently never reached `.passthrough`, the default (an
+    /// MCP `tab_create` cwd override was dropped whenever persistent
+    /// sessions were off). Collapsed here to two, combined ONCE into a
+    /// single `sessionCwd = explicitCwd ?? sessionFallbackCwd ??
+    /// NSHomeDirectory()` fed to BOTH branches below -- a caller can no
+    /// longer wire one branch and forget the other, because neither
+    /// branch has its own independent cwd parameter left to forget.
+    ///
+    /// - `explicitCwd`: an explicit directive, honored by both branches
+    ///   when non-nil. `nil` means "no directive": `.passthrough` passes
+    ///   it straight through as `pwd` (i.e. leaves ghostty's
+    ///   `working_directory` unset), so libghostty inherits the FOCUSED
+    ///   surface's own LIVE OSC 7 pwd
+    ///   (`window-inherit-working-directory`'s default `true`,
+    ///   `ghostty/src/apprt/surface.zig`'s `newConfig`) -- the correct
+    ///   behavior for an ordinary override-less Cmd+T, more accurate
+    ///   than anything Calyx could resolve independently.
+    /// - `sessionFallbackCwd`: deliberately ignored by `.passthrough`,
+    ///   which has real FFI-level inheritance to fall back on instead.
+    ///   Exists only to give a `.persistent` plan a concrete `--cwd`
+    ///   when there is no explicit directive -- the spawned
+    ///   `calyx-session attach --create` command's cwd is fixed at spawn
+    ///   time, with nothing equivalent to libghostty's live inheritance.
+    ///
+    /// `performCreateNewTab`/`performSplit`/`performCreateNewGroup` all pass
+    /// `sessionFallbackCwd: livePaneCwd(of:in:)` rather than `tab.pwd`
+    /// directly: turning persistent sessions on must not change which
+    /// directory a new tab or split opens in relative to `.passthrough`,
+    /// which gets the FOCUSED pane's live OSC 7 cwd straight from
+    /// libghostty, not Calyx's own possibly-stale `Tab.pwd` snapshot --
+    /// with multiple panes in a tab, `tab.pwd` can be a sibling pane's
+    /// directory. (Calyx does have a surface-level pwd getter now --
+    /// `SurfacePropertyStore.cwd(for:)`, fed by the same
+    /// `.ghosttySetPwd` notification `Tab.pwd` is -- `livePaneCwd`
+    /// prefers it for exactly this reason.)
+    ///
     /// `host` (P5, remote sessions): the remote ssh host to spawn this
     /// surface's session against, `nil` for every existing call site
     /// (unchanged, all still local). Passed into the
@@ -737,6 +802,36 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// stores reads the resulting plan's OWN `host` (not this parameter
     /// directly -- see `SessionSpawnPlannerHostPropagationTests` for why
     /// the plan itself is the source of truth for a caller applying it).
+    ///
+    /// `resolver`: threaded straight into `SessionSpawnPlanner
+    /// .plan(for:resolver:)`, which ALREADY exposes exactly this
+    /// defaulted-protocol seam -- `SessionSpawnPlannerTests`/
+    /// `SessionSpawnPlannerRemoteHostTests`/`SessionBinaryResolverTests`
+    /// already drive it with fakes (read those first). This parameter
+    /// just extends that same established seam one level up, to the
+    /// method that OWNS the passthrough-vs-persistent decision for a
+    /// real surface, so a `CalyxWindowController` test can exercise the
+    /// `.persistent` branch for a LOCAL context: the default
+    /// `SessionBinaryResolver().resolve()` always returns `nil` in the
+    /// `CalyxTests` host (no `CALYX_SESSION_BIN` -- only `CalyxUITests`
+    /// propagates that, see `project.yml` -- and no bundled
+    /// `calyx-session` resource, since this target has no `TEST_HOST`),
+    /// so every LOCAL context used to hit `plan(for:)`'s own
+    /// `guard let binaryPath = resolver.resolve() else { return
+    /// .passthrough }` and the `.persistent` branch below was
+    /// unreachable from any test -- meaning `performSplit`'s/
+    /// `performCreateNewGroup`'s `sessionFallbackCwd:
+    /// livePaneCwd(of:in:)` (above) could never actually be observed
+    /// reaching a `.persistent` plan; a revert of either back to plain
+    /// `tab.pwd` would compile and leave the whole suite green.
+    /// Defaults to `SessionBinaryResolver()`, so all 4 existing call
+    /// sites keep working untouched. Rejected alternative: a `host:`
+    /// parameter added to `performSplit`/`performCreateNewGroup` purely
+    /// for test reachability -- no production caller would ever pass
+    /// one, so it would be a nonsensical, permanently-defaulted,
+    /// never-argued parameter. A resolver is not that: it is the real
+    /// dependency this decision already has, merely un-injectable one
+    /// level too high before this change.
     ///
     /// Not `private` any more (P5; mirrors `closeAllTabsInGroup(id:)`'s/
     /// `processChildExited`'s/`handleSessionReconnectDecision`'s own
@@ -748,24 +843,26 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         tab: Tab,
         app: ghostty_app_t,
         config: ghostty_surface_config_s,
-        passthroughPwd: String?,
-        spawnCwd: String,
-        inheritedCwd: String? = nil,
+        explicitCwd: String?,
+        sessionFallbackCwd: String?,
         origin: SessionSpawnOrigin,
-        host: String? = nil
+        host: String? = nil,
+        resolver: SessionBinaryResolverProtocol = SessionBinaryResolver()
     ) -> UUID? {
-        let context = SessionSpawnContext(cwd: spawnCwd, inheritedCwd: inheritedCwd, host: host, origin: origin)
-        switch SessionSpawnPlanner.plan(for: context) {
+        let sessionCwd = explicitCwd ?? sessionFallbackCwd ?? NSHomeDirectory()
+        let context = SessionSpawnContext(cwd: sessionCwd, host: host, origin: origin)
+        switch SessionSpawnPlanner.plan(for: context, resolver: resolver) {
         case .passthrough:
             #if DEBUG
+            _createManagedSurfacePwdObserverForTesting?(explicitCwd)
             if let hook = _createManagedSurfaceHookForTesting {
                 return hook()
             }
             #endif
-            return tab.registry.createSurface(app: app, config: config, pwd: passthroughPwd)
+            return tab.registry.createSurface(app: app, config: config, pwd: explicitCwd)
         case .persistent(let sessionID, let command, let planHost):
-            let ghosttyPwd = inheritedCwd ?? spawnCwd
             #if DEBUG
+            _createManagedSurfacePwdObserverForTesting?(sessionCwd)
             if let hook = _createManagedSurfaceHookForTesting {
                 guard let surfaceID = hook() else { return nil }
                 tab.sessionRefs[surfaceID] = SessionRef(sessionID: sessionID, host: planHost)
@@ -773,7 +870,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
                 return surfaceID
             }
             #endif
-            guard let surfaceID = tab.registry.createSurface(app: app, config: config, pwd: ghosttyPwd, command: command) else {
+            guard let surfaceID = tab.registry.createSurface(app: app, config: config, pwd: sessionCwd, command: command) else {
                 return nil
             }
             tab.sessionRefs[surfaceID] = SessionRef(sessionID: sessionID, host: planHost)
@@ -1214,14 +1311,64 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// parameter existed. Reached by `AppDelegate.spawnRemoteSessionTab
     /// (host:)` when a key window controller already exists.
     ///
-    /// `spawnCwd` (Cockpit `tab_create`): forwarded to
-    /// `resolveNewTabSpawnCwd(override:)`, which returns the pre-Cockpit
-    /// `activeTab?.pwd ?? NSHomeDirectory()` expression unchanged when
-    /// `nil` (every existing caller's shape).
+    /// `spawnCwd` (Cockpit `tab_create`, issue #43): normalized via
+    /// `Self.normalizedCwdOverride(_:)` into `createManagedSurface`'s
+    /// `explicitCwd` argument, so a non-nil override now reaches the
+    /// spawned shell's pwd in BOTH the `.passthrough` and `.persistent`
+    /// branches -- the bug this fixed was `.passthrough` silently
+    /// dropping it (see `createManagedSurface`'s doc comment). `nil`
+    /// (every existing caller's shape) still yields `explicitCwd: nil`,
+    /// so libghostty performs its own live-OSC-7-based inheritance
+    /// exactly as before this parameter existed.
+    ///
+    /// Thin wrapper resolving `GhosttyAppController.shared.app` and
+    /// delegating everything else to `performCreateNewTab` -- same split,
+    /// same reason, as `handleNewSplitNotification`/`performSplit`: that
+    /// global is `nil` in the unit-test host, so a version of this method
+    /// that resolves `app` internally could never be driven end-to-end by
+    /// a test. See `performCreateNewTab`'s doc comment for the actual
+    /// tab-creation body and its two load-bearing orderings.
     func createNewTab(inheritedConfig: Any? = nil, host: String? = nil, spawnCwd: String? = nil) {
-        guard let app = GhosttyAppController.shared.app,
-              let window = self.window,
-              let group = windowSession.activeGroup else { return }
+        guard let app = GhosttyAppController.shared.app else { return }
+        performCreateNewTab(app: app, inheritedConfig: inheritedConfig, host: host, spawnCwd: spawnCwd)
+    }
+
+    /// `createNewTab`'s body, taking `app` directly instead of resolving
+    /// `GhosttyAppController.shared.app` internally -- see that method's
+    /// doc comment for why, and `performSplit`'s identical precedent
+    /// (down to `handleNewSplitNotification` resolving `app` before
+    /// calling it). Not `private` (test access; mirrors `performSplit`'s/
+    /// `createManagedSurface`'s own "un-privated for direct test access"
+    /// precedent) -- a `CalyxWindowController` unit test can drive this
+    /// directly with a dummy `ghostty_app_t` pointer even though
+    /// `createNewTab` itself cannot. `inheritedConfig`/`host`/`spawnCwd`
+    /// are forwarded straight through unchanged; see `createNewTab`'s doc
+    /// comment for their semantics.
+    ///
+    /// CRITICAL ordering (issue #43 fix design): the `createManagedSurface
+    /// (...)` call below MUST stay above `group.addTab(tab)`/
+    /// `group.activeTabID = tab.id`. Its `sessionFallbackCwd:` argument
+    /// calls `livePaneCwd(of: activeTab?.splitTree.focusedLeafID, in:
+    /// activeTab)`, which falls back to `activeTab?.pwd` -- and
+    /// `activeTab` reads `windowSession.activeGroup?.activeTab`, so it
+    /// MUST still resolve to the OLD active tab at the point
+    /// `createManagedSurface` runs. Hoisting the tab-wiring (`addTab`/
+    /// `activeTabID =`) above `createManagedSurface` would silently make
+    /// that same read resolve to the brand-new tab instead (which has no
+    /// focused leaf and a `nil` `pwd`, no surface having reported one
+    /// yet), regressing every override-less new tab's spawn cwd from the
+    /// previous tab's directory back to `$HOME`.
+    ///
+    /// `self.window` is resolved INSIDE this method, not in the
+    /// `createNewTab` wrapper above -- mirrors `performSplit`'s own `if
+    /// let window = self.window`. It's used only for `config
+    /// .scale_factor`, and the unit-test host DOES construct a real
+    /// `CalyxWindow` (unlike `GhosttyAppController.shared.app`), so
+    /// keeping the resolution in here, rather than requiring it as a
+    /// parameter from the caller, is what makes this method drivable by
+    /// a test in the first place.
+    func performCreateNewTab(app: ghostty_app_t, inheritedConfig: Any? = nil, host: String? = nil, spawnCwd: String? = nil) {
+        guard let window = self.window, let group = windowSession.activeGroup else { return }
 
         let tab = Tab()
 
@@ -1235,7 +1382,9 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
 
         guard let surfaceID = createManagedSurface(
             tab: tab, app: app, config: config,
-            passthroughPwd: nil, spawnCwd: resolveNewTabSpawnCwd(override: spawnCwd), origin: .tab, host: host
+            explicitCwd: Self.normalizedCwdOverride(spawnCwd),
+            sessionFallbackCwd: livePaneCwd(of: activeTab?.splitTree.focusedLeafID, in: activeTab),
+            origin: .tab, host: host
         ) else {
             logger.error("Failed to create surface for new tab")
             return
@@ -1284,11 +1433,44 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// surface's font size/theme exactly as before this method was
     /// extracted -- a trailing defaulted parameter rather than dropping
     /// that behavior, since no test exercises it either way.
+    ///
+    /// `explicitCwd: nil` -- a split carries no user-supplied cwd
+    /// directive of its own (unlike Cockpit `tab_create`'s optional
+    /// override), so this always leaves it unset to preserve
+    /// `.passthrough`'s live OSC-7-based inheritance (see
+    /// `createManagedSurface`'s doc comment). `sessionFallbackCwd:
+    /// livePaneCwd(of: surfaceID, in: tab)` -- only ever consulted by a
+    /// `.persistent` plan, since `.passthrough` ignores it -- prefers
+    /// the SOURCE pane's own live cwd (`surfaceID`, the leaf being split,
+    /// not just "the tab") over `tab.pwd`: a new split should land in
+    /// the directory it was split from, even when the tab's own
+    /// last-persisted pwd is stale or reflects a different pane
+    /// entirely.
+    ///
+    /// `resolver`: forwarded straight into `createManagedSurface
+    /// (resolver:)` above -- see that parameter's own doc paragraph for
+    /// the full rationale, not restated here. In short, it exists so a
+    /// unit test can reach the `.persistent` branch for a LOCAL context
+    /// (the real resolver never resolves in the `CalyxTests` host -- no
+    /// `CALYX_SESSION_BIN`, which only the `CalyxUITests` scheme
+    /// propagates per `project.yml`, and no bundled binary, since this
+    /// target has no `TEST_HOST`), which is the only way to observe the
+    /// `sessionFallbackCwd:` argument above reaching anything at all --
+    /// the `.passthrough` branch only ever hands `explicitCwd` to
+    /// `SurfaceRegistry.createSurface`. Unlike `performCreateNewTab`,
+    /// this method has no `host:` parameter that could reach
+    /// `.persistent` some other way: a non-nil `host` short-circuits
+    /// `SessionSpawnPlanner.plan` before the resolver guard, which is
+    /// exactly why `performCreateNewTab` doesn't need this parameter and
+    /// this method does. Defaults to `SessionBinaryResolver()`, so both
+    /// existing callers (`handleNewSplitNotification`,
+    /// `LiveCockpitAppAccess.splitPane`) keep working untouched.
     func performSplit(
         surfaceID: UUID,
         direction: SplitDirection,
         app: ghostty_app_t,
-        config: ghostty_surface_config_s? = nil
+        config: ghostty_surface_config_s? = nil,
+        resolver: SessionBinaryResolverProtocol = SessionBinaryResolver()
     ) -> UUID? {
         guard let tab = findTab(bySplitLeaf: surfaceID) else { return nil }
 
@@ -1299,7 +1481,8 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
 
         guard let newSurfaceID = createManagedSurface(
             tab: tab, app: app, config: resolvedConfig,
-            passthroughPwd: nil, spawnCwd: tab.pwd ?? NSHomeDirectory(), inheritedCwd: tab.pwd, origin: .tab
+            explicitCwd: nil, sessionFallbackCwd: livePaneCwd(of: surfaceID, in: tab), origin: .tab,
+            resolver: resolver
         ) else {
             return nil
         }
@@ -1316,27 +1499,30 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         return newSurfaceID
     }
 
-    /// Factored out of `createNewTab`'s inline `spawnCwd:` argument
-    /// (`activeTab?.pwd ?? NSHomeDirectory()`) so Cockpit's `tab_create`
-    /// cwd override is directly unit-testable without
-    /// `GhosttyAppController.shared.app` (nil in this test host --
-    /// `createNewTab` itself can't be driven end-to-end here, same
-    /// constraint `AppDelegateSpawnRemoteSessionTabWindowLookupTests`
-    /// already documented for this identical guard). `override` is
-    /// trimmed of leading/trailing whitespace AND newlines first (an
-    /// agent-constructed payload built from raw shell output, e.g.
-    /// `$(pwd)`, plausibly carries a trailing `\n`); a non-nil override
-    /// takes priority UNLESS the trimmed result is empty (an MCP caller
-    /// passing `""`/`"\n"` almost certainly means "no override", not
-    /// "spawn at the empty path" -- treated the same as `nil`), then
-    /// expanded via `expandingTildeInPath` since it comes straight from
-    /// an MCP caller rather than already-resolved UI state; a nil (or
-    /// blank) override preserves createNewTab's pre-Cockpit behavior
-    /// exactly. Does not validate the resulting path exists -- P4's job.
-    func resolveNewTabSpawnCwd(override: String?) -> String {
-        guard let override else { return activeTab?.pwd ?? NSHomeDirectory() }
+    /// Normalizes Cockpit's `tab_create` `cwd` argument into the
+    /// `explicitCwd` `createManagedSurface` expects: `nil` when
+    /// `override` is `nil` or blank (an MCP caller passing `""`/`"\n"`
+    /// almost certainly means "no override", not "spawn at the empty
+    /// path"), otherwise the trimmed-and-tilde-expanded path. `static`
+    /// because it no longer reads any instance state -- the pre-fix `??
+    /// activeTab?.pwd ?? NSHomeDirectory()` fallback half is now carried
+    /// entirely by the caller's own `sessionFallbackCwd` argument plus
+    /// `createManagedSurface`'s own `?? NSHomeDirectory()` (see that
+    /// method's doc comment), so this helper has nothing left to resolve
+    /// beyond the override itself.
+    ///
+    /// `override` is trimmed of leading/trailing whitespace AND newlines
+    /// first (an agent-constructed payload built from raw shell output,
+    /// e.g. `$(pwd)`, plausibly carries a trailing `\n`); a non-nil
+    /// override takes priority UNLESS the trimmed result is empty,
+    /// treated the same as `nil`, then expanded via
+    /// `expandingTildeInPath` since it comes straight from an MCP caller
+    /// rather than already-resolved UI state. Does not validate the
+    /// resulting path exists -- P4's job.
+    static func normalizedCwdOverride(_ override: String?) -> String? {
+        guard let override else { return nil }
         let trimmed = override.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return activeTab?.pwd ?? NSHomeDirectory() }
+        guard !trimmed.isEmpty else { return nil }
         return NSString(string: trimmed).expandingTildeInPath
     }
 
@@ -1623,8 +1809,58 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - Group Operations
 
     func createNewGroup() {
-        guard let app = GhosttyAppController.shared.app,
-              let window = self.window else { return }
+        guard let app = GhosttyAppController.shared.app else { return }
+        performCreateNewGroup(app: app)
+    }
+
+    /// `createNewGroup`'s body, taking `app` directly instead of
+    /// resolving `GhosttyAppController.shared.app` internally --
+    /// mirrors `performCreateNewTab`'s and `performSplit`'s identical
+    /// precedent: that global is documented throughout this test target
+    /// (see e.g. `CockpitAppAccessSeamTests.swift`'s and
+    /// `CockpitTabCreateCwdWiringTests.swift`'s own headers) as ALWAYS
+    /// `nil` in the `CalyxTests` process, so a version of this method
+    /// that resolved it internally could never be driven end-to-end by a
+    /// test even once correctly implemented -- exactly the gap
+    /// `CockpitSplitAndGroupCwdWiringTests.swift`'s header reports
+    /// upstream for `createNewGroup` before this extraction existed. Not
+    /// `private` (test access; mirrors `performCreateNewTab`'s/
+    /// `performSplit`'s/`createManagedSurface`'s own "un-privated for
+    /// direct test access" precedent) -- a `CalyxWindowController` unit
+    /// test can drive this directly with a dummy `ghostty_app_t` pointer
+    /// even though `createNewGroup` itself cannot.
+    ///
+    /// `self.window` is resolved INSIDE this method, not in the
+    /// `createNewGroup` wrapper above -- mirrors `performCreateNewTab`'s/
+    /// `performSplit`'s own identical `self.window` resolution. It's
+    /// used only for `config.scale_factor`, and the unit-test host DOES
+    /// construct a real `CalyxWindow` (unlike `GhosttyAppController
+    /// .shared.app`), so keeping the resolution in here, rather than
+    /// requiring it as a parameter from the caller, is what makes this
+    /// method drivable by a test in the first place.
+    ///
+    /// `resolver`: forwarded straight into `createManagedSurface
+    /// (resolver:)` above -- see that parameter's own doc paragraph for
+    /// the full rationale, not restated here. In short, it exists so a
+    /// unit test can reach the `.persistent` branch for a LOCAL context
+    /// (the real resolver never resolves in the `CalyxTests` host -- no
+    /// `CALYX_SESSION_BIN`, which only the `CalyxUITests` scheme
+    /// propagates per `project.yml`, and no bundled binary, since this
+    /// target has no `TEST_HOST`), which is the only way to observe the
+    /// `sessionFallbackCwd:` argument above reaching anything at all --
+    /// the `.passthrough` branch only ever hands `explicitCwd` to
+    /// `SurfaceRegistry.createSurface`. Unlike `performCreateNewTab`,
+    /// this method has no `host:` parameter that could reach
+    /// `.persistent` some other way: a non-nil `host` short-circuits
+    /// `SessionSpawnPlanner.plan` before the resolver guard, which is
+    /// exactly why `performCreateNewTab` doesn't need this parameter and
+    /// this method does. Defaults to `SessionBinaryResolver()`, so
+    /// `createNewGroup`, its only caller, keeps working untouched.
+    func performCreateNewGroup(
+        app: ghostty_app_t,
+        resolver: SessionBinaryResolverProtocol = SessionBinaryResolver()
+    ) {
+        guard let window = self.window else { return }
 
         let tab = Tab()
 
@@ -1633,7 +1869,8 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
 
         guard let surfaceID = createManagedSurface(
             tab: tab, app: app, config: config,
-            passthroughPwd: nil, spawnCwd: activeTab?.pwd ?? NSHomeDirectory(), origin: .tab
+            explicitCwd: nil, sessionFallbackCwd: livePaneCwd(of: activeTab?.splitTree.focusedLeafID, in: activeTab), origin: .tab,
+            resolver: resolver
         ) else {
             logger.error("Failed to create surface for new group")
             return

@@ -331,8 +331,8 @@ final class MCPCockpitBridge {
             // trailing newline (plausible from an agent-constructed
             // payload built from raw shell output, e.g. `$(pwd)`) both
             // validates and reaches access.createTab already cleaned --
-            // matches resolveNewTabSpawnCwd's own normalization on the
-            // CalyxWindowController seam this ultimately reaches
+            // matches CalyxWindowController.normalizedCwdOverride(_:)'s
+            // own normalization on the seam this ultimately reaches
             // (P3 review W2), rather than rejecting what that seam
             // would accept.
             let trimmed = rawCwd.trimmingCharacters(in: .whitespacesAndNewlines)
