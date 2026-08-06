@@ -59,15 +59,33 @@ struct SplitData: Codable, Equatable, Sendable {
 struct SplitTree: Codable, Equatable, Sendable {
     var root: SplitNode?
     var focusedLeafID: UUID?
+    /// The leaf currently zoomed (temporarily expanded to fill the whole
+    /// tab), or `nil` if nothing is zoomed. `private(set)`: every write
+    /// path goes through `togglingZoom(at:)`/`clearingZoom()`/
+    /// `settingFocus(_:)` (or one of this type's own mutating transforms
+    /// below, each of which decides for itself whether to preserve,
+    /// clear, or remap it) — never a direct assignment from outside this
+    /// file, the same discipline `root`'s own privacy would get if it
+    /// weren't for `SplitContainerView`'s direct-mutation needs elsewhere.
+    /// View/Controller code must read `effectiveZoomedLeafID`, never this
+    /// property directly — see that computed property's own doc comment.
+    /// Defaults to `nil` deliberately: every one of this type's mutating
+    /// transforms constructs a NEW `SplitTree` via the initializer below,
+    /// and any call site that forgets to explicitly thread this value
+    /// through therefore fails safe (zoom silently clears) rather than
+    /// unsafe (a stale zoom silently persists somewhere it shouldn't).
+    private(set) var zoomedLeafID: UUID?
 
-    init(root: SplitNode? = nil, focusedLeafID: UUID? = nil) {
+    init(root: SplitNode? = nil, focusedLeafID: UUID? = nil, zoomedLeafID: UUID? = nil) {
         self.root = root
         self.focusedLeafID = focusedLeafID
+        self.zoomedLeafID = zoomedLeafID
     }
 
     init(leafID: UUID) {
         self.root = .leaf(id: leafID)
         self.focusedLeafID = leafID
+        self.zoomedLeafID = nil
     }
 
     var isEmpty: Bool { root == nil }
@@ -82,12 +100,17 @@ struct SplitTree: Codable, Equatable, Sendable {
     func insert(at leafID: UUID, direction: SplitDirection, newID: UUID = UUID()) -> (tree: SplitTree, newLeafID: UUID) {
         let newID = newID
         guard let root else {
-            let tree = SplitTree(root: .leaf(id: newID), focusedLeafID: newID)
+            // zoomedLeafID: nil — a brand new single-leaf tree has nothing
+            // to zoom relative to (mirrors init(leafID:)).
+            let tree = SplitTree(root: .leaf(id: newID), focusedLeafID: newID, zoomedLeafID: nil)
             return (tree, newID)
         }
 
         let newRoot = Self.insertNode(in: root, at: leafID, newID: newID, direction: direction)
-        let tree = SplitTree(root: newRoot, focusedLeafID: newID)
+        // zoomedLeafID: nil — creating a new split pane while another pane
+        // is zoomed would otherwise make the new pane invisible behind its
+        // still-zoomed sibling.
+        let tree = SplitTree(root: newRoot, focusedLeafID: newID, zoomedLeafID: nil)
         return (tree, newID)
     }
 
@@ -128,7 +151,26 @@ struct SplitTree: Codable, Equatable, Sendable {
 
         let newRoot = Self.removeNode(from: root, leafID: leafID)
         let newFocused = focusTarget ?? focusedLeafID
-        return (SplitTree(root: newRoot, focusedLeafID: newRoot == nil ? nil : newFocused), focusTarget)
+
+        // zoomedLeafID: cleared if the removed leaf WAS the zoomed one, or
+        // if the removal collapsed the tree so it's no longer split (a
+        // non-split tree must never carry a truthy zoom — see
+        // effectiveZoomedLeafID's own doc comment). This is a Calyx-only
+        // normalization on top of upstream's simpler `zoomed == target ?
+        // nil : zoomed`: preserved otherwise (an unrelated leaf removed
+        // from a tree that's still split afterward).
+        let stillSplitAfterRemoval: Bool
+        if case .split = newRoot {
+            stillSplitAfterRemoval = true
+        } else {
+            stillSplitAfterRemoval = false
+        }
+        let newZoomed: UUID? = (leafID == zoomedLeafID || !stillSplitAfterRemoval) ? nil : zoomedLeafID
+
+        return (
+            SplitTree(root: newRoot, focusedLeafID: newRoot == nil ? nil : newFocused, zoomedLeafID: newZoomed),
+            focusTarget
+        )
     }
 
     /// Find the leftmost/first leaf in the sibling subtree of the given leaf.
@@ -276,7 +318,13 @@ struct SplitTree: Codable, Equatable, Sendable {
     func equalize() -> SplitTree {
         guard let root else { return self }
         let newRoot = Self.equalizeNode(root)
-        return SplitTree(root: newRoot, focusedLeafID: focusedLeafID)
+        // zoomedLeafID: preserved. Matches upstream ghostty's own
+        // `SplitTree.equalized()` (macos/Sources/Features/Splits/
+        // SplitTree.swift), which is the one mutating transform there
+        // that keeps `zoomed` instead of resetting it — equalize only
+        // touches ratios, an orthogonal concern from zoom's "which pane
+        // temporarily fills the tab" state.
+        return SplitTree(root: newRoot, focusedLeafID: focusedLeafID, zoomedLeafID: zoomedLeafID)
     }
 
     private static func equalizeNode(_ node: SplitNode) -> SplitNode {
@@ -307,7 +355,8 @@ struct SplitTree: Codable, Equatable, Sendable {
             return self
         }
 
-        return SplitTree(root: newRoot, focusedLeafID: focusedLeafID)
+        // zoomedLeafID: preserved — a pure ratio/geometry change, orthogonal to zoom.
+        return SplitTree(root: newRoot, focusedLeafID: focusedLeafID, zoomedLeafID: zoomedLeafID)
     }
 
     private static func resizeInNode(
@@ -392,7 +441,8 @@ struct SplitTree: Codable, Equatable, Sendable {
             return self
         }
 
-        return SplitTree(root: newRoot, focusedLeafID: focusedLeafID)
+        // zoomedLeafID: preserved — a pure ratio/geometry change, orthogonal to zoom.
+        return SplitTree(root: newRoot, focusedLeafID: focusedLeafID, zoomedLeafID: zoomedLeafID)
     }
 
     /// Pin a SPECIFIC split — identified unambiguously by the leftmost leaf
@@ -425,7 +475,8 @@ struct SplitTree: Codable, Equatable, Sendable {
             return self
         }
 
-        return SplitTree(root: newRoot, focusedLeafID: focusedLeafID)
+        // zoomedLeafID: preserved — a pure ratio/geometry change, orthogonal to zoom.
+        return SplitTree(root: newRoot, focusedLeafID: focusedLeafID, zoomedLeafID: zoomedLeafID)
     }
 
     private static func setRatioInNode(
@@ -583,7 +634,11 @@ struct SplitTree: Codable, Equatable, Sendable {
         guard let root else { return self }
         let newRoot = Self.remapNode(root, mapping: mapping)
         let newFocused = focusedLeafID.flatMap { mapping[$0] ?? $0 }
-        return SplitTree(root: newRoot, focusedLeafID: newFocused)
+        // zoomedLeafID: re-keyed through the same mapping as focusedLeafID,
+        // so a session restore's leaf-ID remap doesn't silently orphan a
+        // persisted zoom.
+        let newZoomed = zoomedLeafID.flatMap { mapping[$0] ?? $0 }
+        return SplitTree(root: newRoot, focusedLeafID: newFocused, zoomedLeafID: newZoomed)
     }
 
     private static func remapNode(_ node: SplitNode, mapping: [UUID: UUID]) -> SplitNode {
@@ -595,5 +650,76 @@ struct SplitTree: Codable, Equatable, Sendable {
             let newSecond = remapNode(data.second, mapping: mapping)
             return .split(SplitData(direction: data.direction, ratio: data.ratio, first: newFirst, second: newSecond))
         }
+    }
+
+    // MARK: - Zoom (GHOSTTY_ACTION_TOGGLE_SPLIT_ZOOM)
+    //
+    // Ported from upstream ghostty's `SplitTree.zoomed` +
+    // `BaseTerminalController.ghosttyDidToggleSplitZoom`
+    // (macos/Sources/Features/Splits/SplitTree.swift,
+    // macos/Sources/Features/Terminal/BaseTerminalController.swift).
+    //
+    // Every mutating transform above (`insert`/`remove`/`equalize`/
+    // `resize`/`setRatio`×2/`remapLeafIDs`) threads `zoomedLeafID` through
+    // its own `SplitTree(root:focusedLeafID:zoomedLeafID:)` call
+    // explicitly, rather than relying on the initializer's `nil` default,
+    // so a reviewer can see what each transform intends for zoom right at
+    // its own call site instead of cross-referencing this section. Summary
+    // (see SplitTreeTests.swift's own "Split Zoom" section for the
+    // test-level contract):
+    //
+    //   insert          -> nil (a new split pane would otherwise be
+    //                       invisible behind a still-zoomed sibling)
+    //   remove          -> nil if the removed leaf WAS the zoomed one, or
+    //                       if the removal collapsed the tree so it's no
+    //                       longer split (Calyx-only normalization beyond
+    //                       upstream — see effectiveZoomedLeafID's own
+    //                       doc comment); preserved otherwise
+    //   equalize        -> preserved (matches upstream's own
+    //                       `SplitTree.equalized()`, the one mutating
+    //                       transform there that also keeps `zoomed` —
+    //                       ratio changes are orthogonal to zoom)
+    //   resize/setRatio -> preserved (pure ratio/geometry changes)
+    //   remapLeafIDs    -> re-keyed through the same `mapping` dictionary
+    //                       `focusedLeafID` already goes through
+
+    /// Returns `zoomedLeafID` only when it names a leaf that actually
+    /// exists in `root` AND the tree `isSplit`. View/Controller code
+    /// reads ONLY this, never `zoomedLeafID` directly — double defense so
+    /// a corrupt/stale `zoomedLeafID` (restored from JSON written by a
+    /// build with a bug, or surviving some future transform that fails
+    /// to clear it on collapse) can never present a single-pane tab as
+    /// zoomed, or point at a leaf that no longer exists.
+    var effectiveZoomedLeafID: UUID? {
+        guard isSplit, let zoomedLeafID, let root, Self.containsLeaf(root, id: zoomedLeafID) else {
+            return nil
+        }
+        return zoomedLeafID
+    }
+
+    /// Toggle zoom on `leafID`: zoom it if it isn't already the zoomed
+    /// leaf, clear zoom if it is. A no-op (zoom stays whatever it already
+    /// was) when the tree isn't split, mirroring upstream ghostty's
+    /// `guard surfaceTree.isSplit else { return }` — a single pane can
+    /// never be "zoomed" (there is nothing to expand it relative to) —
+    /// and likewise a no-op when `leafID` doesn't actually name a leaf of
+    /// this tree, so a stale/unknown id can never fabricate a zoom.
+    func togglingZoom(at leafID: UUID) -> SplitTree {
+        guard isSplit, let root, Self.containsLeaf(root, id: leafID) else { return self }
+        let newZoomed: UUID? = (zoomedLeafID == leafID) ? nil : leafID
+        return SplitTree(root: root, focusedLeafID: focusedLeafID, zoomedLeafID: newZoomed)
+    }
+
+    /// Unconditionally clears zoom.
+    func clearingZoom() -> SplitTree {
+        SplitTree(root: root, focusedLeafID: focusedLeafID, zoomedLeafID: nil)
+    }
+
+    /// Move focus to `leafID`, clearing zoom. Calyx does not implement
+    /// ghostty's `split-preserve-zoom` config (`src/config/Config.zig`);
+    /// its default (`navigation: false`) means `goto_split` always clears
+    /// zoom, so that's the only behavior this type needs to encode.
+    func settingFocus(_ leafID: UUID) -> SplitTree {
+        SplitTree(root: root, focusedLeafID: leafID, zoomedLeafID: nil)
     }
 }

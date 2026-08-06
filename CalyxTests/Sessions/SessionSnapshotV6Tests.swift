@@ -117,4 +117,72 @@ final class SessionSnapshotV6Tests: XCTestCase {
                        "migrate(_:) must carry every window/group/tab field through unchanged — only the " +
                        "schemaVersion number itself changes")
     }
+
+    // MARK: - Zoom backward compatibility (GHOSTTY_ACTION_TOGGLE_SPLIT_ZOOM)
+    //
+    // `SplitTree.zoomedLeafID` (new field; see SplitTreeTests.swift's own
+    // "Split Zoom" section for the field-level Codable coverage) must not
+    // break decoding of a v6 snapshot written before the zoom feature
+    // existed — every real v6 file on disk today has no "zoomedLeafID"
+    // key anywhere. Placed here rather than SplitTreeTests.swift because
+    // this specifically exercises the field nested inside a full
+    // SessionSnapshot, mirroring this file's own v5JSONFixture /
+    // test_v5JSON_withoutSessionRefsKey_... shape one schema version up.
+    // Mechanical, like this file's own v5 sessionRefs-backward-compat
+    // test above: passes today because `zoomedLeafID` is a plain
+    // Optional stored property with fully synthesized Codable — there is
+    // no "logic" for a stub to fake.
+
+    private var v6JSONFixtureWithoutZoomedLeafID: String {
+        """
+        {
+            "schemaVersion": 6,
+            "windows": [
+                {
+                    "id": "00000000-0000-0000-0000-000000000001",
+                    "frame": [[0, 0], [800, 600]],
+                    "groups": [
+                        {
+                            "id": "00000000-0000-0000-0000-000000000010",
+                            "name": "Default",
+                            "color": "blue",
+                            "tabs": [
+                                {
+                                    "id": "00000000-0000-0000-0000-000000000020",
+                                    "title": "Terminal",
+                                    "titleOverride": null,
+                                    "pwd": "/Users/dev/repo",
+                                    "splitTree": {
+                                        "focusedLeafID": "00000000-0000-0000-0000-000000000030",
+                                        "root": {"leaf": {"id": "00000000-0000-0000-0000-000000000030"}}
+                                    },
+                                    "browserURL": null
+                                }
+                            ],
+                            "activeTabID": "00000000-0000-0000-0000-000000000020",
+                            "isCollapsed": false
+                        }
+                    ],
+                    "activeGroupID": "00000000-0000-0000-0000-000000000010",
+                    "showSidebar": true,
+                    "sidebarWidth": 260,
+                    "isFullScreen": false
+                }
+            ]
+        }
+        """
+    }
+
+    func test_v6JSON_withoutZoomedLeafIDKey_decodesWithoutThrowing_zoomedLeafIDIsNil() throws {
+        let data = Data(v6JSONFixtureWithoutZoomedLeafID.utf8)
+
+        let decoded = try JSONDecoder().decode(SessionSnapshot.self, from: data)
+
+        XCTAssertEqual(decoded.schemaVersion, 6)
+        let tab = try XCTUnwrap(decoded.windows.first?.groups.first?.tabs.first)
+        XCTAssertEqual(tab.splitTree.allLeafIDs(), [UUID(uuidString: "00000000-0000-0000-0000-000000000030")!],
+                       "Precondition: the pre-zoom tab's own splitTree leaf must still decode correctly")
+        XCTAssertNil(tab.splitTree.zoomedLeafID,
+                    "A v6 snapshot with no zoomedLeafID key anywhere must decode with zoomedLeafID == nil, not throw")
+    }
 }

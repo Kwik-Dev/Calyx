@@ -601,4 +601,13 @@ extension Notification.Name {
     /// converts it before posting so the C type never crosses the
     /// notification boundary).
     static let ghosttyPromptTitle = Notification.Name("com.calyx.ghostty.promptTitle")
+
+    // MARK: - Split Zoom (GHOSTTY_ACTION_TOGGLE_SPLIT_ZOOM)
+
+    /// `GHOSTTY_ACTION_TOGGLE_SPLIT_ZOOM`. `object` is the triggering
+    /// `SurfaceView`; no `userInfo` — mirrors `.ghosttyEqualizeSplits`'s
+    /// no-payload shape. See `CalyxWindowController.processToggleSplitZoom
+    /// (surfaceView:)` and `Calyx/Models/SplitTree.swift`'s own
+    /// "MARK: - Zoom" section for the full contract.
+    static let ghosttyToggleSplitZoom = Notification.Name("com.calyx.ghostty.toggleSplitZoom")
 }

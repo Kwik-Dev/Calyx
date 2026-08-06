@@ -88,8 +88,8 @@ class SplitContainerView: NSView {
         // resizeSubviews/layout will handle it when we get proper bounds.
         guard bounds.width > 0 && bounds.height > 0 else { return }
 
-        dividersUsedThisPass.removeAll()
-        guard let root = tree.root else {
+        guard tree.root != nil else {
+            dividersUsedThisPass.removeAll()
             subviews.forEach { $0.removeFromSuperview() }
             scrollWrappers.removeAll()
             dividerCache.removeAll()
@@ -97,8 +97,8 @@ class SplitContainerView: NSView {
             applyActiveDimming()
             return
         }
-        layoutNode(root, in: bounds)
-        removeOrphanedSurfaces()
+
+        applyLayout()
 
         if activeLeafID == nil || scrollWrappers[activeLeafID!] == nil {
             activeLeafID = tree.focusedLeafID
@@ -111,37 +111,94 @@ class SplitContainerView: NSView {
                 onActiveLeafChange?(id)
             }
         }
+        // Must run AFTER the reseed above, not folded into applyLayout():
+        // a brand-new container's first-ever updateLayout(tree:) call
+        // reaches this method with activeLeafID still nil, and dimming a
+        // multi-pane split against a nil active leaf would flatten every
+        // pane to alpha 1.0 instead of the tree's actual focused/dimmed
+        // split (see testTwoPaneSplitDimsInactivePane).
         applyActiveDimming()
-        reapUnusedDividers()
     }
 
     override func resizeSubviews(withOldSize oldSize: NSSize) {
         super.resizeSubviews(withOldSize: oldSize)
         guard bounds.width > 0 && bounds.height > 0 else { return }
-        guard let root = currentTree.root else { return }
-        dividersUsedThisPass.removeAll()
-        layoutNode(root, in: bounds)
-        removeOrphanedSurfaces()
+        guard currentTree.root != nil else { return }
+        applyLayout()
         applyActiveDimming()
-        reapUnusedDividers()
     }
 
     override func layout() {
         super.layout()
         guard bounds.width > 0 && bounds.height > 0 else { return }
-        guard let root = currentTree.root else { return }
+        guard currentTree.root != nil else { return }
 
         // Deferred layout: surface views haven't been added yet
         if subviews.isEmpty || subviews.allSatisfy({ !($0 is SplitDividerView) }) {
-            dividersUsedThisPass.removeAll()
-            layoutNode(root, in: bounds)
-            removeOrphanedSurfaces()
+            applyLayout()
             applyActiveDimming()
-            reapUnusedDividers()
             let callback = onDeferredLayoutComplete
             onDeferredLayoutComplete = nil
             callback?()
         }
+    }
+
+    /// Shared layout body for all three AppKit entry points above
+    /// (`updateLayout(tree:)` — when `tree.root != nil`, `resizeSubviews
+    /// (withOldSize:)`, and `layout()`'s deferred-layout branch): lay out
+    /// `currentTree` into `bounds`, drop orphaned surfaces, and reap
+    /// unused dividers. Centralizing this is not just DRY — it is the fix
+    /// for a real, reproducible regression class: before this method
+    /// existed, the zoom branch below would need to be duplicated in all
+    /// three call sites, and forgetting it in exactly one (`resizeSubviews`,
+    /// historically the easiest one to miss) means zoom visibly un-zooms
+    /// the instant the window is resized, even though `currentTree
+    /// .zoomedLeafID` never actually changed.
+    ///
+    /// Deliberately does NOT call `applyActiveDimming()` itself, unlike
+    /// every other per-pass step here — each of the three call sites
+    /// above calls it independently, right after `applyLayout()` returns,
+    /// because `updateLayout(tree:)` needs to run its own `activeLeafID`
+    /// reseed IN BETWEEN the two (see that call site's own comment);
+    /// folding dimming into this method would run it before that reseed
+    /// on every first-ever layout pass.
+    private func applyLayout() {
+        guard let root = currentTree.root else { return }
+
+        dividersUsedThisPass.removeAll()
+        if let zoomID = currentTree.effectiveZoomedLeafID {
+            // Zoomed: lay out ONLY the zoomed leaf, at the container's
+            // full bounds, and hide every other wrapper. Hiding the
+            // `SurfaceScrollView` WRAPPER (not the `SurfaceView` inside
+            // it) matters: wrappers are recreated whenever a leaf is
+            // freshly laid out (see the `.leaf` case in `layoutNode`
+            // below), so a stale `isHidden` can never leak across a
+            // registry swap the way it could if this toggled the
+            // long-lived, registry-owned `SurfaceView` instead.
+            //
+            // Deliberately does NOT zero any non-zoomed wrapper's frame —
+            // `updateLayout(tree:)`'s own comment above documents why
+            // `setFrameSize(zero)` kills a live Metal drawable; a hidden
+            // pane simply keeps whatever frame its last visible layout
+            // pass gave it, which is harmless since it isn't drawn.
+            //
+            // `placeDivider` is never called on this path, so
+            // `dividersUsedThisPass` stays empty and `reapUnusedDividers()`
+            // below removes every cached divider — they reappear
+            // automatically the moment zoom clears and the `else` branch
+            // walks the full tree again.
+            layoutNode(.leaf(id: zoomID), in: bounds)
+            for (id, wrapper) in scrollWrappers {
+                wrapper.isHidden = (id != zoomID)
+            }
+        } else {
+            layoutNode(root, in: bounds)
+            for (_, wrapper) in scrollWrappers {
+                wrapper.isHidden = false
+            }
+        }
+        removeOrphanedSurfaces()
+        reapUnusedDividers()
     }
 
     // MARK: - Active Pane Dimming
@@ -157,7 +214,17 @@ class SplitContainerView: NSView {
             return
         }
 
-        guard let active = activeLeafID, scrollWrappers[active] != nil else {
+        // While zoomed, the zoomed leaf is the effective active pane for
+        // dimming purposes, regardless of `activeLeafID` — `activeLeafID`
+        // only updates on an explicit focus transition (surfaceDidBecomeActive
+        // / updateLayout's reseed), so it can lag behind a just-applied
+        // zoom (e.g. zooming a pane that isn't the currently-focused one).
+        // Without this, that pane would be visible (per applyLayout's
+        // isHidden branch above) but dimmed to 0.75 — a single, fully
+        // visible pane that looks wrong.
+        let effectiveActive = currentTree.effectiveZoomedLeafID ?? activeLeafID
+
+        guard let active = effectiveActive, scrollWrappers[active] != nil else {
             for (_, wrapper) in scrollWrappers where wrapper.surfaceView.alphaValue != 1.0 {
                 wrapper.surfaceView.alphaValue = 1.0
             }

@@ -2216,6 +2216,11 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         // way -- see "MARK: - Prompt Title" below.
         center.addObserver(self, selector: #selector(handlePromptTitleNotification(_:)),
                            name: .ghosttyPromptTitle, object: nil)
+        // GHOSTTY_ACTION_TOGGLE_SPLIT_ZOOM: the 18th and final action from
+        // the missing-observer keybind-wiring investigation -- see
+        // "MARK: - Split Zoom" / processToggleSplitZoom's own doc comment.
+        center.addObserver(self, selector: #selector(handleToggleSplitZoomNotification(_:)),
+                           name: .ghosttyToggleSplitZoom, object: nil)
     }
 
     // MARK: - Screen State Polling (Herdr Layer 2)
@@ -3656,7 +3661,19 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         }
 
         guard let targetID = tab.splitTree.focusTarget(for: focusDir, from: surfaceID) else { return }
-        tab.splitTree.focusedLeafID = targetID
+        // settingFocus(_:), not a direct focusedLeafID assignment: while
+        // zoomed, moving focus to a DIFFERENT (necessarily hidden, per
+        // SplitContainerView.applyLayout's isHidden branch) pane must also
+        // clear zoom — Calyx doesn't implement ghostty's
+        // split-preserve-zoom config, whose default (navigation: false)
+        // means goto_split always clears zoom. Without this, the screen
+        // wouldn't visibly change (the zoomed pane stays on screen) but
+        // keystrokes would silently route to the now-focused, still-hidden
+        // pane instead. The decision lives in the model (settingFocus)
+        // rather than here so it stays unit-testable — see
+        // SplitTreeTests.swift's own settingFocus coverage.
+        tab.splitTree = tab.splitTree.settingFocus(targetID)
+        splitContainerView?.updateLayout(tree: tab.splitTree)
 
         if let targetView = tab.registry.view(for: targetID) {
             window?.makeFirstResponder(targetView)
@@ -3715,6 +3732,50 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         guard let tab = activeTab else { return }
         tab.splitTree = tab.splitTree.equalize()
         splitContainerView?.updateLayout(tree: tab.splitTree)
+    }
+
+    /// `GHOSTTY_ACTION_TOGGLE_SPLIT_ZOOM` receiver (Calyx's newest split
+    /// feature, ported from upstream ghostty's `BaseTerminalController
+    /// .ghosttyDidToggleSplitZoom` / `SplitTree.zoomed` — see
+    /// `Calyx/Models/SplitTree.swift`'s own "MARK: - Zoom" section).
+    ///
+    /// Resolves `surfaceView` against `activeTab.registry`, exactly like
+    /// `handleGotoSplitNotification`/`handleResizeSplitNotification`/
+    /// `handleEqualizeSplitsNotification` above (not `findTab(for:)`,
+    /// which the other missing-observer-investigation handlers use): a
+    /// keybind-triggered action always targets the currently-focused
+    /// surface, which can only ever belong to this window's ACTIVE tab —
+    /// background tabs have no first responder to trigger the action
+    /// from. This also means a `surfaceView` this window doesn't own, or
+    /// that belongs to a background tab, naturally no-ops via the
+    /// `tab.registry.id(for:)` lookup failing, without a separate
+    /// `belongsToThisWindow` check (which would reject every
+    /// `_testInsert`-only fixture in this file's own test suite, since
+    /// those are never attached to a real `NSWindow`).
+    ///
+    /// Not `private`, mirroring `processChildExited`'s/`processPromptTitle`'s
+    /// own "Not `private`" precedent, so `CalyxWindowControllerToggleSplitZoomTests`
+    /// can drive it directly without also wiring the real notification path.
+    func processToggleSplitZoom(surfaceView: SurfaceView) {
+        guard let tab = activeTab, let surfaceID = tab.registry.id(for: surfaceView) else { return }
+        tab.splitTree = tab.splitTree.togglingZoom(at: surfaceID)
+        splitContainerView?.updateLayout(tree: tab.splitTree)
+        if let view = tab.registry.view(for: surfaceID) {
+            window?.makeFirstResponder(view)
+        }
+        requestSave()
+    }
+
+    /// `handleToggleSplitZoomNotification`'s own receiver half. Extracts
+    /// `surfaceView` and forwards straight to `processToggleSplitZoom(
+    /// surfaceView:)` above, which owns the entire ownership check (see
+    /// that method's own doc comment for why no separate
+    /// `belongsToThisWindow` guard lives here) — mirrors
+    /// `handlePromptTitleNotification`'s identically-reasoned thin-adapter
+    /// shape.
+    @objc private func handleToggleSplitZoomNotification(_ notification: Notification) {
+        guard let surfaceView = notification.object as? SurfaceView else { return }
+        processToggleSplitZoom(surfaceView: surfaceView)
     }
 
     @objc private func handleSetTitleNotification(_ notification: Notification) {

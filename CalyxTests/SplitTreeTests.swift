@@ -961,4 +961,387 @@ final class SplitTreeTests: XCTestCase {
         XCTAssertEqual(innerData.ratio, 0.7, accuracy: 0.0001,
                        "Bug B regression: inner vertical split's ratio must be pinned to the target value")
     }
+
+    // ==================== Split Zoom (GHOSTTY_ACTION_TOGGLE_SPLIT_ZOOM) ====================
+    //
+    // `SplitTree.zoomedLeafID` + `effectiveZoomedLeafID` /
+    // `togglingZoom(at:)` / `clearingZoom()` / `settingFocus(_:)` are
+    // Calyx's port of upstream ghostty's `SplitTree.zoomed` +
+    // `BaseTerminalController.ghosttyDidToggleSplitZoom`
+    // (macos/Sources/Features/Splits/SplitTree.swift,
+    // macos/Sources/Features/Terminal/BaseTerminalController.swift,
+    // v1.3.1). Calyx previously had no zoom concept at all.
+    //
+    // GREEN PHASE: `togglingZoom(at:)`/`clearingZoom()`/`settingFocus(_:)`/
+    // `effectiveZoomedLeafID` now carry their real implementations, and
+    // `insert`/`remove`/`equalize`/`resize`/`setRatio`×2/`remapLeafIDs`
+    // each explicitly thread `zoomedLeafID` through their own
+    // `SplitTree(root:focusedLeafID:zoomedLeafID:)` call per the table in
+    // `SplitTree.swift`'s own "MARK: - Zoom" section. The per-test
+    // "REGRESSION GUARD" / "REAL RED FAILURE" labels below are kept as
+    // historical context from the TDD red phase (they still correctly
+    // describe why each test exists and what it guards against) even
+    // though every test in this section now exercises real logic rather
+    // than a stub.
+
+    // MARK: Zoom Helpers
+
+    private func makeHorizontalSplit(_ first: UUID, _ second: UUID, zoomedLeafID: UUID? = nil) -> SplitTree {
+        let root = SplitNode.split(SplitData(
+            direction: .horizontal,
+            ratio: 0.5,
+            first: .leaf(id: first),
+            second: .leaf(id: second)
+        ))
+        return SplitTree(root: root, focusedLeafID: first, zoomedLeafID: zoomedLeafID)
+    }
+
+    // MARK: togglingZoom(at:)
+
+    func test_should_zoom_leaf_when_toggling_zoom_on_an_unzoomed_split() {
+        let idA = UUID()
+        let idB = UUID()
+        let tree = makeHorizontalSplit(idA, idB)
+
+        let result = tree.togglingZoom(at: idA)
+
+        XCTAssertEqual(result.zoomedLeafID, idA,
+                       "Toggling zoom on an unzoomed split tree must zoom the target leaf")
+    }
+
+    func test_should_unzoom_when_toggling_the_already_zoomed_leaf_again() {
+        let idA = UUID()
+        let idB = UUID()
+        let tree = makeHorizontalSplit(idA, idB)
+
+        let zoomed = tree.togglingZoom(at: idA)
+        XCTAssertEqual(zoomed.zoomedLeafID, idA,
+                       "The first toggle must zoom idA, as a precondition for this test")
+
+        let unzoomed = zoomed.togglingZoom(at: idA)
+        XCTAssertNil(unzoomed.zoomedLeafID,
+                    "Toggling the SAME already-zoomed leaf again must clear zoom")
+    }
+
+    func test_should_switch_zoom_to_new_target_when_different_leaf_toggled_while_zoomed() {
+        let idA = UUID()
+        let idB = UUID()
+        let tree = makeHorizontalSplit(idA, idB, zoomedLeafID: idA)
+
+        let result = tree.togglingZoom(at: idB)
+
+        XCTAssertEqual(result.zoomedLeafID, idB,
+                       "Toggling a DIFFERENT leaf while zoomed must switch zoom to the new target, not clear it")
+    }
+
+    /// REGRESSION GUARD: passes today because `togglingZoom` is still the
+    /// identity stub — a single-leaf tree already starts at
+    /// `zoomedLeafID == nil`, so "stays nil" trivially holds regardless.
+    /// Pins upstream ghostty's own `guard surfaceTree.isSplit else {
+    /// return }` (BaseTerminalController.swift): the real implementation
+    /// must never let an un-split tab report as zoomed.
+    func test_should_not_zoom_when_tree_has_only_a_single_leaf() {
+        let (tree, onlyID) = makeSingleLeafTree()
+        XCTAssertFalse(tree.isSplit, "Precondition: a single-leaf tree must not be split")
+
+        let result = tree.togglingZoom(at: onlyID)
+
+        XCTAssertNil(result.zoomedLeafID,
+                    "A single-leaf (non-split) tree must never enter a zoomed state")
+    }
+
+    /// REGRESSION GUARD: `togglingZoom`'s stub is the identity function,
+    /// so "the tree comes back completely unchanged" trivially holds for
+    /// ANY input today, not just an absent leaf ID specifically.
+    func test_should_noop_when_toggling_zoom_at_a_leaf_id_not_in_the_tree() {
+        let idA = UUID()
+        let idB = UUID()
+        let tree = makeHorizontalSplit(idA, idB, zoomedLeafID: idA)
+        let unknownID = UUID()
+        XCTAssertNotEqual(unknownID, idA)
+        XCTAssertNotEqual(unknownID, idB)
+
+        let result = tree.togglingZoom(at: unknownID)
+
+        XCTAssertEqual(result, tree,
+                       "Toggling zoom at a leaf ID absent from the tree must be a complete no-op")
+    }
+
+    // MARK: insert / remove / equalize clear zoom
+
+    /// REGRESSION GUARD (see this section's header): `insert` itself is
+    /// untouched by this stub pass; its existing call sites don't pass
+    /// `zoomedLeafID` explicitly, so the new parameter's `nil` default
+    /// already clears zoom on every insert today, which happens to be
+    /// the correct final behavior too (a newly created split pane would
+    /// otherwise be invisible behind a still-zoomed sibling).
+    func test_should_clear_zoom_when_inserting_a_new_split() {
+        let idA = UUID()
+        let idB = UUID()
+        let tree = makeHorizontalSplit(idA, idB, zoomedLeafID: idA)
+
+        let (result, _) = tree.insert(at: idA, direction: .vertical)
+
+        XCTAssertNil(result.zoomedLeafID,
+                    "Inserting a new split must clear zoom")
+    }
+
+    /// REGRESSION GUARD: same reasoning as the insert test above —
+    /// `remove` removing the ZOOMED leaf itself already defaults to
+    /// clearing zoom today.
+    func test_should_clear_zoom_when_removing_the_zoomed_leaf_itself() {
+        let idA = UUID()
+        let idB = UUID()
+        let tree = makeHorizontalSplit(idA, idB, zoomedLeafID: idA)
+
+        let (result, _) = tree.remove(idA)
+
+        XCTAssertNil(result.zoomedLeafID,
+                    "Removing the zoomed leaf itself must clear zoom")
+    }
+
+    /// REAL RED FAILURE (contrast the two REGRESSION GUARDs above):
+    /// removing a leaf UNRELATED to the zoomed one, while the tree is
+    /// STILL split afterward, must PRESERVE zoom. `remove`'s current,
+    /// unmodified body doesn't thread `zoomedLeafID` through at all, so
+    /// today this always comes back `nil` instead of `idA`.
+    func test_should_preserve_zoom_when_removing_an_unrelated_leaf_from_a_three_leaf_tree() {
+        let idA = UUID()
+        let idB = UUID()
+        let idC = UUID()
+        let innerSplit = SplitNode.split(SplitData(
+            direction: .vertical,
+            ratio: 0.5,
+            first: .leaf(id: idB),
+            second: .leaf(id: idC)
+        ))
+        let root = SplitNode.split(SplitData(
+            direction: .horizontal,
+            ratio: 0.5,
+            first: .leaf(id: idA),
+            second: innerSplit
+        ))
+        let tree = SplitTree(root: root, focusedLeafID: idA, zoomedLeafID: idA)
+
+        let (result, _) = tree.remove(idC)
+
+        XCTAssertEqual(result.zoomedLeafID, idA,
+                       "Removing a leaf unrelated to the zoomed one, when the tree is still split " +
+                       "afterward, must preserve zoom")
+    }
+
+    /// REGRESSION GUARD: unlike the "unrelated leaf, still split" case
+    /// directly above (a real red failure today), removing the zoomed
+    /// leaf's ONLY sibling collapses the tree to a single leaf — Calyx's
+    /// own extra invariant, beyond upstream ghostty's `zoomed == target ?
+    /// nil : zoomed` (which only clears zoom when the REMOVED node IS the
+    /// zoomed one): a tree that is no longer split must never carry a
+    /// truthy zoom, so `effectiveZoomedLeafID`'s `isSplit` guard is never
+    /// the ONLY thing standing between a stale `zoomedLeafID` and a
+    /// wrongly-zoomed single pane. Passes today because `remove`'s
+    /// current body already defaults to `nil` regardless of the reason.
+    func test_should_clear_zoom_when_removal_collapses_the_tree_to_a_single_leaf() {
+        let idA = UUID()
+        let idB = UUID()
+        let tree = makeHorizontalSplit(idA, idB, zoomedLeafID: idA)
+
+        let (result, _) = tree.remove(idB)
+
+        XCTAssertFalse(result.isSplit,
+                       "Precondition: removing B from a 2-leaf tree must collapse it to a single leaf")
+        XCTAssertNil(result.zoomedLeafID,
+                    "Zoom must be cleared once the tree is no longer split, even though the " +
+                    "REMOVED leaf (B) was never the zoomed one (A)")
+    }
+
+    /// CORRECTED SPEC (post-review): the original design table had this
+    /// backwards. Upstream ghostty's own `SplitTree.equalized()`
+    /// (macos/Sources/Features/Splits/SplitTree.swift:236-240) is
+    /// `.init(root: newRoot, zoomed: zoomed)` — the ONE mutating
+    /// transform there that PRESERVES `zoomed`, unlike every other one
+    /// (insert/remove/etc.), which all reset it to nil. `equalize()`
+    /// only touches split ratios; which pane is temporarily zoomed to
+    /// fill the tab is an orthogonal, unrelated axis of state — exactly
+    /// like `resize`/`setRatio` (both already preserve zoom), not like
+    /// `insert` (which clears it because a new pane would otherwise be
+    /// invisible behind a still-zoomed sibling). Calyx follows upstream
+    /// here rather than deviating from it.
+    func test_should_preserve_zoom_when_equalizing_splits() {
+        let idA = UUID()
+        let idB = UUID()
+        let tree = makeHorizontalSplit(idA, idB, zoomedLeafID: idA)
+
+        let result = tree.equalize()
+
+        XCTAssertEqual(result.zoomedLeafID, idA,
+                       "Equalizing splits must preserve zoom — ratio changes are orthogonal to zoom state, " +
+                       "matching upstream ghostty's own SplitTree.equalized() and this type's resize/setRatio")
+    }
+
+    // MARK: resize / setRatio preserve zoom (REAL RED FAILUREs)
+
+    func test_should_preserve_zoom_when_resizing_a_split() {
+        let idA = UUID()
+        let idB = UUID()
+        let tree = makeHorizontalSplit(idA, idB, zoomedLeafID: idA)
+
+        let result = tree.resize(
+            node: idA, by: 50.0, direction: .horizontal,
+            bounds: CGSize(width: 800, height: 600), minSize: 50.0
+        )
+
+        XCTAssertEqual(result.zoomedLeafID, idA,
+                       "Resizing a split (a pure ratio/geometry change) must not disturb zoom")
+    }
+
+    func test_should_preserve_zoom_when_setting_ratio_by_leaf() {
+        let idA = UUID()
+        let idB = UUID()
+        let tree = makeHorizontalSplit(idA, idB, zoomedLeafID: idA)
+
+        let result = tree.setRatio(
+            node: idA, to: 0.7, direction: .horizontal,
+            bounds: CGSize(width: 800, height: 600), minSize: 50.0
+        )
+
+        XCTAssertEqual(result.zoomedLeafID, idA,
+                       "setRatio(node:to:direction:bounds:minSize:) must not disturb zoom")
+    }
+
+    func test_should_preserve_zoom_when_setting_ratio_for_a_specific_split() {
+        let idA = UUID()
+        let idB = UUID()
+        let tree = makeHorizontalSplit(idA, idB, zoomedLeafID: idA)
+
+        let result = tree.setRatio(
+            firstChildFirstLeafID: idA,
+            secondChildFirstLeafID: idB,
+            direction: .horizontal,
+            to: 0.7,
+            bounds: CGSize(width: 800, height: 600),
+            minSize: 50.0
+        )
+
+        XCTAssertEqual(result.zoomedLeafID, idA,
+                       "setRatio(firstChildFirstLeafID:secondChildFirstLeafID:direction:to:bounds:minSize:) must not disturb zoom")
+    }
+
+    // MARK: remapLeafIDs re-keys zoom (REAL RED FAILURE)
+
+    func test_should_remap_zoomedLeafID_when_its_leaf_is_remapped() {
+        let idA = UUID()
+        let idB = UUID()
+        let newA = UUID()
+        let tree = makeHorizontalSplit(idA, idB, zoomedLeafID: idA)
+
+        let result = tree.remapLeafIDs([idA: newA])
+
+        XCTAssertEqual(result.zoomedLeafID, newA,
+                       "remapLeafIDs must re-key zoomedLeafID exactly like it already re-keys " +
+                       "focusedLeafID, so a session restore's remap doesn't silently orphan a persisted zoom")
+    }
+
+    // MARK: settingFocus(_:) clears zoom (REAL RED FAILURE)
+
+    func test_should_clear_zoom_when_focus_moves_to_a_different_leaf() {
+        let idA = UUID()
+        let idB = UUID()
+        let tree = makeHorizontalSplit(idA, idB, zoomedLeafID: idA)
+
+        let result = tree.settingFocus(idB)
+
+        XCTAssertEqual(result.focusedLeafID, idB,
+                       "settingFocus must move focus to the requested leaf")
+        XCTAssertNil(result.zoomedLeafID,
+                    "settingFocus must clear zoom — Calyx doesn't implement ghostty's " +
+                    "split-preserve-zoom config, whose default (navigation: false) means " +
+                    "goto_split always clears zoom")
+    }
+
+    // MARK: effectiveZoomedLeafID
+
+    /// REAL RED FAILURE: `effectiveZoomedLeafID` is still the `{ nil }`
+    /// stub, so a legitimately zoomed, currently-split tree's own zoom is
+    /// not yet reported.
+    func test_effectiveZoomedLeafID_should_return_zoomedLeafID_when_it_names_a_real_leaf_of_a_split_tree() {
+        let idA = UUID()
+        let idB = UUID()
+        let tree = makeHorizontalSplit(idA, idB, zoomedLeafID: idA)
+
+        XCTAssertEqual(tree.effectiveZoomedLeafID, idA,
+                       "A zoomedLeafID naming a real leaf of a currently-split tree must be reported as the effective zoom")
+    }
+
+    /// REGRESSION GUARD: `effectiveZoomedLeafID` unconditionally returns
+    /// `nil` today, so a stale/absent leaf ID trivially reports `nil`
+    /// regardless of whether the double-guard is actually implemented.
+    func test_effectiveZoomedLeafID_should_return_nil_when_zoomedLeafID_is_not_a_leaf_of_the_tree() {
+        let idA = UUID()
+        let idB = UUID()
+        let staleID = UUID()
+        let tree = makeHorizontalSplit(idA, idB, zoomedLeafID: staleID)
+
+        XCTAssertNil(tree.effectiveZoomedLeafID,
+                    "A zoomedLeafID naming a leaf that no longer exists in the tree (e.g. a stale " +
+                    "value surviving a bug elsewhere) must never be reported as the effective zoom")
+    }
+
+    /// REGRESSION GUARD: same reasoning — the unconditional `{ nil }`
+    /// stub already satisfies this.
+    func test_effectiveZoomedLeafID_should_return_nil_when_tree_is_not_split_even_if_zoomedLeafID_is_set() {
+        let onlyID = UUID()
+        let tree = SplitTree(root: .leaf(id: onlyID), focusedLeafID: onlyID, zoomedLeafID: onlyID)
+        XCTAssertFalse(tree.isSplit, "Precondition: a single-leaf tree must not be split")
+
+        XCTAssertNil(tree.effectiveZoomedLeafID,
+                    "A non-split tree must never report an effective zoom, even if zoomedLeafID " +
+                    "somehow carries a value (e.g. restored from a JSON snapshot written by a buggy build)")
+    }
+
+    // MARK: Codable
+
+    /// Mechanical: `zoomedLeafID` is a plain stored `UUID?` with fully
+    /// synthesized Codable, so this already passes today — there is no
+    /// "logic" for a stub to fake here. Still a real regression guard: it
+    /// would catch a future change that gives `SplitTree` a hand-written
+    /// `Codable` conformance which forgets this field.
+    func test_should_preserve_zoomedLeafID_through_codable_roundtrip() throws {
+        let idA = UUID()
+        let idB = UUID()
+        let tree = makeHorizontalSplit(idA, idB, zoomedLeafID: idA)
+
+        let data = try JSONEncoder().encode(tree)
+        let decoded = try JSONDecoder().decode(SplitTree.self, from: data)
+
+        XCTAssertEqual(decoded.zoomedLeafID, idA,
+                       "zoomedLeafID must survive an encode-decode roundtrip like every other SplitTree field")
+        XCTAssertEqual(decoded, tree, "The full tree must be equal after a roundtrip")
+    }
+
+    /// Backward compatibility: a `SplitTree` JSON blob with no
+    /// `zoomedLeafID` key at all (every blob written before this feature
+    /// existed) must decode with `zoomedLeafID == nil`, not throw.
+    /// Mechanical (see the roundtrip test's own note) — passes today
+    /// because `zoomedLeafID` is a plain Optional stored property, and
+    /// synthesized `Decodable` already uses `decodeIfPresent` for
+    /// Optional properties. The `{"leaf": {"id": ...}}` shape for `root`
+    /// is confirmed against `SessionSnapshotV6Tests.v5JSONFixture`'s own
+    /// embedded `splitTree` object, not guessed.
+    func test_should_decode_zoomedLeafID_as_nil_when_json_key_is_absent() throws {
+        let leafID = UUID()
+        let legacyJSON = """
+        {
+            "focusedLeafID": "\(leafID.uuidString)",
+            "root": {"leaf": {"id": "\(leafID.uuidString)"}}
+        }
+        """
+        let data = Data(legacyJSON.utf8)
+
+        let decoded = try JSONDecoder().decode(SplitTree.self, from: data)
+
+        XCTAssertEqual(decoded.allLeafIDs(), [leafID],
+                       "Precondition: the legacy tree's own leaf must still decode correctly")
+        XCTAssertNil(decoded.zoomedLeafID,
+                    "A SplitTree JSON blob with no zoomedLeafID key at all must decode with zoomedLeafID == nil")
+    }
 }

@@ -134,6 +134,9 @@ enum GhosttyActionRouter {
         case GHOSTTY_ACTION_EQUALIZE_SPLITS:
             return handleEqualizeSplits(app, target: target)
 
+        case GHOSTTY_ACTION_TOGGLE_SPLIT_ZOOM:
+            return handleToggleSplitZoom(app, target: target)
+
         case GHOSTTY_ACTION_START_SEARCH:
             return handleStartSearch(app, target: target, value: action.action.start_search)
 
@@ -184,7 +187,6 @@ enum GhosttyActionRouter {
             return handlePromptTitle(app, target: target, value: action.action.prompt_title)
 
         case GHOSTTY_ACTION_TOGGLE_WINDOW_DECORATIONS,
-             GHOSTTY_ACTION_TOGGLE_SPLIT_ZOOM,
              GHOSTTY_ACTION_TOGGLE_VISIBILITY,
              GHOSTTY_ACTION_QUIT_TIMER,
              GHOSTTY_ACTION_FLOAT_WINDOW,
@@ -757,6 +759,28 @@ enum GhosttyActionRouter {
 
         NotificationCenter.default.post(
             name: .ghosttyEqualizeSplits,
+            object: surfaceView
+        )
+        return true
+    }
+
+    /// `GHOSTTY_ACTION_TOGGLE_SPLIT_ZOOM`. No payload — same no-userInfo
+    /// shape as `handleEqualizeSplits` immediately above. Unlike that
+    /// handler, though, the surface is REQUIRED (`guard let`, not `let`):
+    /// there is no "zoom the whole app" concept the way equalize can
+    /// (harmlessly) no-op for an app-targeted action — zooming needs to
+    /// know WHICH leaf to toggle, and `CalyxWindowController
+    /// .processToggleSplitZoom(surfaceView:)` takes a non-optional
+    /// `SurfaceView`. Mirrors `handleGotoSplit`'s/`handleResizeSplit`'s
+    /// own `guard let surfaceView` shape instead.
+    private static func handleToggleSplitZoom(
+        _ app: ghostty_app_t,
+        target: ghostty_target_s
+    ) -> Bool {
+        guard let surfaceView = surfaceView(from: target) else { return false }
+
+        NotificationCenter.default.post(
+            name: .ghosttyToggleSplitZoom,
             object: surfaceView
         )
         return true
