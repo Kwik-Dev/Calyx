@@ -168,17 +168,26 @@ enum GhosttyActionRouter {
         case GHOSTTY_ACTION_TOGGLE_COMMAND_PALETTE:
             return handleToggleCommandPalette(app, target: target)
 
-        case GHOSTTY_ACTION_CLOSE_ALL_WINDOWS,
-             GHOSTTY_ACTION_TOGGLE_WINDOW_DECORATIONS,
+        case GHOSTTY_ACTION_GOTO_WINDOW:
+            return handleGotoWindow(app, target: target, direction: action.action.goto_window)
+
+        case GHOSTTY_ACTION_CLOSE_ALL_WINDOWS:
+            return handleCloseAllWindows(app)
+
+        case GHOSTTY_ACTION_PRESENT_TERMINAL:
+            return handlePresentTerminal(app, target: target)
+
+        case GHOSTTY_ACTION_CHECK_FOR_UPDATES:
+            return handleCheckForUpdates(app)
+
+        case GHOSTTY_ACTION_TOGGLE_WINDOW_DECORATIONS,
              GHOSTTY_ACTION_TOGGLE_SPLIT_ZOOM,
              GHOSTTY_ACTION_TOGGLE_VISIBILITY,
-             GHOSTTY_ACTION_PRESENT_TERMINAL,
              GHOSTTY_ACTION_QUIT_TIMER,
              GHOSTTY_ACTION_FLOAT_WINDOW,
              GHOSTTY_ACTION_PROMPT_TITLE,
              GHOSTTY_ACTION_INSPECTOR,
              GHOSTTY_ACTION_RENDER_INSPECTOR,
-             GHOSTTY_ACTION_CHECK_FOR_UPDATES,
              GHOSTTY_ACTION_UNDO,
              GHOSTTY_ACTION_REDO:
             logger.info("Known but unimplemented action: \(action.tag.rawValue)")
@@ -879,6 +888,77 @@ enum GhosttyActionRouter {
     ) -> Bool {
         guard let appDelegate = NSApp.delegate as? AppDelegate else { return false }
         appDelegate.toggleQuickTerminal()
+        return true
+    }
+
+    // MARK: - App-Scoped Window Management
+    //
+    // GHOSTTY_ACTION_GOTO_WINDOW / CLOSE_ALL_WINDOWS / PRESENT_TERMINAL /
+    // CHECK_FOR_UPDATES. Like `handleToggleQuickTerminal` above (and
+    // `handleQuit`/`handleOpenConfig` further up), these four go straight
+    // to `AppDelegate` or an app-wide singleton instead of posting a
+    // `CalyxWindowController`-owned `.ghostty*` notification: none of
+    // them is meaningfully scoped to any one window's surface tree.
+
+    /// `GHOSTTY_ACTION_GOTO_WINDOW`. `ghostty_action_goto_window_e` has
+    /// only the two cases below (`ghostty.h:561-564` — no index-targeted
+    /// variant), so the C enum is translated to a Swift step of `±1`
+    /// right here, before ever crossing into `AppDelegate`:
+    /// `focusAdjacentWindow`/`adjacentWindowIndex` stay free of any
+    /// `GhosttyKit` type.
+    private static func handleGotoWindow(
+        _ app: ghostty_app_t,
+        target: ghostty_target_s,
+        direction: ghostty_action_goto_window_e
+    ) -> Bool {
+        guard let appDelegate = NSApp.delegate as? AppDelegate else { return false }
+        let step: Int
+        switch direction {
+        case GHOSTTY_GOTO_WINDOW_NEXT:
+            step = 1
+        case GHOSTTY_GOTO_WINDOW_PREVIOUS:
+            step = -1
+        default:
+            return false
+        }
+        return appDelegate.focusAdjacentWindow(step: step)
+    }
+
+    /// `GHOSTTY_ACTION_CLOSE_ALL_WINDOWS`. See `AppDelegate
+    /// .closeAllWindows`'s own doc comment for the confirm-once / close /
+    /// restore-flag contract.
+    private static func handleCloseAllWindows(_ app: ghostty_app_t) -> Bool {
+        guard let appDelegate = NSApp.delegate as? AppDelegate else { return false }
+        appDelegate.closeAllWindows()
+        return true
+    }
+
+    /// `GHOSTTY_ACTION_PRESENT_TERMINAL`. Reuses `.calyxFocusSurface`
+    /// rather than introducing a new notification name —
+    /// `CalyxWindowController.handleFocusSurfaceNotification` already
+    /// resolves a surfaceID to its owning tab/window, switches to that
+    /// tab, and raises the window. `NSApp.activate()` lives HERE, not in
+    /// that notification's receiver: the receiver also fires for the
+    /// Agents sidebar row-click and Session Browser call sites, which
+    /// must not gain an app-activation side effect they never had.
+    /// `surfaceController` is `nil` mid-`ghostty_surface_new`, in which
+    /// case there is no surfaceID to focus and this reports unhandled.
+    private static func handlePresentTerminal(
+        _ app: ghostty_app_t,
+        target: ghostty_target_s
+    ) -> Bool {
+        guard let surfaceView = surfaceView(from: target) else { return false }
+        guard let surfaceID = surfaceView.surfaceController?.id else { return false }
+        NSApp.activate()
+        NotificationCenter.default.post(name: .calyxFocusSurface, object: nil, userInfo: ["surfaceID": surfaceID])
+        return true
+    }
+
+    /// `GHOSTTY_ACTION_CHECK_FOR_UPDATES`. App-level singleton, no target
+    /// — the same shape as `handleOpenConfig`'s `SettingsWindowController
+    /// .shared` call above.
+    private static func handleCheckForUpdates(_ app: ghostty_app_t) -> Bool {
+        UpdateController.shared.checkForUpdates()
         return true
     }
 

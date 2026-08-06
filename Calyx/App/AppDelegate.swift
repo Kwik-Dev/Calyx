@@ -1109,6 +1109,136 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         isClosingLastManagedWindow(controller) && quickTerminalController == nil
     }
 
+    // MARK: - GHOSTTY_ACTION_CLOSE_ALL_WINDOWS / GHOSTTY_ACTION_GOTO_WINDOW
+    //
+    // App-scoped libghostty keybind wiring. Router-side dispatch is
+    // `GhosttyActionRouter.handleCloseAllWindows`/`.handleGotoWindow`
+    // (`GhosttyBridge/GhosttyAction.swift`), which translate the C target/
+    // enum payloads and call straight into these methods, mirroring
+    // `handleQuit`/`handleOpenConfig`/`handleToggleQuickTerminal`'s
+    // established "app-target action -> AppDelegate/singleton directly,
+    // no notification round-trip" shape. `closeAllWindows`'s confirm/
+    // close/restore-flag contract is covered by
+    // `AppDelegateCloseAllWindowsTests`; `adjacentWindowIndex`'s pure
+    // index arithmetic is covered by `AppDelegateAdjacentWindowIndexTests`.
+    // `focusAdjacentWindow` itself has no direct unit test — see its own
+    // doc comment below.
+
+    /// `GHOSTTY_ACTION_CLOSE_ALL_WINDOWS`. Closes every managed window
+    /// behind a SINGLE confirm-quit prompt up front.
+    ///
+    /// Uses `window.close()`, never `performClose(_:)`: `performClose`
+    /// re-invokes the `windowShouldClose` delegate arm (and with it
+    /// `confirmQuitBeforeCloseIfWouldTerminate`'s own prompt) for each
+    /// window it closes, which would ask again for every window this
+    /// method already confirmed quitting over. `close()` skips that
+    /// delegate round-trip entirely, so the `confirmQuitIfNeeded()` call
+    /// below is the only prompt that ever fires.
+    ///
+    /// `targets` snapshots `windowControllers` before either loop below:
+    /// closing a window synchronously cascades `windowWillClose` ->
+    /// `removeWindowController`, which mutates the live array in place,
+    /// so iterating the live property directly would skip entries as it
+    /// shrinks out from under the loop.
+    ///
+    /// `isTerminationConfirmed = true` is set BEFORE either loop, not
+    /// after. `CalyxWindowController.windowWillClose`'s pre-teardown save
+    /// only skips its own synchronous `saveImmediately()` call when
+    /// `isAppActuallyTerminating` (-> `AppDelegate.isTerminating` ->
+    /// this flag) already reads `true`. Left `false` here, the last
+    /// window closed by the loop below would see "closing the last
+    /// managed window, app NOT terminating" and synchronously overwrite
+    /// the on-disk snapshot — with every OTHER window in this batch
+    /// already torn down and removed from `windowControllers` by that
+    /// point, that write would silently collapse the snapshot to just
+    /// one window, corrupting the NEXT launch's restore. This mirrors
+    /// exactly why `applicationShouldTerminate`'s own Cmd+Q path sets
+    /// this flag ahead of `markAllControllersClosingForShutdown`.
+    ///
+    /// The trailing check restores the flag back to `false` unless the
+    /// app is genuinely gone (e.g. a quick terminal is still open, so
+    /// `removeWindowController` never reached its own `NSApp.terminate`
+    /// branch, or some window otherwise declined to close and survived).
+    /// Leaving it `true` in that case would make the NEXT Cmd+Q take
+    /// `applicationShouldTerminate`'s "already confirmed" branch and
+    /// terminate immediately, skipping the confirm-quit prompt for
+    /// whatever is still actually running.
+    func closeAllWindows() {
+        let targets = windowControllers
+        guard !targets.isEmpty else { return }
+        guard confirmQuitIfNeeded() else { return }
+
+        isTerminationConfirmed = true
+        for wc in targets { wc.isClosingForShutdown = true }
+        for wc in targets { wc.window?.close() }
+
+        if !windowControllers.isEmpty || quickTerminalController != nil {
+            isTerminationConfirmed = false
+        }
+    }
+
+    /// Pure index arithmetic for `GHOSTTY_ACTION_GOTO_WINDOW`
+    /// (`GHOSTTY_GOTO_WINDOW_PREVIOUS`/`GHOSTTY_GOTO_WINDOW_NEXT` map to
+    /// `step: -1`/`step: +1` respectively). Deliberately free of any
+    /// `NSWindow`/`NSApp` access so it is unit-testable in isolation (see
+    /// `AppDelegateAdjacentWindowIndexTests`).
+    ///
+    /// `currentIndex == nil` always resolves to `0`, regardless of
+    /// `step`'s sign: with no reference point to step "from", there is
+    /// nothing for a direction to modify, so this is its own standalone
+    /// rule — NOT `currentIndex ?? 0` substituted into the modular-step
+    /// formula below (that substitution would instead land on
+    /// `count - 1` for a backward step).
+    ///
+    /// Swift's `%` returns a NEGATIVE result for a negative dividend, so
+    /// `((currentIndex + step) % count + count) % count` double-
+    /// normalizes the result back into `0..<count`.
+    nonisolated static func adjacentWindowIndex(currentIndex: Int?, step: Int, count: Int) -> Int? {
+        guard count > 1, step != 0 else { return nil }
+        guard let currentIndex else { return 0 }
+        let next = ((currentIndex + step) % count + count) % count
+        return next == currentIndex ? nil : next
+    }
+
+    /// Focuses the previous/next managed window (`step: -1`/`+1`), for
+    /// `GHOSTTY_ACTION_GOTO_WINDOW`, resolved via `adjacentWindowIndex`
+    /// above.
+    ///
+    /// Candidates come from `windowControllers`, NOT `NSApp.windows`:
+    /// the latter also includes the Settings/Session Browser/Quick
+    /// Terminal panels, which have no place in this cycle order and no
+    /// stable ordering relative to the managed windows. A candidate must
+    /// have a live window that is `isVisible && !isMiniaturized`.
+    ///
+    /// The "current" position prefers `isKeyWindow`, falling back to
+    /// `isMainWindow` (e.g. invoked while some non-managed panel holds
+    /// key status but a managed window is still main), and `nil` —
+    /// resolved to index 0 by `adjacentWindowIndex` — if neither is
+    /// found.
+    ///
+    /// Not directly unit-tested: exercising the isVisible/isKeyWindow/
+    /// isMiniaturized filtering above needs real, visible `NSWindow`
+    /// instances, which is unsafe to drive from this test host (see
+    /// `AppDelegateAdjacentWindowIndexTests`'s own header comment for
+    /// why coverage is concentrated in `adjacentWindowIndex` instead).
+    /// `makeKeyAndOrderFront` below triggers `windowDidBecomeKey` ->
+    /// `restoreFocus()` on the target controller, so no explicit surface
+    /// focus call is needed here.
+    @discardableResult
+    func focusAdjacentWindow(step: Int) -> Bool {
+        let candidates = windowControllers.filter { controller in
+            guard let window = controller.window else { return false }
+            return window.isVisible && !window.isMiniaturized
+        }
+        let currentIndex = candidates.firstIndex { $0.window?.isKeyWindow == true }
+            ?? candidates.firstIndex { $0.window?.isMainWindow == true }
+        guard let target = Self.adjacentWindowIndex(currentIndex: currentIndex, step: step, count: candidates.count) else {
+            return false
+        }
+        candidates[target].window?.makeKeyAndOrderFront(nil)
+        return true
+    }
+
     /// Distinguishes the two confirm-quit wordings: `.killProcesses`
     /// (the default — a real process is about to be killed) vs.
     /// `.detachOnly` (the session will keep running headless in the
