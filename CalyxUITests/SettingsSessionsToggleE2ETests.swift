@@ -18,10 +18,10 @@
 // still on after a real quit and relaunch.
 //
 // WHY NO "-calyx.session.persistentSessionsEnabled" LAUNCH ARGUMENT
-// (unlike RealQuitRestoreE2ETests/SessionPersistenceE2ETests/
-// SessionBrowserAttachKillE2ETests/AgentResumeOfferE2ETests, which all
-// force this exact setting on via that argument to exercise something
-// ELSE with persistence already enabled): UserDefaults' search order
+// (unlike SessionPersistenceE2ETests/SessionBrowserAttachKillE2ETests/
+// AgentResumeOfferE2ETests, which all force this exact setting on via
+// that argument to exercise something ELSE with persistence already
+// enabled): UserDefaults' search order
 // puts NSArgumentDomain (command-line `-key value` overrides) ABOVE the
 // app's own persistent domain for every read, for the lifetime of the
 // process that received it -- an override for this key would shadow
@@ -52,9 +52,8 @@
 // WHY THE PER-TEST `HOME`/`sessionDir` OVERRIDES STILL EXIST: they
 // isolate everything else this journey touches (`CALYX_UITEST_SESSION_DIR`
 // for the session daemon's own on-disk state, mirroring
-// RealQuitRestoreE2ETests/SessionPersistenceE2ETests's established
-// idiom) -- only the UserDefaults piece specifically needed its own
-// separate seam.
+// SessionPersistenceE2ETests's established idiom) -- only the
+// UserDefaults piece specifically needed its own separate seam.
 //
 // WHY RELAUNCH, NOT JUST RE-SHOWING THE SAME WINDOW: SettingsWindowController
 // .shared is a singleton built once per process and never torn down
@@ -65,8 +64,8 @@
 // value actually changed. Only a genuine relaunch (a brand-new
 // SettingsWindowController.shared, reading whatever the previous
 // process actually persisted to disk) discriminates the bug from the
-// fix. Mirrors RealQuitRestoreE2ETests/SessionPersistenceE2ETests's own
-// established quit-via-menu-then-relaunch idiom exactly.
+// fix. Mirrors SessionPersistenceE2ETests's own established
+// quit-via-menu-then-relaunch idiom exactly.
 
 import XCTest
 

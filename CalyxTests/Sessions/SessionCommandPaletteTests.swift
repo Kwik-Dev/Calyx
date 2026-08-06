@@ -22,15 +22,21 @@
 //  the focused/tracked pane's leaf and `SessionRef` are torn down and
 //  the untracked sibling survives untouched.
 //
-//  Last-pane quit confirmation: `closeFocusedSessionSurface` gates
-//  teardown on `confirmQuitBeforeCloseIfWouldTerminate` only when the
-//  focused pane is the last leaf in the last tab of the last group of
-//  the last managed window (`isLastPaneEverywhere`) — an ordinary
-//  multi-pane tab never consults it, since detaching/killing one pane
-//  can't empty the window. `MockConfirmQuitAppDelegate` below swaps
-//  into `NSApp.delegate` to drive both outcomes (cancel/confirm)
-//  deterministically, without a real `NSAlert.runModal()` blocking the
-//  test run.
+//  Last-pane teardown, window-lifetime redesign: `closeFocusedSessionSurface`
+//  used to gate teardown on `confirmQuitBeforeCloseIfWouldTerminate`
+//  whenever the focused pane is the last leaf in the last tab of the
+//  last group of the last managed window (`isLastPaneEverywhere`) —
+//  deleted along with every close-path confirm-quit prompt, since
+//  closing a window no longer terminates the app at all (see
+//  `AppDelegateLastWindowClosedDoesNotTerminateTests`). Teardown now
+//  proceeds unconditionally in that case too, exactly like the ordinary
+//  multi-pane case below, which never emptied the window and so never
+//  consulted the gate even before this redesign. `MockConfirmQuitAppDelegate`
+//  below still swaps into `NSApp.delegate` for the tests below, now
+//  purely to prove the gate is never consulted at all
+//  (`confirmQuitCallCount` stays 0) and to keep `removeWindowController`
+//  a safe no-op, without a real `NSAlert.runModal()` blocking the test
+//  run.
 //
 
 import XCTest
@@ -295,27 +301,46 @@ final class SessionCommandPaletteTests: XCTestCase {
                     "SessionSurfaceMap must no longer track the killed surface")
     }
 
-    // MARK: - Last-pane teardown (confirm-quit gate)
+    // MARK: - Last-pane teardown (window-lifetime redesign: no confirm-quit gate)
 
-    /// `AppDelegate` subclass that lets the last-pane-everywhere
-    /// confirm-quit gate be driven deterministically, without a real
-    /// `NSAlert.runModal()` blocking the test run, and counts how many
-    /// times it was consulted. `closingWouldTerminate`/`removeWindowController`
-    /// come from `ConfirmQuitMockAppDelegate` (R6-J, r6-fix-spec.md):
-    /// invoking `session.detach`/`session.kill` on `SinglePaneFixture`
-    /// below, when `shouldConfirm` is `true`, empties the window for
-    /// real, so `closeSurfaceAndCleanUp` calls `window?.close()`, which
-    /// fires `windowWillClose` -> `AppDelegate.removeWindowController`,
-    /// see that base class's own doc comment for why the override is a
-    /// no-op.
+    /// `AppDelegate` subclass counting how many times `confirmQuitIfNeeded`
+    /// is consulted, without a real `NSAlert.runModal()` blocking the
+    /// test run — window-lifetime redesign: every test below now expects
+    /// a count of exactly 0, proving `closeFocusedSessionSurface` never
+    /// consults it at all any more, not just pinning one particular
+    /// outcome of it. `removeWindowController` comes from
+    /// `ConfirmQuitMockAppDelegate` (R6-J, r6-fix-spec.md): invoking
+    /// `session.detach`/`session.kill` on `SinglePaneFixture` below
+    /// empties the window for real, so `closeSurfaceAndCleanUp` calls
+    /// `window?.close()`, which fires `windowWillClose` ->
+    /// `AppDelegate.removeWindowController`, see that base class's own
+    /// doc comment for why the override is a no-op.
+    ///
+    /// `requestSave` is also overridden to a no-op: every test below
+    /// drives `closeFocusedSessionSurface` all the way through
+    /// `closeSurfaceAndCleanUp`'s trailing, unconditional `requestSave()`
+    /// call (both its "tab now empty" and "tab still has leaves"
+    /// branches call it), which -- left unmocked -- schedules
+    /// `AppDelegate.requestSave()` on a LATER main-thread runloop turn
+    /// (`CalyxWindowController.requestSave()`'s own `DispatchQueue.main
+    /// .async`), by which point `withMockAppDelegate`'s `defer` has
+    /// already restored `NSApp.delegate` back to the real, ambient
+    /// `AppDelegate` -- so an unmocked override here risks a real,
+    /// delayed write to the developer's actual `~/.calyx` even though
+    /// `NSApp.delegate` reads as this mock for the whole synchronous
+    /// duration of the test itself. Matches this codebase's established
+    /// convention for the same risk (e.g. `CalyxWindowControllerCloseArmsTests
+    /// .ConfirmQuitCallCountAppDelegate`'s identical override, same
+    /// reasoning).
     private final class MockConfirmQuitAppDelegate: ConfirmQuitMockAppDelegate {
-        var shouldConfirm = true
         private(set) var confirmQuitCallCount = 0
 
-        override func confirmQuitIfNeeded(_ mode: ConfirmQuitMode) -> Bool {
+        override func confirmQuitIfNeeded() -> Bool {
             confirmQuitCallCount += 1
-            return shouldConfirm
+            return true
         }
+
+        override func requestSave() {}
     }
 
     private func withMockAppDelegate(_ mock: MockConfirmQuitAppDelegate, _ body: () throws -> Void) rethrows {
@@ -405,80 +430,32 @@ final class SessionCommandPaletteTests: XCTestCase {
                        "The focused, tracked leaf must still be torn down as usual")
     }
 
-    /// True last-pane/last-tab/last-group case, user cancels the
-    /// confirm-quit prompt: teardown must not proceed at all — the
-    /// pane's leaf, `SessionRef`, `SessionSurfaceMap` entry, and the
-    /// group itself must all remain exactly as they were.
-    func test_sessionDetachCommand_lastPaneEverywhere_confirmQuitCancelled_preservesAllState() throws {
+    /// True last-pane/last-tab/last-group case: window-lifetime
+    /// redesign, teardown must proceed unconditionally, with no
+    /// confirm-quit gate left to consult at all — removing the pane's
+    /// leaf and the now-empty tab/group exactly as the ordinary
+    /// multi-pane case above already does. Supersedes this test's own
+    /// pre-redesign shape (`..._confirmQuitConfirmed_proceedsWithTeardown`),
+    /// which pinned `confirmQuitCallCount == 1`; the two
+    /// `..._confirmQuitCancelled_preservesAllState` siblings that used
+    /// to sit next to it are deleted outright, not renamed — cancelling
+    /// is no longer a concept this command has at all, so there is
+    /// nothing left for them to pin.
+    func test_sessionDetachCommand_lastPaneEverywhere_neverConsultsConfirmQuitGate_alwaysProceedsWithTeardown() throws {
         let fixture = makeSinglePaneFixture()
         let detachCommand = try command("session.detach", in: fixture.controller)
         let mock = MockConfirmQuitAppDelegate()
-        mock.shouldConfirm = false
 
         withMockAppDelegate(mock) {
             detachCommand.handler()
         }
 
-        XCTAssertEqual(mock.confirmQuitCallCount, 1,
-                       "The last-pane-everywhere case must consult the confirm-quit gate exactly once")
-        XCTAssertEqual(fixture.tab.splitTree.allLeafIDs(), [fixture.leafID],
-                       "Cancelling the quit prompt must leave the pane's leaf untouched")
-        XCTAssertNotNil(fixture.tab.sessionRefs[fixture.leafID],
-                        "Cancelling must leave the SessionRef untouched")
-        XCTAssertNotNil(SessionSurfaceMap.shared.sessionID(for: fixture.leafID),
-                        "Cancelling must leave the SessionSurfaceMap entry untouched")
-        XCTAssertEqual(fixture.controller.windowSession.groups.count, 1,
-                       "Cancelling must leave the group (and its tab) in place")
-    }
-
-    /// Same guarantee for `session.kill`.
-    func test_sessionKillCommand_lastPaneEverywhere_confirmQuitCancelled_preservesAllState() throws {
-        let fixture = makeSinglePaneFixture()
-        let killCommand = try command("session.kill", in: fixture.controller)
-        let mock = MockConfirmQuitAppDelegate()
-        mock.shouldConfirm = false
-
-        withMockAppDelegate(mock) {
-            killCommand.handler()
-        }
-
-        XCTAssertEqual(mock.confirmQuitCallCount, 1,
-                       "The last-pane-everywhere case must consult the confirm-quit gate exactly once")
-        XCTAssertEqual(fixture.tab.splitTree.allLeafIDs(), [fixture.leafID],
-                       "Cancelling the quit prompt must leave the pane's leaf untouched")
-        XCTAssertNotNil(fixture.tab.sessionRefs[fixture.leafID],
-                        "Cancelling must leave the SessionRef untouched")
-        XCTAssertNotNil(SessionSurfaceMap.shared.sessionID(for: fixture.leafID),
-                        "Cancelling must leave the SessionSurfaceMap entry untouched")
-        XCTAssertEqual(fixture.controller.windowSession.groups.count, 1,
-                       "Cancelling must leave the group (and its tab) in place")
-    }
-
-    /// True last-pane/last-tab/last-group case, user confirms the
-    /// prompt: teardown must proceed exactly as it would with no gate
-    /// at all, and — since teardown reaches `closeSurfaceAndCleanUp`'s
-    /// `.windowShouldClose` case — `AppDelegate.isTerminationConfirmed`
-    /// must end up `true` so the `windowShouldClose` ->
-    /// `applicationShouldTerminate` cascade this triggers for real
-    /// doesn't prompt a second time.
-    func test_sessionDetachCommand_lastPaneEverywhere_confirmQuitConfirmed_proceedsWithTeardown() throws {
-        let fixture = makeSinglePaneFixture()
-        let detachCommand = try command("session.detach", in: fixture.controller)
-        let mock = MockConfirmQuitAppDelegate()
-        mock.shouldConfirm = true
-
-        withMockAppDelegate(mock) {
-            detachCommand.handler()
-        }
-
-        XCTAssertEqual(mock.confirmQuitCallCount, 1,
-                       "The last-pane-everywhere case must consult the confirm-quit gate exactly once")
-        XCTAssertTrue(mock.isTerminationConfirmed,
-                      "Confirming quit must mark isTerminationConfirmed once teardown reaches the window " +
-                      "close, so the real windowShouldClose -> applicationShouldTerminate cascade this " +
-                      "close triggers doesn't prompt again")
+        XCTAssertEqual(mock.confirmQuitCallCount, 0,
+                       "Closing the last pane everywhere must no longer show any quit confirmation — " +
+                       "closing the last window must not terminate the app any more, so there is " +
+                       "nothing left to confirm")
         XCTAssertTrue(fixture.tab.splitTree.isEmpty,
-                      "Confirming quit must let teardown proceed, removing the pane's leaf")
+                      "Teardown must proceed unconditionally, removing the pane's leaf")
         XCTAssertNil(fixture.tab.sessionRefs[fixture.leafID],
                     "Teardown must clear the SessionRef")
         XCTAssertNil(SessionSurfaceMap.shared.sessionID(for: fixture.leafID),
@@ -488,24 +465,21 @@ final class SessionCommandPaletteTests: XCTestCase {
     }
 
     /// Same guarantee for `session.kill`.
-    func test_sessionKillCommand_lastPaneEverywhere_confirmQuitConfirmed_proceedsWithTeardown() throws {
+    func test_sessionKillCommand_lastPaneEverywhere_neverConsultsConfirmQuitGate_alwaysProceedsWithTeardown() throws {
         let fixture = makeSinglePaneFixture()
         let killCommand = try command("session.kill", in: fixture.controller)
         let mock = MockConfirmQuitAppDelegate()
-        mock.shouldConfirm = true
 
         withMockAppDelegate(mock) {
             killCommand.handler()
         }
 
-        XCTAssertEqual(mock.confirmQuitCallCount, 1,
-                       "The last-pane-everywhere case must consult the confirm-quit gate exactly once")
-        XCTAssertTrue(mock.isTerminationConfirmed,
-                      "Confirming quit must mark isTerminationConfirmed once teardown reaches the window " +
-                      "close, so the real windowShouldClose -> applicationShouldTerminate cascade this " +
-                      "close triggers doesn't prompt again")
+        XCTAssertEqual(mock.confirmQuitCallCount, 0,
+                       "Closing the last pane everywhere must no longer show any quit confirmation — " +
+                       "closing the last window must not terminate the app any more, so there is " +
+                       "nothing left to confirm")
         XCTAssertTrue(fixture.tab.splitTree.isEmpty,
-                      "Confirming quit must let teardown proceed, removing the pane's leaf")
+                      "Teardown must proceed unconditionally, removing the pane's leaf")
         XCTAssertNil(fixture.tab.sessionRefs[fixture.leafID],
                     "Teardown must clear the SessionRef")
         XCTAssertNil(SessionSurfaceMap.shared.sessionID(for: fixture.leafID),
@@ -514,79 +488,118 @@ final class SessionCommandPaletteTests: XCTestCase {
                      "Teardown must remove the now-empty tab and its now-empty group")
     }
 
-    // MARK: - Round-4 fix (F2/T2): closingTabIDs insertion ordering
+    // MARK: - closingTabIDs insertion ordering (F2/T2, r4-fix-spec.md)
     //
     // r4-fix-spec.md F2 (V02, CRITICAL): `closeFocusedSessionSurface`
-    // must insert `tab.id` into `closingTabIDs` BEFORE consulting the
-    // confirm-quit gate, mirroring `closeTab`'s exact `:884 insert,
-    // :890 remove-on-cancel` pattern, so a synchronous reentrant close
-    // for the same tab (ghostty's `close_surface` callback firing from
-    // inside `requestClose()`) hits the existing `closeSurfaceAndCleanUp`
+    // must insert `tab.id` into `closingTabIDs` BEFORE any surface
+    // teardown work runs, mirroring `closeTab`'s own insert-before-
+    // teardown ordering, so a synchronous reentrant close for the same
+    // tab (ghostty's `close_surface` callback firing from inside
+    // `requestClose()`) hits the existing `closeSurfaceAndCleanUp`
     // guard instead of tearing down twice. `handleReconnectGiveUp`'s own
     // (multi-pane) insertion is covered separately in
     // `SessionReconnectGiveUpTests`, using a different, already-present
-    // checkpoint (a `NotificationManager` spy), this file's
-    // `confirmQuitIfNeeded` override is the natural checkpoint for
-    // `closeFocusedSessionSurface` specifically, since ONLY its
-    // last-pane-everywhere branch consults that gate.
+    // checkpoint (a `NotificationManager` spy).
+    //
+    // Window-lifetime redesign: this ordering used to be observable via
+    // this file's own `confirmQuitIfNeeded` override, the natural
+    // checkpoint back when `closeFocusedSessionSurface`'s
+    // last-pane-everywhere branch consulted that gate strictly between
+    // the insert and the teardown. That gate is gone (see this file's
+    // "Last-pane teardown" section above), so the two tests below
+    // instead observe a checkpoint synchronously inside
+    // `closeSurfaceAndCleanUp` itself, strictly after the kill/detach
+    // call and strictly before `closeFocusedSessionSurface`'s own
+    // trailing `closingTabIDs.remove(tab.id)`: `session.kill` (which
+    // reaches `killSessionIfPersistent`) uses the existing
+    // `_killSessionIfPersistentRouteObserverForTesting` seam — the same
+    // one `CalyxWindowControllerCloseSurfaceTerminationDiscriminatorTests`
+    // uses for its own, unrelated coverage; `session.detach` (which
+    // reaches `detachSessionIfPersistent` instead, with no equivalent
+    // seam of its own) uses `.calyxSurfaceDestroyed`, posted
+    // synchronously and unconditionally by
+    // `SurfaceRegistry.destroySurface(_:)` right after either kill or
+    // detach — including for a `_testInsert`-only fixture like this
+    // file's own, see that method's own doc comment.
 
-    /// `AppDelegate` subclass that captures
-    /// `CalyxWindowController._closingTabIDsForTesting`'s state at the
-    /// moment `confirmQuitIfNeeded` is consulted. Cannot reuse
-    /// `MockConfirmQuitAppDelegate` above (it's `final`, and doesn't
-    /// expose this hook); `closingWouldTerminate`/`removeWindowController`
-    /// come from `ConfirmQuitMockAppDelegate` (R6-J, r6-fix-spec.md).
-    private final class ClosingTabIDsSpyAppDelegate: ConfirmQuitMockAppDelegate {
+    /// Observes `.calyxSurfaceDestroyed`, filtered to `surfaceID` so an
+    /// unrelated notification (e.g. from another test) can't be mistaken
+    /// for this one's, and captures
+    /// `CalyxWindowController._closingTabIDsForTesting`'s state at that
+    /// moment. `@objc`/`NSObject`-based, matching `SurfacePropertyStore`'s
+    /// own established convention for a `@MainActor` notification
+    /// observer in this codebase (see that class's own doc comment on
+    /// why it subclasses `NSObject`) — the newer closure-based
+    /// `addObserver(forName:object:queue:using:)` doesn't fit here, its
+    /// `@Sendable` closure parameter can't safely capture this
+    /// non-`Sendable`, `@MainActor` spy. Not an `AppDelegate` subclass
+    /// like the (now-deleted) `ClosingTabIDsSpyAppDelegate` this
+    /// replaces — `.calyxSurfaceDestroyed` is a plain `NotificationCenter`
+    /// post, unrelated to `NSApp.delegate`.
+    @MainActor
+    private final class SurfaceDestroyedClosingTabIDsSpy: NSObject {
         weak var controller: CalyxWindowController?
+        let surfaceID: UUID
         private(set) var observedClosingTabIDs: Set<UUID>?
 
-        override func confirmQuitIfNeeded(_ mode: ConfirmQuitMode = .killProcesses) -> Bool {
+        init(controller: CalyxWindowController, surfaceID: UUID) {
+            self.controller = controller
+            self.surfaceID = surfaceID
+            super.init()
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(handleSurfaceDestroyed(_:)), name: .calyxSurfaceDestroyed, object: nil
+            )
+        }
+
+        deinit {
+            NotificationCenter.default.removeObserver(self)
+        }
+
+        @objc private func handleSurfaceDestroyed(_ notification: Notification) {
+            guard notification.userInfo?["surfaceID"] as? UUID == surfaceID else { return }
             observedClosingTabIDs = controller?._closingTabIDsForTesting
-            return true
         }
     }
 
     /// Against the CURRENT code, `closeFocusedSessionSurface` never
     /// touches `closingTabIDs` at all, so the observed set is empty at
-    /// confirm time (expected: `[fixture.tab.id]`).
-    func test_sessionDetachCommand_lastPaneEverywhere_insertsTabIntoClosingTabIDs_beforeConfirmQuitGate() throws {
+    /// destroy time (expected: `[fixture.tab.id]`).
+    func test_sessionDetachCommand_lastPaneEverywhere_insertsTabIntoClosingTabIDs_beforeSurfaceTeardown() throws {
         let fixture = makeSinglePaneFixture()
         let detachCommand = try command("session.detach", in: fixture.controller)
-        let mock = ClosingTabIDsSpyAppDelegate()
-        mock.controller = fixture.controller
+        let mock = MockConfirmQuitAppDelegate()
+        let spy = SurfaceDestroyedClosingTabIDsSpy(controller: fixture.controller, surfaceID: fixture.leafID)
 
-        let originalDelegate = NSApp.delegate
-        NSApp.delegate = mock
-        defer { NSApp.delegate = originalDelegate }
-
-        withExtendedLifetime(mock) {
+        withMockAppDelegate(mock) {
             detachCommand.handler()
         }
 
-        XCTAssertEqual(mock.observedClosingTabIDs, [fixture.tab.id],
+        XCTAssertEqual(spy.observedClosingTabIDs, [fixture.tab.id],
                        "closeFocusedSessionSurface must insert tab.id into closingTabIDs BEFORE " +
-                       "consulting the confirm-quit gate, mirroring closeTab's insert-then-confirm " +
+                       "tearing the surface down, mirroring closeTab's own insert-before-teardown " +
                        "ordering")
     }
 
-    /// Same contract for `session.kill`.
-    func test_sessionKillCommand_lastPaneEverywhere_insertsTabIntoClosingTabIDs_beforeConfirmQuitGate() throws {
+    /// `session.kill`'s counterpart to the `session.detach` checkpoint
+    /// above — see this section's own header comment for why the two
+    /// tests use different checkpoints.
+    func test_sessionKillCommand_lastPaneEverywhere_insertsTabIntoClosingTabIDs_beforeSurfaceTeardown() throws {
         let fixture = makeSinglePaneFixture()
         let killCommand = try command("session.kill", in: fixture.controller)
-        let mock = ClosingTabIDsSpyAppDelegate()
-        mock.controller = fixture.controller
+        let mock = MockConfirmQuitAppDelegate()
 
-        let originalDelegate = NSApp.delegate
-        NSApp.delegate = mock
-        defer { NSApp.delegate = originalDelegate }
+        var observedClosingTabIDs: Set<UUID>?
+        fixture.controller._killSessionIfPersistentRouteObserverForTesting = { _, _ in
+            observedClosingTabIDs = fixture.controller._closingTabIDsForTesting
+        }
 
-        withExtendedLifetime(mock) {
+        withMockAppDelegate(mock) {
             killCommand.handler()
         }
 
-        XCTAssertEqual(mock.observedClosingTabIDs, [fixture.tab.id],
+        XCTAssertEqual(observedClosingTabIDs, [fixture.tab.id],
                        "closeFocusedSessionSurface must insert tab.id into closingTabIDs BEFORE " +
-                       "consulting the confirm-quit gate, mirroring closeTab's insert-then-confirm " +
+                       "tearing the surface down, mirroring closeTab's own insert-before-teardown " +
                        "ordering")
     }
 
@@ -610,7 +623,6 @@ final class SessionCommandPaletteTests: XCTestCase {
         let fixture = makeSinglePaneFixture()
         let detachCommand = try command("session.detach", in: fixture.controller)
         let mock = MockConfirmQuitAppDelegate()
-        mock.shouldConfirm = true
 
         withMockAppDelegate(mock) {
             detachCommand.handler()

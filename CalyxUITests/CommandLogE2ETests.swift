@@ -166,9 +166,9 @@ final class CommandLogE2ETests: CalyxUITestCase {
     /// real `CalyxWindowController.enableIPC()` -- starts a real
     /// `CalyxMCPServer`, writes a real `agent-endpoint.json`, installs
     /// the real shell/agent-hook scripts), and dismisses the resulting
-    /// `NSAlert.runModal()` confirmation, mirroring
-    /// `RealQuitRestoreE2ETests`'s own established pattern for driving a
-    /// real modal alert from XCUITest.
+    /// `NSAlert.runModal()` confirmation. `CockpitApprovalE2ETests` keeps
+    /// an identical copy of this same helper (see that file's own doc
+    /// comment).
     private func enableAIAgentIPCViaCommandPalette() {
         openCommandPaletteViaMenu()
 

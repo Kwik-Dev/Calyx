@@ -15,40 +15,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var pendingURLs: [URL] = []
     private var quickTerminalController: QuickTerminalController?
 
-    /// Captured the moment termination is confirmed (isTerminationConfirmed's
-    /// didSet, false -> true transition only), BEFORE any window teardown or
-    /// removeWindowController(_:) call can empty windowControllers/appSession.
-    /// applicationWillTerminate (via saveForTermination()) consults this
-    /// instead of re-deriving buildSnapshot() from the possibly-already-
-    /// emptied live state, so the confirm-quit-by-closing-the-last-window
-    /// route always saves a real snapshot. Covers BOTH termination routes:
-    /// windowShouldClose's confirm branch and applicationShouldTerminate's
-    /// own Cmd+Q branch both set isTerminationConfirmed = true.
+    /// Captured explicitly by `applicationShouldTerminate` (the only
+    /// termination route now that closing a window never terminates the
+    /// app any more — see `applicationShouldTerminateAfterLastWindowClosed`),
+    /// BEFORE `markAllControllersClosingForShutdown` or any window
+    /// teardown can empty windowControllers/appSession. applicationWillTerminate
+    /// (via saveForTermination()) consults this instead of re-deriving
+    /// buildSnapshot() from the possibly-already-emptied live state, so a
+    /// Cmd+Q quit always saves a real snapshot even if it races a window
+    /// close that already emptied windowControllers via
+    /// `removeWindowController` (see that method's own doc comment for
+    /// the matching synchronous save on that route).
     private(set) var pendingTerminationSnapshot: SessionSnapshot?
 
     #if DEBUG
     /// Test seam: force pendingTerminationSnapshot directly instead of
-    /// only via isTerminationConfirmed's didSet, so saveForTermination()'s
-    /// own "prefers the captured snapshot over a live rebuild" contract is
-    /// testable in isolation from the capture mechanism itself. DO NOT use
-    /// from production code.
+    /// only via applicationShouldTerminate's own capture, so
+    /// saveForTermination()'s own "prefers the captured snapshot over a
+    /// live rebuild" contract is testable in isolation from the capture
+    /// mechanism itself. DO NOT use from production code.
     func _setPendingTerminationSnapshotForTesting(_ snapshot: SessionSnapshot?) {
         pendingTerminationSnapshot = snapshot
     }
     #endif
-
-    /// Set when the user has already confirmed quit (prevents double-prompting
-    /// between windowShouldClose and applicationShouldTerminate). The
-    /// false -> true transition also captures pendingTerminationSnapshot
-    /// (see that property's own doc comment for why); resetting back to
-    /// false (applicationShouldTerminate's own "already confirmed" branch)
-    /// deliberately leaves any already-captured snapshot untouched.
-    var isTerminationConfirmed = false {
-        didSet {
-            guard isTerminationConfirmed, !oldValue else { return }
-            pendingTerminationSnapshot = buildSnapshot()
-        }
-    }
 
     /// P4 round-6 fix (R6-A/R6-D, r6-fix-spec.md): app-wide "the app is
     /// actually terminating" discriminator, distinct from any single
@@ -68,28 +57,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// and again in `applicationWillTerminate` as a belt-and-suspenders
     /// safety net. Never reset back to `false`: once the app is genuinely
     /// terminating, it stays that way for the remainder of the process's
-    /// life.
+    /// life. The ONE canonical "is the app actually terminating" query —
+    /// window-lifetime redesign: closing a window is no longer a second
+    /// termination route, so every reader that used to also need
+    /// `isTerminationConfirmed` (`CalyxWindowController.isAppActuallyTerminating`,
+    /// consulted directly by `detachSessionIfPersistent` and passed
+    /// explicitly as `killSessionIfPersistent`'s `isTerminating` parameter
+    /// by its callers) now reads this flag alone.
     private(set) var isApplicationTerminating = false
-
-    /// R8-C (r8-fix-spec.md; consolidates r7-verdicts.md's I1/A2/C2
-    /// dormant discriminator-mismatch finding): the ONE canonical "is
-    /// the app actually terminating" query, folding in both
-    /// `isApplicationTerminating` (set once `applicationShouldTerminate`
-    /// itself has decided to terminate) and `isTerminationConfirmed`
-    /// (set earlier, by `windowShouldClose`'s last-window success path,
-    /// for the whole window between that decision and
-    /// `applicationShouldTerminate` actually running, see that flag's
-    /// own doc comment for why `isClosingForShutdown` alone cannot
-    /// stand in for this: round-5 review (I2) found it set even for a
-    /// non-terminating close). Every reader that used to consult one or
-    /// the other ad hoc (`CalyxWindowController.isAppActuallyTerminating`,
-    /// `killSessionIfPersistent`/`detachSessionIfPersistent`'s
-    /// `isTerminating` parameter) must read THIS query instead, so the
-    /// outer "should this teardown preserve or tear down" gate and any
-    /// inner policy it drives always agree.
-    var isTerminating: Bool {
-        isApplicationTerminating || isTerminationConfirmed
-    }
 
     #if DEBUG
     /// Test seam (P4 round-6 fix RED phase): mirrors
@@ -266,6 +241,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 applyDemoWindowFrameIfNeeded()
             }
         }
+        // issue #37 recurrence guard (window-lifetime redesign): issue #37
+        // ("Calyx closes after opening") was a snapshot restoring a
+        // window with no tabs, that window closing immediately, and
+        // `removeWindowController` reading the resulting empty
+        // `windowControllers` as "last window closed" and terminating the
+        // app outright — fixed by `SessionSnapshot.removingEmptyWindows()`
+        // below `restoreSession()`, still in place, still load-bearing.
+        // Closing the last window no longer terminates the app at all
+        // (see `applicationShouldTerminateAfterLastWindowClosed`), so the
+        // same gap can no longer manifest as a silent quit — but with
+        // nothing above having produced a window (an edge case
+        // `removingEmptyWindows()` doesn't fully rule out) and no URL
+        // still pending one (`application(_:open:)` runs below and
+        // creates its own window(s)), it would instead surface as a
+        // launch that shows nothing at all, just as unrecoverable to the
+        // user. This is the safety net for that: nothing above created a
+        // window and none is still coming, so create one now.
+        if windowControllers.isEmpty && pendingURLs.isEmpty {
+            createNewWindow()
+        }
         // Bug 3c gap-close: a snapshot preserved by a PREVIOUS run's
         // restoreSession() (via preserveSnapshotForRecovery()) still sits
         // on disk at launch even though THIS run never called that method
@@ -283,15 +278,42 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Ghostty parity (window-lifetime redesign): closing the last window
+    /// never terminates Calyx any more, matching Ghostty's own
+    /// last-window-doesn't-quit behavior. The app instead keeps running
+    /// with zero windows open until the user explicitly quits (Cmd+Q /
+    /// the Quit menu item) or reopens one (`applicationShouldHandleReopen`,
+    /// the Dock icon).
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        quickTerminalController == nil
+        false
     }
 
-    /// Reads and clears `isTerminationConfirmed` — set ahead of time by
-    /// `windowShouldClose` when the last-window close path already ran
-    /// its own pre-close confirm-quit prompt, so this method doesn't
-    /// prompt a second time for the same termination. See
-    /// `windowShouldClose` for that last-window pre-close prompt path.
+    /// Dock-icon click / re-open (double-clicking Calyx.app, or clicking
+    /// its Dock icon, while it's already running) with no window already
+    /// coming to the front on its own. Mirrors Ghostty's own
+    /// `applicationShouldHandleReopen` (ghostty/macos/Sources/App/macOS/AppDelegate.swift).
+    /// Window-lifetime redesign: now that closing every window no longer
+    /// terminates the app (see `applicationShouldTerminateAfterLastWindowClosed`),
+    /// this is how a user gets a window back after closing them all
+    /// without quitting.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        // A visible window already exists -- defer to AppKit's own
+        // default behavior (bring it to front).
+        guard !flag else { return true }
+
+        // A window exists but isn't visible yet (e.g. still initializing,
+        // flag can lag a genuinely-open window) -- nothing to do.
+        guard windowControllers.isEmpty else { return true }
+
+        createNewWindow()
+        return false
+    }
+
+    /// The Cmd+Q / "Quit Calyx" path — window-lifetime redesign: the only
+    /// remaining termination route now that closing a window never
+    /// terminates the app (see `applicationShouldTerminateAfterLastWindowClosed`),
+    /// so unlike before, there is no second, already-confirmed route to
+    /// short-circuit here.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if ProcessInfo.processInfo.arguments.contains("--uitesting") {
             markAllControllersClosingForShutdown()
@@ -299,20 +321,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return .terminateNow
         }
 
-        // Already confirmed (from windowShouldClose on last-window close path)
-        if isTerminationConfirmed {
-            isTerminationConfirmed = false
-            markAllControllersClosingForShutdown()
-            isApplicationTerminating = true
-            return .terminateNow
-        }
-
-        // Cmd+Q path: run confirmations
         if !confirmQuitIfNeeded() {
             return .terminateCancel
         }
 
-        isTerminationConfirmed = true
+        // Captured explicitly, BEFORE markAllControllersClosingForShutdown
+        // or any window teardown can empty windowControllers/appSession
+        // (see pendingTerminationSnapshot's own doc comment).
+        pendingTerminationSnapshot = buildSnapshot()
         // Flag all controllers so windowDidExitFullScreen preserves tracking state
         // during app teardown (the red-button / Cmd+W path sets its own flag).
         markAllControllersClosingForShutdown()
@@ -367,17 +383,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.01))
         }
 
-        // Last-window close path already persists synchronously in
-        // windowWillClose. This guard's ONLY remaining job is skipping
-        // pointless work when there is neither a captured confirm-time
-        // pendingTerminationSnapshot nor any live window left to build one
-        // from -- saveForTermination()'s own saveAtTermination(_:) call
-        // already refuses to let an empty snapshot clobber a non-empty
-        // on-disk one, so this is not a correctness gate: a non-nil
-        // pendingTerminationSnapshot (the confirm-quit-by-closing-the-
-        // last-window route, see that property's own doc comment) must
-        // still be saved even though windowControllers/appSession are
-        // already emptied by the time this runs.
+        // Closing the last window already persists synchronously in
+        // `removeWindowController` (see that method's own doc comment).
+        // This guard's ONLY remaining job is skipping pointless work when
+        // there is neither a captured confirm-time pendingTerminationSnapshot
+        // nor any live window left to build one from -- saveForTermination()'s
+        // own saveAtTermination(_:) call already refuses to let an empty
+        // snapshot clobber a non-empty on-disk one, so this is not a
+        // correctness gate: a non-nil pendingTerminationSnapshot (captured
+        // by applicationShouldTerminate's own Cmd+Q path, see that
+        // property's own doc comment) must still be saved even when
+        // windowControllers/appSession are already empty by the time this
+        // runs (e.g. every window was already closed, each already saved
+        // via removeWindowController, before the user then pressed Cmd+Q).
         let hasLiveWindows = !windowControllers.isEmpty && !appSession.windows.isEmpty
         guard pendingTerminationSnapshot != nil || hasLiveWindows else {
             return
@@ -952,40 +970,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         logger.error("\(message, privacy: .public)")
     }
 
+    /// Closing the LAST window no longer terminates the app (Ghostty
+    /// parity — see `applicationShouldTerminateAfterLastWindowClosed`),
+    /// so this is now purely per-window bookkeeping: unregister
+    /// `controller` and, unless the app is already mid-quit
+    /// (`isApplicationTerminating` — `applicationShouldTerminate` already
+    /// captured its own `pendingTerminationSnapshot` and will save it in
+    /// `applicationWillTerminate`; nothing here should race that),
+    /// persist the now-smaller session.
+    ///
+    /// Saves SYNCHRONOUSLY (`saveImmediately()`), not `requestSave()`'s
+    /// debounced write, the moment this empties `windowControllers`: a
+    /// Cmd+Q immediately following this close would otherwise race
+    /// `requestSave()`'s debounce, and `SessionPersistenceActor
+    /// .saveAtTermination`'s own "never let an empty snapshot clobber a
+    /// non-empty on-disk one" guard would then let the STALE, still-
+    /// non-empty on-disk snapshot survive untouched — restoring this
+    /// already-killed session's windows on the next launch. A window
+    /// that survives this close (`windowControllers` still non-empty)
+    /// has no such race: `requestSave()` exactly as before.
     func removeWindowController(_ controller: CalyxWindowController) {
         appSession.removeWindow(id: controller.windowSession.id)
         windowControllers.removeAll { $0 === controller }
-        if !windowControllers.isEmpty {
+        guard !isApplicationTerminating else { return }
+        if windowControllers.isEmpty {
+            saveImmediately()
+        } else {
             requestSave()
-        } else if quickTerminalController == nil {
-            NSApp.terminate(nil)
         }
-    }
-
-    func isClosingLastManagedWindow(_ controller: CalyxWindowController) -> Bool {
-        windowControllers.count == 1 && windowControllers.first === controller
-    }
-
-    /// True when closing `controller` would empty the last managed
-    /// window and no quick terminal is open to keep the app alive —
-    /// i.e. closing it would terminate the app. Consulted by
-    /// `CalyxWindowController`'s close paths (`windowShouldClose`,
-    /// `closeTab`, `closeActiveGroup`, `closeAllTabsInGroup`,
-    /// `confirmQuitBeforeCloseIfWouldTerminate`) to decide whether a
-    /// pre-teardown confirm-quit prompt is needed at all.
-    func closingWouldTerminate(_ controller: CalyxWindowController) -> Bool {
-        isClosingLastManagedWindow(controller) && quickTerminalController == nil
-    }
-
-    /// Distinguishes the two confirm-quit wordings: `.killProcesses`
-    /// (the default — a real process is about to be killed) vs.
-    /// `.detachOnly` (the session will keep running headless in the
-    /// daemon, detached rather than killed). Passed through by
-    /// `CalyxWindowController.confirmQuitBeforeCloseIfWouldTerminate`
-    /// from whichever close path is asking (kill vs. detach semantics).
-    enum ConfirmQuitMode {
-        case killProcesses
-        case detachOnly
     }
 
     /// Set for the duration of `confirmQuitIfNeeded`'s `alert.runModal()`
@@ -1022,18 +1034,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     #endif
 
     /// Returns true if the app should proceed with quit, false if user
-    /// cancelled. Called both from `applicationShouldTerminate` (the
-    /// Cmd+Q / "Quit Calyx" path) and, via
-    /// `CalyxWindowController.confirmQuitBeforeCloseIfWouldTerminate`,
-    /// from individual close paths (`windowShouldClose`, `closeTab`,
-    /// `closeActiveGroup`, `closeAllTabsInGroup`,
-    /// `closeFocusedSessionSurface`, `handleReconnectGiveUp`) BEFORE
-    /// they tear anything down, when closing would terminate the app —
-    /// see `closingWouldTerminate`. `mode` selects the wording: a
-    /// kill-semantics close (default) warns that a running process is
-    /// about to end; a detach-semantics close (`.detachOnly`) explains
-    /// the session will keep running headless instead.
-    func confirmQuitIfNeeded(_ mode: ConfirmQuitMode = .killProcesses) -> Bool {
+    /// cancelled. Called only from `applicationShouldTerminate` (the
+    /// Cmd+Q / "Quit Calyx" path) — window-lifetime redesign: closing a
+    /// window, tab, or pane never terminates the app any more (see
+    /// `applicationShouldTerminateAfterLastWindowClosed`), so this is the
+    /// only remaining route to this prompt, and its wording is always
+    /// the kill-semantics one: a real process is about to be killed by
+    /// quitting.
+    func confirmQuitIfNeeded() -> Bool {
         // Check for running processes
         guard let app = GhosttyAppController.shared.app,
               ghostty_app_needs_confirm_quit(app) else {
@@ -1043,12 +1051,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Quit Calyx?"
-        switch mode {
-        case .killProcesses:
-            alert.informativeText = "A process is still running. Do you want to quit?"
-        case .detachOnly:
-            alert.informativeText = "The session will be detached and remain running in the background. The daemon will keep it alive for later reattachment. Do you want to quit?"
-        }
+        alert.informativeText = "A process is still running. Do you want to quit?"
         alert.addButton(withTitle: "Quit")
         alert.addButton(withTitle: "Cancel")
 

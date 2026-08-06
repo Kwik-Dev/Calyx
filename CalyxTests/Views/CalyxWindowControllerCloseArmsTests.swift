@@ -2,34 +2,30 @@
 //  CalyxWindowControllerCloseArmsTests.swift
 //  CalyxTests
 //
-//  TDD Red phase for round-4 fixes F3/F7/F8 (r4-fix-spec.md; full
-//  evidence in r4-verdicts.md V03/V07/V08). Covers the five places
-//  `CalyxWindowController` calls `window?.close()` as part of tearing
-//  down the last tab/group/window:
+//  TDD Red phase for round-4 fixes F7/F8 (r4-fix-spec.md; full evidence
+//  in r4-verdicts.md V07/V08), plus the window-lifetime redesign's own
+//  "closing the last tab/group must not confirm quit" coverage below.
 //
-//  - F3/T3: `windowShouldClose` must pre-populate `closingTabIDs` with
-//    EVERY tab id in this window BEFORE consulting `confirmQuitIfNeeded`
-//    (closing the only gate, V03, that does NOT already do this: an
-//    unrelated pane's process can exit synchronously mid-modal via
-//    ghostty's `close_surface` callback, and without this
-//    pre-population, `closeSurfaceAndCleanUp`'s `:1563` reentrancy guard
-//    is empty and does not fire), and remove them again on the cancel
-//    path (return false).
 //  - F7/T7 (the three arms NOT already covered by
 //    `SessionCommandPaletteTests`'s `closeSurfaceAndCleanUp` coverage):
 //    `closeTab`, `closeActiveGroup` (via the public `closeGroup(_:)`),
 //    and `closeAllTabsInGroup` must set `isClosingForShutdown = true`
-//    immediately before `window?.close()`, matching `windowShouldClose`'s
-//    own eager set, currently dead code for `windowDidExitFullScreen`'s
-//    stale-snapshot guard on these three paths (V07's "bonus lead").
+//    immediately before `window?.close()`, currently dead code for
+//    `windowDidExitFullScreen`'s stale-snapshot guard on these three
+//    paths (V07's "bonus lead").
+//
+//  Window-lifetime redesign: this file used to also cover F3/T3
+//  (`windowShouldClose` pre-populating `closingTabIDs` before consulting
+//  `confirmQuitIfNeeded`, and removing them again on cancel) -- deleted
+//  along with `windowShouldClose` itself and the close-path confirm-quit
+//  prompt it drove, see `AppDelegateLastWindowClosedDoesNotTerminateTests`.
 //
 //  Fixtures below use plain, leaf-less `Tab(title:)` tabs (no
 //  `SurfaceRegistry` surfaces): `closeTab`/`closeActiveGroup`/
-//  `closeAllTabsInGroup`/`windowShouldClose` all operate on
-//  `WindowSession`'s tab/group model and `tab.registry.allIDs` (empty
-//  here, so the kill/destroy loop is a harmless no-op), no live
-//  ghostty surface is needed to exercise the confirm-gate/flag-timing
-//  contracts under test.
+//  `closeAllTabsInGroup` all operate on `WindowSession`'s tab/group model
+//  and `tab.registry.allIDs` (empty here, so the kill/destroy loop is a
+//  harmless no-op), no live ghostty surface is needed to exercise the
+//  flag-timing contracts under test.
 //
 //  `closeAllTabsInGroup(id:)` is not `private` (P4 round-4 fix RED
 //  phase, see its own doc comment) so this file can drive it directly,
@@ -68,58 +64,18 @@ final class CalyxWindowControllerCloseArmsTests: XCTestCase {
         return SingleTabFixture(controller: controller, tabID: tab.id, groupID: group.id)
     }
 
-    private struct TwoTabFixture {
-        let controller: CalyxWindowController
-        let tabAID: UUID
-        let tabBID: UUID
-    }
-
-    /// Two tabs in one (the only) group, proves `windowShouldClose`
-    /// pre-populates `closingTabIDs` with EVERY tab id in the window,
-    /// not just the active one.
-    private func makeTwoTabFixture() -> TwoTabFixture {
-        let tabA = Tab(title: "A")
-        let tabB = Tab(title: "B")
-        let group = TabGroup(name: "Default", tabs: [tabA, tabB], activeTabID: tabA.id)
-        let session = WindowSession(groups: [group], activeGroupID: group.id)
-        let window = CalyxWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
-        )
-        let controller = CalyxWindowController(window: window, windowSession: session, restoring: true)
-        return TwoTabFixture(controller: controller, tabAID: tabA.id, tabBID: tabB.id)
-    }
-
     // MARK: - Mocks
 
     /// `AppDelegate` subclass confirming quit unconditionally, driving
     /// every close path under test through to its `.windowShouldClose`
     /// arm without a real, blocking `NSAlert.runModal()`.
-    /// `closingWouldTerminate`/`removeWindowController` come from
-    /// `ConfirmQuitMockAppDelegate` (R6-J, r6-fix-spec.md): confirmed
-    /// teardown here empties the window for real, calling
-    /// `window?.close()` -> `windowWillClose` ->
-    /// `AppDelegate.removeWindowController`, see that base class's own
-    /// doc comment for why the override is a no-op.
+    /// `removeWindowController` comes from `ConfirmQuitMockAppDelegate`
+    /// (R6-J, r6-fix-spec.md): confirmed teardown here empties the
+    /// window for real, calling `window?.close()` -> `windowWillClose`
+    /// -> `AppDelegate.removeWindowController`, see that base class's
+    /// own doc comment for why the override is a no-op.
     private final class ConfirmingAppDelegate: ConfirmQuitMockAppDelegate {
-        override func confirmQuitIfNeeded(_ mode: ConfirmQuitMode = .killProcesses) -> Bool { true }
-    }
-
-    /// Like `ConfirmingAppDelegate`, but captures
-    /// `CalyxWindowController._closingTabIDsForTesting`'s state at the
-    /// moment `confirmQuitIfNeeded` is consulted, and lets the test
-    /// choose whether to confirm or cancel.
-    private final class ClosingTabIDsWindowCloseSpyAppDelegate: ConfirmQuitMockAppDelegate {
-        var shouldConfirm = true
-        weak var controller: CalyxWindowController?
-        private(set) var observedClosingTabIDs: Set<UUID>?
-
-        override func confirmQuitIfNeeded(_ mode: ConfirmQuitMode = .killProcesses) -> Bool {
-            observedClosingTabIDs = controller?._closingTabIDsForTesting
-            return shouldConfirm
-        }
+        override func confirmQuitIfNeeded() -> Bool { true }
     }
 
     // MARK: - F7/T7: isClosingForShutdown timing
@@ -178,56 +134,96 @@ final class CalyxWindowControllerCloseArmsTests: XCTestCase {
                       "window?.close(), matching windowShouldClose's own eager set")
     }
 
-    // MARK: - F3/T3: windowShouldClose closingTabIDs pre-population
+    // MARK: - Window-lifetime redesign: closing the last tab/group must not confirm quit
 
-    /// Against the CURRENT code, `windowShouldClose` never touches
-    /// `closingTabIDs` before calling `confirmQuitIfNeeded`, so the
-    /// observed set is empty (expected: both tab ids).
-    func test_windowShouldClose_insertsAllTabIDsIntoClosingTabIDs_beforeConfirmQuitGate() throws {
-        let fixture = makeTwoTabFixture()
-        let mock = ClosingTabIDsWindowCloseSpyAppDelegate()
-        mock.controller = fixture.controller
-        let window = try XCTUnwrap(fixture.controller.window)
+    /// Closing the last window no longer terminates Calyx at all (see
+    /// `AppDelegateLastWindowClosedDoesNotTerminateTests`), so the "Quit
+    /// Calyx?" confirmation these three arms show via
+    /// `confirmQuitBeforeCloseIfWouldTerminate` ->
+    /// `AppDelegate.confirmQuitIfNeeded` must be removed from every close
+    /// path entirely (Cmd+Q / the Quit menu item keep their own,
+    /// unrelated confirmation). Counts calls the same way
+    /// `SessionCommandPaletteTests.MockConfirmQuitAppDelegate` and
+    /// `SessionReconnectGiveUpTests.LastPaneGiveUpMockAppDelegate` do;
+    /// still returns `true` (rather than never being consulted at all
+    /// under the CURRENT code) so a not-yet-fixed close path proceeds
+    /// through to its real `.windowShouldClose` arm exactly as
+    /// `ConfirmingAppDelegate` above already does, keeping
+    /// `removeWindowController`'s no-op override load-bearing for
+    /// test-process safety. `requestSave` is also overridden to a no-op:
+    /// with the confirm-quit gate satisfied, `closeTab`/`closeActiveGroup`/
+    /// `closeAllTabsInGroup` all reach their own `requestSave()` call on
+    /// the way out, which -- left unmocked -- would reach the REAL
+    /// `AppDelegate.requestSave()` and, via its async, actor-hopping
+    /// `SessionPersistenceActor.shared.save(...)`, risk writing to the
+    /// developer's actual `~/.calyx` (confirmed by observation: running
+    /// this suite without this override left a real, if empty, write
+    /// behind).
+    private final class ConfirmQuitCallCountAppDelegate: ConfirmQuitMockAppDelegate {
+        private(set) var confirmQuitCallCount = 0
 
-        let originalDelegate = NSApp.delegate
-        NSApp.delegate = mock
-        defer { NSApp.delegate = originalDelegate }
-
-        _ = withExtendedLifetime(mock) {
-            fixture.controller.windowShouldClose(window)
+        override func confirmQuitIfNeeded() -> Bool {
+            confirmQuitCallCount += 1
+            return true
         }
 
-        XCTAssertEqual(mock.observedClosingTabIDs, Set([fixture.tabAID, fixture.tabBID]),
-                       "windowShouldClose must insert every tab id in this window into closingTabIDs " +
-                       "BEFORE consulting confirmQuitIfNeeded")
+        override func requestSave() {}
     }
 
-    /// Cancelling the confirm-quit prompt must remove the tab ids
-    /// `windowShouldClose` inserted, matching `closeTab`'s established
-    /// insert-then-remove-on-cancel pattern. This assertion alone would
-    /// trivially pass against the CURRENT code too (nothing is ever
-    /// inserted, so the set is vacuously empty on cancel), it is
-    /// meaningful only once the insertion above is implemented, which
-    /// is why `test_windowShouldClose_insertsAllTabIDsIntoClosingTabIDs_beforeConfirmQuitGate`
-    /// is the primary RED-proving assertion for F3.
-    func test_windowShouldClose_removesClosingTabIDs_whenConfirmQuitCancelled() throws {
-        let fixture = makeTwoTabFixture()
-        let mock = ClosingTabIDsWindowCloseSpyAppDelegate()
-        mock.controller = fixture.controller
-        mock.shouldConfirm = false
-        let window = try XCTUnwrap(fixture.controller.window)
-
+    /// Against the CURRENT code, `closeTab`'s `.windowShouldClose` branch
+    /// still calls `confirmQuitBeforeCloseIfWouldTerminate` ->
+    /// `AppDelegate.confirmQuitIfNeeded` before tearing anything down, so
+    /// this count is 1, not 0.
+    func test_closeTab_lastTab_neverConsultsConfirmQuitGate() {
+        let fixture = makeSingleTabFixture()
+        let mock = ConfirmQuitCallCountAppDelegate()
         let originalDelegate = NSApp.delegate
         NSApp.delegate = mock
         defer { NSApp.delegate = originalDelegate }
 
-        let shouldClose = withExtendedLifetime(mock) {
-            fixture.controller.windowShouldClose(window)
+        withExtendedLifetime(mock) {
+            fixture.controller.closeTab(nil)
         }
 
-        XCTAssertFalse(shouldClose, "Cancelling the confirm-quit prompt must return false")
-        XCTAssertTrue(fixture.controller._closingTabIDsForTesting.isEmpty,
-                      "Cancelling must remove the tab ids windowShouldClose inserted, matching closeTab's " +
-                      "insert-then-remove-on-cancel pattern")
+        XCTAssertEqual(mock.confirmQuitCallCount, 0,
+                      "Closing the last tab must no longer show any quit confirmation -- closing the last " +
+                      "window must not terminate the app any more, so there is nothing left to confirm")
+    }
+
+    /// Same contract for `closeActiveGroup` (driven via the public
+    /// `closeGroup(_:)` action). Against the CURRENT code this count is
+    /// 1, not 0, for the same reason as `closeTab` above.
+    func test_closeGroup_lastGroup_neverConsultsConfirmQuitGate() {
+        let fixture = makeSingleTabFixture()
+        let mock = ConfirmQuitCallCountAppDelegate()
+        let originalDelegate = NSApp.delegate
+        NSApp.delegate = mock
+        defer { NSApp.delegate = originalDelegate }
+
+        withExtendedLifetime(mock) {
+            fixture.controller.closeGroup(nil)
+        }
+
+        XCTAssertEqual(mock.confirmQuitCallCount, 0,
+                      "Closing the last group must no longer show any quit confirmation")
+    }
+
+    /// Same contract for `closeAllTabsInGroup(id:)`. Against the CURRENT
+    /// code this count is 1, not 0, for the same reason as `closeTab`
+    /// above.
+    func test_closeAllTabsInGroup_lastGroup_neverConsultsConfirmQuitGate() {
+        let fixture = makeSingleTabFixture()
+        let mock = ConfirmQuitCallCountAppDelegate()
+        let originalDelegate = NSApp.delegate
+        NSApp.delegate = mock
+        defer { NSApp.delegate = originalDelegate }
+
+        withExtendedLifetime(mock) {
+            fixture.controller.closeAllTabsInGroup(id: fixture.groupID)
+        }
+
+        XCTAssertEqual(mock.confirmQuitCallCount, 0,
+                      "Closing the last group via closeAllTabsInGroup must no longer show any quit " +
+                      "confirmation")
     }
 }
