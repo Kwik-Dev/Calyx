@@ -1284,15 +1284,49 @@ extension SurfaceView {
     // writeup): `SurfaceView` sits earlier than `CalyxWindowController` in
     // the responder chain whenever a terminal surface is focused, so
     // `-[NSApplication targetForAction:]`'s key-window-chain-then-main-
-    // window-fallback resolution reaches these six selectors HERE first,
-    // at this view -- so while this view remains in the chain, that
-    // controller's own matching branches/actions are never consulted for
-    // them (see the findNext/findPrevious comment further down for what
-    // happens once focus leaves this view for the search field). Each
-    // selector below moves focus or navigates search state within THIS
-    // window's existing split/search state, so it is disabled outright
-    // whenever this window is not actually key, mirroring
-    // `CalyxWindowController.keyWindowGatedActions`'s own convention.
+    // window-fallback resolution reaches the selectors below HERE first,
+    // at this view, before that controller is ever consulted. Two groups:
+    //
+    // - `focusSplitLeft/Right/Up/Down(_:)`/`findNext(_:)`/`findPrevious(_:)`
+    //   move focus or navigate search state within THIS window's existing
+    //   split/search state. While this view remains in the responder
+    //   chain, `CalyxWindowController`'s own matching branches/actions are
+    //   never consulted for them (see the findNext/findPrevious comment
+    //   further down for what happens once focus leaves this view for the
+    //   search field).
+    //
+    // - `paste(_:)`/`copy(_:)`/`selectAll(_:)`/`pasteAsPlainText(_:)` close
+    //   the actual on-device defect this whole gate exists to prevent.
+    //   AppDelegate's Edit menu wires "Copy"/"Paste"/"Select All" with
+    //   `#selector(NSText.copy(_:))`/`#selector(NSText.paste(_:))`/
+    //   `#selector(NSText.selectAll(_:))`, target `nil` -- selector-NAME
+    //   identity (`copy:`/`paste:`/`selectAll:`), not any shared declaring
+    //   type or protocol, is what lets `targetForAction:` resolve those
+    //   menu items to these `@IBAction`s at all. CONFIRMED ON-DEVICE: with
+    //   the About panel (a non-`CalyxWindow` `NSPanel`, `canBecomeMain ==
+    //   false`) key, `NSApp.mainWindow` stays whatever `CalyxWindow` was
+    //   last main, so Cmd+V there silently sends the clipboard into that
+    //   BACKGROUND window's shell -- unlike issue #45's Cmd+W (a closed
+    //   tab is visibly gone), there is no on-screen feedback at all, so a
+    //   user has no way to notice it happened. `copy(_:)`/`selectAll(_:)`
+    //   are gated alongside it for the same defect category even though
+    //   the harm is smaller: a non-key window's selection/clipboard state
+    //   must not be mutable from a keystroke aimed at a DIFFERENT window.
+    //   `pasteAsPlainText(_:)` has no menu item wired to it today (a
+    //   dangling `@IBAction`) but is gated defensively so a future menu
+    //   item can't silently reopen this gap. `CalyxWindowController`
+    //   implements NONE of these four (not "reached later" -- genuinely
+    //   absent), so once this view leaves the responder chain they fall
+    //   through to AppKit's own auto-disable-when-no-responder behavior,
+    //   same as `splitRight/Left/Down/Up(_:)` below. Do not remove this
+    //   group as "gating standard Edit actions is overkill" -- this is a
+    //   reproduced data-leak, not a hypothetical.
+    //
+    // `performFindAction(_:)` is deliberately EXCLUDED from this Set: it
+    // opens the in-terminal search bar, a NEW-state action in the same
+    // category as `splitRight/Left/Down/Up(_:)`, not a mutation of
+    // existing state. See
+    // `test_validateMenuItem_performFindAction_enabledRegardlessOfKeyWindow`.
     private static let keyWindowGatedActions: Set<Selector> = [
         #selector(focusSplitLeft(_:)),
         #selector(focusSplitRight(_:)),
@@ -1300,6 +1334,10 @@ extension SurfaceView {
         #selector(focusSplitDown(_:)),
         #selector(findNext(_:)),
         #selector(findPrevious(_:)),
+        #selector(copy(_:)),
+        #selector(paste(_:)),
+        #selector(pasteAsPlainText(_:)),
+        #selector(selectAll(_:)),
     ]
 
     /// "Is THIS view's own `NSWindow` actually the key window" for

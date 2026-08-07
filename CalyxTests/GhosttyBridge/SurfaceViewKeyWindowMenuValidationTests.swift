@@ -41,9 +41,43 @@
 //  active tab IS split (`isActiveTabSplit == true`, so the PRE-EXISTING
 //  gate alone would already say "enabled"), isolating that a future
 //  key-window gate -- not `isActiveTabSplit` -- is what must force
-//  `false` here. Every other test below is a regression guard (NOT
-//  RED-proving): it asserts exactly what the CURRENT, override-blind
-//  code already does, and must keep doing once the gate exists.
+//  `false` here. Every other test in this first batch (through
+//  `findNext:`/`findPrevious:` and the split-action guards) is a
+//  regression guard (NOT RED-proving): it asserts exactly what the
+//  CURRENT, override-blind code already does, and must keep doing once
+//  the gate exists. See the second ledger entry below for a further 4
+//  RED-proving tests added the same day.
+//
+//  A second RED ledger entry (also ran 2026-08-07, same-day follow-up):
+//  `paste(_:)`/`copy(_:)`/`selectAll(_:)`/`pasteAsPlainText(_:)` close
+//  the actual on-device defect this whole gate exists to prevent --
+//  AppDelegate's Edit menu registers "Copy"/"Paste"/"Select All" via
+//  `#selector(NSText.copy(_:))`/`#selector(NSText.paste(_:))`/
+//  `#selector(NSText.selectAll(_:))` (AppDelegate.swift, "Edit menu"
+//  section), which are the SAME Objective-C selectors (`copy:`/`paste:`/
+//  `selectAll:`) as `SurfaceView`'s own identically-named `@IBAction`s
+//  below -- selector-name identity, not a shared declaring type, is what
+//  lets `-[NSApplication targetForAction:]` resolve those menu items to
+//  `SurfaceView`'s implementations at all. Confirmed on-device: with the
+//  About panel (a non-`CalyxWindow` `NSPanel`, `canBecomeMain == false`)
+//  key, `NSApp.mainWindow` stays whatever `CalyxWindow` was last main, so
+//  Cmd+V there silently sends the clipboard into that BACKGROUND window's
+//  shell -- no visible feedback, unlike issue #45's Cmd+W (a closed tab is
+//  obvious; injected shell input is not). `pasteAsPlainText(_:)` has no
+//  menu item wired to it today (a dangling `@IBAction`) but is gated
+//  defensively so a future menu item is covered without a second
+//  follow-up. None of these four are in `keyWindowGatedActions` today, and
+//  `validateMenuItem(_:)` has no per-selector branch for any of them
+//  either, so all four currently fall through to the unconditional
+//  `return true` at the bottom of that method -- exactly 4 more tests
+//  below are therefore RED-proving:
+//  `test_validateMenuItem_{paste,copy,selectAll,pasteAsPlainText}_
+//  disabledWhenNotKeyWindow`. Their "enabled when key" counterparts are
+//  regression guards, same rationale as the focusSplit ones above,
+//  proving the pre-existing return-true fallback survives once the gate
+//  is added. `performFindAction(_:)` (opens the search UI -- a NEW-state
+//  action, same category as `splitRight(_:)`) gets a single regression
+//  guard pinning that it must NEVER be gated at all.
 //
 //  `findNext:`/`findPrevious:` are also exercised below ("disabled when
 //  NOT key window" only -- whether to gate them at all is deliberately
@@ -377,5 +411,129 @@ final class SurfaceViewKeyWindowMenuValidationTests: XCTestCase {
 
         fixture.surfaceView._isKeyWindowOverrideForTesting = true
         XCTAssertTrue(fixture.surfaceView.validateMenuItem(item), "Split Up must stay enabled while key")
+    }
+
+    // MARK: - RED-proving: Paste/Copy/Select All/Paste as Plain Text disabled when NOT key window
+    //
+    // These four close the actual on-device defect (see file header):
+    // AppDelegate's Edit menu registers "Copy"/"Paste"/"Select All" with
+    // `#selector(NSText.copy(_:))`/`#selector(NSText.paste(_:))`/
+    // `#selector(NSText.selectAll(_:))`, target nil -- the SAME
+    // Objective-C selectors (`copy:`/`paste:`/`selectAll:`) SurfaceView's
+    // own `@IBAction`s below answer to. `pasteAsPlainText(_:)` has no menu
+    // item today but is gated for the same reason `focusSplit*` is: so a
+    // future caller can never re-introduce the gap. `split: false` because
+    // none of these four selectors are gated on `isActiveTabSplit`.
+
+    func test_validateMenuItem_paste_disabledWhenNotKeyWindow() {
+        let fixture = makeFixture(split: false)
+        fixture.surfaceView._isKeyWindowOverrideForTesting = false
+
+        let result = fixture.surfaceView.validateMenuItem(menuItem(action: #selector(SurfaceView.paste(_:))))
+
+        XCTAssertFalse(
+            result,
+            "Paste must be disabled while this window is not the key window -- this is what stops Cmd+V, pressed while a non-CalyxWindow panel like About is key, from silently pasting into a background terminal's shell"
+        )
+    }
+
+    func test_validateMenuItem_copy_disabledWhenNotKeyWindow() {
+        let fixture = makeFixture(split: false)
+        fixture.surfaceView._isKeyWindowOverrideForTesting = false
+
+        let result = fixture.surfaceView.validateMenuItem(menuItem(action: #selector(SurfaceView.copy(_:))))
+
+        XCTAssertFalse(
+            result,
+            "Copy must be disabled while this window is not the key window"
+        )
+    }
+
+    func test_validateMenuItem_selectAll_disabledWhenNotKeyWindow() {
+        let fixture = makeFixture(split: false)
+        fixture.surfaceView._isKeyWindowOverrideForTesting = false
+
+        let result = fixture.surfaceView.validateMenuItem(menuItem(action: #selector(SurfaceView.selectAll(_:))))
+
+        XCTAssertFalse(
+            result,
+            "Select All must be disabled while this window is not the key window"
+        )
+    }
+
+    func test_validateMenuItem_pasteAsPlainText_disabledWhenNotKeyWindow() {
+        let fixture = makeFixture(split: false)
+        fixture.surfaceView._isKeyWindowOverrideForTesting = false
+
+        let result = fixture.surfaceView.validateMenuItem(menuItem(action: #selector(SurfaceView.pasteAsPlainText(_:))))
+
+        XCTAssertFalse(
+            result,
+            "Paste as Plain Text must be disabled while this window is not the key window, even though no menu item is wired to it today"
+        )
+    }
+
+    // MARK: - Regression guards: Paste/Copy/Select All/Paste as Plain Text enabled when key window
+    //
+    // `validateMenuItem(_:)` has no per-selector branch for any of these
+    // four today, so it falls through to the unconditional `return true`
+    // at the bottom -- these four already pass. Once the key-window gate
+    // above is implemented, a key window must still leave that fallback
+    // reachable, so these must keep passing unchanged.
+
+    func test_validateMenuItem_paste_enabledWhenKeyWindow() {
+        let fixture = makeFixture(split: false)
+        fixture.surfaceView._isKeyWindowOverrideForTesting = true
+
+        let result = fixture.surfaceView.validateMenuItem(menuItem(action: #selector(SurfaceView.paste(_:))))
+
+        XCTAssertTrue(result, "Paste must stay enabled while this window IS the key window")
+    }
+
+    func test_validateMenuItem_copy_enabledWhenKeyWindow() {
+        let fixture = makeFixture(split: false)
+        fixture.surfaceView._isKeyWindowOverrideForTesting = true
+
+        let result = fixture.surfaceView.validateMenuItem(menuItem(action: #selector(SurfaceView.copy(_:))))
+
+        XCTAssertTrue(result, "Copy must stay enabled while this window IS the key window")
+    }
+
+    func test_validateMenuItem_selectAll_enabledWhenKeyWindow() {
+        let fixture = makeFixture(split: false)
+        fixture.surfaceView._isKeyWindowOverrideForTesting = true
+
+        let result = fixture.surfaceView.validateMenuItem(menuItem(action: #selector(SurfaceView.selectAll(_:))))
+
+        XCTAssertTrue(result, "Select All must stay enabled while this window IS the key window")
+    }
+
+    func test_validateMenuItem_pasteAsPlainText_enabledWhenKeyWindow() {
+        let fixture = makeFixture(split: false)
+        fixture.surfaceView._isKeyWindowOverrideForTesting = true
+
+        let result = fixture.surfaceView.validateMenuItem(menuItem(action: #selector(SurfaceView.pasteAsPlainText(_:))))
+
+        XCTAssertTrue(result, "Paste as Plain Text must stay enabled while this window IS the key window")
+    }
+
+    // MARK: - Regression guard: performFindAction opens NEW UI, so it is never key-window-gated
+
+    /// `performFindAction(_:)` (wired to the Edit > Find > Find… menu item,
+    /// AppDelegate.swift) opens the in-terminal search bar -- it creates a
+    /// new piece of UI rather than mutating this window's existing state,
+    /// the same category `splitRight/Left/Down/Up(_:)` fall into above.
+    /// Fixes this codebase's shape for those: a single test asserting
+    /// `true` on both sides of the override, pinning that this selector
+    /// must NEVER be added to `keyWindowGatedActions`.
+    func test_validateMenuItem_performFindAction_enabledRegardlessOfKeyWindow() {
+        let fixture = makeFixture(split: false)
+        let item = menuItem(action: #selector(SurfaceView.performFindAction(_:)))
+
+        fixture.surfaceView._isKeyWindowOverrideForTesting = false
+        XCTAssertTrue(fixture.surfaceView.validateMenuItem(item), "Find… must stay enabled while not key")
+
+        fixture.surfaceView._isKeyWindowOverrideForTesting = true
+        XCTAssertTrue(fixture.surfaceView.validateMenuItem(item), "Find… must stay enabled while key")
     }
 }
