@@ -1027,6 +1027,34 @@ class SurfaceView: NSView {
         guard UserDefaults.standard.bool(forKey: "com.apple.trackpad.forceClick") else { return }
         quickLook(with: event)
     }
+
+    // MARK: - Testing
+
+    #if DEBUG
+    /// Test seam: overrides "is THIS view's own `NSWindow` actually the
+    /// key window" for `validateMenuItem(_:)`'s `keyWindowGatedActions`
+    /// gate (see the "MARK: - Menu Actions" extension below), mirroring
+    /// `CalyxWindowController._isKeyWindowOverrideForTesting`'s identical
+    /// shape and rationale (a fixture's window is constructed but never
+    /// shown/ordered front, so `window?.isKeyWindow` is always `false` in
+    /// this test host).
+    ///
+    /// `SurfaceView` needs its OWN copy of this gate rather than relying
+    /// on `CalyxWindowController`'s: `SurfaceView` is earlier in the
+    /// responder chain whenever a terminal surface is focused, so
+    /// `-[NSApplication targetForAction:]` resolves `focusSplitLeft/
+    /// Right/Up/Down(_:)`'s and `findNext(_:)`/`findPrevious(_:)`'s
+    /// target here FIRST -- `CalyxWindowController.validateMenuItem(_:)`'s
+    /// own matching `focusSplit*` branch is never reached for that
+    /// purpose (that controller implements no `focusSplit*` action of its
+    /// own, so it can never be resolved as their target in the first
+    /// place).
+    ///
+    /// `nil` (the default) leaves production behavior unchanged (falls
+    /// back to the real `window?.isKeyWindow`). DO NOT use from
+    /// production code.
+    var _isKeyWindowOverrideForTesting: Bool?
+    #endif
 }
 
 // MARK: - NSTextInputClient
@@ -1251,19 +1279,54 @@ extension SurfaceView {
         surfaceController?.performAction("navigate_search:next")
     }
 
-    // Find Next/Previous only make sense while the in-terminal search bar is
-    // visible, so we gate them through validateMenuItem. SurfaceView is in
-    // the responder chain when the terminal is focused; once focus moves to
-    // the search field, CalyxWindowController provides the same gating in
-    // its own validateMenuItem.
-    //
-    // splitRight/Left/Up/Down and focusSplit* are intentionally NOT gated
-    // here. AppKit auto-disables menu items whose target action has no
-    // responder (e.g. browser tabs, where SurfaceView leaves the chain),
-    // which is exactly the desired behavior. See
+    // Issue #45 defense in depth (see `CalyxWindowController.swift`'s
+    // `keyWindowGatedActions` doc comment for the full root-cause
+    // writeup): `SurfaceView` sits earlier than `CalyxWindowController` in
+    // the responder chain whenever a terminal surface is focused, so
+    // `-[NSApplication targetForAction:]`'s key-window-chain-then-main-
+    // window-fallback resolution reaches these six selectors HERE first,
+    // at this view -- so while this view remains in the chain, that
+    // controller's own matching branches/actions are never consulted for
+    // them (see the findNext/findPrevious comment further down for what
+    // happens once focus leaves this view for the search field). Each
+    // selector below moves focus or navigates search state within THIS
+    // window's existing split/search state, so it is disabled outright
+    // whenever this window is not actually key, mirroring
+    // `CalyxWindowController.keyWindowGatedActions`'s own convention.
+    private static let keyWindowGatedActions: Set<Selector> = [
+        #selector(focusSplitLeft(_:)),
+        #selector(focusSplitRight(_:)),
+        #selector(focusSplitUp(_:)),
+        #selector(focusSplitDown(_:)),
+        #selector(findNext(_:)),
+        #selector(findPrevious(_:)),
+    ]
+
+    /// "Is THIS view's own `NSWindow` actually the key window" for
+    /// `keyWindowGatedActions` above. Hook-if-set/else-real-value,
+    /// mirroring `CalyxWindowController.isKeyWindowForMenuValidation`.
+    private var isKeyWindowForMenuValidation: Bool {
+        #if DEBUG
+        if let override = _isKeyWindowOverrideForTesting { return override }
+        #endif
+        return window?.isKeyWindow ?? false
+    }
+
+    // splitRight/Left/Up/Down are intentionally NOT gated here. AppKit
+    // auto-disables menu items whose target action has no responder (e.g.
+    // browser tabs, where SurfaceView leaves the chain), which is exactly
+    // the desired behavior. See
     // MenuShortcutsUITests.test_splitRight_isDisabled_inBrowserTab.
     @objc func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         let action = menuItem.action
+        if let action, Self.keyWindowGatedActions.contains(action), !isKeyWindowForMenuValidation {
+            return false
+        }
+        // Find Next/Previous only make sense while the in-terminal search bar is
+        // visible, so we gate them through validateMenuItem. SurfaceView is in
+        // the responder chain when the terminal is focused; once focus moves to
+        // the search field, CalyxWindowController provides the same gating in
+        // its own validateMenuItem.
         if action == #selector(findNext(_:)) || action == #selector(findPrevious(_:)) {
             return isSearchBarVisible
         }

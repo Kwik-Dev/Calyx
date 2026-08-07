@@ -4179,21 +4179,16 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// window even while About is key), so those are deliberately
     /// excluded here.
     ///
-    /// Known gap, NOT covered by this Set (recorded here, not fixed —
-    /// out of scope for issue #45): `SurfaceView.focusSplitLeft/Right/
-    /// Up/Down(_:)` (Cmd+Option+Arrow, `SurfaceView.swift`) can still
-    /// act on a DIFFERENT, background window's pane while a
-    /// non-`CalyxWindow` panel is key. It is the exact same root-cause
-    /// mechanism (`-[NSApplication targetForAction:]`'s main-window
-    /// fallback) this Set closes for `closeTab:`/etc., but
-    /// `SurfaceView.validateMenuItem`'s own `focusSplit*` gate
-    /// (`isActiveTabSplit`) has no key-window check of its own, and the
-    /// `focusSplit*` branch further down in THIS controller's own
-    /// `validateMenuItem(_:)` below is unreachable for that purpose —
-    /// target resolution stops at whichever `SurfaceView` is earliest
-    /// in the fallback chain, before it ever reaches this window
-    /// controller. Lower severity than what this Set fixes (misdirected
-    /// focus, not a destructive close), so left as a backlog item.
+    /// `SurfaceView.focusSplitLeft/Right/Up/Down(_:)` (Cmd+Option+Arrow)
+    /// are NOT covered by this Set. This controller implements no
+    /// `focusSplit*` action of its own, so `-[NSApplication
+    /// targetForAction:]` never resolves it as their target —
+    /// `SurfaceView` implements those selectors directly and sits
+    /// earlier in the responder chain whenever a terminal surface is
+    /// focused, so resolution always stops there first. `SurfaceView`
+    /// gates them itself, via its own `keyWindowGatedActions`/
+    /// `isKeyWindowForMenuValidation` (mirroring this Set's shape; see
+    /// `SurfaceView.swift`'s "MARK: - Menu Actions" extension).
     private static let keyWindowGatedActions: Set<Selector> = [
         #selector(closeTab(_:)),
         #selector(closeGroup(_:)),
