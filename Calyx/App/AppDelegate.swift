@@ -104,10 +104,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// fix CRITICAL 1's `willTerminate` branch, since deleted along with
     /// `isTerminationConfirmed`) be exercised without ever calling
     /// `toggleQuickTerminal()` for real — a plain `QuickTerminalController()`
-    /// is safe to construct directly, since its `init` only registers a
-    /// config-change observer and neither creates a window nor a ghostty
-    /// surface (both deferred to `animateIn()`/`ensureSurface()`, never
-    /// called here). DO NOT use from production code.
+    /// is safe to construct directly, since its `init` only registers
+    /// notification observers (config-change and close-surface) and
+    /// neither creates a window nor a ghostty surface (both deferred to
+    /// `animateIn()`/`ensureSurface()`, never called here). DO NOT use
+    /// from production code.
     func _setQuickTerminalControllerForTesting(_ controller: QuickTerminalController?) {
         quickTerminalController = controller
     }

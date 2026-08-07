@@ -13,9 +13,10 @@
 //  must survive a Cmd+W exactly like it survives an autoHide.
 //
 //  `QuickTerminalController()` is safe to construct directly: its
-//  `init` only registers a `.ghosttyConfigChange` observer, and neither
-//  creates a window nor a ghostty surface (both deferred to
-//  `animateIn()`/`ensureSurface()`, never called here) — see
+//  `init` only registers notification observers (`.ghosttyConfigChange`
+//  and `.ghosttyCloseSurface`), and neither creates a window nor a
+//  ghostty surface (both deferred to `animateIn()`/`ensureSurface()`,
+//  never called here) — see
 //  `AppDelegate._setQuickTerminalControllerForTesting`'s own doc
 //  comment (AppDelegate.swift) for this exact guarantee. The
 //  `visible == true` case below uses the `_setVisibleForTesting`/
