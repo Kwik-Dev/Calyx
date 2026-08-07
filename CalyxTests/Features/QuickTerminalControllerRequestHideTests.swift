@@ -25,12 +25,13 @@
 //  real window animation — unsafe in this test host.
 //
 //  RED ledger (ran 2026-08-07):
-//   - `test_requestHide_whenVisible_invokesHideHook` is RED-proving: the
-//     current stub body is empty, so the hook is never invoked.
+//   - `test_requestHide_whenVisible_invokesHideHook` was RED-proving:
+//     `requestHide()`'s body was an empty stub then, so the hook was
+//     never invoked. It is implemented now and this test passes.
 //   - `test_requestHide_whenNotVisible_isNoOp` is NOT RED-proving
 //     (regression guard only): "no-op when not visible" is behaviorally
 //     identical to "does nothing at all", which the empty stub already
-//     satisfies. Kept because it is the literal behavior the task brief
+//     satisfied. Kept because it is the literal behavior the task brief
 //     requires, and it still has real teeth against a future
 //     implementation that calls the hook (or otherwise acts)
 //     unconditionally, forgetting its own `visible` guard.
