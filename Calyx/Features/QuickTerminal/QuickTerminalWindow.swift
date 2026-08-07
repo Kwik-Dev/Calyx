@@ -24,4 +24,18 @@ class QuickTerminalWindow: NSPanel {
         self.isOpaque = false
         self.backgroundColor = .clear
     }
+
+    /// GitHub issue #45 (see `NSWindow+CalyxClose.swift`'s header
+    /// comment for the full root-cause writeup): routes Cmd+W to
+    /// `QuickTerminalController.requestHide()` (an animated hide, NOT a
+    /// real window close) instead of `NSApplication.targetForAction:`'s
+    /// key-window-chain resolution falling through to a DIFFERENT
+    /// (main) window's `CalyxWindowController.closeTab(_:)`.
+    override func calyxPerformClose(_ sender: Any?) {
+        guard let controller = delegate as? QuickTerminalController else {
+            super.calyxPerformClose(sender)
+            return
+        }
+        controller.requestHide()
+    }
 }

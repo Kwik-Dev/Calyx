@@ -98,6 +98,13 @@ class CalyxUITestCase: XCTestCase {
         menuAction("File", item: "New Tab")
     }
 
+    /// GitHub issue #45: the File menu's "Close Tab" item still exists
+    /// (now at Cmd+Option+W, wired to `CalyxWindowController.closeTab(_:)`
+    /// unchanged) — only its shortcut moved, since plain Cmd+W is now
+    /// "Close" (`NSWindow.calyxPerformClose(_:)`, which closes the
+    /// focused PANE, not necessarily the whole tab). This helper still
+    /// targets the always-whole-tab-scoped item by title, so it is
+    /// unaffected by that shortcut move.
     func closeTabViaMenu() {
         menuAction("File", item: "Close Tab")
     }

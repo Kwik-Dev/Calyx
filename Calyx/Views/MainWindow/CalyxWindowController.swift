@@ -54,6 +54,26 @@ enum TitlePromptScope: String, Sendable {
     case tab
 }
 
+/// GitHub issue #45 (see `NSWindow+CalyxClose.swift`'s header comment
+/// for the full Cmd+W-routing root-cause writeup): the result of
+/// `CalyxWindowController.closeFocusedTarget(tabID:content:focusedLeafID:)`,
+/// the pure decision of which of a window's focused pane, tab, or the
+/// window itself Cmd+W (`CalyxWindow.calyxPerformClose(_:)`) should
+/// close:
+///   - a `.terminal` tab with a non-nil `focusedLeafID` closes just
+///     that pane (`.surface`) — matches ghostty's own default
+///     `close_surface` semantics for a single Cmd+W press.
+///   - a `.terminal` tab with NO focused leaf, or any non-terminal tab
+///     (`.browser`/`.diff`, neither of which has a ghostty-surface
+///     concept of "the focused pane"), closes the whole tab (`.tab`).
+///   - no active tab at all (`tabID == nil` — a window with zero tabs)
+///     closes the window itself (`.window`).
+enum CloseFocusedTarget: Equatable {
+    case surface(tabID: UUID, surfaceID: UUID)
+    case tab(UUID)
+    case window
+}
+
 @MainActor
 class CalyxWindowController: NSWindowController, NSWindowDelegate {
     private(set) var windowSession: WindowSession
@@ -544,7 +564,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         commandRegistry.register(PaletteCommand(id: "tab.new", title: "New Tab", shortcut: "Cmd+T", category: "Tabs") { [weak self] in
             self?.createNewTab()
         })
-        commandRegistry.register(PaletteCommand(id: "tab.close", title: "Close Tab", shortcut: "Cmd+W", category: "Tabs") { [weak self] in
+        commandRegistry.register(PaletteCommand(id: "tab.close", title: "Close Tab", shortcut: "Cmd+Opt+W", category: "Tabs") { [weak self] in
             guard let self, let tab = self.activeTab else { return }
             self.closeTab(id: tab.id)
         })
@@ -2751,11 +2771,17 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// on the posted surface, or key-window status for an app-targeted
     /// broadcast with no surface at all) BEFORE ever calling this method.
     ///
-    /// `window?.performClose(nil)`, NOT `window?.close()`: `performClose`
-    /// invokes the `windowShouldClose(_:)` delegate callback first, which
-    /// carries the confirm-quit gate and the unsent-review-comments guard
-    /// (`closeTab(id:)`'s own `NSAlert`) — `close()` skips both, silently
-    /// discarding unsaved user state.
+    /// `window?.performClose(nil)`, NOT `window?.close()`: stale doc note
+    /// corrected — this controller no longer implements
+    /// `windowShouldClose(_:)` (removed in `95cfcebff`, window-lifetime
+    /// redesign), so there is no per-window confirm-quit gate on this
+    /// path any more, and the unsent-review-comments guard
+    /// (`closeTab(id:)`'s own `NSAlert`) does not apply here either —
+    /// `windowWillClose` below tears down every tab directly, never
+    /// through `closeTab(id:)`. `performClose(nil)` is kept anyway as
+    /// the ordinary, user-initiated-close entry point: it respects the
+    /// `.closable` style mask exactly like a real click on the Close
+    /// button/menu item would, which plain `close()` does not.
     func processCloseWindow() {
         #if DEBUG
         if let hook = _processCloseWindowHookForTesting {
@@ -2778,6 +2804,104 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         }
         processCloseWindow()
     }
+
+    // MARK: - calyxPerformClose (GitHub issue #45)
+    //
+    // `CalyxWindow.calyxPerformClose(_:)`'s intended receiver (once
+    // implemented — see that method's own doc comment and
+    // `NSWindow+CalyxClose.swift`'s header for the full root-cause
+    // writeup of why Cmd+W needs its own selector distinct from
+    // `closeTab(_:)`). `closeFocusedTarget` is the pure decision of
+    // WHICH of this window's focused pane/tab/window Cmd+W should
+    // actually close; `performCloseFocusedTarget` is its effectful
+    // caller, invoked from `CalyxWindow.calyxPerformClose(_:)` via
+    // `window?.windowController as? CalyxWindowController` (mirrors
+    // `SurfaceView.isActiveTabSplit`'s identical reverse lookup).
+
+    /// `CloseFocusedTarget` (top-level, near `TitlePromptScope` above)
+    /// is this pure function's return type — see its own doc comment
+    /// for the full decision contract.
+    ///
+    /// 純粋関数(テスト可能)。AppDelegate.matchKeyEvent / adjacentWindowIndex /
+    /// CalyxWindow.shouldPerformZoom と同じ既存イディオム。
+    static func closeFocusedTarget(tabID: UUID?, content: TabContent?, focusedLeafID: UUID?) -> CloseFocusedTarget {
+        guard let tabID else { return .window }
+        guard case .terminal = content, let focusedLeafID else { return .tab(tabID) }
+        return .surface(tabID: tabID, surfaceID: focusedLeafID)
+    }
+
+    /// Effectful caller of `closeFocusedTarget` above, using THIS
+    /// window's own `activeTab`/`activeTab.splitTree.focusedLeafID` as
+    /// its inputs.
+    ///
+    /// `.surface` closes via `GhosttySurfaceController.requestClose()`,
+    /// never `closeSurfaceAndCleanUp` directly: `requestClose()` asks
+    /// libghostty itself to close the pane — the exact same entry point
+    /// the `close_surface` keybind drives — which eventually fires
+    /// ghostty's own close callback (`.ghosttyCloseSurface`) back into
+    /// `processCloseSurface`/`closeSurfaceAndCleanUp`. Calling
+    /// `closeSurfaceAndCleanUp` here directly would bypass libghostty's
+    /// own close handling and create a second, redundant teardown path.
+    ///
+    /// `.tab` closes via the existing `closeTab(id:)`, not
+    /// `closeSurfaceAndCleanUp`: `closeTab(id:)` is the one place the
+    /// unsent-review-comments guard (diff tabs, its own `NSAlert`) lives
+    /// — routing a whole-tab close any other way would silently drop
+    /// that warning.
+    ///
+    /// `.window` closes via `window?.performClose(sender)`, never
+    /// `closeLastWindow()` directly: `closeSurfaceAndCleanUp`/
+    /// `closeTab(id:)` already call `closeLastWindow()` themselves once
+    /// they empty the window, so `.window` here only fires for a window
+    /// that has NO active tab at all to begin with — a real
+    /// `performClose` is the correct, ordinary close for that case,
+    /// matching `.ghosttyCloseWindow`'s own `processCloseWindow()`.
+    func performCloseFocusedTarget(_ sender: Any?) {
+        let target = Self.closeFocusedTarget(
+            tabID: activeTab?.id,
+            content: activeTab?.content,
+            focusedLeafID: activeTab?.splitTree.focusedLeafID
+        )
+        #if DEBUG
+        if let hook = _closeFocusedTargetHookForTesting {
+            hook(target)
+            return
+        }
+        #endif
+        switch target {
+        case .surface(_, let surfaceID):
+            activeTab?.registry.controller(for: surfaceID)?.requestClose()
+        case .tab(let tabID):
+            closeTab(id: tabID)
+        case .window:
+            window?.performClose(sender)
+        }
+    }
+
+    #if DEBUG
+    /// Test seam: mirrors `_processCloseWindowHookForTesting`'s exact
+    /// "hook right before the actually-unsafe-to-drive-in-tests real
+    /// close" shape, carrying the `CloseFocusedTarget`
+    /// `performCloseFocusedTarget` computed so a test can assert WHICH
+    /// target it resolved without a real surface/tab/window close
+    /// running. `nil` (the default) leaves production behavior
+    /// unchanged. DO NOT use from production code.
+    var _closeFocusedTargetHookForTesting: ((CloseFocusedTarget) -> Void)?
+
+    /// Test seam: overrides "is THIS window actually the key window"
+    /// for `validateMenuItem`'s menu-enabling decisions, mirroring
+    /// `_setHasAppliedInitialSizeForTesting`'s override-seam shape. A
+    /// fixture's `CalyxWindow` is constructed but never shown/ordered
+    /// front, so `window?.isKeyWindow` is always `false` in this test
+    /// host (see `CalyxWindowControllerCloseWindowTests`'s own
+    /// precondition assertion on exactly this) — this seam lets a test
+    /// exercise BOTH the true and false branches of that gate without a
+    /// real, driven-by-the-window-server key-window transition. `nil`
+    /// (the default) leaves production behavior unchanged (falls back
+    /// to the real `window?.isKeyWindow`). DO NOT use from production
+    /// code.
+    var _isKeyWindowOverrideForTesting: Bool?
+    #endif
 
     #if DEBUG
     /// Test seam: see `_processCloseWindowHookForTesting`'s doc comment —
@@ -4041,7 +4165,67 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         switchToTab(id: target.id)
     }
 
+    /// Issue #45 defense in depth (see `NSWindow+CalyxClose.swift`'s
+    /// header comment for the full root-cause writeup):
+    /// `calyxPerformClose(_:)` closes the Cmd+W hole structurally, but
+    /// every OTHER action below still reaches `validateMenuItem`/its
+    /// receiver via the SAME key-window-chain-then-main-window-fallback
+    /// resolution `-[NSApplication targetForAction:]` performs. Every
+    /// selector in this set operates on/moves THIS window's EXISTING
+    /// state, so it is disabled outright whenever this window is not
+    /// actually key — macOS convention keeps "create something new"
+    /// commands (`newTab:`/`newBrowserTab:`/`newGroup:`) enabled
+    /// regardless (Safari's Cmd+T still opens a tab in the frontmost
+    /// window even while About is key), so those are deliberately
+    /// excluded here.
+    ///
+    /// Known gap, NOT covered by this Set (recorded here, not fixed —
+    /// out of scope for issue #45): `SurfaceView.focusSplitLeft/Right/
+    /// Up/Down(_:)` (Cmd+Option+Arrow, `SurfaceView.swift`) can still
+    /// act on a DIFFERENT, background window's pane while a
+    /// non-`CalyxWindow` panel is key. It is the exact same root-cause
+    /// mechanism (`-[NSApplication targetForAction:]`'s main-window
+    /// fallback) this Set closes for `closeTab:`/etc., but
+    /// `SurfaceView.validateMenuItem`'s own `focusSplit*` gate
+    /// (`isActiveTabSplit`) has no key-window check of its own, and the
+    /// `focusSplit*` branch further down in THIS controller's own
+    /// `validateMenuItem(_:)` below is unreachable for that purpose —
+    /// target resolution stops at whichever `SurfaceView` is earliest
+    /// in the fallback chain, before it ever reaches this window
+    /// controller. Lower severity than what this Set fixes (misdirected
+    /// focus, not a destructive close), so left as a backlog item.
+    private static let keyWindowGatedActions: Set<Selector> = [
+        #selector(closeTab(_:)),
+        #selector(closeGroup(_:)),
+        #selector(toggleFullScreen(_:)),
+        #selector(selectNextTab(_:)),
+        #selector(selectPreviousTab(_:)),
+        #selector(nextGroup(_:)),
+        #selector(previousGroup(_:)),
+        #selector(jumpToMostRecentUnreadTab),
+        #selector(toggleSidebar),
+        #selector(toggleCommandPalette),
+        #selector(toggleComposeOverlay),
+        #selector(findNext(_:)),
+        #selector(findPrevious(_:)),
+    ]
+
+    /// "Is THIS window's own `NSWindow` actually the key window" for
+    /// `keyWindowGatedActions` above. Hook-if-set/else-real-value,
+    /// mirroring every other `#if DEBUG` seam in this file.
+    private var isKeyWindowForMenuValidation: Bool {
+        #if DEBUG
+        if let override = _isKeyWindowOverrideForTesting { return override }
+        #endif
+        return window?.isKeyWindow ?? false
+    }
+
     @objc func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if let action = menuItem.action,
+           Self.keyWindowGatedActions.contains(action),
+           !isKeyWindowForMenuValidation {
+            return false
+        }
         if menuItem.action == #selector(jumpToMostRecentUnreadTab) {
             return windowSession.groups.flatMap(\.tabs).contains { $0.unreadNotifications > 0 }
         }

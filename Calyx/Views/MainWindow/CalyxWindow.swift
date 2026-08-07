@@ -78,4 +78,22 @@ class CalyxWindow: NSWindow {
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
+
+    /// Issue #45 (see `NSWindow+CalyxClose.swift`'s header comment for
+    /// the full root-cause writeup): routes Cmd+W to whichever of this
+    /// window's focused pane/tab/window is the correct close target,
+    /// instead of `NSApplication.targetForAction:`'s key-window-chain
+    /// resolution silently falling through to a DIFFERENT (main)
+    /// window's `CalyxWindowController.closeTab(_:)`. Pure trampoline —
+    /// this file owns only window chrome, so the actual decision lives
+    /// in `CalyxWindowController.performCloseFocusedTarget(_:)`
+    /// (`windowController as? CalyxWindowController`, mirroring
+    /// `SurfaceView.isActiveTabSplit`'s identical reverse lookup).
+    override func calyxPerformClose(_ sender: Any?) {
+        guard let controller = windowController as? CalyxWindowController else {
+            super.calyxPerformClose(sender)
+            return
+        }
+        controller.performCloseFocusedTarget(sender)
+    }
 }

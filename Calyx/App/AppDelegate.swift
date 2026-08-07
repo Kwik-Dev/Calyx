@@ -1233,6 +1233,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         for wc in targets { wc.window?.close() }
     }
 
+    /// GitHub issue #45 follow-on: a distinct `Selector` (`closeAllWindows:`,
+    /// NOT the no-argument `closeAllWindows()` above, which is
+    /// `GHOSTTY_ACTION_CLOSE_ALL_WINDOWS`'s existing keybind receiver,
+    /// see that method's own doc comment) for the File menu's "Close All
+    /// Windows" item (`setupMainMenu()`). Just forwards to the existing
+    /// no-argument `closeAllWindows()` above — same call, distinct
+    /// selector purely so the menu item's `action` has an `Any?` sender
+    /// parameter to satisfy `NSMenuItem`'s target-action signature.
+    @objc func closeAllWindows(_ sender: Any?) {
+        closeAllWindows()
+    }
+
     /// Pure index arithmetic for `GHOSTTY_ACTION_GOTO_WINDOW`
     /// (`GHOSTTY_GOTO_WINDOW_PREVIOUS`/`GHOSTTY_GOTO_WINDOW_NEXT` map to
     /// `step: -1`/`step: +1` respectively). Deliberately free of any
@@ -1447,7 +1459,39 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         fileMenu.addItem(splitUpItem)
 
         fileMenu.addItem(.separator())
-        fileMenu.addItem(withTitle: "Close Tab", action: #selector(CalyxWindowController.closeTab(_:)), keyEquivalent: "w")
+
+        // GitHub issue #45: four distinct close scopes, each with its own
+        // shortcut and stable selector — see `NSWindow+CalyxClose.swift`'s
+        // header comment for the full root-cause writeup of why a single
+        // nil-target `closeTab:` item used to sit on Cmd+W here. Every
+        // item below deliberately keeps `target == nil` (unlike
+        // `selectTabByNumber`'s items further down, which need `self`):
+        // a nil target is what lets `-[NSApplication targetForAction:]`
+        // walk the KEY window's own responder chain first, which is the
+        // entire point of `calyxPerformClose(_:)` existing as a
+        // same-selector-on-every-window method.
+        fileMenu.addItem(withTitle: "Close", action: #selector(NSWindow.calyxPerformClose(_:)), keyEquivalent: "w")
+
+        let closeTabItem = NSMenuItem(
+            title: "Close Tab",
+            action: #selector(CalyxWindowController.closeTab(_:)),
+            keyEquivalent: "w")
+        closeTabItem.keyEquivalentModifierMask = [.command, .option]
+        fileMenu.addItem(closeTabItem)
+
+        let closeWindowItem = NSMenuItem(
+            title: "Close Window",
+            action: #selector(NSWindow.performClose(_:)),
+            keyEquivalent: "w")
+        closeWindowItem.keyEquivalentModifierMask = [.command, .shift]
+        fileMenu.addItem(closeWindowItem)
+
+        let closeAllWindowsItem = NSMenuItem(
+            title: "Close All Windows",
+            action: #selector(AppDelegate.closeAllWindows(_:)),
+            keyEquivalent: "w")
+        closeAllWindowsItem.keyEquivalentModifierMask = [.command, .shift, .option]
+        fileMenu.addItem(closeAllWindowsItem)
 
         // Edit menu
         let editMenuItem = NSMenuItem()

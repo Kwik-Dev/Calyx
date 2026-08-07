@@ -46,6 +46,46 @@ class QuickTerminalController: NSObject, NSWindowDelegate {
         }
     }
 
+    #if DEBUG
+    /// Test seam: overrides `visible` directly, mirroring
+    /// `CalyxWindowController._setHasAppliedInitialSizeForTesting`'s
+    /// override-seam shape — lets a test represent "the quick terminal
+    /// is currently shown" without driving the real `animateIn()` (a
+    /// real window/screen/animation, unsafe in this test host; see
+    /// `ensureWindow()`/`animateIn()`'s own bodies). DO NOT use from
+    /// production code.
+    func _setVisibleForTesting(_ value: Bool) {
+        visible = value
+    }
+
+    /// Test seam: mirrors `CalyxWindowController
+    /// ._processCloseWindowHookForTesting`'s exact "hook right before
+    /// the actually-unsafe-to-drive-in-tests real work" shape, for
+    /// `requestHide()`'s eventual `animateOut()` call (real window
+    /// animation, unsafe here — see `animateOut()`'s own body). `nil`
+    /// (the default) leaves production behavior unchanged. DO NOT use
+    /// from production code.
+    var _requestHideHookForTesting: (() -> Void)?
+    #endif
+
+    /// GitHub issue #45 follow-on: `QuickTerminalWindow.calyxPerformClose(_:)`'s
+    /// intended receiver — Cmd+W on the quick terminal must HIDE it
+    /// (mirroring `autoHide`'s existing `animateOut()` on key resign),
+    /// never destroy/close the window for real: `handleSurfaceClosed()`
+    /// is the only path that tears down `tab`/`splitContainerView`, and
+    /// this window's persistent-session surface (if any) must survive a
+    /// Cmd+W exactly like it survives an autoHide.
+    func requestHide() {
+        guard visible else { return }
+        #if DEBUG
+        if let hook = _requestHideHookForTesting {
+            hook()
+            return
+        }
+        #endif
+        animateOut()
+    }
+
     // MARK: - Window Setup
 
     private func ensureWindow() -> QuickTerminalWindow {

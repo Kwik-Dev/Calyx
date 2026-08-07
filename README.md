@@ -64,7 +64,10 @@ https://github.com/user-attachments/assets/a04e1161-e296-4791-9b7c-3ef84d990089
 | Shortcut | Action |
 |---|---|
 | `Cmd+T` | New tab |
-| `Cmd+W` | Close tab |
+| `Cmd+W` | Close focused pane (whole tab if nothing narrower to close) |
+| `Cmd+Option+W` | Close tab |
+| `Cmd+Shift+W` | Close window |
+| `Cmd+Shift+Option+W` | Close all windows |
 | `Cmd+1`--`9` | Switch to tab |
 | `Cmd+Shift+]` | Next tab |
 | `Cmd+Shift+[` | Previous tab |
