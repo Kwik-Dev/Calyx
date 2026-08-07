@@ -3225,7 +3225,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         wc.selectTab(at: sender.tag)
     }
 
-    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+    @objc func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(toggleSecureInput(_:)) {
             menuItem.state = SecureInput.shared.global ? .on : .off
             return true
