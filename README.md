@@ -42,6 +42,7 @@ https://github.com/user-attachments/assets/a04e1161-e296-4791-9b7c-3ef84d990089
 - **Command Log** -- records shell commands and their output (zsh/fish shell integration, auto-installed) and exposes `terminal_list_commands`, `terminal_read_output`, `terminal_await_command` MCP tools to agents; secrets (tokens, passwords, API keys) redacted before exposure; records stay in memory only
 - **Scriptable Browser** -- 25 CLI commands for browser automation (like cmux): snapshot, click, fill, eval, screenshot, wait, get-attribute, get-links, get-inputs, is-visible, hover, scroll. No enable step needed. `calyx` CLI bundled in the app
 - **Ghostty config compatibility** -- reads `~/.config/ghostty/config` (most keys hot-reload on save; see Settings for Calyx-managed keys)
+- **Ghostty keybind actions** -- bind Calyx operations to keys in your Ghostty config: `toggle_split_zoom`, `prompt_surface_title` (tab rename), `set_tab_title`, `copy_title_to_clipboard`, `move_tab`, `goto_window`, `close_all_windows`, `toggle_maximize`, `reset_window_size`, `toggle_command_palette`, `check_for_updates`
 - **Compose Overlay** -- floating text editor over the terminal for comfortable multiline input (`Cmd+Shift+E`), useful for writing long commands or AI prompts ([demo video](https://www.youtube.com/watch?v=qhwYnk8adF4))
 - **Quick Terminal** -- system-wide drop-down terminal toggled via global keybind
 - **Clipboard Confirmation** -- prompts before pasting potentially unsafe content (respects Ghostty's `clipboard-paste-protection` setting)
@@ -102,6 +103,7 @@ https://github.com/user-attachments/assets/a04e1161-e296-4791-9b7c-3ef84d990089
 | `Cmd+Shift+P` | Command palette |
 | `Cmd+Shift+E` | Toggle compose overlay |
 | `Cmd+Shift+B` | Session Browser |
+| `Cmd+Enter` / `Ctrl+Cmd+F` | Toggle full screen |
 
 ### Compose Overlay
 
