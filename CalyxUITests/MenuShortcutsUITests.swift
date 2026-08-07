@@ -3,11 +3,16 @@
 //
 // Tests for issue #33: surface README-documented keyboard shortcuts in the
 // macOS menu bar, organised to match Ghostty's upstream menu layout. Covers:
-//   - Submenu / item existence (Window > Group, File > Split*, Window >
-//     Focus Split, Edit > Find)
+//   - Submenu / item existence (Window > Group, File > Split*, File >
+//     Close*, Window > Focus Split, Edit > Find)
 //   - Menu-triggered actions (New Group, Split Right, Find, Next/Previous
 //     Group)
 //   - validateMenuItem behavior for Find Next when the search bar is hidden
+//
+// File > Close* items' EXISTENCE only (issue #45): the negative condition
+// that fix actually closes -- About/Settings/Session Browser being key but
+// never the terminal's own main window -- cannot be driven from here; see
+// `CalyxUITests/AuxiliaryWindowCloseE2ETests.swift`'s header for why.
 
 import XCTest
 
@@ -134,6 +139,40 @@ final class MenuShortcutsUITests: CalyxUITestCase {
         XCTAssertTrue(
             menuItemExists("Split Up"),
             "File menu should contain 'Split Up'"
+        )
+
+        dismissOpenMenus()
+    }
+
+    /// GitHub issue #45: the File menu now carries ghostty's four
+    /// distinct close scopes (see `AppDelegate.setupMainMenu()`'s own
+    /// "GitHub issue #45" comment and `NSWindow+CalyxClose.swift`'s
+    /// header for the full root-cause writeup) instead of the single
+    /// nil-target "Close Tab" item that used to own Cmd+W alone. This
+    /// only proves the four items EXIST, in the plain sense every other
+    /// existence test in this section already checks; the negative
+    /// condition the fix actually closes (About/Settings/Session
+    /// Browser being key but never the terminal's own main window) is
+    /// `CalyxUITests/AuxiliaryWindowCloseE2ETests.swift`'s job -- see
+    /// that file's header for why it cannot be folded into this one.
+    func test_closeMenuItems_existInFileMenu() {
+        openMenuBarItem("File")
+
+        XCTAssertTrue(
+            menuItemExists("Close"),
+            "File menu should contain 'Close' (Cmd+W, closes the key window's focused pane)"
+        )
+        XCTAssertTrue(
+            menuItemExists("Close Tab"),
+            "File menu should contain 'Close Tab' (Cmd+Option+W)"
+        )
+        XCTAssertTrue(
+            menuItemExists("Close Window"),
+            "File menu should contain 'Close Window' (Cmd+Shift+W)"
+        )
+        XCTAssertTrue(
+            menuItemExists("Close All Windows"),
+            "File menu should contain 'Close All Windows' (Cmd+Shift+Option+W)"
         )
 
         dismissOpenMenus()
