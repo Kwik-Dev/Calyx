@@ -179,6 +179,7 @@ struct SplitDividerGlassStrip: View {
             glassOpacity: glassOpacity
         )
         return Color.clear
+            .modifier(GlassInactiveTintModifier(themeColor: themeColor, glassOpacity: glassOpacity))
             .glassEffect(.clear.tint(Color(nsColor: tint)), in: .rect)
             .opacity(0.5)
             .allowsHitTesting(false)

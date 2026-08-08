@@ -56,6 +56,18 @@ enum GlassTheme {
         Color.white.opacity(0.24)
     }
 
+    /// Derive the inactive-window tint overlay color: theme color hue/saturation/brightness
+    /// preserved as-is, full opacity.
+    static func inactiveOverlayColor(for themeColor: NSColor) -> NSColor {
+        let hsb = toHSB(themeColor)
+        return NSColor(hue: hsb.hue, saturation: min(hsb.saturation * 1.0, 1.0), brightness: hsb.brightness, alpha: 1.0)
+    }
+
+    /// Opacity for the inactive-window tint overlay: matches the active-state chrome tint's own alpha.
+    static func inactiveOverlayOpacity(for glassOpacity: Double) -> Double {
+        chromeTintOpacity(for: glassOpacity)
+    }
+
     // HSB extraction helper
     private static func toHSB(_ color: NSColor) -> (hue: CGFloat, saturation: CGFloat, brightness: CGFloat) {
         let converted = color.usingColorSpace(.sRGB) ?? color
@@ -90,5 +102,26 @@ struct TabChromeModifier: ViewModifier {
                     .opacity(controlActiveState == .key ? 1.0 : 0.5)
             }
         }
+    }
+}
+
+/// Overlays a saturation-boosted, theme-derived tint when the window is not key,
+/// matching Ghostty's inactive-window dimming (ported from TerminalViewContainer.swift).
+struct GlassInactiveTintModifier: ViewModifier {
+    let themeColor: NSColor
+    let glassOpacity: Double
+    /// Extra leading inset (negative values bleed the tint past this view's
+    /// own leading edge) to close hairline gaps at seams between adjacent
+    /// tinted surfaces. Defaults to 0 (no bleed, matches the tint's own bounds).
+    var leadingBleed: CGFloat = 0
+    @Environment(\.controlActiveState) private var controlActiveState
+
+    func body(content: Content) -> some View {
+        content.background(
+            Color(nsColor: GlassTheme.inactiveOverlayColor(for: themeColor))
+                .opacity(controlActiveState == .key ? 0 : GlassTheme.inactiveOverlayOpacity(for: glassOpacity))
+                .padding(.leading, leadingBleed)
+                .allowsHitTesting(false)
+        )
     }
 }

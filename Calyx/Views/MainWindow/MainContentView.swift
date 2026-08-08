@@ -224,6 +224,7 @@ struct MainContentView: View {
                                     }
                                 }
                             }
+                            .modifier(GlassInactiveTintModifier(themeColor: themeColor, glassOpacity: glassOpacity, leadingBleed: -1))
                             .glassEffect(.clear.tint(Color(nsColor: GlassTheme.chromeTint(for: themeColor, glassOpacity: glassOpacity))), in: .rect)
                             .accessibilityIdentifier(AccessibilityID.Diff.container)
                         } else if let browserController = activeBrowserController {
@@ -236,6 +237,7 @@ struct MainContentView: View {
                                     glassOpacity: glassOpacity
                                 )
                                 .padding(.top, -1)
+                                .modifier(GlassInactiveTintModifier(themeColor: themeColor, glassOpacity: glassOpacity, leadingBleed: -1))
                                 .glassEffect(.clear.tint(Color(nsColor: GlassTheme.chromeTint(for: themeColor, glassOpacity: glassOpacity))), in: .rect)
                                 .onDrop(of: [.fileURL], delegate: TerminalDropDelegate(splitContainerView: splitContainerView))
                                 .layoutPriority(1)
@@ -268,6 +270,7 @@ struct MainContentView: View {
                                         .padding(.horizontal, 12)
                                         .padding(.bottom, 12)
                                     }
+                                    .modifier(GlassInactiveTintModifier(themeColor: themeColor, glassOpacity: glassOpacity, leadingBleed: -1))
                                     .glassEffect(.clear.tint(Color(nsColor: GlassTheme.chromeTint(for: themeColor, glassOpacity: glassOpacity))), in: .rect)
                                 }
                             }
@@ -296,6 +299,7 @@ struct MainContentView: View {
                 GeometryReader { geo in
                     Color.white.opacity(0.001)
                         .frame(height: geo.safeAreaInsets.top + 1)
+                        .modifier(GlassInactiveTintModifier(themeColor: themeColor, glassOpacity: glassOpacity))
                         .glassEffect(.clear.tint(Color(nsColor: GlassTheme.chromeTint(for: themeColor, glassOpacity: glassOpacity))), in: .rect)
                         .offset(y: -geo.safeAreaInsets.top)
                 }
