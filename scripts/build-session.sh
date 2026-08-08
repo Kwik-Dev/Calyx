@@ -39,7 +39,7 @@ for arg in "$@"; do
 done
 
 EXPECTED_ZIG_MINOR="0.15"
-CELLAR_ZIG="/opt/homebrew/Cellar/zig/0.15.2/bin/zig"
+CELLAR_ZIG="/opt/homebrew/opt/zig@0.15/bin/zig"
 
 if [ -n "${GVT_ZIG:-}" ]; then
     : # explicit override wins outright
