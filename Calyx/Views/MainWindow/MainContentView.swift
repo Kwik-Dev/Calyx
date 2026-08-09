@@ -299,7 +299,7 @@ struct MainContentView: View {
                 GeometryReader { geo in
                     Color.white.opacity(0.001)
                         .frame(height: geo.safeAreaInsets.top + 1)
-                        .modifier(GlassInactiveTintModifier(themeColor: themeColor, glassOpacity: glassOpacity))
+                        .modifier(GlassInactiveTintModifier(themeColor: themeColor, glassOpacity: glassOpacity, bottomInset: 1))
                         .glassEffect(.clear.tint(Color(nsColor: GlassTheme.chromeTint(for: themeColor, glassOpacity: glassOpacity))), in: .rect)
                         .offset(y: -geo.safeAreaInsets.top)
                 }

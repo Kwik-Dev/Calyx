@@ -335,7 +335,7 @@ private struct TabBarBackgroundModifier: ViewModifier {
             content.background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea(.all, edges: .top))
         } else {
             content
-                .modifier(GlassInactiveTintModifier(themeColor: themeColor, glassOpacity: glassOpacity, leadingBleed: -1))
+                .modifier(GlassInactiveTintModifier(themeColor: themeColor, glassOpacity: glassOpacity))
                 .glassEffect(.clear.tint(Color(nsColor: GlassTheme.chromeTint(for: themeColor, glassOpacity: glassOpacity))), in: .rect)
                 .overlay(alignment: .bottom) {
                     Rectangle()

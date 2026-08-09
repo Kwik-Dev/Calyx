@@ -114,6 +114,9 @@ struct GlassInactiveTintModifier: ViewModifier {
     /// own leading edge) to close hairline gaps at seams between adjacent
     /// tinted surfaces. Defaults to 0 (no bleed, matches the tint's own bounds).
     var leadingBleed: CGFloat = 0
+    /// Keeps the inactive tint out of a surface's bottom overlap without
+    /// changing the surface's layout or glass-effect bounds.
+    var bottomInset: CGFloat = 0
     @Environment(\.controlActiveState) private var controlActiveState
 
     func body(content: Content) -> some View {
@@ -121,6 +124,7 @@ struct GlassInactiveTintModifier: ViewModifier {
             Color(nsColor: GlassTheme.inactiveOverlayColor(for: themeColor))
                 .opacity(controlActiveState == .key ? 0 : GlassTheme.inactiveOverlayOpacity(for: glassOpacity))
                 .padding(.leading, leadingBleed)
+                .padding(.bottom, bottomInset)
                 .allowsHitTesting(false)
         )
     }
