@@ -127,10 +127,18 @@ enum SessionCommandSynthesizer {
         binaryPath: String,
         sessionID: String,
         cwd: String,
+        initialGridSize: SessionInitialGridSize? = nil,
         rootResolver: SessionRootResolverProtocol = SessionRootResolver()
     ) -> String {
         let root = rootResolver.resolve()
-        return "\(shSafeToken(binaryPath)) --runtime-dir \(shSafeToken(root + "/.calyx/run")) --state-dir \(shSafeToken(root + "/.calyx/state")) attach \(shSafeToken(sessionID)) --create --cwd \(shSafeToken(cwd))"
+        let initialGridArguments: String
+        if let initialGridSize {
+            initialGridArguments = " --initial-cols \(shSafeToken(String(initialGridSize.columns)))"
+                + " --initial-rows \(shSafeToken(String(initialGridSize.rows)))"
+        } else {
+            initialGridArguments = ""
+        }
+        return "\(shSafeToken(binaryPath)) --runtime-dir \(shSafeToken(root + "/.calyx/run")) --state-dir \(shSafeToken(root + "/.calyx/state")) attach \(shSafeToken(sessionID)) --create\(initialGridArguments) --cwd \(shSafeToken(cwd))"
     }
 
     /// Builds the attach command for re-attaching to an *existing*
@@ -211,9 +219,17 @@ enum SessionCommandSynthesizer {
         host: String,
         sessionID: String,
         cwd: String,
+        initialGridSize: SessionInitialGridSize? = nil,
         sshResolver: SSHBinaryResolverProtocol = SSHBinaryResolver()
     ) -> String {
-        let remoteCommand = "$HOME/.calyx/bin/calyx-session attach \(shSafeToken(sessionID)) --create --cwd \(shSafeToken(cwd))"
+        let initialGridArguments: String
+        if let initialGridSize {
+            initialGridArguments = " --initial-cols \(shSafeToken(String(initialGridSize.columns)))"
+                + " --initial-rows \(shSafeToken(String(initialGridSize.rows)))"
+        } else {
+            initialGridArguments = ""
+        }
+        let remoteCommand = "$HOME/.calyx/bin/calyx-session attach \(shSafeToken(sessionID)) --create\(initialGridArguments) --cwd \(shSafeToken(cwd))"
         return "\(shSafeToken(sshResolver.resolve())) -t -- \(shSafeToken(host)) \(shSafeToken(remoteCommand))"
     }
 }

@@ -126,6 +126,33 @@ final class SessionCommandSynthesizerTests: XCTestCase {
                        "has no #[arg(long)]), not a --id flag")
     }
 
+    func test_attachCommand_initialGridSize_reachesAttachAsExplicitColumnsAndRows() throws {
+        let binaryPath = uniqueTempPath("calyx-session-dumper")
+        let outputPath = uniqueTempPath("calyx-argv-capture")
+        defer {
+            try? FileManager.default.removeItem(atPath: binaryPath)
+            try? FileManager.default.removeItem(atPath: outputPath)
+        }
+        try makeArgvDumperScript(at: binaryPath, outputPath: outputPath)
+
+        let command = SessionCommandSynthesizer.attachCommand(
+            binaryPath: binaryPath,
+            sessionID: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            cwd: "/Users/dev/repo",
+            initialGridSize: SessionInitialGridSize(columns: 72, rows: 31)
+        )
+        let argv = try runAndCaptureArgv(command, outputPath: outputPath)
+        let expectedRoot = SessionRootResolver().resolve()
+
+        XCTAssertEqual(argv, [
+            "--runtime-dir", expectedRoot + "/.calyx/run",
+            "--state-dir", expectedRoot + "/.calyx/state",
+            "attach", "01ARZ3NDEKTSV4RRFFQ69G5FAV", "--create",
+            "--initial-cols", "72", "--initial-rows", "31",
+            "--cwd", "/Users/dev/repo",
+        ])
+    }
+
     // MARK: - cwd
 
     func test_attachCommand_cwdWithSpacesQuoteAndJapanese_survivesShCIntact() throws {

@@ -83,6 +83,14 @@ pub struct AttachArgs {
     pub cwd: Option<String>,
     #[arg(long)]
     pub name: Option<String>,
+    /// Host-provided initial PTY columns. Internal Calyx launches use
+    /// this with `initial_rows` so the shell starts at the final pane
+    /// grid instead of Ghostty's temporary bootstrap grid.
+    #[arg(long, requires = "initial_rows")]
+    pub initial_cols: Option<u16>,
+    /// Host-provided initial PTY rows; see `initial_cols`.
+    #[arg(long, requires = "initial_cols")]
+    pub initial_rows: Option<u16>,
     /// The command to run when creating a new session (repeat per
     /// argv element, e.g. `--argv /bin/sh --argv -c --argv 'exit 0'`).
     /// Not in the original P2 spec's flag list; added because the CLI
@@ -215,6 +223,46 @@ mod tests {
         match cli.command {
             Command::Upgrade(args) => assert_eq!(args.binary, None),
             other => panic!("expected Command::Upgrade, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn attach_parses_explicit_initial_grid_size() {
+        let cli = Cli::try_parse_from([
+            "calyx-session",
+            "attach",
+            "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "--create",
+            "--initial-cols",
+            "72",
+            "--initial-rows",
+            "31",
+        ])
+        .expect("attach should accept an explicit initial grid size");
+
+        match cli.command {
+            Command::Attach(args) => {
+                assert_eq!(args.initial_cols, Some(72));
+                assert_eq!(args.initial_rows, Some(31));
+            }
+            other => panic!("expected Command::Attach, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn attach_rejects_an_incomplete_initial_grid_size() {
+        for lone_flag in ["--initial-cols", "--initial-rows"] {
+            let result = Cli::try_parse_from([
+                "calyx-session",
+                "attach",
+                "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                lone_flag,
+                "72",
+            ]);
+            assert!(
+                result.is_err(),
+                "{lone_flag} must require the other initial-grid dimension"
+            );
         }
     }
 

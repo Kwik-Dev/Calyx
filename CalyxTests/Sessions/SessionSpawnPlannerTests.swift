@@ -195,6 +195,28 @@ final class SessionSpawnPlannerTests: XCTestCase {
         XCTAssertNotEqual(firstID, secondID, "Each new surface must get its own freshly generated session ID")
     }
 
+    func test_plan_initialGridSize_isForwardedToPersistentAttachCommand() throws {
+        SessionSettings.persistentSessionsEnabled = true
+        let context = SessionSpawnContext(
+            cwd: "/Users/dev/repo",
+            origin: .tab,
+            initialGridSize: SessionInitialGridSize(columns: 72, rows: 31)
+        )
+
+        guard let (_, _, argv) = try capturedArgv(for: context) else {
+            XCTFail("A persistent tab must produce an attach command")
+            return
+        }
+
+        guard let colsIndex = argv.firstIndex(of: "--initial-cols"),
+              let rowsIndex = argv.firstIndex(of: "--initial-rows") else {
+            XCTFail("The attach command must carry the host layout's initial grid")
+            return
+        }
+        XCTAssertEqual(argv[colsIndex + 1], "72")
+        XCTAssertEqual(argv[rowsIndex + 1], "31")
+    }
+
     // MARK: - Enabled, .quickTerminal origin
 
     func test_plan_enabledQuickTerminalOrigin_stillReturnsPassthrough() {

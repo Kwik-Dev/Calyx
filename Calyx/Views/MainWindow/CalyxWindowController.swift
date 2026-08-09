@@ -848,6 +848,22 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         surfaceID.flatMap { SurfacePropertyStore.shared.cwd(for: $0) } ?? tab?.pwd
     }
 
+    /// The established grid of the currently focused terminal pane. A new
+    /// full-size tab or group uses the same viewport, or a larger one when
+    /// the focused pane is split, so this is a safe initial grid for the new
+    /// shell. Without it, embedded Ghostty starts the command at its fixed
+    /// 800x600 bootstrap grid and resizes only after AppKit installs the view.
+    private func focusedTerminalGridSize() -> SessionInitialGridSize? {
+        guard let tab = activeTab,
+              let surfaceID = tab.splitTree.focusedLeafID,
+              let surface = tab.registry.controller(for: surfaceID)?.surface else {
+            return nil
+        }
+        let size = GhosttyFFI.surfaceSize(surface)
+        guard size.columns > 0, size.rows > 0 else { return nil }
+        return SessionInitialGridSize(columns: size.columns, rows: size.rows)
+    }
+
     /// Applies `SessionSpawnPlanner`'s decision for a freshly-created
     /// terminal surface. `.passthrough` (the default — feature off, or
     /// `origin == .quickTerminal`) creates the surface exactly as
@@ -923,10 +939,16 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         explicitCwd: String?,
         sessionFallbackCwd: String?,
         origin: SessionSpawnOrigin,
-        host: String? = nil
+        host: String? = nil,
+        initialGridSize: SessionInitialGridSize? = nil
     ) -> UUID? {
         let sessionCwd = explicitCwd ?? sessionFallbackCwd ?? NSHomeDirectory()
-        let context = SessionSpawnContext(cwd: sessionCwd, host: host, origin: origin)
+        let context = SessionSpawnContext(
+            cwd: sessionCwd,
+            host: host,
+            origin: origin,
+            initialGridSize: initialGridSize
+        )
         switch SessionSpawnPlanner.plan(for: context) {
         case .passthrough:
             #if DEBUG
@@ -1447,6 +1469,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         guard let window = self.window, let group = windowSession.activeGroup else { return }
 
         let tab = Tab()
+        let initialGridSize = focusedTerminalGridSize()
 
         var config: ghostty_surface_config_s
         if let inherited = inheritedConfig as? ghostty_surface_config_s {
@@ -1460,7 +1483,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
             tab: tab, app: app, config: config,
             explicitCwd: Self.normalizedCwdOverride(spawnCwd),
             sessionFallbackCwd: livePaneCwd(of: activeTab?.splitTree.focusedLeafID, in: activeTab),
-            origin: .tab, host: host
+            origin: .tab, host: host, initialGridSize: initialGridSize
         ) else {
             logger.error("Failed to create surface for new tab")
             return
@@ -1897,13 +1920,17 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         guard let window = self.window else { return }
 
         let tab = Tab()
+        let initialGridSize = focusedTerminalGridSize()
 
         var config = GhosttyFFI.surfaceConfigNew()
         config.scale_factor = Double(window.backingScaleFactor)
 
         guard let surfaceID = createManagedSurface(
             tab: tab, app: app, config: config,
-            explicitCwd: nil, sessionFallbackCwd: livePaneCwd(of: activeTab?.splitTree.focusedLeafID, in: activeTab), origin: .tab
+            explicitCwd: nil,
+            sessionFallbackCwd: livePaneCwd(of: activeTab?.splitTree.focusedLeafID, in: activeTab),
+            origin: .tab,
+            initialGridSize: initialGridSize
         ) else {
             logger.error("Failed to create surface for new group")
             return

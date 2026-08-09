@@ -25,6 +25,14 @@ enum SessionSpawnOrigin: Sendable, Equatable {
     case quickTerminal
 }
 
+/// Terminal grid the host has already laid out for a new surface.
+/// Supplying this to `calyx-session attach` prevents the embedded
+/// Ghostty bootstrap grid from becoming the new shell's initial PTY size.
+struct SessionInitialGridSize: Sendable, Equatable {
+    let columns: UInt16
+    let rows: UInt16
+}
+
 struct SessionSpawnContext: Sendable, Equatable {
     /// The resolved spawn cwd handed down by `CalyxWindowController
     /// .createManagedSurface` — already that method's own `explicitCwd
@@ -43,11 +51,18 @@ struct SessionSpawnContext: Sendable, Equatable {
     /// resolvability guard entirely (see `plan(for:)`'s doc comment).
     let host: String?
     let origin: SessionSpawnOrigin
+    let initialGridSize: SessionInitialGridSize?
 
-    init(cwd: String? = nil, host: String? = nil, origin: SessionSpawnOrigin = .tab) {
+    init(
+        cwd: String? = nil,
+        host: String? = nil,
+        origin: SessionSpawnOrigin = .tab,
+        initialGridSize: SessionInitialGridSize? = nil
+    ) {
         self.cwd = cwd
         self.host = host
         self.origin = origin
+        self.initialGridSize = initialGridSize
     }
 }
 
@@ -106,7 +121,8 @@ enum SessionSpawnPlanner {
             let command = SessionCommandSynthesizer.remoteAttachCommand(
                 host: host,
                 sessionID: sessionID,
-                cwd: effectiveCwd
+                cwd: effectiveCwd,
+                initialGridSize: context.initialGridSize
             )
             return .persistent(sessionID: sessionID, command: command, host: host)
         }
@@ -117,7 +133,8 @@ enum SessionSpawnPlanner {
         let command = SessionCommandSynthesizer.attachCommand(
             binaryPath: binaryPath,
             sessionID: sessionID,
-            cwd: effectiveCwd
+            cwd: effectiveCwd,
+            initialGridSize: context.initialGridSize
         )
         return .persistent(sessionID: sessionID, command: command, host: nil)
     }

@@ -182,7 +182,10 @@ final class SessionCommandSynthesizerRemoteAttachTests: XCTestCase {
     /// containing a stub calyx-session (LAYER 2), and returns what that
     /// remote stub itself observed.
     private func roundTripRemoteAttachCommand(
-        host: String, sessionID: String, cwd: String
+        host: String,
+        sessionID: String,
+        cwd: String,
+        initialGridSize: SessionInitialGridSize? = nil
     ) throws -> (remoteSelfPath: String, remoteArgv: [String]) {
         let sshStubPath = uniqueTempPath("ssh-argv-dumper")
         let sshOutputPath = uniqueTempPath("ssh-argv-capture")
@@ -199,7 +202,10 @@ final class SessionCommandSynthesizerRemoteAttachTests: XCTestCase {
         try makeSelfPathAndArgvDumperScript(at: remoteCalyxSessionPath, outputPath: remoteOutputPath)
 
         let command = SessionCommandSynthesizer.remoteAttachCommand(
-            host: host, sessionID: sessionID, cwd: cwd,
+            host: host,
+            sessionID: sessionID,
+            cwd: cwd,
+            initialGridSize: initialGridSize,
             sshResolver: FakeSSHResolver(path: sshStubPath)
         )
         try runShCEmulatingGhosttyWrapping(command)
@@ -359,6 +365,25 @@ final class SessionCommandSynthesizerRemoteAttachTests: XCTestCase {
                        ["attach", "01ARZ3NDEKTSV4RRFFQ69G5FAV", "--create", "--cwd", "/home/dev/repo"],
                        "sessionID/cwd must survive both the local-layer and remote-layer quoting " +
                        "intact as their own argv words, with no --runtime-dir/--state-dir flags present")
+    }
+
+    func test_remoteAttachCommand_execution_initialGridSizeSurvivesBothShellLayers() throws {
+        let result = try roundTripRemoteAttachCommand(
+            host: "build-box.example.com",
+            sessionID: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            cwd: "/home/dev/repo",
+            initialGridSize: SessionInitialGridSize(columns: 72, rows: 31)
+        )
+
+        XCTAssertEqual(
+            result.remoteArgv,
+            [
+                "attach", "01ARZ3NDEKTSV4RRFFQ69G5FAV", "--create",
+                "--initial-cols", "72", "--initial-rows", "31",
+                "--cwd", "/home/dev/repo",
+            ],
+            "the host layout's initial grid must reach remote calyx-session as intact argv words"
+        )
     }
 
     // MARK: - Metacharacter torture, both layers

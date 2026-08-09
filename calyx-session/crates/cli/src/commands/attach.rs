@@ -39,7 +39,8 @@ pub fn run(
         Err(_) => return Ok(EXIT_DISCONNECTED),
     };
 
-    let (cols, rows) = tty_size().unwrap_or((80, 24));
+    let tty_size = tty_size().unwrap_or((80, 24));
+    let (cols, rows) = resolved_initial_size(tty_size, args.initial_cols, args.initial_rows);
     let create = args.create.then(|| SessionSpec {
         id: args.id.clone(),
         name: args.name.clone(),
@@ -277,6 +278,17 @@ pub(crate) fn tty_size() -> Option<(u16, u16)> {
     None
 }
 
+fn resolved_initial_size(
+    tty_size: (u16, u16),
+    initial_cols: Option<u16>,
+    initial_rows: Option<u16>,
+) -> (u16, u16) {
+    match (initial_cols, initial_rows) {
+        (Some(cols), Some(rows)) => (cols.max(1), rows.max(1)),
+        _ => tty_size,
+    }
+}
+
 /// Write end of the signal self-pipe, read by the signal handlers.
 static SIGNAL_PIPE_WRITE: AtomicI32 = AtomicI32::new(-1);
 
@@ -331,4 +343,22 @@ fn install_signal_pipe() -> nix::Result<std::os::fd::OwnedFd> {
         );
     }
     Ok(rx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolved_initial_size;
+
+    #[test]
+    fn explicit_initial_grid_overrides_bootstrap_tty_size() {
+        assert_eq!(
+            resolved_initial_size((99, 35), Some(72), Some(31)),
+            (72, 31)
+        );
+    }
+
+    #[test]
+    fn absent_initial_grid_uses_current_tty_size() {
+        assert_eq!(resolved_initial_size((99, 35), None, None), (99, 35));
+    }
 }
