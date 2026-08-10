@@ -52,8 +52,7 @@
 //    SettingsWindowController.swift:
 //    - sectionHeading(for: .commandTracking) returns
 //      SectionHeading(title: "Command Tracking", subtitle: "Changes apply to new terminals only.")
-//      -- the caption the plan requires ("変更は新しいターミナルから適用されます"),
-//      translated, since this file uses English UI text throughout (verified: zero
+//      -- this file uses English UI text throughout (verified: zero
 //      Japanese strings anywhere in SettingsWindowController.swift).
 //    - contentView(for: .commandTracking) returns a new
 //      commandTrackingRow(), built the same self-contained way as

@@ -97,7 +97,7 @@ enum SessionDaemonClientBoundTimeoutOverrides {
 /// winner-cancels-loser ordering (see `bounded(...)`'s own R10-C doc
 /// comment) and a closure-valued `onTimeout()` result, a three-way race
 /// shape `AwaitBridge`'s single fixed-fallback timeout arm doesn't cover.
-private final class SessionDaemonBoundedRaceBridge<T: Sendable>: @unchecked Sendable {
+final class SessionDaemonBoundedRaceBridge<T: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var resumed = false
     private var isCancelled = false
@@ -274,7 +274,7 @@ extension SessionDaemonClientProtocol {
     /// resume discipline -- mirroring
     /// `SystemCommandRunner`'s own `CancellationBridge`.
     @MainActor
-    private func bounded<T: Sendable>(
+    func bounded<T: Sendable>(
         operation: @escaping @Sendable () async -> T,
         onTimeout: @escaping @Sendable () -> T,
         timeoutSeconds: UInt64 = Self.daemonQueryBoundTimeoutSeconds

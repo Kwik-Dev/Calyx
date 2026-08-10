@@ -22,10 +22,10 @@ enum ScreenStateClassifier {
     /// "Do you want to continue? [Y/n]", fzf's "ESC to cancel" footer —
     /// neither of which renders this cursor+numbered-option shape.
     /// Requiring it is Claude-Code-specific and conservative: no
-    /// confirmed Codex/OpenCode-equivalent marker exists yet (Round 3
-    /// plan's "実機文言の確認" follow-up), so every `kind`, including an
-    /// unrecognized one, is classified against this same minimal pattern
-    /// for now rather than a per-`kind` guess.
+    /// confirmed Codex/OpenCode-equivalent marker exists yet (verifying
+    /// real on-device wording is an open Round 3 follow-up), so every
+    /// `kind`, including an unrecognized one, is classified against this
+    /// same minimal pattern for now rather than a per-`kind` guess.
     private static let choiceMarkerPattern = #"❯\s*\d+\."#
 
     /// Case-insensitive substrings recognized as an in-progress marker.

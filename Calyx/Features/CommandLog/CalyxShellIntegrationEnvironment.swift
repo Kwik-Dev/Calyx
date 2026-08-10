@@ -11,12 +11,11 @@
 //
 // Injection point: setting ZDOTDIR/XDG_DATA_DIRS in THIS process's own
 // environment (not a surface's per-surface config.env_vars) is
-// deliberate -- see the command-log plan's own "注入点の修正" note: a
-// surface's individual env is applied AFTER ghostty's own shell
-// integration setup, so setting ZDOTDIR there would stomp ghostty's
-// setup instead of chaining after it. Process env is read fresh by every
-// new surface, so a toggle change takes effect from the next new pane
-// without an app restart.
+// deliberate: a surface's individual env is applied AFTER ghostty's own
+// shell integration setup, so setting ZDOTDIR there would stomp
+// ghostty's setup instead of chaining after it. Process env is read
+// fresh by every new surface, so a toggle change takes effect from the
+// next new pane without an app restart.
 
 import Foundation
 

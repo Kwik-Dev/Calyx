@@ -59,15 +59,70 @@ struct SessionBrowserRow: Identifiable, Equatable, Sendable {
     }
 }
 
+/// Wraps `HerdrSessionInfo` the same way `SessionBrowserRow` wraps
+/// `SessionInfo`, so the herdr section has its own row type independent
+/// of whatever UI-only state `SessionBrowserRow` carries for
+/// calyx-session rows (`isOrphan`/`isAttachedHere` have no herdr
+/// equivalent -- herdr identity never enters `SessionSurfaceMap` by
+/// design).
+struct HerdrSessionRow: Identifiable, Equatable, Sendable {
+    var id: String { info.id }
+    let info: HerdrSessionInfo
+}
+
 @MainActor
 @Observable
 final class SessionBrowserModel {
 
     private(set) var rows: [SessionBrowserRow] = []
 
+    /// Populated by `refresh()` from the injected `herdrProvider`, gated
+    /// on `herdrAvailability()` (binary resolution only -- see that
+    /// property's own doc comment for why "is any session actually
+    /// alive" is entirely `herdrProvider`'s own job, not this gate's).
+    /// Reset to `[]` on every `refresh()` while herdr is unavailable, so
+    /// a herdr that dies mid-session disappears from the browser on the
+    /// next poll rather than leaving a frozen last-known list.
+    private(set) var herdrRows: [HerdrSessionRow] = []
+
     private let daemonClient: SessionDaemonClientProtocol
     private let surfaceMap: SessionSurfaceMap
     private let hostCandidateProvider: SSHHostCandidateProvider
+    /// Herdr session lister -- see `HerdrSessionProvider.swift`. Defaults
+    /// to the production `HerdrCLISessionProvider` (bare discovery +
+    /// liveness probe; CLI enrichment isn't wired in yet).
+    private let herdrProvider: HerdrSessionProviderProtocol
+    /// Reports whether the herdr integration should currently be
+    /// treated as available: a CHEAP binary-resolution check only, no
+    /// discovery, no socket probes. This must stay free of any per-tick
+    /// cost heavier than reading a memoized resolver result, since
+    /// `refresh()` calls it unconditionally on every poll. "Is any
+    /// session actually alive" deliberately does NOT live here:
+    /// `herdrProvider.listSessions()` already performs that discovery +
+    /// liveness sweep and returns `[]` when nothing is alive, and
+    /// `showHerdrSection` already hides the section from an empty
+    /// `herdrRows` -- duplicating that check here would mean two
+    /// discovery sweeps (and a second, redundant set of socket probes)
+    /// per poll instead of one. A closure, mirroring
+    /// `SSHHostCandidateProvider`'s own `loadConfig` closure-injection
+    /// precedent, rather than a protocol, so this file never needs to
+    /// depend on `HerdrBinaryResolver` directly -- a fake closure here
+    /// lets tests fix the answer without touching real PATH state.
+    /// `() async -> Bool`, not a plain `() -> Bool`: a memoized HIT is
+    /// just a lock-guarded property read, but a MISS (herdr not
+    /// installed) re-walks PATH via `FileManager.isExecutableFile` on
+    /// every single call -- see `HerdrBinaryResolver`'s own doc comment
+    /// for why a miss is deliberately never cached -- and
+    /// `defaultHerdrAvailability()` below hops that walk onto
+    /// `DispatchQueue.global()` so `refresh()`'s 1s poll never runs it on
+    /// the caller's thread (this property is only ever called from
+    /// `@MainActor` `refresh()`, so "the caller's thread" means the main
+    /// thread).
+    /// Defaults to `defaultHerdrAvailability()` (below); an undetected
+    /// herdr still renders exactly like today, unchanged, since an
+    /// unresolvable binary means `herdrProvider.listSessions()` is never
+    /// even called (see `refresh()`'s own negative-invariant test).
+    private let herdrAvailability: () async -> Bool
 
     /// Remote host candidates for the "New Remote Session…" picker,
     /// populated by `refreshRemoteHostCandidates()` from the injected
@@ -99,14 +154,63 @@ final class SessionBrowserModel {
     /// called with the right row instead of driving real AppKit.
     var onAttachRequested: ((SessionBrowserRow) -> Void)?
 
+    /// Invoked by `attachHerdr(_:)` with the herdr row to attach to --
+    /// mirrors `onAttachRequested`'s injectable-closure pattern exactly.
+    var onHerdrAttachRequested: ((HerdrSessionRow) -> Void)?
+
     init(
         daemonClient: SessionDaemonClientProtocol = SessionDaemonClient.shared,
         surfaceMap: SessionSurfaceMap = .shared,
-        hostCandidateProvider: SSHHostCandidateProvider = SSHHostCandidateProvider()
+        hostCandidateProvider: SSHHostCandidateProvider = SSHHostCandidateProvider(),
+        herdrProvider: HerdrSessionProviderProtocol = HerdrCLISessionProvider(),
+        herdrAvailability: @escaping () async -> Bool = SessionBrowserModel.defaultHerdrAvailability()
     ) {
         self.daemonClient = daemonClient
         self.surfaceMap = surfaceMap
         self.hostCandidateProvider = hostCandidateProvider
+        self.herdrProvider = herdrProvider
+        self.herdrAvailability = herdrAvailability
+    }
+
+    /// Builds the production `herdrAvailability` default: binary
+    /// resolution only, no discovery, no socket probes (see
+    /// `herdrAvailability`'s own doc comment for why that's the whole
+    /// rule now). `resolver` is constructed ONCE here -- this factory
+    /// runs once per `SessionBrowserModel` instance, exactly like any
+    /// other default-parameter expression (Swift evaluates a default
+    /// argument fresh per call that omits it, not once globally) -- and
+    /// captured by the returned closure, so every later call the closure
+    /// receives (e.g. `SessionBrowserView`'s 1s poll, indirectly through
+    /// `refresh()`) reuses the SAME `HerdrBinaryResolver` instance
+    /// instead of reconstructing one per poll. That reuse is what makes
+    /// `HerdrBinaryResolver`'s own per-instance memoization of
+    /// `resolve()` (see that type's doc comment) actually pay off here:
+    /// repeated polls against an absent/present binary cost one property
+    /// read after the first call, not a fresh PATH walk every second.
+    ///
+    /// The returned closure hops `resolver.resolve()` itself onto
+    /// `DispatchQueue.global()` via `withCheckedContinuation`, mirroring
+    /// `SystemCommandRunner.locate(_:)`'s identical "run blocking work on
+    /// a background queue, resume a non-throwing continuation" shape --
+    /// so we do not park the calling thread inside a blocking
+    /// `FileManager.isExecutableFile` PATH walk. `refresh()` calls this
+    /// unconditionally on every 1s poll while the herdr binary is
+    /// undetected (a permanent miss, per `HerdrBinaryResolver`'s own
+    /// never-cache-a-miss contract), and `refresh()` runs on `@MainActor`,
+    /// so without this hop that walk would run on the main thread once a
+    /// second for every user without herdr installed. `resolver` is
+    /// `Sendable` (its cache lives behind `OSAllocatedUnfairLock`, see
+    /// that type's own doc comment), so capturing it directly in the
+    /// `@Sendable` dispatch closure is sound.
+    private static func defaultHerdrAvailability() -> () async -> Bool {
+        let resolver = HerdrBinaryResolver()
+        return {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                DispatchQueue.global().async {
+                    continuation.resume(returning: resolver.resolve() != nil)
+                }
+            }
+        }
     }
 
     /// Refreshes `rows` from `daemonClient.listAll()`, for Running
@@ -138,6 +242,28 @@ final class SessionBrowserModel {
     /// still resolve early with a result that arrives after the
     /// caller gave up, wiping this SHARED model's rows with a stale
     /// value -- an empty flash on reopen.
+    ///
+    /// After the calyx-session block above, gates the herdr step on
+    /// `herdrAvailability()` -- an unresolvable binary clears
+    /// `herdrRows` to `[]` and returns WITHOUT ever calling
+    /// `herdrProvider.listSessions()` (undetected herdr costs zero
+    /// work, checked as a permanent structural invariant by
+    /// `SessionBrowserModelHerdrTests`'s own negative test). That
+    /// clearing assignment gets the identical `Task.isCancelled` guard
+    /// as the `rows` and available-branch `herdrRows` assignments above
+    /// it, for the same reason: a late-resolving cancellation must not
+    /// let a stale result (here, the unconditional `[]`) overwrite a
+    /// previously-populated `herdrRows`
+    /// (`SessionBrowserModelHerdrTests`'s own cancellation-guard test).
+    /// Clearing unconditionally (not just leaving stale rows alone) is
+    /// what makes the herdr section actually disappear on the next poll
+    /// after herdr dies, rather than showing a frozen last-known list.
+    /// When available, routes through `boundedHerdrListSessions()`
+    /// rather than a bare `await`, for the identical reason
+    /// `listAllBounded()` exists above: a provider call (this stage's
+    /// own bare discovery+probe is fast, but the protocol boundary is
+    /// still an injection point a future CLI-enrichment implementation
+    /// could make slow) must never freeze this shared poll loop.
     func refresh() async {
         guard !isRefreshing else { return }
         isRefreshing = true
@@ -152,11 +278,44 @@ final class SessionBrowserModel {
                 isAttachedHere: isAttached
             )
         }
+
+        guard await herdrAvailability() else {
+            guard !Task.isCancelled else { return }
+            herdrRows = []
+            return
+        }
+        let herdrSessions = await boundedHerdrListSessions()
+        guard !Task.isCancelled else { return }
+        herdrRows = herdrSessions.map { HerdrSessionRow(info: $0) }
+    }
+
+    /// Races `herdrProvider.listSessions()` against the shared
+    /// `daemonQueryBoundTimeoutSeconds` bound, degrading to `[]` on
+    /// timeout, by reusing `SessionDaemonClientProtocol`'s own
+    /// `bounded(operation:onTimeout:timeoutSeconds:)` through
+    /// `daemonClient` -- the identical winner-cancels-loser race
+    /// `listAllBounded()` uses (promoted from `private` to `internal` in
+    /// `SessionDaemonClient.swift` so this file can call it directly
+    /// instead of duplicating its own ~80-line bridge). Omitting
+    /// `timeoutSeconds:` lets the default `daemonQueryBoundTimeoutSeconds`
+    /// bind, so this shares the exact same constant (its `#if DEBUG`
+    /// override seam included) as every other bounded daemon call,
+    /// rather than inventing a second one.
+    private func boundedHerdrListSessions() async -> [HerdrSessionInfo] {
+        let herdrProvider = self.herdrProvider
+        return await daemonClient.bounded(operation: { await herdrProvider.listSessions() }, onTimeout: { [] })
     }
 
     /// Requests attaching to `row`'s session.
     func attach(_ row: SessionBrowserRow) {
         onAttachRequested?(row)
+    }
+
+    /// Requests attaching to `row`'s herdr session. Mirrors `attach(_:)`
+    /// exactly -- herdr identity flows through the same
+    /// injected-closure seam, just its own closure/row type.
+    func attachHerdr(_ row: HerdrSessionRow) {
+        onHerdrAttachRequested?(row)
     }
 
     /// Kills `row`'s session via the daemon, then refreshes.
@@ -187,6 +346,15 @@ final class SessionBrowserModel {
     /// on.
     var showRemoteHostsSection: Bool {
         SessionSettings.persistentSessionsEnabled && !remoteHostCandidates.isEmpty
+    }
+
+    /// Whether the herdr section should render at all. Mirrors
+    /// `showRemoteHostsSection`'s shape: an empty/undetected herdr (no
+    /// binary, no live socket, or a live-but-session-less herdr) must
+    /// stay pixel-identical to today, so this is purely `herdrRows`'s
+    /// own emptiness, not a separate "is herdr detected" flag.
+    var showHerdrSection: Bool {
+        !herdrRows.isEmpty
     }
 
     /// Requests spawning a new remote session against `host`.

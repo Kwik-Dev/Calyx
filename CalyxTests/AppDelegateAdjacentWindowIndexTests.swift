@@ -76,10 +76,10 @@ final class AppDelegateAdjacentWindowIndexTests: XCTestCase {
     func test_adjacentWindowIndex_stepZero_withNilCurrentIndex_returnsNil() {
         let result = AppDelegate.adjacentWindowIndex(currentIndex: nil, step: 0, count: 3)
 
-        XCTAssertNil(result, "step == 0 must take priority over the nil-currentIndex '0 起点' rule")
+        XCTAssertNil(result, "step == 0 must take priority over the nil-currentIndex origin-0 rule")
     }
 
-    // ==================== currentIndex == nil ("0 起点") ====================
+    // ==================== currentIndex == nil (origin-0) ====================
 
     /// currentIndex == nil resolves to plain index 0 for a forward step —
     func test_adjacentWindowIndex_nilCurrentIndex_stepForward_returnsZero() {
@@ -88,7 +88,7 @@ final class AppDelegateAdjacentWindowIndexTests: XCTestCase {
         XCTAssertEqual(result, 0, "With no current window, the next-direction step must land on window 0")
     }
 
-    /// — and for a backward step too: the "0 起点" rule is step-direction
+    /// — and for a backward step too: the origin-0 rule is step-direction
     /// independent (NOT currentIndex ?? 0 substituted into the modular
     /// step formula below, which would instead give count - 1 = 2 here).
     func test_adjacentWindowIndex_nilCurrentIndex_stepBackward_returnsZero() {

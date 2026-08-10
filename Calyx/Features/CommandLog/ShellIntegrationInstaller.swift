@@ -116,8 +116,8 @@ enum ShellIntegrationInstaller {
     /// `int(EPOCHREALTIME * 1000)` would give if `zsh/mathfunc` were
     /// loaded -- this avoids that extra `zmodload`). `command`/`cwd` are
     /// base64-encoded (`print -rn | base64 | tr -d '\\n'`, no line
-    /// wrapping) rather than JSON-escaped, matching the plan's explicit
-    /// "任意文字列の sh 内 JSON エスケープは不採用" decision.
+    /// wrapping) rather than JSON-escaped -- JSON-escaping arbitrary
+    /// strings inside sh was considered and rejected.
     static let calyxZshBody = """
     [[ -o interactive ]] || return 0
     [[ -z "${_CALYX_HOOKS_LOADED:-}" ]] || return 0

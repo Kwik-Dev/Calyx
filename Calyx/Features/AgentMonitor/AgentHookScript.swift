@@ -47,6 +47,43 @@ enum AgentHookScript {
     /// invariant ("`CALYX_SESSION_ID` is only ever set alongside
     /// `CALYX_SURFACE_ID`") that happens to hold today but isn't
     /// enforced anywhere.
+    ///
+    /// Second fail-open guard, herdr environment contamination: running
+    /// a herdr server from inside a Calyx pane's shell means every
+    /// shell herdr itself spawns can inherit that pane's
+    /// `CALYX_SURFACE_ID`/`CALYX_SESSION_ID` — the guard above alone
+    /// does NOT catch this, because that inherited ID is non-empty
+    /// (just stale/misattributed, not unset). The guard is implemented
+    /// as `awk 'BEGIN{f=0;for(k in ENVIRON)if(k~/^HERDR_/)f=1;exit
+    /// !f}'`: iterating `ENVIRON`'s KEYS only (never reading any
+    /// `ENVIRON[k]` value) means only actual environment variable NAMES
+    /// are ever matched against `^HERDR_`, anchoring on the trailing
+    /// underscore so a hypothetical `HERDRX_...` variable (no
+    /// underscore after `HERDR`) never trips this guard. An earlier
+    /// `env | grep -q '^HERDR_'` form looked equivalent but was NOT:
+    /// `env` prints raw `NAME=value` records with no escaping, so an
+    /// unrelated variable whose VALUE happens to contain an embedded
+    /// newline followed by text that merely looks like
+    /// `HERDR_SOMETHING=...` renders, from grep's line-oriented point
+    /// of view, as if it were its own `NAME=value` line — a false
+    /// positive that silently drops a real event. `awk`'s `ENVIRON`
+    /// array is built from the process's actual `environ` records, not
+    /// by re-splitting printed text on newlines, so an embedded newline
+    /// inside a value can never be misread as a variable-name boundary.
+    /// The exact set of `HERDR_`-prefixed names herdr itself sets
+    /// doesn't need to be enumerated here — any one of them is
+    /// sufficient signal that this shell is running inside a
+    /// herdr-managed pane, not a plain Calyx one.
+    ///
+    /// Known residual path (tracked, not closable by this guard):
+    /// Claude Code's own MCP client config (`ClaudeConfigManager`)
+    /// writes the `X-Calyx-Surface-ID` header as the literal string
+    /// `${CALYX_SURFACE_ID:-}`, which Claude Code itself expands from
+    /// its OWN process environment at MCP-connection time, entirely
+    /// inside the agent binary — a separate code path this hook script
+    /// never runs in and cannot intercept. A stale `CALYX_SURFACE_ID`
+    /// inherited by a herdr-managed shell can still reach that header
+    /// this way. Tracked for the herdr socket-integration stage.
     static let scriptBody: String = """
     #!/bin/sh
     #
@@ -55,6 +92,17 @@ enum AgentHookScript {
     # ClaudeHooksConfigManager / CodexHooksConfigManager.
 
     if [ -z "$CALYX_SURFACE_ID" ] && [ -z "$CALYX_SESSION_ID" ]; then
+        exit 0
+    fi
+
+    # A herdr server started from inside a Calyx pane can spawn shells
+    # that inherit that pane's CALYX_SURFACE_ID/CALYX_SESSION_ID -- any
+    # HERDR_-prefixed variable NAME means this shell is herdr-managed,
+    # so skip posting under that stale, misattributed surface identity.
+    # Matches variable NAMES via awk's ENVIRON keys only (never a
+    # value), immune to a value containing an embedded newline that
+    # could otherwise fool a text-based `env | grep` scan.
+    if awk 'BEGIN{f=0;for(k in ENVIRON)if(k~/^HERDR_/)f=1;exit !f}'; then
         exit 0
     fi
 

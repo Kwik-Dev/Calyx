@@ -18,8 +18,16 @@ struct SessionBrowserView: View {
             if model.showRemoteHostsSection {
                 remoteHostsSection
             }
+            if model.showHerdrSection {
+                herdrSection
+            }
             Group {
-                if model.rows.isEmpty {
+                // `!model.showHerdrSection` guards this against
+                // contradicting the herdr section rendered right above:
+                // with herdr rows present but zero calyx-session rows,
+                // "No sessions yet" would read as a lie one section down
+                // from a list of sessions.
+                if model.rows.isEmpty && !model.showHerdrSection {
                     emptyState
                 } else {
                     TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -57,6 +65,26 @@ struct SessionBrowserView: View {
                 .padding(.top, 8)
             ForEach(model.remoteHostCandidates, id: \.self) { host in
                 RemoteHostRowView(host: host, model: model)
+            }
+            Divider()
+        }
+    }
+
+    /// herdr's own session section (`SessionBrowserModel.herdrRows`),
+    /// mirroring `remoteHostsSection`'s exact shape one section down:
+    /// same header/row/divider layout, hidden entirely (via
+    /// `model.showHerdrSection` in `body` above) whenever herdr isn't
+    /// detected or has zero live sessions -- an undetected herdr must
+    /// render pixel-identical to today.
+    private var herdrSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("herdr Sessions")
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 14)
+                .padding(.top, 8)
+            ForEach(model.herdrRows) { row in
+                HerdrSessionRowView(row: row, model: model)
             }
             Divider()
         }
@@ -130,6 +158,43 @@ private struct RemoteHostRowView: View {
         .padding(.vertical, 8)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AccessibilityID.SessionBrowser.remoteHostRow(host))
+    }
+}
+
+/// One row per `SessionBrowserModel.herdrRows` entry. Mirrors
+/// `RemoteHostRowView`'s dot + name + single trailing-action shape --
+/// no kill/orphan affordances (herdr identity never enters
+/// `SessionSurfaceMap`, so this model has no concept of either for a
+/// herdr row) and no cwd/pane-count detail line (Stage 1's own
+/// `HerdrCLISessionProvider` never populates `paneCount`/`agentCount`,
+/// CLI enrichment being gated on a verification step that hasn't run
+/// yet). `row.info.name ?? row.info.id` labels the default/unnamed
+/// session by its socket path, the same fallback
+/// `SessionBrowserRowView` uses for a calyx-session row with no name.
+private struct HerdrSessionRowView: View {
+    let row: HerdrSessionRow
+    let model: SessionBrowserModel
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(Color.gray)
+                .frame(width: 8, height: 8)
+
+            Text(row.info.name ?? row.info.id)
+                .font(.system(size: 12.5, weight: .semibold, design: .rounded))
+                .lineLimit(1)
+
+            Spacer()
+
+            Button("Attach") { model.attachHerdr(row) }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier(AccessibilityID.SessionBrowser.herdrAttachButton(row.id))
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(AccessibilityID.SessionBrowser.herdrRow(row.id))
     }
 }
 

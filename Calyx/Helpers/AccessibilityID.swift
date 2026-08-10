@@ -94,6 +94,8 @@ enum AccessibilityID {
         static func remoteHostRow(_ host: String) -> String { "calyx.sessionBrowser.remoteHost.\(host)" }
         static func remoteHostAttachButton(_ host: String) -> String { "calyx.sessionBrowser.remoteHost.\(host).attachButton" }
         static func remoteHostInstallButton(_ host: String) -> String { "calyx.sessionBrowser.remoteHost.\(host).installButton" }
+        static func herdrRow(_ id: String) -> String { "calyx.sessionBrowser.herdr.\(id)" }
+        static func herdrAttachButton(_ id: String) -> String { "calyx.sessionBrowser.herdr.\(id).attachButton" }
     }
     /// Chrome-style in-app "your previous session was preserved" bar,
     /// shown at the top of a window when AppDelegate

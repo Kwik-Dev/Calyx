@@ -336,6 +336,37 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// work still runs unmodified" style. `nil` (the default) leaves
     /// production behavior unchanged. DO NOT use from production code.
     var _killSessionIfPersistentRouteObserverForTesting: ((String, String?) -> Void)?
+
+    /// Test seam (herdr auto-close, Stage 1 RED phase): when non-nil,
+    /// called with `surfaceID` alongside `processChildExited`'s real
+    /// close action for a herdr-hosted surface -- mirrors
+    /// `_killSessionIfPersistentRouteObserverForTesting`'s exact
+    /// "observe right alongside the real (tracked) work; the real work
+    /// still runs unmodified" style, NOT a replacement/bypass hook like
+    /// `_openHerdrAttachTabSurfaceCreationHookForTesting`: closing a
+    /// `_testInsert`-only fake surface through `closeSurfaceAndCleanUp`
+    /// is already exercised safely by `SessionReconnectGiveUpTests`, so
+    /// no FFI-avoidance bypass is needed here. `nil` (the default)
+    /// leaves production behavior unchanged.
+    ///
+    /// GREEN CONTRACT (binding on the implementation): inside
+    /// `processChildExited`, immediately after resolving `surfaceID`,
+    /// consult `HerdrChildExitedPolicy.shouldAutoClose(isHerdrHosted:
+    /// HerdrHostedSurfaces.shared.contains(surfaceID))`. On `true`, fire
+    /// this observer with `surfaceID`, close the pane SYNCHRONOUSLY
+    /// through the same `findTabAndGroup` + `closeSurfaceAndCleanUp`
+    /// shape `closeDeadPersistentSessionSurface` uses (default
+    /// `killSessions: true` is safe here: `SessionSurfaceMap.shared
+    /// .sessionID(for:)` is always `nil` for a herdr surface, so
+    /// `SessionCloseKillPolicy.shouldKill`'s `hasSession` gate is always
+    /// `false` and no kill call ever fires -- herdr's child process is
+    /// already dead, nothing left to signal), and `return` BEFORE the
+    /// `childExitedTasks` Task insert below: a herdr decision needs no
+    /// daemon round-trip, so it must never reach
+    /// `sessionReconnectCoordinator` at all. On `false`, fall through to
+    /// the existing (unchanged) reconnect-coordinator path. DO NOT use
+    /// from production code.
+    var _herdrHostedAutoCloseObserverForTesting: ((UUID) -> Void)?
     #endif
     /// Surface UUIDs currently being destroyed as part of
     /// `performReconnect`'s surface swap (populated right before, and
@@ -2665,6 +2696,31 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         guard let tab = findTab(for: surfaceView)?.0,
               let surfaceID = tab.registry.id(for: surfaceView) else { return }
 
+        // Herdr auto-close (Stage 1): a herdr-hosted surface is
+        // deliberately never registered in `SessionSurfaceMap` (see
+        // `HerdrHostedSurfaces.swift`'s header), so
+        // `sessionReconnectCoordinator.childExited` below provably
+        // no-ops for it -- nothing else would ever close this pane,
+        // leaving ghostty's own "process exited" banner up forever.
+        // Closed here instead, synchronously and BEFORE the
+        // `childExitedTasks` Task insert below: a herdr decision needs
+        // no daemon round-trip, so it must never reach
+        // `sessionReconnectCoordinator` at all. `killSessions` stays at
+        // its default `true` -- safe here since `SessionSurfaceMap
+        // .shared.sessionID(for:)` is always `nil` for a herdr surface,
+        // so `SessionCloseKillPolicy.shouldKill`'s `hasSession` gate is
+        // always `false` and no kill call ever fires (herdr's child
+        // process is already dead, nothing left to signal).
+        if HerdrChildExitedPolicy.shouldAutoClose(isHerdrHosted: HerdrHostedSurfaces.shared.contains(surfaceID)) {
+            #if DEBUG
+            _herdrHostedAutoCloseObserverForTesting?(surfaceID)
+            #endif
+            if let (herdrTab, herdrGroup) = findTabAndGroup(surfaceID: surfaceID) {
+                closeSurfaceAndCleanUp(tab: herdrTab, group: herdrGroup, surfaceID: surfaceID)
+            }
+            return
+        }
+
         // P5 (remote sessions): a remote SessionRef's host means the
         // LOCAL daemon has no record of this session at all, so
         // `sessionReconnectCoordinator.childExited` must skip its local
@@ -2849,8 +2905,9 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// is this pure function's return type — see its own doc comment
     /// for the full decision contract.
     ///
-    /// 純粋関数(テスト可能)。AppDelegate.matchKeyEvent / adjacentWindowIndex /
-    /// CalyxWindow.shouldPerformZoom と同じ既存イディオム。
+    /// Pure function (testable). Same existing idiom as
+    /// `AppDelegate.matchKeyEvent` / `adjacentWindowIndex` /
+    /// `CalyxWindow.shouldPerformZoom`.
     static func closeFocusedTarget(tabID: UUID?, content: TabContent?, focusedLeafID: UUID?) -> CloseFocusedTarget {
         guard let tabID else { return .window }
         guard case .terminal = content, let focusedLeafID else { return .tab(tabID) }

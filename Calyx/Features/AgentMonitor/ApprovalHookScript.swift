@@ -28,6 +28,20 @@ enum ApprovalHookScript {
     /// token rotation never leaves the hook posting to a stale
     /// port/token.
     ///
+    /// Second fail-open guard, herdr environment contamination: exits
+    /// immediately whenever any `HERDR_`-prefixed environment variable
+    /// NAME is present (via awk's `ENVIRON` key iteration, never a
+    /// value scan), exactly like `AgentHookScript`'s identical guard --
+    /// see its doc comment for the fuller rationale, including why an
+    /// `env | grep -q '^HERDR_'` form was replaced, which applies
+    /// identically here.
+    ///
+    /// Known residual path (tracked, not closable by this guard): see
+    /// `AgentHookScript`'s identical doc comment -- Claude Code's own
+    /// MCP client config substitutes a stale `CALYX_SURFACE_ID` inside
+    /// the agent binary itself, a code path this hook script never runs
+    /// in and cannot intercept.
+    ///
     /// `$1` defaults `kind` to `claude-code` for the same reason as
     /// `AgentHookScript`: Claude Code's own hook `command` entries
     /// (installed by `ClaudeHooksConfigManager`) invoke this script with
@@ -89,6 +103,17 @@ enum ApprovalHookScript {
     # CodexHooksConfigManager.
 
     if [ -z "$CALYX_SURFACE_ID" ] && [ -z "$CALYX_SESSION_ID" ]; then
+        exit 0
+    fi
+
+    # A herdr server started from inside a Calyx pane can spawn shells
+    # that inherit that pane's CALYX_SURFACE_ID/CALYX_SESSION_ID -- any
+    # HERDR_-prefixed variable NAME means this shell is herdr-managed,
+    # so skip posting under that stale, misattributed surface identity.
+    # Matches variable NAMES via awk's ENVIRON keys only (never a
+    # value), immune to a value containing an embedded newline that
+    # could otherwise fool a text-based `env | grep` scan.
+    if awk 'BEGIN{f=0;for(k in ENVIRON)if(k~/^HERDR_/)f=1;exit !f}'; then
         exit 0
     fi
 

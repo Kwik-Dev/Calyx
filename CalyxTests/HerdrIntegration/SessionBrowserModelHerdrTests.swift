@@ -1,0 +1,332 @@
+//
+//  SessionBrowserModelHerdrTests.swift
+//  CalyxTests
+//
+//  Exercises the herdr-session section `SessionBrowserModel` carries
+//  alongside its existing calyx-session `rows`: `herdrRows`, fed by an
+//  injected `HerdrSessionProviderProtocol` and gated on an injected
+//  availability closure (mirroring `daemonClient`'s own
+//  injectable-protocol shape and `SSHHostCandidateProvider`'s own
+//  closure-injection precedent, respectively) -- exercised with fakes,
+//  no real herdr binary/socket, no window, matching
+//  `SessionBrowserModelTests`'s direct-call style.
+//
+//  Availability semantics under test: `herdrAvailability()` reports
+//  ONLY whether the herdr binary itself resolves -- no discovery, no
+//  socket probes. Whether any session is actually alive is entirely
+//  `herdrProvider.listSessions()`'s own job (it discovers candidates,
+//  probes liveness, and returns `[]` when nothing is running), and
+//  `showHerdrSection == !herdrRows.isEmpty` is what actually hides the
+//  section for an available-but-idle herdr.
+//
+//  `herdrAvailability` is `() async -> Bool`, not a plain `() -> Bool`:
+//  the production default (`SessionBrowserModel.defaultHerdrAvailability()`)
+//  hops `HerdrBinaryResolver.resolve()`'s PATH scan onto
+//  `DispatchQueue.global()` so `refresh()`'s 1s poll never runs that
+//  blocking filesystem walk on the main thread. Every fake closure below
+//  is still written as a plain, non-suspending closure literal (Swift
+//  infers `async` for an unmarked closure literal against an `async`
+//  expected type), except one dedicated test that awaits a real
+//  suspension point to prove `refresh()` actually awaits the result
+//  instead of merely happening to work with closures that never suspend.
+//
+//  Coverage:
+//  - refresh() populates `herdrRows` from the injected `herdrProvider`
+//    once herdr is available, and `showHerdrSection` becomes true
+//  - refresh() with a herdr provider that returns zero sessions (herdr
+//    available, but nothing running) leaves `showHerdrSection` false --
+//    an empty/undetected herdr must render exactly like today
+//  - attachHerdr(_:) invokes `onHerdrAttachRequested` with the row
+//  - CRITICAL negative invariant (undetected herdr = zero work):
+//    refresh() must NEVER call `herdrProvider.listSessions()` while the
+//    herdr binary itself is unresolvable -- asserted via the fake
+//    provider's own call counter, not just its return value. A
+//    permanent structural regression guard, asserted unconditionally on
+//    every run, not a one-time Red/Green transition test.
+//  - A refresh() cancelled at the exact moment its own
+//    `herdrAvailability()` check reports unavailable must not overwrite
+//    a previously-populated `herdrRows` with that branch's `[]` --
+//    mirrors the `Task.isCancelled` guard already protecting the
+//    `rows` assignment (`SessionBrowserModelRefreshCancellationGuardTests`)
+//    and the available-branch `herdrRows` assignment right next to it
+//  - refresh() bounds `herdrProvider.listSessions()` by the same shared
+//    `daemonQueryBoundTimeoutSeconds` `SessionDaemonClient
+//    .listAllBounded()` uses, degrading `herdrRows` to `[]` rather than
+//    hanging forever when the provider call never completes
+//
+
+import XCTest
+@testable import Calyx
+
+/// Minimal `SessionDaemonClientProtocol` fake -- none of this file's
+/// tests exercise calyx-session daemon interaction at all. A local
+/// duplicate of `SessionBrowserModelTests`'/
+/// `SessionBrowserModelRemoteHostsGateTests`'s own fake shape (this
+/// codebase's established per-file fixture-duplication convention),
+/// narrowed to inert stubs.
+private final class FakeDaemonClient: SessionDaemonClientProtocol, @unchecked Sendable {
+    func sessionState(id: String) async -> SessionQueryResult { .unreachable }
+    func kill(id: String) async {}
+    func listAll() async -> [SessionInfo] { [] }
+    func setMeta(id: String, key: String, value: String) async {}
+}
+
+/// Records every `listSessions()` call (for the CRITICAL negative
+/// invariant below) and replays a canned `[HerdrSessionInfo]` -- a
+/// process boundary stand-in, no real herdr binary/socket involved.
+private final class FakeHerdrSessionProvider: HerdrSessionProviderProtocol, @unchecked Sendable {
+    var sessionsToReturn: [HerdrSessionInfo] = []
+    private(set) var listSessionsCallCount = 0
+
+    func listSessions() async -> [HerdrSessionInfo] {
+        listSessionsCallCount += 1
+        return sessionsToReturn
+    }
+}
+
+/// Never resumes -- stands in for a herdr provider whose
+/// `listSessions()` call hangs forever, mirroring
+/// `SessionDaemonClientBoundedListTests`'s own `NeverCompletingCommandRunner`.
+/// Harmless to leave suspended for the rest of the process's life:
+/// `refresh()`'s own bounded race must reach a terminal `[]` regardless.
+private final class NeverCompletingHerdrSessionProvider: HerdrSessionProviderProtocol, @unchecked Sendable {
+    func listSessions() async -> [HerdrSessionInfo] {
+        await withCheckedContinuation { (_: CheckedContinuation<[HerdrSessionInfo], Never>) in
+            // Deliberately never resumed.
+        }
+    }
+}
+
+/// MainActor-isolated box letting a `herdrAvailability` closure reach
+/// back into the very `Task` that's running the `refresh()` call
+/// evaluating it, and cancel that task from inside the closure itself.
+/// `herdrAvailability` is `() async -> Bool`, but this closure's own
+/// body has no internal suspension point (no `await` anywhere in it),
+/// so `await herdrAvailability()` never actually yields the thread here
+/// -- control stays on the same synchronous call stack, and
+/// `refresh()`'s unavailable branch still has nothing separating the
+/// check from the assignment right after it. That is what keeps this
+/// the only way to deterministically land a cancellation inside that
+/// branch: nothing outside the closure could ever interleave a
+/// cancellation between the two with reliable timing.
+@MainActor
+private final class HerdrAvailabilityCancelBox {
+    var task: Task<Void, Never>?
+    var available = true
+    var cancelOnNextCheck = false
+}
+
+@MainActor
+final class SessionBrowserModelHerdrTests: XCTestCase {
+
+    private func makeModel(
+        herdrProvider: HerdrSessionProviderProtocol,
+        herdrAvailability: @escaping () async -> Bool
+    ) -> SessionBrowserModel {
+        SessionBrowserModel(
+            daemonClient: FakeDaemonClient(),
+            surfaceMap: SessionSurfaceMap(),
+            herdrProvider: herdrProvider,
+            herdrAvailability: herdrAvailability
+        )
+    }
+
+    override func tearDown() {
+        // Mirrors `SessionDaemonClientBoundedListTests`' own tearDown --
+        // no override must leak into a later test.
+        SessionDaemonClientBoundTimeoutOverrides.daemonQueryBoundTimeoutSeconds = nil
+        super.tearDown()
+    }
+
+    // MARK: - refresh() populates herdrRows once herdr is available
+
+    func test_refresh_herdrAvailableWithSessions_populatesHerdrRowsAndShowsSection() async {
+        let provider = FakeHerdrSessionProvider()
+        let info = HerdrSessionInfo(id: "test-herdr-socket-1", name: "work", paneCount: 3, agentCount: 1)
+        provider.sessionsToReturn = [info]
+        let model = makeModel(herdrProvider: provider, herdrAvailability: { true })
+
+        await model.refresh()
+
+        XCTAssertEqual(
+            model.herdrRows.map(\.id), [info.id],
+            "refresh() must populate herdrRows from the injected herdrProvider once herdr is available"
+        )
+        XCTAssertTrue(
+            model.showHerdrSection,
+            "With at least one herdr row, showHerdrSection must be true"
+        )
+    }
+
+    // MARK: - herdrAvailability() that genuinely suspends is still awaited correctly
+
+    /// Every other fake `herdrAvailability` closure in this file (`{ true }`,
+    /// `{ false }`) has no internal suspension point, so it would keep
+    /// passing even if `refresh()` accidentally called it without `await`
+    /// on some code path that never actually needs to suspend. This one
+    /// awaits a real suspension point (`Task.yield()`) before answering,
+    /// proving `refresh()` genuinely awaits `herdrAvailability()` rather
+    /// than merely happening to work with closures that return
+    /// synchronously -- the production default
+    /// (`SessionBrowserModel.defaultHerdrAvailability()`) is exactly this
+    /// shape, hopping `HerdrBinaryResolver.resolve()` onto
+    /// `DispatchQueue.global()`.
+    func test_refresh_herdrAvailabilityGenuinelySuspends_stillGatesCorrectly() async {
+        let provider = FakeHerdrSessionProvider()
+        let info = HerdrSessionInfo(id: "test-herdr-socket-1", name: "work", paneCount: nil, agentCount: nil)
+        provider.sessionsToReturn = [info]
+        let model = makeModel(herdrProvider: provider, herdrAvailability: {
+            await Task.yield()
+            return true
+        })
+
+        await model.refresh()
+
+        XCTAssertEqual(
+            model.herdrRows.map(\.id), [info.id],
+            "refresh() must correctly await a herdrAvailability() closure that genuinely suspends " +
+            "before answering, not just one that happens to return synchronously"
+        )
+    }
+
+    // MARK: - Empty herdr session list keeps the section hidden
+
+    func test_refresh_herdrAvailableButNoSessions_showHerdrSectionStaysFalse() async {
+        let provider = FakeHerdrSessionProvider()
+        provider.sessionsToReturn = []
+        let model = makeModel(herdrProvider: provider, herdrAvailability: { true })
+
+        await model.refresh()
+
+        XCTAssertFalse(
+            model.showHerdrSection,
+            "With zero herdr rows, showHerdrSection must stay false -- an empty/undetected herdr must " +
+            "render exactly like today"
+        )
+    }
+
+    // MARK: - attachHerdr(_:) requests attaching via the injected callback
+
+    func test_attachHerdr_invokesOnHerdrAttachRequested_withTheRow() {
+        let model = makeModel(herdrProvider: FakeHerdrSessionProvider(), herdrAvailability: { false })
+        let row = HerdrSessionRow(
+            info: HerdrSessionInfo(id: "test-herdr-socket-1", name: nil, paneCount: nil, agentCount: nil)
+        )
+
+        var requestedRow: HerdrSessionRow?
+        model.onHerdrAttachRequested = { requestedRow = $0 }
+
+        model.attachHerdr(row)
+
+        XCTAssertEqual(
+            requestedRow?.id, row.id,
+            "attachHerdr(_:) must invoke onHerdrAttachRequested with the row it was given"
+        )
+    }
+
+    // MARK: - CRITICAL negative invariant: unavailable herdr does zero work
+
+    func test_refresh_herdrUnavailable_neverCallsHerdrProviderListSessions() async {
+        let provider = FakeHerdrSessionProvider()
+        provider.sessionsToReturn = [
+            HerdrSessionInfo(id: "test-herdr-socket-1", name: nil, paneCount: nil, agentCount: nil)
+        ]
+        let model = makeModel(herdrProvider: provider, herdrAvailability: { false })
+
+        await model.refresh()
+
+        XCTAssertEqual(
+            provider.listSessionsCallCount, 0,
+            "refresh() must never call herdrProvider.listSessions() while the herdr binary itself is " +
+            "unresolvable -- a structural, permanent invariant (undetected herdr costs zero work), not a " +
+            "Red/Green transition. (An available binary with zero live sockets is a different case: " +
+            "listSessions() legitimately runs there and returns [] -- see the sibling 'no sessions' test.)"
+        )
+    }
+
+    // MARK: - A cancelled refresh() must not overwrite herdrRows from the unavailable branch
+
+    /// A `refresh()` cancelled exactly at the moment its own
+    /// `herdrAvailability()` check reports unavailable must not wipe a
+    /// previously-populated `herdrRows` -- mirrors the `Task.isCancelled`
+    /// guard already protecting the `rows` assignment
+    /// (`SessionBrowserModelRefreshCancellationGuardTests`) and the
+    /// available-branch `herdrRows` assignment right above it in
+    /// `refresh()`. `HerdrAvailabilityCancelBox` lets this test land the
+    /// cancellation inside that exact synchronous window, since no
+    /// `await` separates the check from the assignment.
+    func test_refresh_cancelledDuringUnavailableCheck_doesNotOverwriteHerdrRows() async {
+        let provider = FakeHerdrSessionProvider()
+        let info = HerdrSessionInfo(id: "test-herdr-socket-1", name: "work", paneCount: nil, agentCount: nil)
+        provider.sessionsToReturn = [info]
+        let box = HerdrAvailabilityCancelBox()
+        let model = makeModel(
+            herdrProvider: provider,
+            herdrAvailability: {
+                if box.cancelOnNextCheck { box.task?.cancel() }
+                return box.available
+            }
+        )
+
+        // Baseline: herdr available with one session, fully resolved
+        // (never cancelled).
+        await model.refresh()
+        XCTAssertEqual(
+            model.herdrRows.map(\.id), [info.id],
+            "Precondition: baseline herdrRows must be populated before the cancellation below"
+        )
+
+        // Second refresh(): herdr goes unavailable, and the
+        // availability check itself cancels this very refresh()'s Task
+        // from inside the closure -- landing cancellation exactly
+        // inside the unavailable branch's own synchronous window.
+        box.available = false
+        box.cancelOnNextCheck = true
+        box.task = Task { await model.refresh() }
+        await box.task!.value
+
+        XCTAssertEqual(
+            model.herdrRows.map(\.id), [info.id],
+            "A refresh() cancelled at its own herdrAvailability() check must not overwrite herdrRows with " +
+            "the unavailable branch's [] -- mirrors the guard already protecting the rows/herdrRows " +
+            "assignments elsewhere in refresh()"
+        )
+        XCTAssertEqual(
+            provider.listSessionsCallCount, 1,
+            "The second refresh() must never reach listSessions() once herdrAvailability() reports " +
+            "unavailable, cancelled or not"
+        )
+    }
+
+    // MARK: - refresh() bounds herdrProvider.listSessions(), degrading to [] on timeout
+
+    /// Characterization/regression guard for the herdr step's bounded
+    /// race: against a herdr provider whose `listSessions()` never
+    /// completes, `refresh()` must still reach a terminal empty
+    /// `herdrRows` within a generous margin over its own bound, exactly
+    /// like `SessionDaemonClient.listAllBounded()` already does for the
+    /// calyx-session ledger (`SessionDaemonClientBoundedListTests`).
+    /// Overrides `daemonQueryBoundTimeoutSeconds` to 1s via the shared
+    /// DEBUG timeout seam so this test runs in ~1s instead of burning
+    /// the real ~5s default, and doubles as proof that the herdr step
+    /// shares that SAME constant rather than a second, invented one.
+    func test_refresh_herdrProviderNeverCompletes_herdrRowsDegradeToEmptyWithinBound() async {
+        SessionDaemonClientBoundTimeoutOverrides.daemonQueryBoundTimeoutSeconds = 1
+        let model = makeModel(herdrProvider: NeverCompletingHerdrSessionProvider(), herdrAvailability: { true })
+
+        let start = Date()
+        await model.refresh()
+        let elapsed = Date().timeIntervalSince(start)
+
+        XCTAssertEqual(
+            model.herdrRows, [],
+            "refresh() must degrade herdrRows to [] rather than hang forever when herdrProvider.listSessions" +
+            "() never completes"
+        )
+        XCTAssertLessThan(
+            elapsed, 3.0,
+            "The herdr step must be bounded by the shared daemonQueryBoundTimeoutSeconds (overridden to 1s " +
+            "here), not the unbounded provider call"
+        )
+    }
+}

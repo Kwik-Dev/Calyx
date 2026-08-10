@@ -355,6 +355,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         installKeyMonitor()
         installGlobalEventTap()
         SurfacePropertyStore.shared.startObserving()
+        HerdrHostedSurfaces.shared.startObserving()
 
         browserTabBroker.appDelegate = self
         let browserHandler = BrowserToolHandler(broker: browserTabBroker)
@@ -1033,7 +1034,106 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// describes). `nil` (the default) leaves production behavior
     /// unchanged. DO NOT use from production code.
     var _attachSessionAsNewTabCreationHookForTesting: (() -> Void)?
+
+    /// Test seam (Stage 1 herdr attach, RED phase): mirrors
+    /// `_attachSessionAsNewTabPlaceholderTabObserverForTesting` exactly
+    /// -- fires once, immediately after `openHerdrAttachTab` builds its
+    /// placeholder `Tab` (deliberately empty `sessionRefs`: herdr
+    /// session identity must never enter `Tab.sessionRefs`/
+    /// `SessionSurfaceMap`, Stage 1 plan's explicit decision), so a test
+    /// can inspect that shape without reaching real surface creation.
+    /// `nil` (the default) leaves production behavior unchanged. DO NOT
+    /// use from production code.
+    var _openHerdrAttachTabPlaceholderTabObserverForTesting: ((Tab) -> Void)?
+
+    /// Test seam: substitutes ONLY the real ghostty-FFI
+    /// `SurfaceRegistry.createSurface(app:config:pwd:command:)` step
+    /// `openHerdrAttachTab` would otherwise reach -- unsafe in the
+    /// unit-test host, identical to
+    /// `_attachSessionAsNewTabCreationHookForTesting`'s own reasoning.
+    /// Unlike that `() -> Void` hook, this one also stands in for the
+    /// call's result: `openHerdrAttachTab` has no existing session to
+    /// reattach (unlike `attachSessionAsNewTab`, which derives its
+    /// command internally via `restoreTabSurfaces`/`SessionRef`), so the
+    /// `command` this closure receives IS the exact string that would
+    /// otherwise reach `createSurface`, and its return value stands in
+    /// for the surface UUID that call would have produced.
+    ///
+    /// GREEN CONTRACT (binding on Stage 1-C's implementation): when this
+    /// hook is set, `openHerdrAttachTab` must still perform
+    /// `HerdrHostedSurfaces.shared.register(_:)` with the returned UUID,
+    /// then return -- exactly like
+    /// `_attachSessionAsNewTabCreationHookForTesting` bails out before
+    /// `attachRestoredTab` -- so `AppDelegateOpenHerdrAttachTabTests` can
+    /// observe the registration without ever reaching a real window
+    /// attach. `nil` (the default) leaves production behavior unchanged.
+    /// DO NOT use from production code.
+    var _openHerdrAttachTabSurfaceCreationHookForTesting: ((String) -> UUID)?
     #endif
+
+    /// Stage 1 herdr attach: opens `command` (an already-synthesized,
+    /// escaped `<herdrBin>`/`<herdrBin> --session <name>` invocation --
+    /// see `HerdrAttachCommandSynthesizer`) as a new tab, `title`-labeled.
+    /// Mirrors `attachSessionAsNewTab` (below) with every session-identity
+    /// concern stripped: no `SessionRef`, no `SessionSurfaceMap`
+    /// registration -- herdr's own identity must never enter either
+    /// (Stage 1 plan's explicit decision; `SessionReconnectCoordinator
+    /// .childExited`'s surfaceMap-registration guard is what keeps herdr
+    /// panes structurally unreachable from calyx-session's own
+    /// reconnect/kill/restore paths).
+    ///
+    /// Builds the placeholder `Tab` (empty `sessionRefs`, fires the
+    /// observer above), resolves a target window the same "prefer key,
+    /// else first" way `attachSessionAsTab` does, then creates the real
+    /// surface and attaches the tab to that window.
+    ///
+    /// No target window available (e.g. every Calyx window closed while
+    /// the Session Browser itself, a separate `NSWindow`, stayed open)
+    /// silently does nothing -- no new-window fallback: unlike
+    /// `attachSessionAsTab`'s `SessionAttachRoutingPolicy`, herdr has no
+    /// daemon-backed session to justify spawning a brand-new window for,
+    /// and Stage 1's own no-dialog philosophy (herdr absence/death never
+    /// surfaces an error) extends naturally to this edge case too.
+    ///
+    /// GREEN CONTRACT: when `_openHerdrAttachTabSurfaceCreationHookForTesting`
+    /// is set, its returned UUID is registered with `HerdrHostedSurfaces`
+    /// and this method returns immediately after -- mirrors
+    /// `attachSessionAsNewTab`'s own `_attachSessionAsNewTabCreationHookForTesting`
+    /// bailing out before `attachRestoredTab`, so a test never drives a
+    /// real ghostty surface/window-layout pass (confirmed unsafe/hang-prone
+    /// in this test host, see that hook's own doc comment).
+    func openHerdrAttachTab(command: String, title: String) {
+        let placeholderLeafID = UUID()
+        let tab = Tab(title: title, splitTree: SplitTree(leafID: placeholderLeafID))
+
+        #if DEBUG
+        _openHerdrAttachTabPlaceholderTabObserverForTesting?(tab)
+        #endif
+
+        guard let target = windowControllers.first(where: { $0.window?.isKeyWindow == true }) ?? windowControllers.first,
+              let app = GhosttyAppController.shared.app,
+              let window = target.window
+        else { return }
+
+        #if DEBUG
+        if let hook = _openHerdrAttachTabSurfaceCreationHookForTesting {
+            HerdrHostedSurfaces.shared.register(hook(command))
+            return
+        }
+        #endif
+
+        var config = GhosttyFFI.surfaceConfigNew()
+        config.scale_factor = Double(window.backingScaleFactor)
+
+        guard let surfaceID = tab.registry.createSurface(app: app, config: config, pwd: tab.pwd, command: command) else {
+            logger.error("Failed to create herdr attach surface")
+            return
+        }
+
+        tab.splitTree = SplitTree(leafID: surfaceID)
+        HerdrHostedSurfaces.shared.register(surfaceID)
+        target.attachRestoredTab(tab)
+    }
 
     /// `.attachAsTab`'s real work: reuses `restoreTabSurfaces`/
     /// `fallbackCreateSurface` -- the same machinery `attachWindow` uses

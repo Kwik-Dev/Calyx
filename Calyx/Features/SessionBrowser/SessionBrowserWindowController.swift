@@ -50,6 +50,13 @@ final class SessionBrowserWindowController: NSWindowController {
         model.onRemoteSessionRequested = { [weak self] context in
             self?.attachRemote(context)
         }
+
+        // Stage 1 herdr attach: mirrors onAttachRequested's wiring
+        // immediately above, for a herdr row instead of a calyx-session
+        // one.
+        model.onHerdrAttachRequested = { [weak self] row in
+            self?.attachHerdr(row)
+        }
     }
 
     @available(*, unavailable)
@@ -67,6 +74,28 @@ final class SessionBrowserWindowController: NSWindowController {
 
     private func attachRemote(_ context: SessionSpawnContext) {
         (NSApp.delegate as? AppDelegate)?.spawnRemoteSessionTab(host: context.host)
+    }
+
+    /// Synthesizes `row`'s attach command (`/usr/bin/env
+    /// HERDR_SOCKET_PATH=<socketPath> <herdrBin>`, token-escaped by
+    /// `HerdrAttachCommandSynthesizer`) and opens it as a new tab via
+    /// `AppDelegate.openHerdrAttachTab(command:title:)`. Passes
+    /// `row.info.id` -- the socket path that was actually probed alive
+    /// for this row -- as `socketPath`, pinning the exact socket the
+    /// user clicked rather than a name herdr would have to re-resolve;
+    /// `row.info.name` is used only for the tab title. Re-resolves the
+    /// herdr binary here rather than caching one from whatever produced
+    /// `row` (`HerdrSessionInfo` carries no binary path of its own --
+    /// only session identity), silently doing nothing if it's since
+    /// gone missing (e.g. uninstalled between the last Session Browser
+    /// poll and this click): matches Stage 1's broader no-dialog
+    /// philosophy for herdr absence -- a herdr that dies mid-session
+    /// simply drops its section on the next poll, no error UI.
+    private func attachHerdr(_ row: HerdrSessionRow) {
+        guard let herdrBin = HerdrBinaryResolver().resolve() else { return }
+        let command = HerdrAttachCommandSynthesizer.attachCommand(herdrBin: herdrBin, socketPath: row.info.id)
+        let title = row.info.name.map { "herdr: \($0)" } ?? "herdr"
+        (NSApp.delegate as? AppDelegate)?.openHerdrAttachTab(command: command, title: title)
     }
 
     func showBrowser() {
