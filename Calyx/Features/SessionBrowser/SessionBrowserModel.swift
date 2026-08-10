@@ -68,6 +68,44 @@ struct SessionBrowserRow: Identifiable, Equatable, Sendable {
 struct HerdrSessionRow: Identifiable, Equatable, Sendable {
     var id: String { info.id }
     let info: HerdrSessionInfo
+
+    /// Row title text (`HerdrSessionRowView`'s bold line 1): the
+    /// session's own name when discovery found one, falling back to its
+    /// socket path (`info.id`) only when it didn't -- mirrors
+    /// `SessionBrowserRowView`'s identical `row.info.name ?? row.info.id`
+    /// fallback for a calyx-session row with no name. Factored onto this
+    /// model type (not left inline in the view) so it's unit-testable
+    /// without a SwiftUI view-inspection dependency, mirroring
+    /// `SessionBrowserRow.attachButtonLabel`'s own precedent.
+    var displayName: String { info.name ?? info.id }
+
+    /// Tab title for `SessionBrowserWindowController.attachHerdr(_:)`'s
+    /// new tab (`AppDelegate.openHerdrAttachTab(command:title:)`):
+    /// `"herdr: <name>"` when discovery found a name -- including
+    /// herdr's own `"default"` term for the unnamed default session, so
+    /// attaching it opens a tab titled "herdr: default" -- and plain
+    /// `"herdr"` only when discovery found no name at all (`info.name
+    /// == nil`, still live for the `HERDR_SOCKET_PATH` env-override
+    /// candidate -- see `HerdrSessionDiscovery`'s own doc comment).
+    /// Mirrors `displayName`'s identical name-or-fallback shape one
+    /// property up; factored here for the same reason -- unit-testable
+    /// without a test seam on `SessionBrowserWindowController` itself
+    /// (that type's own header comment: "the logic worth testing lives
+    /// in `SessionBrowserModel`, not this AppKit shell").
+    var attachTabTitle: String {
+        info.name.map { "herdr: \($0)" } ?? "herdr"
+    }
+
+    /// Row status text (`HerdrSessionRowView`'s short line-3 status
+    /// line): every row `SessionBrowserModel.herdrRows` ever carries
+    /// already passed `HerdrSessionDiscovery.isAlive(socketPath:)`'s
+    /// connect() probe -- `HerdrSessionProviderProtocol.listSessions()`
+    /// only ever returns already-alive candidates -- so this is a fixed
+    /// label, not a per-row derivation: `HerdrSessionInfo.paneCount`/
+    /// `.agentCount` stay `nil` until CLI JSON enrichment lands, and
+    /// this text must never fabricate a client-count/timestamp summary
+    /// from them.
+    var statusLineText: String { "Running" }
 }
 
 @MainActor

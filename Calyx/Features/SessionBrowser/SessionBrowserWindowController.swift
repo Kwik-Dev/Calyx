@@ -83,7 +83,8 @@ final class SessionBrowserWindowController: NSWindowController {
     /// `row.info.id` -- the socket path that was actually probed alive
     /// for this row -- as `socketPath`, pinning the exact socket the
     /// user clicked rather than a name herdr would have to re-resolve;
-    /// `row.info.name` is used only for the tab title. Re-resolves the
+    /// `row.attachTabTitle` (derived from `row.info.name`) is used only
+    /// for the tab title. Re-resolves the
     /// herdr binary here rather than caching one from whatever produced
     /// `row` (`HerdrSessionInfo` carries no binary path of its own --
     /// only session identity), silently doing nothing if it's since
@@ -94,8 +95,7 @@ final class SessionBrowserWindowController: NSWindowController {
     private func attachHerdr(_ row: HerdrSessionRow) {
         guard let herdrBin = HerdrBinaryResolver().resolve() else { return }
         let command = HerdrAttachCommandSynthesizer.attachCommand(herdrBin: herdrBin, socketPath: row.info.id)
-        let title = row.info.name.map { "herdr: \($0)" } ?? "herdr"
-        (NSApp.delegate as? AppDelegate)?.openHerdrAttachTab(command: command, title: title)
+        (NSApp.delegate as? AppDelegate)?.openHerdrAttachTab(command: command, title: row.attachTabTitle)
     }
 
     func showBrowser() {

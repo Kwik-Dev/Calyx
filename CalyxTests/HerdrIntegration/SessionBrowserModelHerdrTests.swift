@@ -53,6 +53,15 @@
 //    `daemonQueryBoundTimeoutSeconds` `SessionDaemonClient
 //    .listAllBounded()` uses, degrading `herdrRows` to `[]` rather than
 //    hanging forever when the provider call never completes
+//  - HerdrSessionRow.displayName / .statusLineText: the pure
+//    display-string derivations HerdrSessionRowView's three-line row
+//    anatomy renders (name-or-socket-path title; fixed status text that
+//    never fabricates a client-count summary from paneCount/agentCount)
+//  - HerdrSessionRow.attachTabTitle: the pure "herdr: <name>" / "herdr"
+//    derivation SessionBrowserWindowController.attachHerdr(_:) uses for
+//    its new tab's title -- pinned for both a named session and the
+//    default session now that discovery names it "default" instead of
+//    leaving it nameless
 //
 
 import XCTest
@@ -328,5 +337,119 @@ final class SessionBrowserModelHerdrTests: XCTestCase {
             "The herdr step must be bounded by the shared daemonQueryBoundTimeoutSeconds (overridden to 1s " +
             "here), not the unbounded provider call"
         )
+    }
+
+    // MARK: - HerdrSessionRow.displayName (row title, HerdrSessionRowView line 1)
+    //
+    // Pure display-string derivation factored onto HerdrSessionRow itself
+    // (not left inline in the view) so it's testable without a SwiftUI
+    // view-inspection dependency -- mirrors SessionBrowserRow
+    // .attachButtonLabel/.orphanBadgeLabel's own precedent. No window, no
+    // view, exactly this file's own existing style.
+
+    func test_displayName_returnsNameWhenPresent() {
+        let row = HerdrSessionRow(
+            info: HerdrSessionInfo(id: "/fixture/config/herdr/sessions/work/herdr.sock", name: "work", paneCount: nil, agentCount: nil)
+        )
+
+        XCTAssertEqual(row.displayName, "work")
+    }
+
+    func test_displayName_fallsBackToSocketPathWhenNameIsNil() {
+        let row = HerdrSessionRow(
+            info: HerdrSessionInfo(id: "/fixture/config/herdr-env-override/herdr.sock", name: nil, paneCount: nil, agentCount: nil)
+        )
+
+        XCTAssertEqual(row.displayName, "/fixture/config/herdr-env-override/herdr.sock")
+    }
+
+    /// The default herdr session's `HerdrSessionInfo.name` is "default" --
+    /// herdr's own term for it (`herdr session list --json` reports
+    /// "default":true,"name":"default" for exactly this session). This
+    /// row's bold title must show that short label, never fall back to
+    /// its long, hard-to-read config-root socket path the way an
+    /// unnamed (`nil`) row would.
+    func test_displayName_defaultSessionRow_showsDefaultLabel_notRawSocketPath() {
+        let row = HerdrSessionRow(
+            info: HerdrSessionInfo(id: "/fixture/config/herdr/herdr.sock", name: "default", paneCount: nil, agentCount: nil)
+        )
+
+        XCTAssertEqual(row.displayName, "default")
+    }
+
+    // MARK: - HerdrSessionRow.statusLineText (HerdrSessionRowView line 3)
+
+    /// Every row `SessionBrowserModel.herdrRows` ever carries already
+    /// passed a live connect() probe, and Stage 1 never populates
+    /// paneCount/agentCount -- so this text must be the identical fixed
+    /// label regardless of those fields, never a fabricated
+    /// client-count summary built from them.
+    func test_statusLineText_isFixedLabel_regardlessOfPaneOrAgentCount() {
+        let rowWithNilCounts = HerdrSessionRow(
+            info: HerdrSessionInfo(id: "socket-a", name: "work", paneCount: nil, agentCount: nil)
+        )
+        let rowWithPopulatedCounts = HerdrSessionRow(
+            info: HerdrSessionInfo(id: "socket-b", name: "personal", paneCount: 5, agentCount: 2)
+        )
+
+        XCTAssertEqual(rowWithNilCounts.statusLineText, "Running")
+        XCTAssertEqual(
+            rowWithPopulatedCounts.statusLineText, "Running",
+            "statusLineText must never fabricate a client-count summary from paneCount/agentCount -- " +
+            "it's a fixed \"the socket answered a connect() probe\" label, not a per-row derivation " +
+            "over data this integration doesn't reliably have yet"
+        )
+    }
+
+    // MARK: - HerdrSessionRow.attachTabTitle (SessionBrowserWindowController.attachHerdr(_:)'s tab title)
+    //
+    // Pure derivation factored onto HerdrSessionRow (mirroring
+    // displayName/statusLineText's own precedent above) because
+    // SessionBrowserWindowController has no test file of its own -- see
+    // that type's header comment. Pins the tab-title behavior for both a
+    // named session and the default session now that
+    // HerdrSessionDiscovery names the latter "default" instead of
+    // leaving it nameless (HerdrSessionDiscoveryTests): attaching to it
+    // must deliberately open a tab titled "herdr: default", not the
+    // bare "herdr" fallback.
+
+    func test_attachTabTitle_namedSession_returnsHerdrPrefixedName() {
+        let row = HerdrSessionRow(
+            info: HerdrSessionInfo(id: "/fixture/config/herdr/sessions/work/herdr.sock", name: "work", paneCount: nil, agentCount: nil)
+        )
+
+        XCTAssertEqual(row.attachTabTitle, "herdr: work")
+    }
+
+    /// The default herdr session discovers with `name: "default"`
+    /// (`HerdrSessionDiscoveryTests`), so attaching to it must open a
+    /// tab titled "herdr: default" rather than the bare "herdr"
+    /// fallback -- an intentional, informative, consistent-with-named-
+    /// sessions side effect of that rename, pinned here rather than left
+    /// as an unreviewed accident.
+    func test_attachTabTitle_defaultSession_returnsHerdrPrefixedDefaultLabel() {
+        let row = HerdrSessionRow(
+            info: HerdrSessionInfo(id: "/fixture/config/herdr/herdr.sock", name: "default", paneCount: nil, agentCount: nil)
+        )
+
+        XCTAssertEqual(
+            row.attachTabTitle, "herdr: default",
+            "Attaching to the default herdr session must open a tab titled \"herdr: default\", not the " +
+            "bare \"herdr\" fallback -- deliberate now that the default session carries a real discovered " +
+            "name"
+        )
+    }
+
+    /// `info.name == nil` stays live for the `HERDR_SOCKET_PATH`
+    /// env-override candidate (`HerdrSessionDiscovery`'s own doc
+    /// comment) -- unlike the default session, that candidate is never
+    /// discovery-named, so the bare "herdr" fallback still has a real
+    /// row to apply to.
+    func test_attachTabTitle_noName_fallsBackToBareHerdr() {
+        let row = HerdrSessionRow(
+            info: HerdrSessionInfo(id: "/fixture/config/herdr-env-override/herdr.sock", name: nil, paneCount: nil, agentCount: nil)
+        )
+
+        XCTAssertEqual(row.attachTabTitle, "herdr")
     }
 }

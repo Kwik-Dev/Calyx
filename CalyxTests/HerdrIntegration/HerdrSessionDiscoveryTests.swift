@@ -11,6 +11,14 @@
 //  - discover()'s default-session candidate is ALWAYS present, even
 //    when configRootDirectory doesn't exist on disk at all --
 //    existence/liveness is isAlive()'s job, not discover()'s.
+//  - The default-session candidate (the one whose socket is
+//    "<configRootDirectory>/herdr.sock") is named "default" -- herdr's
+//    own term for it: `herdr session list --json` reports
+//    "default":true,"name":"default" for this exact session. A
+//    HERDR_SOCKET_PATH override candidate that does NOT collide with
+//    the default candidate's own socket path stays unnamed (nil); one
+//    that DOES collide is deduped away, so the survivor keeps the
+//    default candidate's "default" name (see the dedup section below).
 //  - HERDR_SOCKET_PATH is ADDITIVE: it contributes one more candidate
 //    alongside whatever the directory scan already found, never a
 //    replacement for it (a replace semantics could hide real sessions
@@ -43,7 +51,9 @@
 //  - discover() dedup: a HERDR_SOCKET_PATH override colliding with the
 //    default candidate's own socket path, or with an already-discovered
 //    named session's socket path, must never produce a second,
-//    duplicate candidate for the same socket
+//    duplicate candidate for the same socket; the default-socket-path
+//    collision case also pins that the survivor keeps the "default"
+//    name rather than being overwritten by the override's own nil shape
 //  - Task.isCancelled cooperative checks: a cancelled Task stops
 //    discover()'s directory-scan loop from contributing further named
 //    candidates, and makes isAlive() return false immediately without
@@ -82,11 +92,11 @@ final class HerdrSessionDiscoveryTests: XCTestCase {
         let discovery = HerdrSessionDiscovery(environment: [:], configRootDirectory: configRoot)
         let candidates = discovery.discover()
 
-        let expectedDefault = HerdrSessionCandidate(name: nil, socketPath: configRoot + "/herdr.sock")
+        let expectedDefault = HerdrSessionCandidate(name: "default", socketPath: configRoot + "/herdr.sock")
         XCTAssertTrue(candidates.contains(expectedDefault),
-                      "The default-session candidate must always be present -- discover() only " +
-                      "constructs candidate paths, it never checks existence itself (that's " +
-                      "isAlive()'s job)")
+                      "The default-session candidate must always be present, named \"default\" (herdr's " +
+                      "own term for it) -- discover() only constructs candidate paths, it never checks " +
+                      "existence itself (that's isAlive()'s job)")
     }
 
     func test_discover_namedSessionSubdirectories_becomeNamedCandidates_skippingStrayNonDirectoryFile() {
@@ -128,11 +138,11 @@ final class HerdrSessionDiscoveryTests: XCTestCase {
         // would also make a weaker assertion pass, so the directory-
         // scan candidates must be checked here too to actually pin
         // additive semantics.
-        let expectedDefault = HerdrSessionCandidate(name: nil, socketPath: configRoot + "/herdr.sock")
+        let expectedDefault = HerdrSessionCandidate(name: "default", socketPath: configRoot + "/herdr.sock")
         let expectedPersonal = HerdrSessionCandidate(name: "personal", socketPath: configRoot + "/sessions/personal/herdr.sock")
         let expectedOverride = HerdrSessionCandidate(name: nil, socketPath: overridePath)
 
-        XCTAssertTrue(candidates.contains(expectedDefault), "The default candidate must survive alongside the env override")
+        XCTAssertTrue(candidates.contains(expectedDefault), "The default candidate (named \"default\") must survive alongside the env override")
         XCTAssertTrue(candidates.contains(expectedPersonal), "The directory-scanned named candidate must survive alongside the env override")
         XCTAssertTrue(candidates.contains(expectedOverride), "HERDR_SOCKET_PATH must contribute its own additional candidate")
     }
@@ -150,9 +160,14 @@ final class HerdrSessionDiscoveryTests: XCTestCase {
         )
         let candidates = discovery.discover()
 
-        XCTAssertEqual(candidates.filter { $0.socketPath == defaultSocketPath }.count, 1,
+        let matches = candidates.filter { $0.socketPath == defaultSocketPath }
+        XCTAssertEqual(matches.count, 1,
                        "HERDR_SOCKET_PATH exactly matching the default candidate's own socket path must " +
                        "not produce a second, duplicate candidate for the same socket")
+        XCTAssertEqual(matches.first?.name, "default",
+                       "The surviving candidate must keep the default candidate's own \"default\" name " +
+                       "(herdr's own term for this session), not be overwritten by the override's own " +
+                       "unnamed (nil) shape")
     }
 
     func test_discover_herdrSocketPathOverride_collidingWithNamedSessionSocketPath_keepsNamedCandidateOnly() {
@@ -244,14 +259,14 @@ final class HerdrSessionDiscoveryTests: XCTestCase {
         gate.proceed()
         let candidates = await task.value
 
-        XCTAssertFalse(candidates.contains { $0.name != nil },
+        XCTAssertFalse(candidates.contains { $0.name?.hasPrefix("session-") == true },
                        "Once the surrounding Task is cancelled, discover()'s directory-scan loop must stop " +
-                       "contributing named candidates -- a cancelled bounded-race sweep " +
+                       "contributing named candidates from sessions/ -- a cancelled bounded-race sweep " +
                        "(SessionBrowserModel.boundedHerdrListSessions()) must not keep scanning after its " +
                        "caller has already given up")
-        XCTAssertTrue(candidates.contains { $0.name == nil },
+        XCTAssertTrue(candidates.contains { $0.name == "default" },
                       "The always-present default candidate, added before the cancellable loop, must " +
-                      "still be there")
+                      "still be there, named \"default\"")
     }
 
     // MARK: - isAlive() fixtures (real AF_UNIX sockets -- short-path roots)

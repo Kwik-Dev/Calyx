@@ -17,10 +17,14 @@ import Darwin
 import Foundation
 
 /// One discovered (not yet liveness-checked) herdr socket location.
-/// `name` is `nil` for the default/unnamed session (both
-/// `<configRootDirectory>/herdr.sock` and the `HERDR_SOCKET_PATH`
-/// env-override candidate), and the `sessions/` subdirectory's own
-/// name for a named session.
+/// `name` is `"default"` for `<configRootDirectory>/herdr.sock` --
+/// herdr's own term for this session: `herdr session list --json`
+/// reports `"default":true,"name":"default"` for exactly this socket.
+/// It is `nil` for the `HERDR_SOCKET_PATH` env-override candidate
+/// (unless that override collides with an already-named candidate's
+/// socket path, in which case dedup keeps the richer name -- see
+/// `discover()`'s own doc comment), and the `sessions/` subdirectory's
+/// own name for a named session.
 struct HerdrSessionCandidate: Sendable, Equatable, Hashable {
     let name: String?
     let socketPath: String
@@ -46,14 +50,14 @@ protocol HerdrSessionDiscoveryProtocol: Sendable {
 ///
 /// `discover()`'s candidate set is the union of, ADDITIVELY (never one
 /// replacing another):
-///   1. The default/unnamed session:
-///      `<configRootDirectory>/herdr.sock` (`name: nil`) -- ALWAYS
-///      included, even when `configRootDirectory` doesn't exist on
-///      disk. `discover()` only constructs candidate PATHS; it never
-///      checks existence itself (that would duplicate `isAlive`'s own
-///      job and blur the two functions' separation of concerns) --
-///      liveness alone decides whether a candidate is ever surfaced to
-///      the user.
+///   1. The default session: `<configRootDirectory>/herdr.sock`
+///      (`name: "default"`, herdr's own term for it -- see
+///      `HerdrSessionCandidate`'s own doc comment) -- ALWAYS included,
+///      even when `configRootDirectory` doesn't exist on disk.
+///      `discover()` only constructs candidate PATHS; it never checks
+///      existence itself (that would duplicate `isAlive`'s own job and
+///      blur the two functions' separation of concerns) -- liveness
+///      alone decides whether a candidate is ever surfaced to the user.
 ///   2. One candidate per existing subdirectory of
 ///      `<configRootDirectory>/sessions/` (`name:` the subdirectory's
 ///      own name, `socketPath:`
@@ -74,8 +78,9 @@ protocol HerdrSessionDiscoveryProtocol: Sendable {
 /// default candidate's own socket path or an already-discovered named
 /// session's, and a later duplicate must never surface as a second row
 /// for the same live session -- keeping the first occurrence also means
-/// a name from the directory scan is never overwritten by the
-/// override's own unnamed (`nil`) shape.
+/// the default candidate's own `"default"` name, or a name from the
+/// directory scan, is never overwritten by the override's own unnamed
+/// (`nil`) shape.
 ///
 /// `configRootDirectory` defaults to `~/.config/herdr` but is
 /// injectable so tests never touch the real filesystem outside a
@@ -95,7 +100,7 @@ struct HerdrSessionDiscovery: HerdrSessionDiscoveryProtocol {
 
     func discover() -> [HerdrSessionCandidate] {
         var candidates: [HerdrSessionCandidate] = [
-            HerdrSessionCandidate(name: nil, socketPath: configRootDirectory + "/herdr.sock"),
+            HerdrSessionCandidate(name: "default", socketPath: configRootDirectory + "/herdr.sock"),
         ]
 
         let sessionsDirectory = configRootDirectory + "/sessions"

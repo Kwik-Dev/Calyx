@@ -29,12 +29,13 @@ enum ApprovalHookScript {
     /// port/token.
     ///
     /// Second fail-open guard, herdr environment contamination: exits
-    /// immediately whenever any `HERDR_`-prefixed environment variable
-    /// NAME is present (via awk's `ENVIRON` key iteration, never a
-    /// value scan), exactly like `AgentHookScript`'s identical guard --
-    /// see its doc comment for the fuller rationale, including why an
-    /// `env | grep -q '^HERDR_'` form was replaced, which applies
-    /// identically here.
+    /// immediately whenever `HERDR_PANE_ID` is set to a non-empty value
+    /// (`[ -n "$HERDR_PANE_ID" ]`), exactly like `AgentHookScript`'s
+    /// identical guard -- see its doc comment for the fuller rationale,
+    /// including why `HERDR_PANE_ID` specifically (not any
+    /// `HERDR_`-prefixed variable name, and not a text-based
+    /// environment scan) is the only reliable herdr-managed-pane
+    /// signal, which applies identically here.
     ///
     /// Known residual path (tracked, not closable by this guard): see
     /// `AgentHookScript`'s identical doc comment -- Claude Code's own
@@ -107,13 +108,14 @@ enum ApprovalHookScript {
     fi
 
     # A herdr server started from inside a Calyx pane can spawn shells
-    # that inherit that pane's CALYX_SURFACE_ID/CALYX_SESSION_ID -- any
-    # HERDR_-prefixed variable NAME means this shell is herdr-managed,
-    # so skip posting under that stale, misattributed surface identity.
-    # Matches variable NAMES via awk's ENVIRON keys only (never a
-    # value), immune to a value containing an embedded newline that
-    # could otherwise fool a text-based `env | grep` scan.
-    if awk 'BEGIN{f=0;for(k in ENVIRON)if(k~/^HERDR_/)f=1;exit !f}'; then
+    # that inherit that pane's CALYX_SURFACE_ID/CALYX_SESSION_ID -- a
+    # non-empty HERDR_PANE_ID means this shell is herdr-managed, so skip
+    # posting under that stale, misattributed surface identity. Other
+    # HERDR_-prefixed variables (e.g. HERDR_SOCKET_PATH) are NOT this
+    # signal: a user may export HERDR_SOCKET_PATH in their own shell
+    # profile from inside an ordinary Calyx pane herdr never touched, so
+    # only HERDR_PANE_ID itself is checked here.
+    if [ -n "$HERDR_PANE_ID" ]; then
         exit 0
     fi
 

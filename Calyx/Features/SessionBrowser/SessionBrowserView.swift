@@ -161,16 +161,29 @@ private struct RemoteHostRowView: View {
     }
 }
 
-/// One row per `SessionBrowserModel.herdrRows` entry. Mirrors
-/// `RemoteHostRowView`'s dot + name + single trailing-action shape --
-/// no kill/orphan affordances (herdr identity never enters
-/// `SessionSurfaceMap`, so this model has no concept of either for a
-/// herdr row) and no cwd/pane-count detail line (Stage 1's own
-/// `HerdrCLISessionProvider` never populates `paneCount`/`agentCount`,
-/// CLI enrichment being gated on a verification step that hasn't run
-/// yet). `row.info.name ?? row.info.id` labels the default/unnamed
-/// session by its socket path, the same fallback
-/// `SessionBrowserRowView` uses for a calyx-session row with no name.
+/// One row per `SessionBrowserModel.herdrRows` entry -- no kill/orphan
+/// affordances (herdr identity never enters `SessionSurfaceMap`, so
+/// this model has no concept of either for a herdr row). Same dot +
+/// leading-VStack + trailing-action shape as `SessionBrowserRowView`
+/// one section up: a fixed-green 8pt `Circle` is the outer `HStack`'s
+/// first child, vertically centred against all three text lines below
+/// it, followed by a three-line leading `VStack`. Line 1 is
+/// `row.displayName` (bold -- the session's own name when discovery
+/// found one, herdr's `"default"` term for the unnamed default session
+/// included, falling back to its socket path only when discovery found
+/// no name at all); line 2 is `row.info.id`, the session's socket path,
+/// shown directly with no cwd/pane-count summary -- herdr does expose a
+/// JSON session-list subcommand (`herdr session list --json`, verified
+/// against real herdr 0.8.0) that could supply `paneCount`/`agentCount`,
+/// but Stage 1 deliberately doesn't shell out to it on every poll tick,
+/// deriving names and liveness from the filesystem plus a `connect()`
+/// probe instead (see `HerdrSessionProvider.swift`'s own doc comment);
+/// pane/agent counts stay unpopulated and could come from that
+/// subcommand later. Line 3 is `row.statusLineText`. The dot itself is
+/// a fixed green, never gray/orange -- every row here already passed a
+/// live `connect()` probe (see `HerdrSessionRow.statusLineText`'s own
+/// doc comment), so there is no "not running" or "orphaned" state for
+/// it to represent, unlike `SessionBrowserRowView.dotColor`.
 private struct HerdrSessionRowView: View {
     let row: HerdrSessionRow
     let model: SessionBrowserModel
@@ -178,12 +191,23 @@ private struct HerdrSessionRowView: View {
     var body: some View {
         HStack(spacing: 8) {
             Circle()
-                .fill(Color.gray)
+                .fill(Color.green)
                 .frame(width: 8, height: 8)
 
-            Text(row.info.name ?? row.info.id)
-                .font(.system(size: 12.5, weight: .semibold, design: .rounded))
-                .lineLimit(1)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(row.displayName)
+                    .font(.system(size: 12.5, weight: .semibold, design: .rounded))
+                    .lineLimit(1)
+
+                Text(row.info.id)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                Text(row.statusLineText)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            }
 
             Spacer()
 

@@ -6,29 +6,29 @@
 //  (calyx-agent-hook) carries. Running a herdr server from inside a
 //  Calyx pane's shell means every shell herdr itself spawns can inherit
 //  that pane's CALYX_SURFACE_ID; without a guard, Claude Code's hook
-//  running INSIDE a herdr pane would POST to /agent-event under that
-//  stale, misattributed surface, corrupting the .hooks authoritative
-//  log and misrouting approvals. The fix: calyx-agent-hook exits 0
-//  WITHOUT posting whenever ANY HERDR_*-prefixed environment variable
-//  NAME is present, mirroring the script's own existing
-//  CALYX_SURFACE_ID/CALYX_SESSION_ID early-exit guard.
+//  running INSIDE a herdr-managed pane would POST to /agent-event under
+//  that stale, misattributed surface, corrupting the .hooks
+//  authoritative log and misrouting approvals. The fix: calyx-agent-hook
+//  exits 0 WITHOUT posting whenever HERDR_PANE_ID is set and non-empty,
+//  mirroring the script's own existing CALYX_SURFACE_ID/CALYX_SESSION_ID
+//  early-exit guard.
 //
-//  The guard is implemented via awk's ENVIRON key iteration (matching
-//  variable NAMES only -- never reading any ENVIRON value) rather than
-//  `env | grep -q '^HERDR_'`. The multiline-value false-positive test
-//  below pins exactly why that distinction matters: `env` prints raw
-//  NAME=value records with no escaping, so an unrelated variable whose
-//  VALUE happens to contain an embedded newline followed by text that
-//  merely looks like a HERDR_-prefixed assignment renders, from grep's
-//  line-oriented point of view, as if it were its own NAME=value line --
-//  a false positive that silently drops a real event. awk's ENVIRON
-//  array is built from the process's actual environ records, not by
-//  re-splitting printed text on newlines, so an embedded newline inside
-//  a value can never be misread as a variable-name boundary.
+//  HERDR_PANE_ID specifically -- not any HERDR_*-prefixed variable name --
+//  is the guard's condition: herdr sets several HERDR_*-prefixed
+//  variables inside its panes (e.g. HERDR_SOCKET_PATH, HERDR_TAB_ID,
+//  HERDR_WORKSPACE_ID, HERDR_ENV), but only HERDR_PANE_ID reliably means
+//  "this shell is running inside a herdr-managed pane". The others,
+//  HERDR_SOCKET_PATH in particular, are user-facing configuration a
+//  person may export in their own shell profile (to select a session by
+//  default) from inside an ORDINARY Calyx pane that herdr never touched
+//  at all -- an implementation that suppresses on any HERDR_-prefixed
+//  name would silently lose agent monitoring for that pane the moment
+//  the user exports it, which is exactly the regression this file's
+//  HERDR_SOCKET_PATH-alone and HERDR_ENV-alone tests below pin against.
 //
 //  Why a fake `curl` on PATH instead of AgentHookPipelineIntegrationTests'
 //  own real-CalyxMCPServer-plus-AgentRegistry pipeline style: every
-//  assertion here is a NEGATIVE ("curl must never run"). curl runs in
+//  negative assertion here is about curl never running. curl runs in
 //  the script's own foreground (no trailing `&`), so
 //  `process.waitUntilExit()` already guarantees the fake curl has
 //  already run-or-not by the time this file reads its record file --
@@ -40,22 +40,27 @@
 //  - Baseline sanity: CALYX_SURFACE_ID set, no HERDR_* variable -> curl
 //    IS invoked exactly once (proves the fake-curl harness itself
 //    works, so the zero-invocation assertions below aren't vacuous)
-//  - CALYX_SURFACE_ID set + HERDR_PANE_ID set -> exit 0, curl NEVER
-//    invoked
-//  - CALYX_SURFACE_ID set + a DIFFERENT HERDR_*-prefixed variable
-//    (HERDR_SESSION_ID) set -> exit 0, curl NEVER invoked (prefix-match
-//    generality, not one hardcoded variable name)
+//  - CALYX_SURFACE_ID set + HERDR_PANE_ID set to a non-empty value ->
+//    exit 0, curl NEVER invoked
 //  - CALYX_SESSION_ID (not CALYX_SURFACE_ID) set + HERDR_PANE_ID set ->
 //    exit 0, curl NEVER invoked (the guard must apply regardless of
 //    which CALYX_* variable is what's actually set -- a real
 //    persistent-session pane shape, see AgentHookScriptSessionIDPipelineTests)
-//  - Prefix-match boundary (negative-invariant): HERDRX_FOO (not
-//    HERDR_*-prefixed -- no underscore after HERDR) must NOT trip the
-//    guard, curl IS still invoked
-//  - Multiline-value false-positive immunity: an unrelated variable
-//    whose VALUE contains an embedded newline followed by text shaped
-//    like a HERDR_*-prefixed assignment must NOT trip the guard, curl
-//    IS still invoked -- pins the awk-vs-`env | grep` distinction above
+//  - HERDR_PANE_ID set but EMPTY -> curl IS still invoked (the
+//    condition is "set AND non-empty", not merely "the name is present
+//    in the environment")
+//  - CALYX_SURFACE_ID set + HERDR_SOCKET_PATH set, HERDR_PANE_ID absent
+//    -> curl IS still invoked (an ordinary Calyx pane whose user
+//    exported HERDR_SOCKET_PATH in their shell profile must keep normal
+//    agent monitoring)
+//  - CALYX_SURFACE_ID set + HERDR_ENV set, HERDR_PANE_ID absent -> curl
+//    IS still invoked (same principle, a second herdr-set variable that
+//    is not the guard's own signal)
+//  - Residual regression guards: HERDRX_FOO (a name that merely starts
+//    with the letters HERDR) and an unrelated variable whose VALUE
+//    contains an embedded newline followed by text shaped like a
+//    HERDR_PANE_ID assignment must NEVER trip the guard either -- curl
+//    IS still invoked in both cases
 //
 
 import XCTest
@@ -187,18 +192,6 @@ final class AgentHookScriptHerdrGuardTests: XCTestCase {
                        "started in, and must never misattribute an /agent-event to it")
     }
 
-    func test_surfaceIDSet_differentHerdrPrefixedVariableSet_exitsZeroWithoutInvokingCurl() throws {
-        let exitCode = try runHookScript(
-            stdinJSON: sampleStdin,
-            extraEnv: ["CALYX_SURFACE_ID": UUID().uuidString, "HERDR_SESSION_ID": "abc123"]
-        )
-
-        XCTAssertEqual(exitCode, 0)
-        XCTAssertEqual(curlInvocationCount(), 0,
-                       "The guard must match ANY HERDR_*-prefixed variable, not one hardcoded name -- " +
-                       "HERDR_SESSION_ID (not HERDR_PANE_ID) must suppress the POST too")
-    }
-
     func test_sessionIDSetInsteadOfSurfaceID_herdrPaneIDSet_exitsZeroWithoutInvokingCurl() throws {
         let exitCode = try runHookScript(
             stdinJSON: sampleStdin,
@@ -207,12 +200,55 @@ final class AgentHookScriptHerdrGuardTests: XCTestCase {
 
         XCTAssertEqual(exitCode, 0)
         XCTAssertEqual(curlInvocationCount(), 0,
-                       "The HERDR_* guard must apply regardless of which CALYX_* variable is what's set " +
-                       "-- CALYX_SESSION_ID alone, without CALYX_SURFACE_ID, is a real persistent-session " +
-                       "pane shape (see AgentHookScriptSessionIDPipelineTests)")
+                       "The HERDR_PANE_ID guard must apply regardless of which CALYX_* variable is what's " +
+                       "set -- CALYX_SESSION_ID alone, without CALYX_SURFACE_ID, is a real " +
+                       "persistent-session pane shape (see AgentHookScriptSessionIDPipelineTests)")
     }
 
-    // MARK: - Prefix-match boundary (negative-invariant)
+    // MARK: - HERDR_PANE_ID must be set AND non-empty
+
+    func test_surfaceIDSet_herdrPaneIDSetToEmptyString_stillInvokesCurl() throws {
+        let exitCode = try runHookScript(
+            stdinJSON: sampleStdin,
+            extraEnv: ["CALYX_SURFACE_ID": UUID().uuidString, "HERDR_PANE_ID": ""]
+        )
+
+        XCTAssertEqual(exitCode, 0)
+        XCTAssertEqual(curlInvocationCount(), 1,
+                       "HERDR_PANE_ID present in the environment but set to an empty value must NOT trip " +
+                       "the guard -- the condition is \"set AND non-empty\", not merely \"the name exists\"")
+    }
+
+    // MARK: - Other HERDR_*-prefixed variables must NOT suppress on their own
+
+    func test_surfaceIDSet_herdrSocketPathSetWithoutPaneID_stillInvokesCurl() throws {
+        let exitCode = try runHookScript(
+            stdinJSON: sampleStdin,
+            extraEnv: ["CALYX_SURFACE_ID": UUID().uuidString, "HERDR_SOCKET_PATH": "/Users/dev/.config/herdr/herdr.sock"]
+        )
+
+        XCTAssertEqual(exitCode, 0)
+        XCTAssertEqual(curlInvocationCount(), 1,
+                       "HERDR_SOCKET_PATH alone, without HERDR_PANE_ID, must NOT suppress the POST -- it " +
+                       "is user-facing configuration a person may export in their own shell profile to " +
+                       "select a herdr session by default, from inside an ORDINARY Calyx pane herdr never " +
+                       "touched, and must never cost that pane its agent monitoring")
+    }
+
+    func test_surfaceIDSet_herdrEnvSetWithoutPaneID_stillInvokesCurl() throws {
+        let exitCode = try runHookScript(
+            stdinJSON: sampleStdin,
+            extraEnv: ["CALYX_SURFACE_ID": UUID().uuidString, "HERDR_ENV": "1"]
+        )
+
+        XCTAssertEqual(exitCode, 0)
+        XCTAssertEqual(curlInvocationCount(), 1,
+                       "HERDR_ENV alone, without HERDR_PANE_ID, must NOT suppress the POST either -- only " +
+                       "HERDR_PANE_ID is a reliable \"this shell is herdr-managed\" signal, not any other " +
+                       "HERDR_*-prefixed variable herdr happens to also set")
+    }
+
+    // MARK: - Residual regression guards
 
     func test_surfaceIDSet_nonUnderscoreTerminatedHerdrPrefixVariable_stillInvokesCurl() throws {
         let exitCode = try runHookScript(
@@ -222,30 +258,25 @@ final class AgentHookScriptHerdrGuardTests: XCTestCase {
 
         XCTAssertEqual(exitCode, 0)
         XCTAssertEqual(curlInvocationCount(), 1,
-                       "HERDRX_FOO is not HERDR_*-prefixed (no underscore after HERDR) and must NOT trip " +
-                       "the guard -- pins a real prefix-match implementation (e.g. case \"HERDR_*\") " +
-                       "against an over-broad implementation that merely greps for the substring HERDR " +
-                       "anywhere in the environment")
+                       "HERDRX_FOO (a name that merely starts with the letters HERDR, not HERDR_PANE_ID " +
+                       "itself) must NOT trip the guard -- curl must still be invoked")
     }
-
-    // MARK: - Multiline-value false-positive immunity (awk ENVIRON key-matching, not env|grep)
 
     func test_surfaceIDSet_unrelatedVariableValueContainsNewlineFollowedByHerdrLookingLine_stillInvokesCurl() throws {
         let exitCode = try runHookScript(
             stdinJSON: sampleStdin,
             extraEnv: [
                 "CALYX_SURFACE_ID": UUID().uuidString,
-                "SOME_UNRELATED_VAR": "first-line\nHERDR_FAKE=1",
+                "SOME_UNRELATED_VAR": "first-line\nHERDR_PANE_ID=w9:p9",
             ]
         )
 
         XCTAssertEqual(exitCode, 0)
         XCTAssertEqual(curlInvocationCount(), 1,
-                       "A variable VALUE containing an embedded newline followed by text that merely " +
-                       "looks like a HERDR_*-prefixed assignment must never trip the guard -- the guard " +
-                       "matches environment variable NAMES only, never scans values, so this must still " +
-                       "invoke curl. An `env | grep -q '^HERDR_'` implementation is fooled by this: " +
-                       "`env`'s own NAME=value dump renders the embedded newline as if it were a new text " +
-                       "line, so grep misreads the embedded fake assignment as a real variable name")
+                       "An unrelated variable's VALUE containing an embedded newline followed by text " +
+                       "shaped like a HERDR_PANE_ID assignment must never influence the guard -- the " +
+                       "guard reads the shell's own $HERDR_PANE_ID parameter directly, which stays unset " +
+                       "here regardless of what any other variable's value happens to contain, so curl " +
+                       "must still be invoked")
     }
 }

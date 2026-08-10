@@ -7,10 +7,13 @@
 // shape. The production conformer below, `HerdrCLISessionProvider`,
 // composes `HerdrSessionDiscovery`'s socket enumeration + non-blocking
 // connect probe (that type's own file, called here through its frozen
-// protocol, never reimplemented). Optional CLI JSON enrichment stays
-// out of Stage 1 entirely -- it depends on herdr exposing a JSON
-// session-list subcommand, which hasn't been verified yet (see
-// `HerdrCLISessionProvider`'s own doc comment).
+// protocol, never reimplemented). herdr does expose a JSON
+// session-list subcommand (`herdr session list --json`, verified
+// against real herdr 0.8.0) that could enrich rows with pane/agent
+// counts; Stage 1 deliberately chooses not to shell out to it on every
+// poll tick, deriving names and liveness from the filesystem plus a
+// connect() probe instead (see `HerdrCLISessionProvider`'s own doc
+// comment).
 
 import Foundation
 
@@ -22,11 +25,14 @@ protocol HerdrSessionProviderProtocol: Sendable {
 /// session's Unix domain socket path -- herdr assigns no separate
 /// session ID of its own to key rows on, so the socket path itself IS
 /// the identity (mirrors `SessionInfo.id` being the calyx-session ULID,
-/// just a different kind of stable string). `name`/`paneCount`/
-/// `agentCount` are optional because Stage 1-C's own CLI JSON
-/// enrichment is itself optional and not yet verified as available: a
-/// degraded row (bare socket path, no enrichment) is always a valid
-/// `HerdrSessionInfo`, never an error.
+/// just a different kind of stable string). `name` is optional because
+/// the `HERDR_SOCKET_PATH` env-override candidate carries none of its
+/// own (see `HerdrSessionDiscovery`'s own doc comment); `paneCount`/
+/// `agentCount` are always `nil` in Stage 1 -- herdr's own JSON
+/// session-list subcommand could supply them, but Calyx doesn't shell
+/// out to it per poll tick (see `HerdrCLISessionProvider`'s own doc
+/// comment below) -- so a degraded row (bare socket path, no pane/agent
+/// counts) is always a valid `HerdrSessionInfo`, never an error.
 struct HerdrSessionInfo: Identifiable, Equatable, Sendable {
     let id: String
     let name: String?
@@ -39,10 +45,13 @@ struct HerdrSessionInfo: Identifiable, Equatable, Sendable {
 /// Stage 1: bare discovery + liveness only -- `discovery.discover()`'s
 /// candidates, kept only when `discovery.isAlive(socketPath:)`, mapped
 /// 1:1 onto `HerdrSessionInfo` (`id`/`name` straight from the
-/// candidate; `paneCount`/`agentCount` always `nil` -- the optional CLI
-/// JSON enrichment depends on herdr exposing a JSON session-list
-/// subcommand, which hasn't been verified yet, so it isn't wired in
-/// this stage). Neither `discover()` nor `isAlive(socketPath:)` throws,
+/// candidate; `paneCount`/`agentCount` always `nil` -- herdr's own JSON
+/// session-list subcommand (`herdr session list --json`, verified
+/// against real herdr 0.8.0) could supply them, but this stage
+/// deliberately doesn't shell out to it per poll tick, sticking to
+/// filesystem discovery plus a `connect()` probe instead; pane/agent
+/// counts could come from that subcommand later). Neither `discover()`
+/// nor `isAlive(socketPath:)` throws,
 /// so "a degraded row beats an error" (this type's own doc comment
 /// above) holds structurally: a config directory that doesn't exist
 /// yields `[]` from `discover()`, and a stale/crashed socket file

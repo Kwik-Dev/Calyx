@@ -53,27 +53,27 @@ enum AgentHookScript {
     /// shell herdr itself spawns can inherit that pane's
     /// `CALYX_SURFACE_ID`/`CALYX_SESSION_ID` — the guard above alone
     /// does NOT catch this, because that inherited ID is non-empty
-    /// (just stale/misattributed, not unset). The guard is implemented
-    /// as `awk 'BEGIN{f=0;for(k in ENVIRON)if(k~/^HERDR_/)f=1;exit
-    /// !f}'`: iterating `ENVIRON`'s KEYS only (never reading any
-    /// `ENVIRON[k]` value) means only actual environment variable NAMES
-    /// are ever matched against `^HERDR_`, anchoring on the trailing
-    /// underscore so a hypothetical `HERDRX_...` variable (no
-    /// underscore after `HERDR`) never trips this guard. An earlier
-    /// `env | grep -q '^HERDR_'` form looked equivalent but was NOT:
-    /// `env` prints raw `NAME=value` records with no escaping, so an
-    /// unrelated variable whose VALUE happens to contain an embedded
-    /// newline followed by text that merely looks like
-    /// `HERDR_SOMETHING=...` renders, from grep's line-oriented point
-    /// of view, as if it were its own `NAME=value` line — a false
-    /// positive that silently drops a real event. `awk`'s `ENVIRON`
-    /// array is built from the process's actual `environ` records, not
-    /// by re-splitting printed text on newlines, so an embedded newline
-    /// inside a value can never be misread as a variable-name boundary.
-    /// The exact set of `HERDR_`-prefixed names herdr itself sets
-    /// doesn't need to be enumerated here — any one of them is
-    /// sufficient signal that this shell is running inside a
-    /// herdr-managed pane, not a plain Calyx one.
+    /// (just stale/misattributed, not unset). The guard is
+    /// `[ -n "$HERDR_PANE_ID" ]`: of every `HERDR_`-prefixed variable
+    /// herdr sets inside a managed pane (`HERDR_PANE_ID`,
+    /// `HERDR_SOCKET_PATH`, `HERDR_TAB_ID`, `HERDR_WORKSPACE_ID`,
+    /// `HERDR_ENV`, empirically confirmed against a real herdr pane),
+    /// only `HERDR_PANE_ID` reliably means "this shell is running
+    /// inside a herdr-managed pane". The others are not that signal —
+    /// `HERDR_SOCKET_PATH` in particular is user-facing configuration a
+    /// person may export in their own shell profile (to select a herdr
+    /// session by default) from inside an ORDINARY Calyx pane herdr
+    /// never touched at all, so a guard that suppressed on ANY
+    /// `HERDR_`-prefixed name would silently cost that pane its agent
+    /// monitoring the moment the user exports it. An earlier
+    /// implementation matched any `HERDR_`-prefixed variable NAME via
+    /// `awk`'s `ENVIRON` keys for exactly this over-broad reason and
+    /// was replaced. Reading `$HERDR_PANE_ID` directly, rather than
+    /// scanning the environment for a name/value match, also sidesteps
+    /// the class of problem a text-based `env | grep` scan would have:
+    /// an unrelated variable's VALUE can never be misread as its own
+    /// `HERDR_PANE_ID=...` assignment, since this guard never inspects
+    /// any value other than that one named parameter's own.
     ///
     /// Known residual path (tracked, not closable by this guard):
     /// Claude Code's own MCP client config (`ClaudeConfigManager`)
@@ -96,13 +96,14 @@ enum AgentHookScript {
     fi
 
     # A herdr server started from inside a Calyx pane can spawn shells
-    # that inherit that pane's CALYX_SURFACE_ID/CALYX_SESSION_ID -- any
-    # HERDR_-prefixed variable NAME means this shell is herdr-managed,
-    # so skip posting under that stale, misattributed surface identity.
-    # Matches variable NAMES via awk's ENVIRON keys only (never a
-    # value), immune to a value containing an embedded newline that
-    # could otherwise fool a text-based `env | grep` scan.
-    if awk 'BEGIN{f=0;for(k in ENVIRON)if(k~/^HERDR_/)f=1;exit !f}'; then
+    # that inherit that pane's CALYX_SURFACE_ID/CALYX_SESSION_ID -- a
+    # non-empty HERDR_PANE_ID means this shell is herdr-managed, so skip
+    # posting under that stale, misattributed surface identity. Other
+    # HERDR_-prefixed variables (e.g. HERDR_SOCKET_PATH) are NOT this
+    # signal: a user may export HERDR_SOCKET_PATH in their own shell
+    # profile from inside an ordinary Calyx pane herdr never touched, so
+    # only HERDR_PANE_ID itself is checked here.
+    if [ -n "$HERDR_PANE_ID" ]; then
         exit 0
     fi
 
