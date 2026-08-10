@@ -13,6 +13,17 @@ import SwiftUI
 struct SessionBrowserView: View {
     @Bindable var model: SessionBrowserModel
 
+    /// Single source of truth for every row list's left inset, so the
+    /// scrolled calyx-session `VStack` and the two fixed sections above it
+    /// (`remoteHostsSection`, `herdrSection`) can never drift apart again:
+    /// each row view (`SessionBrowserRowView`, `HerdrSessionRowView`,
+    /// `RemoteHostRowView`) already ends its own body with an identical
+    /// `.padding(.horizontal, 14)`, so this constant is the only remaining
+    /// variable standing between "all three row types share one left edge"
+    /// and "they don't." Section headers are intentionally NOT built from
+    /// this constant -- they use their own fixed 14pt.
+    private static let rowListHorizontalInset: CGFloat = 8
+
     var body: some View {
         VStack(spacing: 0) {
             if model.showRemoteHostsSection {
@@ -30,15 +41,31 @@ struct SessionBrowserView: View {
                 if model.rows.isEmpty && !model.showHerdrSection {
                     emptyState
                 } else {
-                    TimelineView(.periodic(from: .now, by: 1)) { context in
-                        ScrollView {
-                            VStack(spacing: 4) {
-                                ForEach(model.rows) { row in
-                                    SessionBrowserRowView(row: row, now: context.date, model: model)
+                    VStack(spacing: 0) {
+                        // Only labelled once a sibling section
+                        // (remoteHostsSection/herdrSection) is also on
+                        // screen -- see `showSessionsHeader`'s own doc
+                        // comment for the full rule. `!model.rows.isEmpty`
+                        // is baked into that property, so this never
+                        // dangles over the empty ScrollView below it in
+                        // the herdr-rows-but-zero-calyx-rows case.
+                        if model.showSessionsHeader {
+                            Text("Calyx Sessions")
+                                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 14)
+                                .padding(.top, 8)
+                        }
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            ScrollView {
+                                VStack(spacing: 4) {
+                                    ForEach(model.rows) { row in
+                                        SessionBrowserRowView(row: row, now: context.date, model: model)
+                                    }
                                 }
+                                .padding(.horizontal, Self.rowListHorizontalInset)
+                                .padding(.vertical, 4)
                             }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
                         }
                     }
                 }
@@ -66,6 +93,7 @@ struct SessionBrowserView: View {
             ForEach(model.remoteHostCandidates, id: \.self) { host in
                 RemoteHostRowView(host: host, model: model)
             }
+            .padding(.horizontal, Self.rowListHorizontalInset)
             Divider()
         }
     }
@@ -86,6 +114,7 @@ struct SessionBrowserView: View {
             ForEach(model.herdrRows) { row in
                 HerdrSessionRowView(row: row, model: model)
             }
+            .padding(.horizontal, Self.rowListHorizontalInset)
             Divider()
         }
     }

@@ -395,6 +395,23 @@ final class SessionBrowserModel {
         !herdrRows.isEmpty
     }
 
+    /// Whether the calyx-session list's own "Calyx Sessions" header
+    /// should render. A header exists to distinguish this list from a
+    /// sibling section, so it renders only when a sibling section is
+    /// actually visible (`showRemoteHostsSection || showHerdrSection`)
+    /// AND `rows` is non-empty: with no sibling section visible, the
+    /// window's own "Sessions" title already identifies the list, so
+    /// adding this header would be redundant for every user with
+    /// neither herdr nor SSH hosts configured (the common case, and one
+    /// this property must leave visually unchanged); and gating on
+    /// non-empty `rows` keeps the header from dangling over an empty
+    /// list -- the herdr-rows-but-zero-calyx-rows case `SessionBrowser
+    /// View`'s own empty-state guard already handles by rendering that
+    /// empty state instead of the row list this header sits above.
+    var showSessionsHeader: Bool {
+        (showRemoteHostsSection || showHerdrSection) && !rows.isEmpty
+    }
+
     /// Requests spawning a new remote session against `host`.
     func attachToRemoteHost(_ host: String) {
         onRemoteSessionRequested?(SessionSpawnContext(host: host, origin: .tab))

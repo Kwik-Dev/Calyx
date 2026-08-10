@@ -67,16 +67,20 @@
 import XCTest
 @testable import Calyx
 
-/// Minimal `SessionDaemonClientProtocol` fake -- none of this file's
-/// tests exercise calyx-session daemon interaction at all. A local
-/// duplicate of `SessionBrowserModelTests`'/
-/// `SessionBrowserModelRemoteHostsGateTests`'s own fake shape (this
-/// codebase's established per-file fixture-duplication convention),
-/// narrowed to inert stubs.
+/// Minimal `SessionDaemonClientProtocol` fake -- most of this file's
+/// tests exercise no calyx-session daemon interaction at all, so
+/// `sessionsToReturn` defaults to `[]` (this file's original behavior,
+/// unchanged for every test that never sets it). A local duplicate of
+/// `SessionBrowserModelTests`'/`SessionBrowserModelRemoteHostsGateTests`'s
+/// own fake shape (this codebase's established per-file
+/// fixture-duplication convention), narrowed to inert stubs plus the one
+/// settable field the `showSessionsHeader` tests below need to put a
+/// non-empty `SessionBrowserModel.rows` on the board.
 private final class FakeDaemonClient: SessionDaemonClientProtocol, @unchecked Sendable {
+    var sessionsToReturn: [SessionInfo] = []
     func sessionState(id: String) async -> SessionQueryResult { .unreachable }
     func kill(id: String) async {}
-    func listAll() async -> [SessionInfo] { [] }
+    func listAll() async -> [SessionInfo] { sessionsToReturn }
     func setMeta(id: String, key: String, value: String) async {}
 }
 
@@ -129,11 +133,12 @@ private final class HerdrAvailabilityCancelBox {
 final class SessionBrowserModelHerdrTests: XCTestCase {
 
     private func makeModel(
+        daemonClient: FakeDaemonClient = FakeDaemonClient(),
         herdrProvider: HerdrSessionProviderProtocol,
         herdrAvailability: @escaping () async -> Bool
     ) -> SessionBrowserModel {
         SessionBrowserModel(
-            daemonClient: FakeDaemonClient(),
+            daemonClient: daemonClient,
             surfaceMap: SessionSurfaceMap(),
             herdrProvider: herdrProvider,
             herdrAvailability: herdrAvailability
@@ -451,5 +456,76 @@ final class SessionBrowserModelHerdrTests: XCTestCase {
         )
 
         XCTAssertEqual(row.attachTabTitle, "herdr")
+    }
+
+    // MARK: - showSessionsHeader visibility rule
+    //
+    // Truth table (`SessionBrowserModel.showSessionsHeader`):
+    // `(showRemoteHostsSection || showHerdrSection) && !rows.isEmpty`.
+    // `showRemoteHostsSection` needs no separate exercising here -- it's
+    // `SessionSettings.persistentSessionsEnabled && !remoteHostCandidates
+    // .isEmpty`, and `remoteHostCandidates` stays `[]` unless
+    // `refreshRemoteHostCandidates()` is called, which none of these
+    // tests do -- so "no sibling section visible" falls out for free
+    // without touching `SessionSettings` at all.
+
+    private func makeRunningSessionInfo(id: String) -> SessionInfo {
+        SessionInfo(
+            id: id, name: nil, cwd: nil, state: .running,
+            createdAtMs: 0, attachedClients: 1, pid: 0, meta: [:]
+        )
+    }
+
+    func test_showSessionsHeader_herdrVisibleAndRowsNonEmpty_isTrue() async {
+        let herdrProvider = FakeHerdrSessionProvider()
+        herdrProvider.sessionsToReturn = [
+            HerdrSessionInfo(id: "test-herdr-socket-1", name: "work", paneCount: nil, agentCount: nil)
+        ]
+        let daemonClient = FakeDaemonClient()
+        daemonClient.sessionsToReturn = [makeRunningSessionInfo(id: "session-a")]
+        let model = makeModel(daemonClient: daemonClient, herdrProvider: herdrProvider, herdrAvailability: { true })
+
+        await model.refresh()
+
+        XCTAssertTrue(
+            model.showSessionsHeader,
+            "With the herdr section visible and at least one calyx-session row, showSessionsHeader must be true"
+        )
+    }
+
+    func test_showSessionsHeader_noSiblingSectionVisible_isFalse() async {
+        let daemonClient = FakeDaemonClient()
+        daemonClient.sessionsToReturn = [makeRunningSessionInfo(id: "session-a")]
+        let model = makeModel(
+            daemonClient: daemonClient, herdrProvider: FakeHerdrSessionProvider(), herdrAvailability: { false }
+        )
+
+        await model.refresh()
+
+        XCTAssertFalse(
+            model.showSessionsHeader,
+            "With no sibling section visible (herdr unavailable, no remote host candidates loaded), " +
+            "showSessionsHeader must stay false even with non-empty rows -- the window's own title " +
+            "already identifies the list"
+        )
+    }
+
+    func test_showSessionsHeader_siblingVisibleButRowsEmpty_isFalse() async {
+        let herdrProvider = FakeHerdrSessionProvider()
+        herdrProvider.sessionsToReturn = [
+            HerdrSessionInfo(id: "test-herdr-socket-1", name: "work", paneCount: nil, agentCount: nil)
+        ]
+        // daemonClient omitted -- defaults to an empty FakeDaemonClient(), so rows stays [].
+        let model = makeModel(herdrProvider: herdrProvider, herdrAvailability: { true })
+
+        await model.refresh()
+
+        XCTAssertFalse(
+            model.showSessionsHeader,
+            "With a sibling section visible but zero calyx-session rows, showSessionsHeader must stay " +
+            "false -- this is exactly the herdr-rows-but-zero-calyx-rows case where the empty ScrollView " +
+            "still renders (SessionBrowserView's friendly emptyState only shows when no sibling section " +
+            "is visible either), and a header must never sit above zero rows"
+        )
     }
 }
