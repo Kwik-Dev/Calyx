@@ -41,7 +41,7 @@ struct SessionBrowserView: View {
                 if model.rows.isEmpty && !model.showHerdrSection {
                     emptyState
                 } else {
-                    VStack(spacing: 0) {
+                    VStack(alignment: .leading, spacing: 0) {
                         // Only labelled once a sibling section
                         // (remoteHostsSection/herdrSection) is also on
                         // screen -- see `showSessionsHeader`'s own doc
