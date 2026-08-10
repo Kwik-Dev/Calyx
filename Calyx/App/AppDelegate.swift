@@ -991,6 +991,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver
         }
     }
 
+    /// PATH for child shells launched inside Calyx.
+    ///
+    /// Calyx's own bundle bin stays first so `calyx` and sibling tools
+    /// remain available, but the rest of the path should come from the
+    /// same augmented login-shell logic used by `SystemCommandRunner`
+    /// so Finder/Dock launches still see Homebrew, fnm, and other
+    /// version-manager directories sourced from the user's login shell.
+    nonisolated static func terminalLaunchPATH() -> String {
+        if let binPath = Bundle.main.resourceURL?.appendingPathComponent("bin").path {
+            return "\(binPath):\(SystemCommandRunner.augmentedPATH())"
+        }
+        return SystemCommandRunner.augmentedPATH()
+    }
+
     // MARK: - NSApplicationDelegate
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -1028,9 +1042,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver
         applyCalyxShellIntegrationIfEnabled()
 
         // Add CLI to PATH for terminals launched within Calyx
-        if let binPath = Bundle.main.resourceURL?.appendingPathComponent("bin").path {
-            let currentPath = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"
-            setenv("PATH", "\(binPath):\(currentPath)", 1)
+        if let _ = Bundle.main.resourceURL?.appendingPathComponent("bin").path {
+            setenv("PATH", Self.terminalLaunchPATH(), 1)
         }
 
         let controller = GhosttyAppController.shared

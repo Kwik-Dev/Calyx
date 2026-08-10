@@ -68,4 +68,18 @@ final class AppDelegateLaunchEnvironmentGateTests: XCTestCase {
             "it injects \(injectedBinPath) into this process's PATH today because the host's launch is ungated"
         )
     }
+
+    func test_terminalLaunchPATH_prefersBundledBinAndAugmentsWithLoginShellPATH() throws {
+        let resourceURL = try XCTUnwrap(
+            Bundle.main.resourceURL,
+            "the test host's own app bundle must resolve a resource URL for this assertion to be meaningful"
+        )
+        let injectedBinPath = resourceURL.appendingPathComponent("bin").path
+
+        XCTAssertEqual(
+            AppDelegate.terminalLaunchPATH(),
+            "\(injectedBinPath):\(SystemCommandRunner.augmentedPATH())",
+            "terminalLaunchPATH must keep Calyx's bundled bin first and then append the same augmented PATH used by SystemCommandRunner so Finder/Dock launches still see Homebrew and fnm"
+        )
+    }
 }
