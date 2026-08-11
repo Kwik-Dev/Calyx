@@ -17,14 +17,14 @@
 //
 //  Also covers showsMonitoringDisabledBanner(isServerRunning:hasExternal:),
 //  decide's companion: whether the rows branch should ALSO show an
-//  explanatory "Calyx's own agent monitoring is disabled" banner. Each
+//  explanatory "Calyx's own agent monitoring is disabled" notice. Each
 //  test below pairs BOTH functions for one row of the task's truth
 //  table (neither / IPC only / herdr only / both), so each test reads
 //  as one full row rather than an isolated fact:
-//    neither      -> placeholder (banner does not apply)
-//    IPC only     -> rows, no banner
-//    herdr only   -> rows WITH banner
-//    both         -> rows, no banner
+//    neither      -> placeholder (notice does not apply)
+//    IPC only     -> rows, no notice
+//    herdr only   -> rows WITH notice
+//    both         -> rows, no notice
 //
 
 import XCTest

@@ -53,7 +53,7 @@ struct AgentStatusView: View {
                         hooksIssuesBanner(hooksIssues)
                     }
                     if AgentSidebarGate.showsMonitoringDisabledBanner(isServerRunning: isServerRunning, hasExternal: hasExternal) {
-                        monitoringDisabledBanner
+                        monitoringDisabledNotice
                     }
                     if entries.isEmpty {
                         emptyPlaceholder
@@ -84,16 +84,16 @@ struct AgentStatusView: View {
     /// (`AgentRegistry.hooksIssues`, set by `CalyxWindowController.
     /// enableIPC`), so a symlink/permissions failure that used to degrade
     /// the sidebar silently (only a one-shot alert at enable time) is
-    /// visible for as long as it remains unresolved.
+    /// visible for as long as it remains unresolved. Rendered as plain,
+    /// quiet text -- no icon, no background -- matching
+    /// `disabledPlaceholder` / `emptyPlaceholder` below rather than a
+    /// designed warning box, so nothing opaque paints over the sidebar's
+    /// `.glassEffect` chrome.
     private func hooksIssuesBanner(_ issues: [String]) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.yellow)
-                Text("Some agent hooks failed to install")
-                    .font(.system(size: 11.5, weight: .medium, design: .rounded))
-                    .foregroundStyle(.primary)
-            }
+            Text("Some agent hooks failed to install")
+                .font(.system(size: 11.5, weight: .medium, design: .rounded))
+                .foregroundStyle(.secondary)
             ForEach(issues, id: \.self) { issue in
                 Text(issue)
                     .font(.system(size: 10.5))
@@ -104,7 +104,6 @@ struct AgentStatusView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background(Color.yellow.opacity(0.15))
         .accessibilityIdentifier(AccessibilityID.Sidebar.agentHooksIssuesBanner)
     }
 
@@ -114,26 +113,29 @@ struct AgentStatusView: View {
     /// (sourced from herdr alone), so a user's own locally-run agents
     /// don't appear to have silently vanished from the list. Same
     /// stacked-independent-condition shape and `VStack` position as
-    /// `hooksIssuesBanner` above.
-    private var monitoringDisabledBanner: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.yellow)
-                Text("Calyx's own agent monitoring is off")
-                    .font(.system(size: 11.5, weight: .medium, design: .rounded))
-                    .foregroundStyle(.primary)
-            }
-            Text("Locally-run agents won't be listed. Open Command Palette → Enable AI Agent IPC")
-                .font(.system(size: 10.5))
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(Color.yellow.opacity(0.15))
-        .accessibilityIdentifier(AccessibilityID.Sidebar.agentMonitoringDisabledBanner)
+    /// `hooksIssuesBanner` above. Rendered as plain, quiet text -- no
+    /// icon, no background -- matching `hooksIssuesBanner`'s own idiom;
+    /// named `monitoringDisabledNotice` rather than `...Banner` (see
+    /// `AgentSidebarGate.showsMonitoringDisabledBanner`'s own doc
+    /// comment for why the gating function keeps the old name).
+    ///
+    /// A single line rather than a title+body pair: the how-to-enable
+    /// instruction already lives in `disabledPlaceholder` above, so this
+    /// only needs to state the fact plus the command name that makes it
+    /// actionable. Uses `.fixedSize(horizontal: false, vertical: true)`
+    /// and no `lineLimit`, so it cannot truncate at any sidebar width
+    /// (see `SidebarLayout`'s min/max clamp) -- the old yellow-box
+    /// banner used to cut off mid-word ("Calyx's own agent
+    /// monitorin...", "...Enable AI...").
+    private var monitoringDisabledNotice: some View {
+        Text("Local agent monitoring is off. Enable AI Agent IPC")
+            .font(.system(size: 11.5, weight: .medium, design: .rounded))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .accessibilityIdentifier(AccessibilityID.Sidebar.agentMonitoringDisabledBanner)
     }
 
     // MARK: - Placeholders
@@ -190,11 +192,16 @@ enum AgentSidebarGate {
     }
 
     /// Companion to `decide(isServerRunning:hasExternal:)`: whether the
-    /// rows branch should ALSO show an explanatory banner that Calyx's
-    /// own agent monitoring is disabled, modeled on `hooksIssuesBanner`
-    /// (both are independent conditions stacked at the top of the rows
-    /// branch's `VStack`, not alternatives to the placeholder/rows
-    /// choice `decide` already makes).
+    /// rows branch should ALSO show `monitoringDisabledNotice`, an
+    /// explanatory notice that Calyx's own agent monitoring is disabled,
+    /// modeled on `hooksIssuesBanner` (both are independent conditions
+    /// stacked at the top of the rows branch's `VStack`, not
+    /// alternatives to the placeholder/rows choice `decide` already
+    /// makes). Keeps the `...Banner` name here for API/test stability
+    /// even though the gated view was renamed to
+    /// `monitoringDisabledNotice` once its yellow-box styling was
+    /// dropped for plain, quiet text matching `hooksIssuesBanner`'s own
+    /// idiom.
     ///
     /// The old all-or-nothing gate was incoherent either way: hiding
     /// everything while herdr was connected threw away real, useful
