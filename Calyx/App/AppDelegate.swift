@@ -25,7 +25,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let herdrIntegrationCoordinator = HerdrIntegrationCoordinator(
         resolver: HerdrBinaryResolver(),
         discovery: HerdrSessionDiscovery(),
-        sessionFactory: LiveHerdrSessionFactory(),
+        transportFactory: LiveHerdrTransportFactory(),
         mirror: HerdrAgentMirror(registry: .shared)
     )
 

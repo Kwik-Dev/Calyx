@@ -40,6 +40,19 @@
 //  - HerdrEvent throws a real DecodingError for a line that isn't even
 //    a recognisable envelope (missing the required "event" key); see
 //    this file's own comment on it below
+//  - Structural guards (schema required/optional contract): for
+//    HerdrPaneRecord, HerdrAgentRecord, HerdrSessionSnapshot,
+//    HerdrAgentSessionInfo, HerdrPaneScrollInfo, and
+//    HerdrPaneAgentStatusChangedEvent, a payload containing ONLY the
+//    schema's required fields decodes successfully with every optional
+//    property nil; and, where the type has nullable-typed optionals, the
+//    same payload with those fields present as explicit JSON `null`
+//    (never the optional-but-non-nullable ones -- see
+//    HerdrEvent.swift's own header) also decodes successfully with the
+//    same nil result. This is the regression pin for the exact defect
+//    class that shipped three times: a Swift property that should have
+//    been optional (per the schema's own `required` list) instead
+//    required, so a legal minimal server payload failed to decode.
 //
 
 import XCTest
@@ -114,7 +127,7 @@ final class HerdrEventTests: XCTestCase {
 
     func test_decode_snakeCaseEnvelope_paneCreated_decodesNestedPaneRecord() throws {
         let json = Data(#"""
-        {"data":{"pane":{"terminal_id":"term_1","agent":"claude","agent_status":"working","workspace_id":"w9","tab_id":"w9:t1","pane_id":"w9:p1","focused":true,"state_change_seq":7,"cwd":"/Users/dev","foreground_cwd":"/Users/dev","revision":2},"type":"pane_created"},"event":"pane_created"}
+        {"data":{"pane":{"terminal_id":"term_1","agent":"claude","agent_status":"working","workspace_id":"w9","tab_id":"w9:t1","pane_id":"w9:p1","focused":true,"cwd":"/Users/dev","foreground_cwd":"/Users/dev","revision":2},"type":"pane_created"},"event":"pane_created"}
         """#.utf8)
 
         let event = try JSONDecoder().decode(HerdrEvent.self, from: json)
@@ -208,7 +221,7 @@ final class HerdrEventTests: XCTestCase {
 
     func test_decode_unknownExtraFields_tolerated_atEnvelopeLevelAndInsideNestedPaneRecord() throws {
         let json = Data(#"""
-        {"server_time":999,"data":{"pane":{"terminal_id":"term_1","agent":"claude","agent_status":"blocked","workspace_id":"w9","tab_id":"w9:t1","pane_id":"w9:p1","focused":false,"state_change_seq":5,"cwd":"/Users/dev","foreground_cwd":"/Users/dev","revision":0,"scroll_offset":42,"scroll_at_bottom":true},"type":"pane_created","extra_data_field":"ignored"},"event":"pane_created"}
+        {"server_time":999,"data":{"pane":{"terminal_id":"term_1","agent":"claude","agent_status":"blocked","workspace_id":"w9","tab_id":"w9:t1","pane_id":"w9:p1","focused":false,"cwd":"/Users/dev","foreground_cwd":"/Users/dev","revision":0,"scroll_offset":42,"scroll_at_bottom":true},"type":"pane_created","extra_data_field":"ignored"},"event":"pane_created"}
         """#.utf8)
 
         let event = try JSONDecoder().decode(HerdrEvent.self, from: json)
@@ -235,5 +248,255 @@ final class HerdrEventTests: XCTestCase {
         let json = Data(#"{"data":{"foo":"bar"}}"#.utf8)
 
         XCTAssertThrowsError(try JSONDecoder().decode(HerdrEvent.self, from: json))
+    }
+
+    // MARK: - Structural guards: HerdrPaneRecord (PaneInfo)
+
+    /// The regression pin for this stage's whole reason to exist: a
+    /// payload carrying ONLY `PaneInfo`'s 7 schema-required fields must
+    /// decode successfully, with every one of the other 12 (optional)
+    /// properties `nil`.
+    func test_paneRecord_decodesMinimalRequiredOnlyPayload_withEveryOptionalNil() throws {
+        let json = Data(#"""
+        {"pane_id":"w9:p1","terminal_id":"term_1","workspace_id":"w9","tab_id":"w9:t1","focused":true,"agent_status":"working","revision":0}
+        """#.utf8)
+
+        let pane = try JSONDecoder().decode(HerdrPaneRecord.self, from: json)
+
+        XCTAssertEqual(pane.paneID, "w9:p1")
+        XCTAssertEqual(pane.terminalID, "term_1")
+        XCTAssertEqual(pane.workspaceID, "w9")
+        XCTAssertEqual(pane.tabID, "w9:t1")
+        XCTAssertTrue(pane.focused)
+        XCTAssertEqual(pane.agentStatus, .working)
+        XCTAssertEqual(pane.revision, 0)
+        XCTAssertNil(pane.agent)
+        XCTAssertNil(pane.agentSession)
+        XCTAssertNil(pane.cwd)
+        XCTAssertNil(pane.displayAgent)
+        XCTAssertNil(pane.foregroundCwd)
+        XCTAssertNil(pane.label)
+        XCTAssertNil(pane.scroll)
+        XCTAssertNil(pane.terminalTitle)
+        XCTAssertNil(pane.terminalTitleStripped)
+        XCTAssertNil(pane.title)
+        XCTAssertNil(pane.stateLabels)
+        XCTAssertNil(pane.tokens)
+    }
+
+    /// Required fields plus an explicit JSON `null` for every one of
+    /// `PaneInfo`'s NULLABLE optionals (`["string","null"]`/`anyOf`-
+    /// with-null on the wire) -- `state_labels`/`tokens` are deliberately
+    /// EXCLUDED here (bare `"type":"object"`, optional but never null;
+    /// see HerdrEvent.swift's own header) -- decodes identically to the
+    /// minimal payload above.
+    func test_paneRecord_decodesRequiredPlusExplicitNullForNullableOptionals_asNil() throws {
+        let json = Data(#"""
+        {"pane_id":"w9:p1","terminal_id":"term_1","workspace_id":"w9","tab_id":"w9:t1","focused":true,"agent_status":"working","revision":0,"agent":null,"agent_session":null,"cwd":null,"display_agent":null,"foreground_cwd":null,"label":null,"scroll":null,"terminal_title":null,"terminal_title_stripped":null,"title":null}
+        """#.utf8)
+
+        let pane = try JSONDecoder().decode(HerdrPaneRecord.self, from: json)
+
+        XCTAssertEqual(pane.paneID, "w9:p1")
+        XCTAssertNil(pane.agent)
+        XCTAssertNil(pane.agentSession)
+        XCTAssertNil(pane.cwd)
+        XCTAssertNil(pane.displayAgent)
+        XCTAssertNil(pane.foregroundCwd)
+        XCTAssertNil(pane.label)
+        XCTAssertNil(pane.scroll)
+        XCTAssertNil(pane.terminalTitle)
+        XCTAssertNil(pane.terminalTitleStripped)
+        XCTAssertNil(pane.title)
+    }
+
+    // MARK: - Structural guards: HerdrAgentRecord (AgentInfo)
+
+    /// Same guard as `HerdrPaneRecord`'s above, for `AgentInfo`'s own 7
+    /// required fields and 15 optional ones (`HerdrAgentRecord` has 8
+    /// more optional properties than `HerdrPaneRecord`: `interactive_ready`/
+    /// `launch_pending`/`name`/`screen_detection_skipped`/
+    /// `state_change_seq` where `HerdrPaneRecord` has `label`/`scroll`
+    /// instead -- see HerdrEvent.swift's own header).
+    func test_agentRecord_decodesMinimalRequiredOnlyPayload_withEveryOptionalNil() throws {
+        let json = Data(#"""
+        {"terminal_id":"term_1","agent_status":"working","workspace_id":"w9","tab_id":"w9:t1","pane_id":"w9:p1","focused":true,"revision":0}
+        """#.utf8)
+
+        let record = try JSONDecoder().decode(HerdrAgentRecord.self, from: json)
+
+        XCTAssertEqual(record.terminalID, "term_1")
+        XCTAssertEqual(record.agentStatus, .working)
+        XCTAssertEqual(record.workspaceID, "w9")
+        XCTAssertEqual(record.tabID, "w9:t1")
+        XCTAssertEqual(record.paneID, "w9:p1")
+        XCTAssertTrue(record.focused)
+        XCTAssertEqual(record.revision, 0)
+        XCTAssertNil(record.agent)
+        XCTAssertNil(record.agentSession)
+        XCTAssertNil(record.cwd)
+        XCTAssertNil(record.displayAgent)
+        XCTAssertNil(record.foregroundCwd)
+        XCTAssertNil(record.name)
+        XCTAssertNil(record.terminalTitle)
+        XCTAssertNil(record.terminalTitleStripped)
+        XCTAssertNil(record.title)
+        XCTAssertNil(record.interactiveReady)
+        XCTAssertNil(record.launchPending)
+        XCTAssertNil(record.screenDetectionSkipped)
+        XCTAssertNil(record.stateChangeSeq, "absent state_change_seq must decode to nil, never the schema's own \"default\": 0 -- see HerdrEvent.swift's header")
+        XCTAssertNil(record.stateLabels)
+        XCTAssertNil(record.tokens)
+    }
+
+    /// Required fields plus an explicit JSON `null` for every one of
+    /// `AgentInfo`'s NULLABLE optionals -- `interactive_ready`/
+    /// `launch_pending`/`screen_detection_skipped`/`state_change_seq`/
+    /// `state_labels`/`tokens` are deliberately EXCLUDED (never null on
+    /// this wire; see HerdrEvent.swift's own header).
+    func test_agentRecord_decodesRequiredPlusExplicitNullForNullableOptionals_asNil() throws {
+        let json = Data(#"""
+        {"terminal_id":"term_1","agent_status":"working","workspace_id":"w9","tab_id":"w9:t1","pane_id":"w9:p1","focused":true,"revision":0,"agent":null,"agent_session":null,"cwd":null,"display_agent":null,"foreground_cwd":null,"name":null,"terminal_title":null,"terminal_title_stripped":null,"title":null}
+        """#.utf8)
+
+        let record = try JSONDecoder().decode(HerdrAgentRecord.self, from: json)
+
+        XCTAssertEqual(record.terminalID, "term_1")
+        XCTAssertNil(record.agent)
+        XCTAssertNil(record.agentSession)
+        XCTAssertNil(record.cwd)
+        XCTAssertNil(record.displayAgent)
+        XCTAssertNil(record.foregroundCwd)
+        XCTAssertNil(record.name)
+        XCTAssertNil(record.terminalTitle)
+        XCTAssertNil(record.terminalTitleStripped)
+        XCTAssertNil(record.title)
+    }
+
+    // MARK: - Structural guards: HerdrSessionSnapshot (SessionSnapshot)
+
+    /// All 7 of `SessionSnapshot`'s fields are required -- `version`/
+    /// `protocol`/`workspaces`/`tabs`/`panes`/`layouts`/`agents` -- even
+    /// though an empty array is a legal VALUE for the array-typed ones.
+    /// Only `focused_workspace_id`/`focused_tab_id`/`focused_pane_id`
+    /// are optional, and absent here.
+    func test_sessionSnapshot_decodesMinimalRequiredOnlyPayload_withFocusedFieldsNil() throws {
+        let json = Data(#"""
+        {"version":"0.8.0","protocol":19,"workspaces":[],"tabs":[],"panes":[],"layouts":[],"agents":[]}
+        """#.utf8)
+
+        let snapshot = try JSONDecoder().decode(HerdrSessionSnapshot.self, from: json)
+
+        XCTAssertEqual(snapshot.version, "0.8.0")
+        XCTAssertEqual(snapshot.protocolVersion, 19)
+        XCTAssertEqual(snapshot.workspaces.count, 0)
+        XCTAssertEqual(snapshot.tabs.count, 0)
+        XCTAssertEqual(snapshot.panes.count, 0)
+        XCTAssertEqual(snapshot.layouts.count, 0)
+        XCTAssertEqual(snapshot.agents.count, 0)
+        XCTAssertNil(snapshot.focusedWorkspaceID)
+        XCTAssertNil(snapshot.focusedTabID)
+        XCTAssertNil(snapshot.focusedPaneID)
+    }
+
+    /// Required fields plus an explicit JSON `null` for all three
+    /// `focused_*` fields (all nullable on the wire) -- decodes
+    /// identically to the minimal payload above.
+    func test_sessionSnapshot_decodesRequiredPlusExplicitNullForFocusedFields_asNil() throws {
+        let json = Data(#"""
+        {"version":"0.8.0","protocol":19,"workspaces":[],"tabs":[],"panes":[],"layouts":[],"agents":[],"focused_workspace_id":null,"focused_tab_id":null,"focused_pane_id":null}
+        """#.utf8)
+
+        let snapshot = try JSONDecoder().decode(HerdrSessionSnapshot.self, from: json)
+
+        XCTAssertNil(snapshot.focusedWorkspaceID)
+        XCTAssertNil(snapshot.focusedTabID)
+        XCTAssertNil(snapshot.focusedPaneID)
+    }
+
+    // MARK: - Structural guards: HerdrAgentSessionInfo (AgentSessionInfo)
+
+    /// Every field of `AgentSessionInfo` is required -- there is no
+    /// optional/nullable split to guard, so the "minimal" payload IS the
+    /// full payload.
+    func test_agentSessionInfo_decodesFullyRequiredPayload() throws {
+        let json = Data(#"""
+        {"source":"herdr:claude","agent":"claude","kind":"id","value":"session-value-1"}
+        """#.utf8)
+
+        let info = try JSONDecoder().decode(HerdrAgentSessionInfo.self, from: json)
+
+        XCTAssertEqual(info.source, "herdr:claude")
+        XCTAssertEqual(info.agent, "claude")
+        XCTAssertEqual(info.kind, .id)
+        XCTAssertEqual(info.value, "session-value-1")
+    }
+
+    /// `kind` tolerates a wire value outside the schema's current
+    /// "id"/"path" enum -- see HerdrEvent.swift's own header for why
+    /// `HerdrAgentSessionRefKind` mirrors `HerdrAgentStatus`'s own
+    /// `.unrecognized(String)` precedent here.
+    func test_agentSessionInfo_unrecognisedKind_decodesToUnrecognizedCase_withoutThrowing() throws {
+        let json = Data(#"""
+        {"source":"herdr:claude","agent":"claude","kind":"future_kind_v2","value":"session-value-1"}
+        """#.utf8)
+
+        let info = try JSONDecoder().decode(HerdrAgentSessionInfo.self, from: json)
+
+        XCTAssertEqual(info.kind, .unrecognized("future_kind_v2"))
+    }
+
+    // MARK: - Structural guards: HerdrPaneScrollInfo (PaneScrollInfo)
+
+    /// Every field of `PaneScrollInfo` is required -- there is no
+    /// optional/nullable split to guard, so the "minimal" payload IS the
+    /// full payload.
+    func test_paneScrollInfo_decodesFullyRequiredPayload() throws {
+        let json = Data(#"""
+        {"offset_from_bottom":0,"max_offset_from_bottom":10,"viewport_rows":23}
+        """#.utf8)
+
+        let scroll = try JSONDecoder().decode(HerdrPaneScrollInfo.self, from: json)
+
+        XCTAssertEqual(scroll.offsetFromBottom, 0)
+        XCTAssertEqual(scroll.maxOffsetFromBottom, 10)
+        XCTAssertEqual(scroll.viewportRows, 23)
+    }
+
+    // MARK: - Structural guards: HerdrPaneAgentStatusChangedEvent (subscription_event.PaneAgentStatusChangedEvent)
+
+    /// A payload carrying ONLY `pane_id`/`workspace_id`/`agent_status`
+    /// (the 3 schema-required fields) decodes successfully, with
+    /// `agent`/`displayAgent`/`title`/`stateLabels` all `nil`.
+    func test_paneAgentStatusChangedEvent_decodesMinimalRequiredOnlyPayload_withEveryOptionalNil() throws {
+        let json = Data(#"""
+        {"pane_id":"w9:p1","workspace_id":"w9","agent_status":"working"}
+        """#.utf8)
+
+        let changed = try JSONDecoder().decode(HerdrPaneAgentStatusChangedEvent.self, from: json)
+
+        XCTAssertEqual(changed.paneID, "w9:p1")
+        XCTAssertEqual(changed.workspaceID, "w9")
+        XCTAssertEqual(changed.agentStatus, .working)
+        XCTAssertNil(changed.agent)
+        XCTAssertNil(changed.displayAgent)
+        XCTAssertNil(changed.title)
+        XCTAssertNil(changed.stateLabels)
+    }
+
+    /// Required fields plus an explicit JSON `null` for `agent`/
+    /// `display_agent`/`title` (this event's only NULLABLE optionals --
+    /// `state_labels` is deliberately EXCLUDED, a bare `"type":"object"`
+    /// that is optional but never null on this wire).
+    func test_paneAgentStatusChangedEvent_decodesRequiredPlusExplicitNullForNullableOptionals_asNil() throws {
+        let json = Data(#"""
+        {"pane_id":"w9:p1","workspace_id":"w9","agent_status":"working","agent":null,"display_agent":null,"title":null}
+        """#.utf8)
+
+        let changed = try JSONDecoder().decode(HerdrPaneAgentStatusChangedEvent.self, from: json)
+
+        XCTAssertNil(changed.agent)
+        XCTAssertNil(changed.displayAgent)
+        XCTAssertNil(changed.title)
     }
 }

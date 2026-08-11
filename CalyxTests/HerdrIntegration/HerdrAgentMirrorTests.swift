@@ -65,16 +65,19 @@ final class HerdrAgentMirrorTests: XCTestCase {
         cwd: String? = "/Users/dev/project"
     ) -> HerdrAgentRecord {
         HerdrAgentRecord(
-            terminalID: "term_\(paneID)", agent: agent, agentStatus: status,
-            workspaceID: workspaceID, tabID: "\(workspaceID):t1", paneID: paneID,
-            focused: false, stateChangeSeq: 0, cwd: cwd, foregroundCwd: cwd, revision: 0
+            terminalID: "term_\(paneID)", agentStatus: status, workspaceID: workspaceID,
+            tabID: "\(workspaceID):t1", paneID: paneID, focused: false, revision: 0,
+            agent: agent, agentSession: nil, cwd: cwd, displayAgent: nil, foregroundCwd: cwd,
+            name: nil, terminalTitle: nil, terminalTitleStripped: nil, title: nil,
+            interactiveReady: nil, launchPending: nil, screenDetectionSkipped: nil,
+            stateChangeSeq: nil, stateLabels: nil, tokens: nil
         )
     }
 
     private func snapshot(agents: [HerdrAgentRecord]) -> HerdrSessionSnapshot {
         HerdrSessionSnapshot(
-            version: nil, protocolVersion: nil, focusedWorkspaceID: nil, focusedTabID: nil,
-            focusedPaneID: nil, workspaces: [], tabs: [], panes: [], layouts: [], agents: agents
+            version: "0.8.0", protocolVersion: 19, workspaces: [], tabs: [], panes: [], layouts: [],
+            agents: agents, focusedWorkspaceID: nil, focusedTabID: nil, focusedPaneID: nil
         )
     }
 
@@ -94,9 +97,11 @@ final class HerdrAgentMirrorTests: XCTestCase {
 
     private func paneRecord(paneID: String, workspaceID: String = "w1") -> HerdrPaneRecord {
         HerdrPaneRecord(
-            terminalID: "term_\(paneID)", agent: nil, agentStatus: .unknown,
-            workspaceID: workspaceID, tabID: "\(workspaceID):t1", paneID: paneID,
-            focused: false, stateChangeSeq: 0, cwd: nil, foregroundCwd: nil, revision: 0
+            terminalID: "term_\(paneID)", agentStatus: .unknown, workspaceID: workspaceID,
+            tabID: "\(workspaceID):t1", paneID: paneID, focused: false, revision: 0,
+            agent: nil, agentSession: nil, cwd: nil, displayAgent: nil, foregroundCwd: nil,
+            label: nil, scroll: nil, terminalTitle: nil, terminalTitleStripped: nil, title: nil,
+            stateLabels: nil, tokens: nil
         )
     }
 

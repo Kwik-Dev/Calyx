@@ -1,189 +1,306 @@
 // HerdrIntegrationCoordinator.swift
 // Calyx
 //
-// @MainActor lifecycle owner for the herdr Stage 2 connection: detects
-// herdr, opens/subscribes/snapshots a `HerdrSocketSession`, keeps
+// @MainActor lifecycle owner for the herdr connection: detects herdr,
+// takes a `session.snapshot` on its own one-shot connection, subscribes
+// on a SEPARATE, long-lived event-stream connection, keeps
 // `HerdrAgentMirror` in sync with pushed events, and rebuilds or
-// reconnects the connection as the pane set or transport health
-// changes. Every dependency is injected (binary resolver, discovery, a
-// session factory, the mirror) so this file's own tests never open a
-// real socket -- see HerdrIntegrationCoordinatorTests.swift.
+// reconnects as the pane set or transport health changes. Every
+// dependency is injected (binary resolver, discovery, a transport
+// factory, the mirror) so this file's own tests never open a real socket
+// -- see HerdrIntegrationCoordinatorTests.swift.
 //
 // LIFECYCLE: driven ENTIRELY by explicit calls to `start()` from
 // outside (app launch / app became active / Agents sidebar became
-// visible -- wiring those call sites into AppDelegate/
-// CalyxWindowController/AgentStatusView is a later stage, out of this
-// file's own scope). There is no polling timer anywhere in this type:
-// `start()` is a no-op if herdr isn't currently detectable, and does
-// nothing again on a second call while already connected -- nothing
-// here loops or retries on its own initiative except the bounded
-// reconnect described below, itself only ever triggered BY a
-// transport-level EOF/failure, never by a clock.
+// visible). There is no polling timer anywhere in this type: `start()`
+// is a no-op if herdr isn't currently detectable, and does nothing again
+// on a second call while already connected -- nothing here loops or
+// retries on its own initiative except the bounded reconnect described
+// below, itself only ever triggered BY a transport-level EOF/failure,
+// never by a clock.
 //
-// DETECTION (`start()` steps 1-2 below): `resolver.resolve()` and
-// `discovery.discover()`/`discovery.isAlive(socketPath:)` all do
-// blocking filesystem/socket work (PATH scans, a `connect()`/`poll()`
-// probe per candidate). Because `start()` runs on every
-// `applicationDidBecomeActive` and every Agents sidebar appearance,
-// this whole detection step is dispatched as ONE unit onto
-// `DispatchQueue.global()` behind a `withCheckedContinuation`, mirroring
-// `HerdrCLISessionProvider.listSessions()`'s identical idiom, so it
-// never blocks `@MainActor` -- see `detectLiveCandidate()`.
+// DETECTION (`start()` steps 1-2 below): unchanged from before --
+// `resolver.resolve()` and `discovery.discover()`/`discovery
+// .isAlive(socketPath:)` all do blocking filesystem/socket work, so this
+// whole step is dispatched as ONE unit onto `DispatchQueue.global()`
+// behind a `withCheckedContinuation`, never blocking `@MainActor` -- see
+// `detectLiveCandidate()`.
 //
-// START SEQUENCE (pinned by test -- this exact order, because herdr
-// never replays agent-status events on (re)subscribe, only structural
-// ones; `session.snapshot()` is the only way to learn CURRENT statuses,
-// so it must run after subscribing, never before or instead of it):
-//   1. `resolver.resolve()` -- nil means herdr isn't installed; bail,
-//      touching NOTHING else (no session created).
-//   2. `discovery.discover()` then `discovery.isAlive(socketPath:)` --
-//      no live candidate means bail the same way.
-//   3. `sessionFactory.makeSession()`, then `session.start(socketPath:)`.
-//   4. `session.ping()` (handshake).
-//   5. `session.subscribe(_:)` with the FULL set: the five structure
-//      events herdr documents as type-only -- "pane.created",
-//      "pane.closed", "pane.exited", "pane.agent_detected",
-//      "layout.updated" -- PLUS one `.agentStatusChanged(paneID:)` per
-//      pane THIS ATTEMPT already knows about (empty on this instance's
-//      very first attempt, since nothing has been snapshotted yet;
-//      populated from the previous snapshot on a reconnect/rebuild, or
-//      -- see BOOTSTRAP REBUILD below -- from this same `start()`
-//      call's own prior attempt).
-//   6. `session.snapshot()`, then `mirror.applySnapshot(_:socketPath:)`
-//      -- this is also where `knownPaneIDs` (the "currently known pane"
-//      set step 5 reads) is (re)populated, from the snapshot's
-//      `agents[].paneID`, matching what `HerdrAgentMirror` itself
-//      treats as authoritative. Applied on EVERY attempt, even one
-//      BOOTSTRAP REBUILD is about to discard -- the snapshot data
-//      itself is accurate; only that attempt's subscription coverage
-//      was stale.
-//   7. Only THEN does this instance begin consuming the stream
-//      `subscribe(_:)` returned, for as long as the connection lives --
-//      see "ONGOING EVENT HANDLING" below, and ONLY for the attempt
-//      that survives BOOTSTRAP REBUILD below. Deferring this until
-//      after step 6 is deliberate: `subscribe(_:)` replays every
-//      EXISTING pane as a `.paneCreated` event as soon as it is acked
-//      (before step 6 even runs), and `AsyncThrowingStream` buffers
-//      those unread elements rather than dropping them -- so by the
-//      time this instance starts reading, `knownPaneIDs` has ALREADY
-//      been populated by step 6, and the buffered replay burst's own
-//      pane ids are (barring a pane created in the tiny window between
-//      subscribe and snapshot) already all "known" -- see "REBUILD
-//      TRIGGERS" below for why that dedup is what keeps this from
-//      re-triggering a rebuild for every single one of its own replayed
-//      panes.
+// CONNECT SEQUENCE (`attemptConnect(socketPath:)`, pinned by test) --
+// MEASURED against a real herdr 0.8.0 server: a request/response
+// connection serves EXACTLY ONE request (the server closes it right
+// after), and `events.subscribe` is the ONLY thing that keeps a
+// connection open -- see HerdrConnection.swift's own header for the full
+// measured contract this follows directly from:
+//   1. `HerdrTransportFactory.makeTransport()` + `HerdrOneShotRequest
+//      .send(method: "session.snapshot", ...)`, on its OWN transport --
+//      this is the ONLY way to learn the CURRENT pane set and agent
+//      statuses (subscribing never replays agent-status events, only
+//      structural ones, and a replayed pane_created record carries no
+//      agent identity at all -- see HerdrConnection.swift's own header,
+//      fact 4).
+//   2. `mirror.applySnapshot(_:socketPath:)` -- applied on EVERY
+//      successful snapshot, including one about to be superseded by a
+//      REBUILD TRIGGER below; the snapshot data itself is always
+//      accurate.
+//   3. `knownPaneIDs` is (re)populated from the snapshot's own
+//      `panes[].paneID` -- REPLACING whatever this instance held before,
+//      never merged with it. This is what the per-pane subscription list
+//      below is built from, so it is always exactly what THIS attempt's
+//      own snapshot just revealed. Deliberately NOT `agents[]` -- a
+//      pane with no detected agent is still a pane whose status changes
+//      we want to hear about, and seeding from `agents[]` alone also
+//      guaranteed a mismatch against the very first event any replay
+//      burst ever delivers -- see REPLAY BURST RECONCILIATION below for
+//      the MEASURED DEFECT this caused and its fix. Separately,
+//      `recognizedPaneIDs` (UNION, never replaced -- see REPLAY BURST
+//      RECONCILIATION) also absorbs every one of these pane ids on
+//      every `attemptConnect`.
+//   4. `HerdrTransportFactory.makeTransport()` + `HerdrEventStream
+//      .subscribe(_:socketPath:)`, on its OWN, SEPARATE transport,
+//      carrying the five structure events herdr documents as type-only
+//      ("pane.created", "pane.closed", "pane.exited",
+//      "pane.agent_detected", "layout.updated") PLUS one
+//      `.agentStatusChanged(paneID:)` per pane step 3 just revealed --
+//      per pane step 3 revealed ONLY, never per a `recognizedPaneIDs`-
+//      only (replay-only) pane id -- see REPLAY BURST RECONCILIATION
+//      below, "WHY THE SUBSCRIBE LIST STAYS `knownPaneIDs`-ONLY": MEASURED
+//      against a real herdr 0.8.0 server, subscribing
+//      `pane.agent_status_changed` for a pane id herdr does not
+//      currently consider current -- whether it once genuinely existed
+//      or never did -- is REJECTED outright
+//      ({"error":{"code":"pane_not_found","message":"pane ... not
+//      found"}}), and the WHOLE `events.subscribe` request fails,
+//      closing the connection.
+//   5. Only on a successful subscribe does this instance begin consuming
+//      the returned stream, for as long as that connection lives -- see
+//      "ONGOING EVENT HANDLING" below.
 //
-// BOOTSTRAP REBUILD (A1): step 5 can only ever subscribe to panes THIS
-// ATTEMPT already knows about before its own step 6 runs -- on a cold
-// `start()` that is always the empty set, even though herdr may already
-// have panes with running agents. Left unaddressed, those agents' LATER
-// status transitions would never reach this instance until some
-// unrelated pane creation happened to force a rebuild. So:
-// `attemptConnect(socketPath:)` loops steps 3-6 (each iteration bounded
-// by HANDSHAKE DEADLINE below): after step 6, if the pane set it
-// revealed (`Set(snapshot.agents.map(\.paneID))`) differs from the pane
-// set THIS iteration's own step 5 actually subscribed with, the
-// session is dropped WITHOUT ever running step 7 (consuming its stream
-// would risk a spurious REBUILD TRIGGER off its own replay burst for no
-// benefit, since it is being discarded anyway), `knownPaneIDs` is
-// updated to the revealed set, and steps 3-6 run again. This converges
-// after exactly one retry in the overwhelmingly common case: the
-// retry's own step 5 now subscribes with the just-revealed set, so its
-// own step 6 snapshot matches unless the live pane set changed again in
-// the tiny window between the two attempts -- structurally the same
-// "vanishingly small window" this file already accepts for an ordinary
-// REBUILD TRIGGER racing a concurrent pane creation. The
-// retry-only-on-mismatch shape (never an unconditional second attempt)
-// IS the storm guard: an iteration whose own revealed set matches what
-// it just subscribed with never loops again.
+// Because the snapshot ALWAYS runs before the subscribe that depends on
+// it, the subscribe's own per-pane list is always exactly what THAT
+// snapshot revealed. The one remaining, deliberately accepted race -- a
+// pane created in the tiny window between the snapshot response and the
+// subscribe ack -- is still caught without any retry: subscribing
+// replays every EXISTING pane as a `pane.created` event on the new
+// connection (HerdrConnection.swift's own header, fact 4), which
+// `consumeEvents` below still reacts to like any other newly-observed
+// pane, via REPLAY BURST RECONCILIATION below.
 //
-// BOOTSTRAP REBUILD ITERATION CAP (A3): "exactly one retry in the
-// overwhelmingly common case" above is exactly that -- common, not
-// guaranteed. A pane set that keeps changing between every single
-// retry's own subscribe and its own snapshot would otherwise spin
-// `attemptConnect(socketPath:)`'s loop forever, each iteration paying
-// for a full connect+ping+subscribe+snapshot round trip against a real
-// herdr server. `maxBootstrapRebuildIterations` bounds the loop itself
-// -- a SEPARATE axis from HANDSHAKE DEADLINE (A2) below, which only
-// bounds ONE iteration's own wait, never the iteration count. Once
-// exhausted without ever converging, `attemptConnect(socketPath:)`
-// returns `false`, identical to an ordinary handshake failure -- every
-// existing caller already handles that outcome, so exhausting this cap
-// needs no dedicated handling of its own.
+// REPLAY BURST RECONCILIATION -- MEASURED DEFECT and fix. Against a
+// real herdr 0.8.0 server, `session.snapshot` deterministically returned
+// a strict SUBSET of what a FRESH `events.subscribe`'s own replay burst
+// reported (2 panes vs. 5 -- the extra 3 belonged to workspaces closed
+// BEFORE either probe ever connected; confirmed byte-for-byte identical
+// across two independent probes). A design that treats "a replayed pane
+// id I do not already know about" as an IMMEDIATE rebuild trigger
+// therefore rebuilds forever: the very FIRST replayed event triggers a
+// rebuild, whose own fresh subscribe replays the identical burst,
+// triggering another rebuild, with NO delay and NO bound, against a
+// server whose actual current state never changes. That was this file's
+// own prior bug. The fix tracks two SEPARATE sets for two SEPARATE
+// purposes:
+//   - `knownPaneIDs` (REPLACED wholesale by every `attemptConnect`'s own
+//     fresh `panes[]`) is exactly, and ONLY EVER, what this connection's
+//     subscribe legitimately lists per-pane -- CONNECT SEQUENCE step 4
+//     above is why a replay-only id must never end up in this set.
+//   - `recognizedPaneIDs` (UNION -- grows across every
+//     attemptConnect/reconcile for as long as `isActive`; cleared only
+//     by `resetToIdle()`) is every pane id this instance has EVER been
+//     told about, by snapshot OR by replay. This -- not `knownPaneIDs`
+//     -- is what "is this `pane.created` event genuinely new" is judged
+//     against in steady state (below): once a replay-only ghost id has
+//     been recognized once, it never again looks new. This is the one
+//     place this file's behavior deliberately departs from a literal
+//     "compare the union against the panes actually subscribed" --
+//     CONNECT SEQUENCE step 4 rules out ever WIDENING the subscribed set
+//     itself to include a replay-only id, so the comparison and the
+//     convergence below are against `recognizedPaneIDs` instead.
 //
-// HANDSHAKE DEADLINE (A2): steps 3-6 above (one loop iteration) are
-// raced against `handshakeTimeout`, via two independent, unstructured
-// `Task`s resuming a shared `CheckedContinuation` at most once (mirrors
-// `SessionDaemonClient.bounded()`'s identical shape and its own doc
-// comment's reasoning for why `withTaskGroup` cannot be used here: a
-// stalled handshake -- the server accepted the connection but never
-// answers -- never observes cancellation, so a `TaskGroup`'s implicit
-// "await every child before returning" would hang exactly as long as
-// the deadline exists to bound). `sleep` -- the same injected delay
-// primitive DISCONNECT HANDLING's own backoff uses below -- is the
-// timeout arm's wait primitive, so tests drive both deterministically.
-// Expiry is handled EXACTLY like the handshake throwing: the iteration
-// produces no result, and `attemptConnect(socketPath:)` returns
-// `false` -- every existing caller (`start()`'s plain give-up,
-// `rebuild(socketPath:)`'s `handleDisconnect(socketPath:)` + bounded
-// reconnect, `reconnectLoop`'s own next attempt) already handles an
-// ordinary connect failure correctly, so none of them need to change
-// for this. A losing handshake that eventually completes ON ITS OWN
-// (e.g. an ordinary RPC failure, or the transport EOFing/failing
-// normally) needs no further help: nothing it produced was ever
-// assigned to `currentSession`/`eventLoopTask` or applied to the
-// mirror, so dropping the abandoned `HerdrSocketSession` reference,
-// once its own `Task` closure actually returns, is, per that type's own
-// "no ordinary close()" contract, its complete teardown. A losing
-// handshake that is instead STUCK -- suspended forever inside some
-// pending request's own `awaitEntry` continuation, e.g. `ping()` never
-// getting a reply because herdr accepted the connection but never
-// answers -- is a DIFFERENT case ARC alone cannot resolve: a
-// `CheckedContinuation` never resumes itself on cancellation, so that
-// closure (and every strong reference it holds -- the session, the
-// socket fd, the `DispatchSourceRead` reading it) would otherwise never
-// be released, no matter how many times the losing `Task` is
-// `cancel()`ed. The TIMEOUT arm below, immediately after ACTUALLY
-// WINNING `bridge.resume(with:)` (never on a losing/no-op resume -- the
-// handshake arm may have already won and started using this exact
-// session as `currentSession`), calls `session.abandon()` for exactly
-// this reason -- see `HerdrSocketSession.abandon()`'s own doc comment
-// for the mechanism.
+// Right after every successful subscribe, this instance spends up to
+// `replayBurstSettleWindow` in an ACCUMULATING phase
+// (`isAccumulatingReplayBurst`): every `pane.created` event is added to
+// `pendingBurstPaneIDs` and applied to the mirror as usual, but is NOT
+// individually treated as a rebuild trigger -- unlike
+// `pane.closed`/`pane.exited`, which stay UNCONDITIONAL rebuild triggers
+// at ALL times, accumulating or not (HerdrConnection.swift's own header,
+// fact 4: only `pane_created` is ever replayed, so acting on these two
+// immediately carries no storm risk). A background task
+// (`burstSettleTask`) sleeps `replayBurstSettleWindow` (the SAME injected
+// `sleep` primitive DISCONNECT HANDLING's own backoff below uses) and
+// then settles the burst EXACTLY once:
+// `pendingBurstPaneIDs.subtracting(recognizedPaneIDs)` is what the burst
+// revealed that this instance did not already recognize. Empty -- the
+// common, converged steady state -- ends the accumulating phase with NO
+// rebuild at all, and resets the CONSECUTIVE-REBUILD CAP below (a clean
+// settle is itself proof this cycle is not pathological). Non-empty --
+// e.g. the very first subscribe against a server carrying replay-only
+// ghosts -- merges the difference into `recognizedPaneIDs` (so it can
+// never look "new" again) and rebuilds EXACTLY ONCE via
+// `triggerRebuild`, below. Because the burst is deterministic, that
+// rebuild's own fresh subscribe replays the identical burst again, but
+// this time every replayed id is already in `recognizedPaneIDs` -- the
+// second settle finds nothing new, and the cycle terminates.
+//
+// WHY A FIXED, NON-RESETTING WINDOW rather than "the first
+// non-`pane.created` event": measured against the same real server, a
+// replay burst is NOT a contiguous run of `pane.created` events followed
+// by ordinary traffic -- it deterministically INTERLEAVES
+// `pane.agent_detected` and `layout.updated` events between
+// `pane.created` ones (confirmed byte-for-byte identical across
+// independent probes). "Settle on the first non-`pane.created` event"
+// would therefore conclude the burst had ended after the SECOND event of
+// a 13-event burst, compute an incomplete union, and converge only after
+// several more rebuilds (bounded by the cap below regardless, but
+// needlessly). A FIXED window sidesteps this entirely: it does not
+// inspect event TYPE at all, only that the window has elapsed.
+//
+// CANNOT HANG: `replayBurstSettleWindow` is a single `sleep` call,
+// started once per successful subscribe and NEVER reset/extended by
+// subsequent traffic (contrast a resetting debounce, which a
+// continuously-active connection could in principle defer forever) -- it
+// fires unconditionally after a bounded duration, full stop, regardless
+// of how much or how little traffic arrives during it. The consume loop
+// itself makes progress the entire time regardless (every event,
+// replayed or not, is still applied to the mirror as it arrives) --
+// nothing here blocks waiting on this window; it only gates whether a
+// `pane.created` id is accumulated or immediately actionable.
+//
+// REBUILD TRIGGERS (steady state, i.e. once a connection's own
+// accumulating phase has settled): a "pane.created" event is a trigger
+// only when its pane id is not already in `recognizedPaneIDs` (a
+// genuinely new pane -- e.g. one created long after this connection
+// settled). A `.paneClosed`/`.paneExited` event is ALWAYS a trigger,
+// unconditionally, at ANY time (accumulating or steady state) -- see
+// REPLAY BURST RECONCILIATION above for why these two carry no storm
+// risk. Every trigger funnels through `triggerRebuild(socketPath:)`,
+// shared with the settle task's own burst-driven rebuild -- see
+// CONSECUTIVE-REBUILD CAP below for what it checks before tearing
+// anything down.
+//
+// CONSECUTIVE-REBUILD CAP -- independent of, and never touching,
+// `totalReconnectAttempts` (LIFETIME RECONNECT BUDGET below bounds a
+// DIFFERENT failure mode -- a connection that will not stay up at all;
+// this cap instead bounds a connection that stays up fine but keeps
+// getting rebuilt, e.g. a pathologically misbehaving server whose own
+// replay burst never converges on any subscribe).
+// `consecutiveRebuildsWithoutProgress` counts rebuilds since the last one
+// that either (a) discovered a genuinely new, CURRENT pane -- a pane id
+// present in a fresh `session.snapshot` that was NOT in the immediately
+// PRECEDING `knownPaneIDs`, a purely mechanical, post-hoc definition of
+// "this rebuild was fruitful," computed inside `attemptConnect` itself
+// so it applies uniformly no matter what triggered the rebuild -- or (b)
+// settled a burst with nothing new to reconcile (proof this cycle
+// understands the current state, not proof of "new" progress, but
+// equally proof it is not a pathological loop). Once
+// `maxConsecutiveRebuildsWithoutProgress` is reached, `triggerRebuild`
+// stops rebuilding ENTIRELY -- checked BEFORE any teardown, so the
+// CURRENT, still-live, still-subscribed connection is left completely
+// untouched: a subscription that misses a status push for a stale/
+// never-current pane id is strictly better than an infinite reconnect
+// loop against a server that will never converge. Consecutive rebuilds
+// also back off (`rebuildBackoffDelays`, indexed by the pre-increment
+// counter and clamped to the schedule's own last entry), sleeping BEFORE
+// tearing down the current connection -- the existing connection stays
+// live and keeps consuming events for the full backoff duration, not
+// just until the new one happens to be ready.
+//
+// SINGLE OWNER, NOT A RACE: `triggerRebuild` and the "stream ended" tail
+// of `consumeEvents` (DISCONNECT HANDLING below) are the only two places
+// that ever call `attemptConnect` again after the first, and they are
+// mutually exclusive via `isRebuildOrReconnectInFlight`, a plain flag
+// claimed-and-released SYNCHRONOUSLY (before any `await`, so there is no
+// window for two callers to both see it unclaimed): whichever of "the
+// burst-settle task decided to reconcile-rebuild" or "this connection's
+// own stream genuinely ended" reaches its own outer entry point FIRST
+// proceeds; the other backs off rather than independently opening a
+// SECOND, redundant connection out from under the first.
+// `connectionGeneration` (bumped on every successful `attemptConnect`,
+// regardless of caller) additionally lets the burst-settle task recognize
+// on its own eventual wakeup that the connection it was accumulating for
+// has ALREADY been superseded by an unrelated trigger (e.g. an
+// unconditional paneClosed/paneExited rebuild firing before the window
+// even elapses) -- checked alongside `Task.isCancelled` (the settle task
+// is also explicitly cancelled at the same shared teardown point every
+// superseding path already uses -- EXPLICIT TRANSPORT TEARDOWN below)
+// and `isAccumulatingReplayBurst` itself (flipped by whichever path acts
+// first). One narrow, deliberately accepted gap remains, mirroring this
+// file's own existing A2 race (CONNECT SEQUENCE above): a genuinely
+// external transport EOF/failure landing in the vanishingly small
+// scheduling window after a same-generation settle task has already
+// passed both its cancellation and generation checks, but before this
+// connection's own natural-disconnect path has itself claimed
+// `isRebuildOrReconnectInFlight`, could in principle see the mutex
+// already held and back off from handling that disconnect directly --
+// accepted because the in-flight rebuild already holding the mutex will
+// itself reach `attemptConnect`/`handleDisconnect` and correctly resolve
+// the connection's fate either way; nothing is silently dropped, only
+// handled by whichever side won.
+//
+// HANDSHAKE DEADLINE (A2) -- now PER STEP, not one combined window:
+// each of the two steps above (the snapshot request, the subscribe ack)
+// independently races `handshakeTimeout` via `runWithDeadline(transport:
+// operation:)`, mirroring `SessionDaemonClient.bounded()`'s own
+// two-unstructured-Tasks-race-a-shared-continuation shape (`withTaskGroup`
+// cannot be used here: a stalled step -- the server accepted the
+// connection but never answers -- never observes cancellation, so a
+// `TaskGroup`'s implicit "await every child before returning" would hang
+// exactly as long as the deadline exists to bound). `sleep` -- the same
+// injected delay primitive DISCONNECT HANDLING's own backoff uses below
+// -- is the timeout arm's wait primitive, so tests drive both
+// deterministically. Expiry is handled EXACTLY like the step throwing:
+// `attemptConnect` returns `false`, identical to an ordinary connect
+// failure -- every existing caller already handles that outcome.
+//
+// On timeout, `runWithDeadline` closes the STUCK step's own transport
+// DIRECTLY -- unlike `HerdrSocketSession` (the type this coordinator used
+// to depend on), whose stuck requests needed an `abandon()` indirection
+// through the session actor itself, a one-shot/event-stream connection's
+// transport is created by, and already held directly by, THIS caller (see
+// `attemptConnect(socketPath:)`), so there is no intermediary to ask.
+// Closing it unsticks whichever suspension the stuck step is inside,
+// exactly as an ordinary transport EOF would, letting that step's own
+// `Task` unwind and release its captures instead of leaking them forever.
 //
 // ONGOING EVENT HANDLING: every event read off the stream is forwarded
-// to `mirror.apply(event:socketPath:)` (this instance's only source for
-// that call), and separately inspected for a rebuild trigger. The FIRST
-// event any given connection ever delivers also earns back DISCONNECT
-// HANDLING's own lifetime reconnect budget -- see LIFETIME RECONNECT
-// BUDGET below.
+// to `mirror.apply(event:socketPath:)`, then separately inspected for a
+// REBUILD TRIGGER (above) -- during the accumulating phase, a
+// `pane.created` event is instead added to `pendingBurstPaneIDs` (see
+// REPLAY BURST RECONCILIATION above). The FIRST event any given
+// connection ever delivers also earns back DISCONNECT HANDLING's own
+// lifetime reconnect budget -- see LIFETIME RECONNECT BUDGET below. A
+// trigger that actually proceeds (see CONSECUTIVE-REBUILD CAP above for
+// when it does not) closes and drops this instance's reference to the
+// current event-stream transport (see EXPLICIT TRANSPORT TEARDOWN
+// below), then re-runs `attemptConnect` against the SAME socket path --
+// no explicit cancellation of the event-reading task is needed, or even
+// possible: `consumeEvents` IS that task's own body, already running,
+// and this instance never retains a `Task` handle for it at all (there
+// is nothing here it would be used for); it simply `return`s right
+// after this call and the task self-terminates.
 //
-// REBUILD TRIGGERS: a "pane.created" event is a REBUILD trigger only
-// when its pane id is NOT already in `knownPaneIDs` -- otherwise every
-// (re)subscribe's own initial replay burst would rebuild once per
-// replayed pane, which would itself resubscribe (replaying again),
-// diverging. A `.paneClosed`/`.paneExited` event is ALWAYS a rebuild
-// trigger, unconditionally: these are never replayed at subscribe time
-// (only "pane_created" is), so there is no storm risk. Unlike
-// `.paneCreated`, closing/exiting a pane also REMOVES its id from
-// `knownPaneIDs` before rebuilding (A4) -- otherwise the rebuilt
-// connection would resubscribe `.agentStatusChanged(paneID:)` for a
-// pane id that no longer exists, which is unmeasured server behavior. A
-// rebuild: drops this instance's reference to the current session (its
-// only owner, per HerdrSocketSession.swift's own "no ordinary close()"
-// contract -- deallocation IS its teardown path), drops this instance's
-// own reference to its event-reading task (needing no explicit
-// cancellation of its own -- `consumeEvents` IS that task's own body,
-// already running; it simply `return`s right after this call and the
-// task self-terminates), then re-runs `attemptConnect` against the SAME
-// socket path, with `knownPaneIDs` still holding its pre-rebuild
-// contents (so the resubscribe's own per-pane list is never simply
-// empty) until that attempt's own snapshot refreshes it.
+// EXPLICIT TRANSPORT TEARDOWN: unlike the type this coordinator used to
+// depend on (`HerdrSocketSession`, whose `BSDHerdrTransport` cleans
+// itself up via `deinit` once ARC drops the session's own last strong
+// reference), `HerdrEventStream.subscribe(_:socketPath:)`'s own relay
+// task (which forwards transport lines onto the returned event stream)
+// captures ONLY the stream, never the transport or this coordinator --
+// so ARC alone dropping `currentEventStreamTransport` is NOT enough to
+// guarantee prompt teardown, particularly for the `InMemoryHerdrTransport`
+// test double, which (per HerdrTransport.swift's own contract, left
+// unchanged by this stage) has no `deinit` safety net of its own. Every
+// path that supersedes or gives up on the current event-stream connection
+// -- REBUILD TRIGGERS above, and DISCONNECT HANDLING below -- therefore
+// closes `currentEventStreamTransport` EXPLICITLY before dropping it,
+// rather than relying on ARC, and ALSO explicitly cancels
+// `burstSettleTask` at the same point (see SINGLE OWNER, NOT A RACE
+// above) -- a harmless no-op once that task has already fired or was
+// never accumulating in the first place.
 //
 // DISCONNECT HANDLING: the event stream ending -- normally (a clean
-// EOF) or by throwing (a transport failure; see HerdrTransport.swift's
-// own EOF-vs-failure distinction) -- is handled identically: call
-// `mirror.connectionLost()`, drop the session, then attempt a bounded
-// reconnect, each attempt gated by `discovery.isAlive(socketPath:)`
+// EOF) or by throwing (a transport failure) -- is handled identically:
+// call `mirror.connectionLost()`, close and drop the event-stream
+// transport (see EXPLICIT TRANSPORT TEARDOWN above), then attempt a
+// bounded reconnect, each attempt gated by `discovery.isAlive(socketPath:)`
 // (checked before AND after its backoff delay -- the delay itself is
 // exactly the window in which the socket could disappear): as soon as
 // the socket no longer probes alive, stop entirely, no further retry.
@@ -209,52 +326,22 @@
 // budget every time `applicationDidBecomeActive` fires again. The ONLY
 // way to earn the budget back to zero is a connection proving itself
 // HEALTHY, defined here as: it delivered at least one event AFTER its
-// own handshake completed (the first iteration of `consumeEvents`'s own
-// read loop for that connection actually running). A successful
-// handshake ALONE is deliberately NOT enough -- a server that accepts,
-// completes ping/subscribe/snapshot, and drops again before ever
+// own subscribe ack completed (the first iteration of `consumeEvents`'s
+// own read loop for that connection actually running). A successful
+// subscribe ALONE is deliberately NOT enough -- a server that accepts,
+// completes the snapshot and subscribe, and drops again before ever
 // pushing anything would otherwise reset the budget every single cycle,
 // reproducing the exact indefinite churn this budget exists to prevent.
-// Known, accepted limitation: `subscribe(_:)`'s own replay burst (see
-// START SEQUENCE step 7 above) counts as "at least one event" for a
-// connection with 1+ existing panes, so a flapper that happens to
-// survive just long enough to deliver that burst before dropping again
-// would still earn the reset -- narrower than a wall-clock "stayed up N
-// seconds" bar would be, but avoids a second timer/clock dependency for
-// a bar this coordinator does not currently need to be that precise
-// about.
+// Known, accepted limitation: `subscribe(_:)`'s own replay burst counts
+// as "at least one event" for a connection with 1+ existing panes, so a
+// flapper that happens to survive just long enough to deliver that burst
+// before dropping again would still earn the reset -- narrower than a
+// wall-clock "stayed up N seconds" bar would be, but avoids a second
+// timer/clock dependency for a bar this coordinator does not currently
+// need to be that precise about.
 //
 
 import Foundation
-
-// MARK: - HerdrSessionFactory
-
-/// Constructs a fresh, not-yet-started `HerdrSocketSession` --
-/// `HerdrIntegrationCoordinator`'s only session-construction seam, so
-/// its own tests never open a real socket (a test conformer builds each
-/// session over an `InMemoryHerdrTransport` it retains, mirroring
-/// `LSPSessionFactory`'s identical transport-injection role for LSP).
-/// `async`, not synchronous, purely to allow an actor-isolated test
-/// double to conform directly (mirrors `LSPSessionFactory.makeClient`'s
-/// own `async throws` shape) -- a production conformer need not
-/// actually suspend.
-protocol HerdrSessionFactory: Sendable {
-    func makeSession() async -> HerdrSocketSession
-}
-
-// MARK: - LiveHerdrSessionFactory
-
-/// Production `HerdrSessionFactory`: builds a fresh `HerdrSocketSession`
-/// over a real `BSDHerdrTransport` -- `AppDelegate`'s own
-/// `HerdrIntegrationCoordinator` instance is this type's only
-/// production call site. Never suspends; `async` only to satisfy the
-/// protocol (see its own doc comment for why the protocol itself is
-/// `async`).
-struct LiveHerdrSessionFactory: HerdrSessionFactory {
-    func makeSession() async -> HerdrSocketSession {
-        HerdrSocketSession(transport: BSDHerdrTransport())
-    }
-}
 
 // MARK: - HerdrIntegrationCoordinator
 
@@ -262,7 +349,7 @@ struct LiveHerdrSessionFactory: HerdrSessionFactory {
 final class HerdrIntegrationCoordinator {
 
     /// The five herdr structure events subscribed type-only on every
-    /// (re)subscribe -- see this file's header, START SEQUENCE step 5.
+    /// (re)subscribe -- see this file's header, CONNECT SEQUENCE step 4.
     static let structureEventSubscriptionTypes = [
         "pane.created", "pane.closed", "pane.exited", "pane.agent_detected", "layout.updated",
     ]
@@ -273,19 +360,13 @@ final class HerdrIntegrationCoordinator {
     /// bound (A5).
     static let defaultReconnectDelays: [Duration] = [.seconds(1), .seconds(2), .seconds(4)]
 
-    /// Default HANDSHAKE DEADLINE (A2) -- generous enough that a merely
-    /// slow (not hung) real herdr server is never mistaken for a stalled
-    /// one, while still bounding the otherwise-unbounded wait a
-    /// connection-accepted-then-silent server would impose.
+    /// Default HANDSHAKE DEADLINE (A2) -- applied independently to EACH
+    /// of the snapshot step and the subscribe step (see this file's
+    /// header). Generous enough that a merely slow (not hung) real herdr
+    /// server is never mistaken for a stalled one, while still bounding
+    /// the otherwise-unbounded wait a connection-accepted-then-silent
+    /// server would impose.
     static let defaultHandshakeTimeout: Duration = .seconds(10)
-
-    /// Default BOOTSTRAP REBUILD ITERATION CAP (A3) -- see this file's
-    /// header. Deliberately small: the common case converges after
-    /// exactly one retry (2 total iterations), so this leaves ample
-    /// headroom before ever being reached by legitimate pane-set churn,
-    /// while still bounding a snapshot that never stops revealing a
-    /// freshly different pane set on every single retry.
-    static let defaultMaxBootstrapRebuildIterations = 5
 
     /// Default LIFETIME RECONNECT BUDGET (A5) -- see this file's header.
     /// Deliberately larger than any single cycle's own `reconnectDelays
@@ -293,19 +374,83 @@ final class HerdrIntegrationCoordinator {
     /// HEALTHY well before this total is reached) are never affected.
     static let defaultMaxLifetimeReconnectAttempts = 10
 
+    /// Default REPLAY BURST RECONCILIATION window (see this file's
+    /// header) -- pragmatic, unmeasured (mirrors
+    /// `BSDHerdrTransport.writePollTimeoutMilliseconds`'s own precedent
+    /// for a bounded-but-not-precisely-tuned duration): generous enough
+    /// that a real replay burst (measured: well under 100ms for 13
+    /// events over a local Unix socket) has long finished arriving,
+    /// short enough that a genuinely new pane created while a fresh
+    /// connection is still accumulating is not noticeably delayed.
+    static let defaultReplayBurstSettleWindow: Duration = .milliseconds(500)
+
+    /// Default CONSECUTIVE-REBUILD CAP (see this file's header) -- small
+    /// on purpose: this bounds a pathological server whose replay burst
+    /// never converges, not ordinary operation (which converges in at
+    /// most one rebuild against every server measured so far).
+    static let defaultMaxConsecutiveRebuildsWithoutProgress = 3
+
+    /// Default backoff between consecutive rebuilds (see this file's
+    /// header "CONSECUTIVE-REBUILD CAP") -- independent of, and
+    /// deliberately shorter than, `defaultReconnectDelays`: a rebuild
+    /// keeps the CURRENT connection alive throughout, unlike a
+    /// reconnect, so there is less need for a long wait between
+    /// attempts.
+    static let defaultRebuildBackoffDelays: [Duration] = [.milliseconds(200), .seconds(1), .seconds(2)]
+
     private let resolver: any HerdrBinaryResolverProtocol
     private let discovery: any HerdrSessionDiscoveryProtocol
-    private let sessionFactory: any HerdrSessionFactory
+    private let transportFactory: any HerdrTransportFactory
     private let mirror: HerdrAgentMirror
     private let reconnectDelays: [Duration]
     private let handshakeTimeout: Duration
-    private let maxBootstrapRebuildIterations: Int
     private let maxLifetimeReconnectAttempts: Int
+    private let replayBurstSettleWindow: Duration
+    private let maxConsecutiveRebuildsWithoutProgress: Int
+    private let rebuildBackoffDelays: [Duration]
     private let sleep: @Sendable (Duration) async -> Void
 
-    private var currentSession: HerdrSocketSession?
+    /// The transport behind the CURRENT, subscribed event-stream
+    /// connection, once `attemptConnect(socketPath:)` has succeeded --
+    /// `nil` before the first successful connect, and while idle/
+    /// reconnecting. See this file's header "EXPLICIT TRANSPORT
+    /// TEARDOWN" for why every path that supersedes or gives up on it
+    /// closes it explicitly rather than relying on ARC.
+    private var currentEventStreamTransport: (any HerdrTransport)?
+
+    /// REPLACE semantics -- see this file's header, CONNECT SEQUENCE
+    /// step 3 and REPLAY BURST RECONCILIATION. ONLY EVER exactly this
+    /// connection's own fresh `panes[]`; never a replay-only id.
     private var knownPaneIDs: Set<String> = []
-    private var eventLoopTask: Task<Void, Never>?
+
+    /// UNION semantics -- see this file's header, REPLAY BURST
+    /// RECONCILIATION. Grows across every `attemptConnect`/settle for as
+    /// long as `isActive`; cleared only by `resetToIdle()`.
+    private var recognizedPaneIDs: Set<String> = []
+
+    /// REPLAY BURST RECONCILIATION state (see this file's header) --
+    /// ALL reset at the top of every successful `attemptConnect`.
+    private var isAccumulatingReplayBurst = false
+    private var pendingBurstPaneIDs: Set<String> = []
+    private var burstSettleTask: Task<Void, Never>?
+
+    /// Bumped on every successful `attemptConnect`, regardless of
+    /// caller -- see this file's header "SINGLE OWNER, NOT A RACE".
+    private var connectionGeneration = 0
+
+    /// SINGLE OWNER, NOT A RACE (see this file's header): claimed
+    /// synchronously by `triggerRebuild` and by the natural-disconnect
+    /// tail of `consumeEvents` before either does anything else: only
+    /// one of the two may ever be establishing/tearing down a
+    /// connection at a time.
+    private var isRebuildOrReconnectInFlight = false
+
+    /// CONSECUTIVE-REBUILD CAP (see this file's header) -- counts
+    /// rebuilds since the last one that made mechanical progress (see
+    /// `attemptConnect`) or settled a burst with nothing new to
+    /// reconcile. Independent of, and never touched by,
+    /// `totalReconnectAttempts` below.
+    private var consecutiveRebuildsWithoutProgress = 0
 
     /// LIFETIME RECONNECT BUDGET (A5) -- see this file's header. Counts
     /// every `reconnectLoop`-driven attempt across every disconnect
@@ -315,37 +460,40 @@ final class HerdrIntegrationCoordinator {
     private var totalReconnectAttempts = 0
 
     /// `true` from the moment `start()` begins a real connection attempt
-    /// (set SYNCHRONOUSLY, before this method's first `await` -- mirrors
-    /// `HerdrSocketSession.subscribe(_:)`'s own reentrancy-window
-    /// precedent) through until this instance is fully idle again --
-    /// covers the in-flight START SEQUENCE, the established connection,
-    /// and every bounded-reconnect attempt. This is what makes `start()`
-    /// safe to call redundantly from its three independent production
-    /// triggers (app launch, `applicationDidBecomeActive`, the Agents
-    /// sidebar becoming visible) without risking two connections opened
-    /// for the same socket by two overlapping `start()` calls racing
-    /// each other across an `await`.
+    /// (set SYNCHRONOUSLY, before this method's first `await`) through
+    /// until this instance is fully idle again -- covers the in-flight
+    /// CONNECT SEQUENCE, the established connection, and every
+    /// bounded-reconnect attempt. This is what makes `start()` safe to
+    /// call redundantly from its three independent production triggers
+    /// (app launch, `applicationDidBecomeActive`, the Agents sidebar
+    /// becoming visible) without risking two connections opened for the
+    /// same socket by two overlapping `start()` calls racing each other
+    /// across an `await`.
     private var isActive = false
 
     init(
         resolver: any HerdrBinaryResolverProtocol,
         discovery: any HerdrSessionDiscoveryProtocol,
-        sessionFactory: any HerdrSessionFactory,
+        transportFactory: any HerdrTransportFactory,
         mirror: HerdrAgentMirror,
         reconnectDelays: [Duration] = HerdrIntegrationCoordinator.defaultReconnectDelays,
         handshakeTimeout: Duration = HerdrIntegrationCoordinator.defaultHandshakeTimeout,
-        maxBootstrapRebuildIterations: Int = HerdrIntegrationCoordinator.defaultMaxBootstrapRebuildIterations,
         maxLifetimeReconnectAttempts: Int = HerdrIntegrationCoordinator.defaultMaxLifetimeReconnectAttempts,
+        replayBurstSettleWindow: Duration = HerdrIntegrationCoordinator.defaultReplayBurstSettleWindow,
+        maxConsecutiveRebuildsWithoutProgress: Int = HerdrIntegrationCoordinator.defaultMaxConsecutiveRebuildsWithoutProgress,
+        rebuildBackoffDelays: [Duration] = HerdrIntegrationCoordinator.defaultRebuildBackoffDelays,
         sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     ) {
         self.resolver = resolver
         self.discovery = discovery
-        self.sessionFactory = sessionFactory
+        self.transportFactory = transportFactory
         self.mirror = mirror
         self.reconnectDelays = reconnectDelays
         self.handshakeTimeout = handshakeTimeout
-        self.maxBootstrapRebuildIterations = maxBootstrapRebuildIterations
         self.maxLifetimeReconnectAttempts = maxLifetimeReconnectAttempts
+        self.replayBurstSettleWindow = replayBurstSettleWindow
+        self.maxConsecutiveRebuildsWithoutProgress = maxConsecutiveRebuildsWithoutProgress
+        self.rebuildBackoffDelays = rebuildBackoffDelays
         self.sleep = sleep
     }
 
@@ -359,22 +507,40 @@ final class HerdrIntegrationCoordinator {
         isActive = true
 
         guard let candidate = await detectLiveCandidate() else {
-            isActive = false
+            resetToIdle()
             return
         }
 
         guard await attemptConnect(socketPath: candidate.socketPath) else {
-            // No prior connection ever existed for this attempt to have
-            // "lost" -- a plain give-up, distinct from DISCONNECT
-            // HANDLING's bounded reconnect (which only ever follows an
-            // established connection's stream ending). A later `start()`
-            // call re-attempts detection from scratch.
-            isActive = false
+            // A plain give-up, distinct from DISCONNECT HANDLING's
+            // bounded reconnect (which only ever follows an established
+            // connection's stream ending) -- but NOT necessarily one
+            // that never touched anything: `attemptConnect`'s own
+            // snapshot step may have already succeeded (upserting rows
+            // into the mirror, and populating `knownPaneIDs`/
+            // `recognizedPaneIDs`) before its OWN subsequent subscribe
+            // step failed. `resetToIdle()` (not a bare `isActive =
+            // false`) is what unwinds that -- see its own doc comment --
+            // so a later `start()` call re-attempts detection from
+            // scratch with no leftover state from this abandoned attempt.
+            resetToIdle()
             return
         }
     }
 
-    // MARK: - Detection (START SEQUENCE steps 1-2, A7)
+    // MARK: - TEST ONLY instrumentation
+
+    /// TEST ONLY: whether this instance is currently in REPLAY BURST
+    /// RECONCILIATION's accumulating phase (see this file's header) --
+    /// mirrors `BSDHerdrTransport.testOnlyConnectedFileDescriptor()`'s
+    /// own precedent (HerdrTransport.swift) for exposing otherwise-
+    /// private state ONLY for deterministic test synchronization.
+    /// `HerdrIntegrationCoordinatorTests` polls this to know exactly
+    /// when it is safe to simulate a steady-state event without it
+    /// being silently accumulated instead.
+    internal var testOnlyIsAccumulatingReplayBurst: Bool { isAccumulatingReplayBurst }
+
+    // MARK: - Detection (START SEQUENCE steps 1-2)
 
     /// Runs `resolver.resolve()` then, only if that succeeds,
     /// `discovery.discover()`/`discovery.isAlive(socketPath:)` as ONE
@@ -397,89 +563,108 @@ final class HerdrIntegrationCoordinator {
         }
     }
 
-    // MARK: - Connecting (START SEQUENCE steps 3-7)
+    // MARK: - Connecting (CONNECT SEQUENCE)
 
-    /// Runs the START SEQUENCE's steps 3-7 against `socketPath`, looping
-    /// once more whenever BOOTSTRAP REBUILD (A1) applies -- see this
-    /// file's header for both. Bounded at `maxBootstrapRebuildIterations`
-    /// iterations (A3): a pane set that never stops changing between one
-    /// iteration's own subscribe and its own snapshot would otherwise
-    /// spin this loop forever. Returns `true` once `currentSession`/
-    /// `eventLoopTask` are live, `false` once an iteration's handshake
-    /// either fails or times out, OR once the iteration cap is exhausted
-    /// without ever converging (nothing left half-set in any of these
-    /// cases -- the caller decides what "this attempt failed" means).
+    /// Runs the CONNECT SEQUENCE described in this file's header: a
+    /// one-shot `session.snapshot`, applied to the mirror and used to
+    /// (re)populate `knownPaneIDs`, THEN a fresh `events.subscribe`
+    /// connection carrying the five structure events plus one
+    /// `.agentStatusChanged(paneID:)` per pane the snapshot just
+    /// revealed. Each of the two steps is independently bounded by
+    /// `runWithDeadline(transport:operation:)` (A2). Returns `true` once
+    /// `currentEventStreamTransport` is live and the event-consuming task
+    /// (`consumeEvents`) has been started, `false` if either step fails
+    /// or times out (nothing left half-set in that case -- the caller
+    /// decides what "this attempt failed" means).
     private func attemptConnect(socketPath: String) async -> Bool {
-        for _ in 0..<maxBootstrapRebuildIterations {
-            let subscribedPaneIDs = knownPaneIDs
-            guard let result = await performHandshakeWithDeadline(
-                socketPath: socketPath, subscribedPaneIDs: subscribedPaneIDs
-            ) else {
-                return false
-            }
-
-            mirror.applySnapshot(result.snapshot, socketPath: socketPath)
-            let revealedPaneIDs = Set(result.snapshot.agents.map(\.paneID))
-            knownPaneIDs = revealedPaneIDs
-
-            guard revealedPaneIDs == subscribedPaneIDs else {
-                // BOOTSTRAP REBUILD (A1): this attempt's own subscribe
-                // did not cover every pane its own snapshot just
-                // revealed -- discard it WITHOUT ever starting step 7
-                // (see this file's header) and retry once with the
-                // now-corrected `knownPaneIDs`. Converges: the retry's
-                // own `subscribedPaneIDs` will equal `revealedPaneIDs`
-                // set here, so its own snapshot matches unless the pane
-                // set changes again in the tiny window between attempts.
-                continue
-            }
-
-            currentSession = result.session
-            eventLoopTask = Task { [weak self] in
-                await self?.consumeEvents(result.stream, socketPath: socketPath)
-            }
-            return true
+        let snapshotTransport = await transportFactory.makeTransport()
+        guard let snapshot: HerdrSessionSnapshot = await runWithDeadline(transport: snapshotTransport, operation: {
+            let request = HerdrOneShotRequest(transport: snapshotTransport)
+            return try await request.send(method: "session.snapshot", socketPath: socketPath)
+        }) else {
+            return false
         }
-        // BOOTSTRAP REBUILD ITERATION CAP (A3): every iteration mismatched
-        // -- give up exactly like an ordinary handshake failure.
-        return false
+
+        mirror.applySnapshot(snapshot, socketPath: socketPath)
+        // CONNECT SEQUENCE step 3: REPLACES `knownPaneIDs`, never merges
+        // -- see this file's header. Seeded from `panes[]`, NOT
+        // `agents[]` -- see this file's header, REPLAY BURST
+        // RECONCILIATION.
+        let previousKnownPaneIDs = knownPaneIDs
+        let freshPaneIDs = Set(snapshot.panes.map(\.paneID))
+        knownPaneIDs = freshPaneIDs
+        // UNION semantics -- see this file's header, REPLAY BURST
+        // RECONCILIATION.
+        recognizedPaneIDs.formUnion(freshPaneIDs)
+        // CONSECUTIVE-REBUILD CAP: a pane id this fresh snapshot reveals
+        // that the PRECEDING `knownPaneIDs` did not -- mechanical,
+        // post-hoc "this attempt found genuine progress" (see this
+        // file's header). Applies uniformly regardless of what caused
+        // this `attemptConnect` call (first connect, ordinary reconnect,
+        // or a rebuild); harmless (no-op reset of an already-zero
+        // counter) for the first two.
+        if !freshPaneIDs.subtracting(previousKnownPaneIDs).isEmpty {
+            consecutiveRebuildsWithoutProgress = 0
+        }
+
+        let subscribeTransport = await transportFactory.makeTransport()
+        let subscriptions = Self.structureEventSubscriptionTypes.map(HerdrSubscription.typeOnly)
+            + knownPaneIDs.sorted().map { HerdrSubscription.agentStatusChanged(paneID: $0) }
+        guard let stream = await runWithDeadline(transport: subscribeTransport, operation: {
+            let eventStream = HerdrEventStream(transport: subscribeTransport)
+            return try await eventStream.subscribe(subscriptions, socketPath: socketPath)
+        }) else {
+            return false
+        }
+
+        currentEventStreamTransport = subscribeTransport
+        // REPLAY BURST RECONCILIATION -- see this file's header. Reset
+        // for every fresh subscribe; `connectionGeneration` bumped
+        // regardless of caller so a stale settle task from a PRIOR
+        // connection (see this file's header "SINGLE OWNER, NOT A RACE")
+        // can recognize it has been superseded.
+        isAccumulatingReplayBurst = true
+        pendingBurstPaneIDs = []
+        connectionGeneration += 1
+        let generation = connectionGeneration
+        burstSettleTask = Task { [weak self] in
+            guard let self else { return }
+            await self.sleep(self.replayBurstSettleWindow)
+            guard !Task.isCancelled else { return }
+            await self.settleReplayBurst(socketPath: socketPath, generation: generation)
+        }
+        // Deliberately NOT retained anywhere: `consumeEvents` IS this
+        // task's own body, already running once this line executes, and
+        // it self-terminates (`return`s) on every exit path -- see this
+        // file's header "ONGOING EVENT HANDLING". `Task.init` is
+        // `@discardableResult`, so nothing here needs a stored handle to
+        // cancel or await later.
+        Task { [weak self] in
+            await self?.consumeEvents(stream, socketPath: socketPath, generation: generation)
+        }
+        return true
     }
 
-    /// Races one `performHandshake(session:socketPath:subscribedPaneIDs:)`
-    /// attempt against `handshakeTimeout` -- see this file's header
-    /// "HANDSHAKE DEADLINE (A2)" for why this uses two independent,
-    /// unstructured `Task`s racing to resume a shared continuation
-    /// rather than a `TaskGroup`. `nil` on either a thrown error or
-    /// expiry -- `attemptConnect` does not need to distinguish the two,
-    /// mirroring the pre-A2 `catch { return false }` this replaces.
+    /// Races ONE async `operation` -- which internally owns exactly one
+    /// `transport`, created by the caller just before this is invoked --
+    /// against `handshakeTimeout` (A2); see this file's header for why
+    /// `withTaskGroup` cannot be used here. `nil` on either a thrown
+    /// error or expiry -- callers do not need to distinguish the two.
     ///
-    /// BLOCKER fix: the TIMEOUT arm calls `session.abandon()` immediately
-    /// after `bridge.resume(with:)`, but ONLY when that call actually WON
-    /// the race (`resume(with:)` returns `true`) -- see this file's
-    /// header "HANDSHAKE DEADLINE (A2)" for why a stuck handshake needs
-    /// this at all. Gating on the return value matters: if the HANDSHAKE
-    /// arm already won (e.g. it completed a hair before the deadline),
-    /// `resume(with:)` here is a no-op and `session` may ALREADY be this
-    /// attempt's `currentSession` -- calling `abandon()` on it regardless
-    /// would tear down a connection `attemptConnect` just decided to
-    /// keep, forcing a spurious disconnect/reconnect. The HANDSHAKE arm
-    /// needs no symmetric guard: its own `catch` path only ever runs for
-    /// an error `performHandshake` actually threw, which means it is by
-    /// definition not stuck, so ARC teardown (dropping the reference)
-    /// remains sufficient there.
-    private func performHandshakeWithDeadline(
-        socketPath: String, subscribedPaneIDs: Set<String>
-    ) async -> HandshakeResult? {
-        let session = await sessionFactory.makeSession()
-        let bridge = HandshakeRaceBridge()
+    /// On timeout, closes `transport` DIRECTLY -- see this file's header
+    /// "HANDSHAKE DEADLINE". Gated on `resume(with:)` actually WINNING
+    /// the race: if the OPERATION arm already won (e.g. it completed a
+    /// hair before the deadline), closing `transport` here would tear
+    /// down a connection `attemptConnect` just decided to keep.
+    private func runWithDeadline<T: Sendable>(
+        transport: any HerdrTransport, operation: @escaping @Sendable () async throws -> T
+    ) async -> T? {
+        let bridge = DeadlineRaceBridge<T>()
 
-        return await withCheckedContinuation { (continuation: CheckedContinuation<HandshakeResult?, Never>) in
-            let handshakeTask = Task { [weak self] in
-                guard let self else { return }
+        return await withCheckedContinuation { (continuation: CheckedContinuation<T?, Never>) in
+            let operationTask = Task {
                 do {
-                    let result = try await self.performHandshake(
-                        session: session, socketPath: socketPath, subscribedPaneIDs: subscribedPaneIDs
-                    )
+                    let result = try await operation()
                     bridge.resume(with: result)
                 } catch {
                     bridge.resume(with: nil)
@@ -490,160 +675,115 @@ final class HerdrIntegrationCoordinator {
                 await self.sleep(self.handshakeTimeout)
                 guard !Task.isCancelled else { return }
                 if bridge.resume(with: nil) {
-                    // Only reached when the HANDSHAKE arm had not already
+                    // Only reached when the OPERATION arm had not already
                     // won -- see this method's own doc comment above.
-                    await session.abandon()
+                    await transport.close()
                 }
             }
-            bridge.register(continuation: continuation, handshakeTask: handshakeTask, timeoutTask: timeoutTask)
+            bridge.register(continuation: continuation, operationTask: operationTask, timeoutTask: timeoutTask)
         }
     }
 
-    /// Steps 3-6 of the START SEQUENCE, run once, with no deadline of
-    /// its own -- `performHandshakeWithDeadline(socketPath:subscribedPaneIDs:)`
-    /// above is what bounds it (A2). Deliberately takes
-    /// `subscribedPaneIDs` as a parameter rather than reading
-    /// `knownPaneIDs` directly, so the exact pane set this attempt
-    /// subscribed with is unambiguous to `attemptConnect`'s own
-    /// BOOTSTRAP REBUILD (A1) comparison, independent of timing.
-    private func performHandshake(
-        session: HerdrSocketSession, socketPath: String, subscribedPaneIDs: Set<String>
-    ) async throws -> HandshakeResult {
-        try await session.start(socketPath: socketPath)
-        _ = try await session.ping()
-
-        let subscriptions = Self.structureEventSubscriptionTypes.map(HerdrSubscription.typeOnly)
-            + subscribedPaneIDs.sorted().map { HerdrSubscription.agentStatusChanged(paneID: $0) }
-        let stream = try await session.subscribe(subscriptions)
-
-        let snapshot = try await session.snapshot()
-        return HandshakeResult(session: session, stream: stream, snapshot: snapshot)
-    }
-
-    /// One completed handshake's payload -- see this file's header
-    /// "HANDSHAKE DEADLINE (A2)". Deliberately side-effect free (no
-    /// `mirror`/`knownPaneIDs` mutation): only `attemptConnect`, the
-    /// sole caller of `performHandshakeWithDeadline`, decides whether an
-    /// attempt's result is the one that actually gets published, so a
-    /// handshake that completes AFTER already losing its own deadline
-    /// race can be discarded without corrupting instance state.
-    private struct HandshakeResult: Sendable {
-        let session: HerdrSocketSession
-        let stream: AsyncThrowingStream<HerdrEvent, Error>
-        let snapshot: HerdrSessionSnapshot
-    }
-
-    /// Thread-safe, exactly-once bridge between
-    /// `performHandshakeWithDeadline(socketPath:subscribedPaneIDs:)`'s
-    /// two racing arms -- mirrors `SessionDaemonBoundedRaceBridge`
-    /// (SessionDaemonClient.swift) trimmed to this file's single-result
-    /// shape (no `onCancel`-driven third resumer: nothing here needs to
-    /// react to the AWAITING task's own cancellation, unlike that
-    /// type's `bounded(...)`). The first arm to call `resume(with:)`
-    /// wins; cancelling both tasks afterward is a harmless no-op for
-    /// whichever one already finished, and lets a real `Task.sleep`-
-    /// backed `sleep` closure exit its wait promptly instead of running
-    /// the losing arm's full duration. `@unchecked Sendable` is sound
-    /// because every mutable stored property below is read/written ONLY
-    /// while holding `lock` -- the same "single `NSLock` guards every
-    /// mutation" justification `SessionDaemonBoundedRaceBridge` itself
-    /// relies on.
-    ///
-    /// BLOCKER fix: `resume(with:)` also nils out `handshakeTask` /
-    /// `timeoutTask` (under `lock`, alongside `continuation`) the moment
-    /// it wins, not merely local-variable copies afterward -- both
-    /// racing `Task` closures capture this bridge, and this bridge, in
-    /// turn, held onto `Task` handles referencing those SAME closures
-    /// (a retain cycle for as long as both remained set). This breaks
-    /// that cycle unconditionally, independent of whether the LOSING
-    /// arm's own closure ever actually finishes running (see
-    /// `performHandshakeWithDeadline`'s own doc comment for what makes a
-    /// STUCK handshake's closure finish at all).
-    private final class HandshakeRaceBridge: @unchecked Sendable {
+    /// Thread-safe, exactly-once bridge between `runWithDeadline(transport:
+    /// operation:)`'s two racing arms -- mirrors
+    /// `SessionDaemonBoundedRaceBridge` (SessionDaemonClient.swift),
+    /// generalized over the raced operation's result type `T` so ONE
+    /// bridge type serves both the snapshot step and the subscribe step.
+    /// The first arm to call `resume(with:)` wins; cancelling both tasks
+    /// afterward is a harmless no-op for whichever one already finished.
+    /// `@unchecked Sendable` is sound because every mutable stored
+    /// property below is read/written ONLY while holding `lock`.
+    private final class DeadlineRaceBridge<T: Sendable>: @unchecked Sendable {
         private let lock = NSLock()
         private var resumed = false
-        private var handshakeTask: Task<Void, Never>?
+        private var operationTask: Task<Void, Never>?
         private var timeoutTask: Task<Void, Never>?
-        private var continuation: CheckedContinuation<HandshakeResult?, Never>?
+        private var continuation: CheckedContinuation<T?, Never>?
 
         func register(
-            continuation: CheckedContinuation<HandshakeResult?, Never>,
-            handshakeTask: Task<Void, Never>,
+            continuation: CheckedContinuation<T?, Never>,
+            operationTask: Task<Void, Never>,
             timeoutTask: Task<Void, Never>
         ) {
             lock.lock(); defer { lock.unlock() }
             self.continuation = continuation
-            self.handshakeTask = handshakeTask
+            self.operationTask = operationTask
             self.timeoutTask = timeoutTask
         }
 
         @discardableResult
-        func resume(with result: HandshakeResult?) -> Bool {
+        func resume(with result: T?) -> Bool {
             lock.lock()
             guard !resumed, let continuation else { lock.unlock(); return false }
             resumed = true
             self.continuation = nil
-            let hTask = handshakeTask
+            let oTask = operationTask
             let tTask = timeoutTask
-            handshakeTask = nil
+            operationTask = nil
             timeoutTask = nil
             lock.unlock()
             continuation.resume(returning: result)
-            hTask?.cancel()
+            oTask?.cancel()
             tTask?.cancel()
             return true
         }
     }
 
-    // MARK: - Ongoing event handling (START SEQUENCE step 7)
+    // MARK: - Ongoing event handling
 
     /// Consumes `stream` for as long as the connection lives -- every
     /// event is forwarded to `mirror.apply(event:socketPath:)`, then
     /// separately inspected for a REBUILD TRIGGER (see this file's
-    /// header). The FIRST event this call ever reads also earns back
-    /// the LIFETIME RECONNECT BUDGET (A5) -- see this file's header
+    /// header) -- during the accumulating phase, `pane.created` is
+    /// instead added to `pendingBurstPaneIDs` (REPLAY BURST
+    /// RECONCILIATION). The FIRST event this call ever reads also earns
+    /// back the LIFETIME RECONNECT BUDGET (A5) -- see this file's header
     /// "LIFETIME RECONNECT BUDGET". The stream ending -- normally (a
     /// clean EOF) or by throwing (a transport failure) -- is DISCONNECT
-    /// HANDLING, shared with a failed rebuild attempt via
-    /// `handleDisconnect(socketPath:)`.
-    private func consumeEvents(_ stream: AsyncThrowingStream<HerdrEvent, Error>, socketPath: String) async {
+    /// HANDLING, shared with a failed reconnect attempt via
+    /// `handleDisconnect(socketPath:)`; `generation` is what lets that
+    /// tail recognize a stream ending as a DIRECT CONSEQUENCE of an
+    /// external `triggerRebuild` call (the burst-settle task's own
+    /// reconciliation) rather than a genuine disconnect -- see this
+    /// file's header "SINGLE OWNER, NOT A RACE".
+    private func consumeEvents(
+        _ stream: AsyncThrowingStream<HerdrEvent, Error>, socketPath: String, generation: Int
+    ) async {
         var hasEarnedHealthyReset = false
         do {
             for try await event in stream {
                 if !hasEarnedHealthyReset {
                     hasEarnedHealthyReset = true
                     // HEALTHY (A5): this connection has delivered at
-                    // least one event after its own handshake completed
-                    // -- see this file's header for the known, accepted
-                    // limitation this bar has (the subscribe-time replay
-                    // burst counts).
+                    // least one event after its own subscribe ack
+                    // completed -- see this file's header for the known,
+                    // accepted limitation this bar has (the subscribe-time
+                    // replay burst counts).
                     totalReconnectAttempts = 0
                 }
                 mirror.apply(event: event, socketPath: socketPath)
 
                 switch event {
-                case .paneCreated(let pane) where !knownPaneIDs.contains(pane.paneID):
-                    // A genuinely NEW pane -- record it immediately (not
-                    // just at the next snapshot) so the rebuilt
-                    // connection's own resubscribe below already
-                    // includes it -- see this file's header.
-                    knownPaneIDs.insert(pane.paneID)
-                    eventLoopTask = nil
-                    await rebuild(socketPath: socketPath)
-                    return
-                case .paneClosed(let paneID), .paneExited(let paneID):
-                    // ALWAYS a rebuild trigger, unconditionally -- unlike
-                    // `.paneCreated` above, neither event is ever
-                    // replayed at subscribe time, so there is no storm
-                    // risk to guard against here. A4: remove the id from
-                    // `knownPaneIDs` BEFORE rebuilding, so the rebuilt
-                    // connection's own resubscribe never lists a pane id
-                    // herdr no longer knows about -- see this file's
-                    // header.
-                    knownPaneIDs.remove(paneID)
-                    eventLoopTask = nil
-                    await rebuild(socketPath: socketPath)
-                    return
+                case .paneCreated(let pane) where isAccumulatingReplayBurst:
+                    // REPLAY BURST RECONCILIATION -- see this file's
+                    // header: accumulated, not immediately treated as a
+                    // rebuild trigger; `burstSettleTask` (spawned
+                    // alongside this task in `attemptConnect`) evaluates
+                    // the accumulated set exactly once.
+                    pendingBurstPaneIDs.insert(pane.paneID)
+                case .paneCreated(let pane) where !recognizedPaneIDs.contains(pane.paneID):
+                    // Steady-state REBUILD TRIGGER -- a genuinely NEW
+                    // pane. No manual `knownPaneIDs`/`recognizedPaneIDs`
+                    // update needed here: `attemptConnect`'s own fresh
+                    // snapshot (inside `triggerRebuild`, below) already
+                    // updates both.
+                    if await triggerRebuild(socketPath: socketPath) { return }
+                case .paneClosed, .paneExited:
+                    // ALWAYS a rebuild trigger, unconditionally, at ANY
+                    // time (accumulating or steady state) -- neither
+                    // event is ever replayed at subscribe time, so there
+                    // is no storm risk to guard against here.
+                    if await triggerRebuild(socketPath: socketPath) { return }
                 default:
                     break
                 }
@@ -655,38 +795,123 @@ final class HerdrIntegrationCoordinator {
             // see this file's header "DISCONNECT HANDLING".
         }
 
-        eventLoopTask = nil
+        // SINGLE OWNER, NOT A RACE (see this file's header): this stream
+        // ending might be a genuine disconnect, OR the direct
+        // consequence of `triggerRebuild` (called from the burst-settle
+        // task, for this SAME generation) having already closed this
+        // transport while establishing a NEWER connection. Claiming the
+        // mutex synchronously, before anything else, is what tells the
+        // two apart -- a mismatched generation OR an already-claimed
+        // mutex both mean "someone else is already resolving this
+        // connection's fate," so back off silently rather than handling
+        // it a second time.
+        guard generation == connectionGeneration, !isRebuildOrReconnectInFlight else { return }
+        isRebuildOrReconnectInFlight = true
+        defer { isRebuildOrReconnectInFlight = false }
         await handleDisconnect(socketPath: socketPath)
     }
 
     // MARK: - Rebuild
 
-    /// A REBUILD TRIGGER fired (see `consumeEvents`): drops the current
-    /// session and re-runs the START SEQUENCE from step 3 against the
-    /// SAME socket path, reusing `knownPaneIDs`. A failed reconnect
-    /// attempt here is funnelled into the same `connectionLost()` +
-    /// bounded-reconnect path a stream disconnect uses (untested by this
-    /// stage's own suite, but a rebuild that cannot re-establish a
-    /// session has, functionally, also just lost the connection).
-    private func rebuild(socketPath: String) async {
-        currentSession = nil
-        guard await attemptConnect(socketPath: socketPath) else {
-            await handleDisconnect(socketPath: socketPath)
+    /// Shared entry point for every REBUILD TRIGGER (see this file's
+    /// header) -- `consumeEvents`' own steady-state triggers AND
+    /// `settleReplayBurst`'s burst-driven reconciliation both call this.
+    /// Returns `true` if this call actually performed a rebuild (closed
+    /// the current connection and attempted a fresh one); callers inside
+    /// `consumeEvents` must `return` (ending their own Task body) ONLY
+    /// when this returns `true` -- `false` means the CONSECUTIVE-REBUILD
+    /// CAP was already exhausted, or a rebuild/reconnect sequence was
+    /// already in flight (SINGLE OWNER, NOT A RACE) -- in EITHER case,
+    /// deliberately leaving the current, still-live connection
+    /// completely untouched, per this file's header.
+    @discardableResult
+    private func triggerRebuild(socketPath: String) async -> Bool {
+        guard !isRebuildOrReconnectInFlight, consecutiveRebuildsWithoutProgress < maxConsecutiveRebuildsWithoutProgress else {
+            return false
+        }
+        isRebuildOrReconnectInFlight = true
+        defer { isRebuildOrReconnectInFlight = false }
+
+        isAccumulatingReplayBurst = false // interrupt any in-progress accumulation
+
+        // Backoff BEFORE teardown -- see this file's header
+        // "CONSECUTIVE-REBUILD CAP": the current connection stays live
+        // and keeps consuming events for the full backoff duration, not
+        // just until a new one happens to be ready.
+        let delayIndex = consecutiveRebuildsWithoutProgress
+        consecutiveRebuildsWithoutProgress += 1 // optimistic; attemptConnect resets to 0 on genuine progress
+        if let lastIndex = rebuildBackoffDelays.indices.last {
+            await sleep(rebuildBackoffDelays[min(delayIndex, lastIndex)])
+        }
+
+        await closeAndClearEventStreamTransport()
+        if await attemptConnect(socketPath: socketPath) {
+            return true
+        }
+        await handleDisconnect(socketPath: socketPath)
+        return true
+    }
+
+    /// REPLAY BURST RECONCILIATION (see this file's header) -- runs
+    /// once, `replayBurstSettleWindow` after a successful subscribe,
+    /// unless superseded first (`Task.isCancelled`, checked both here
+    /// and by the caller right after `sleep` returns). `generation` is
+    /// the value `connectionGeneration` held when this connection's own
+    /// `burstSettleTask` was spawned; a mismatch -- or
+    /// `isAccumulatingReplayBurst` already `false` -- means this
+    /// connection has already been superseded by a DIFFERENT trigger
+    /// (e.g. an unconditional paneClosed/paneExited rebuild firing
+    /// before this window even elapsed) -- see this file's header
+    /// "SINGLE OWNER, NOT A RACE".
+    private func settleReplayBurst(socketPath: String, generation: Int) async {
+        guard !Task.isCancelled, generation == connectionGeneration, isAccumulatingReplayBurst else { return }
+        isAccumulatingReplayBurst = false
+
+        let newlyRevealed = pendingBurstPaneIDs.subtracting(recognizedPaneIDs)
+        guard !newlyRevealed.isEmpty else {
+            // A clean settle -- the burst told us nothing we did not
+            // already recognize -- is itself proof this cycle is not
+            // pathological; see this file's header "CONSECUTIVE-REBUILD
+            // CAP".
+            consecutiveRebuildsWithoutProgress = 0
             return
         }
+
+        recognizedPaneIDs.formUnion(newlyRevealed)
+        await triggerRebuild(socketPath: socketPath)
     }
 
     // MARK: - Disconnect handling
 
     /// Shared tail for "the live connection is gone": a clean EOF, a
     /// transport failure, or a rebuild's own reconnect attempt failing.
-    /// Notifies the mirror exactly once, drops the session, then
-    /// attempts the bounded reconnect -- see this file's header
-    /// "DISCONNECT HANDLING".
+    /// Notifies the mirror exactly once, closes and drops the
+    /// event-stream transport (see this file's header "EXPLICIT
+    /// TRANSPORT TEARDOWN" -- a harmless no-op here if the transport
+    /// already ended on its own), then attempts the bounded reconnect --
+    /// see this file's header "DISCONNECT HANDLING".
     private func handleDisconnect(socketPath: String) async {
         mirror.connectionLost()
-        currentSession = nil
+        await closeAndClearEventStreamTransport()
         await reconnectLoop(socketPath: socketPath)
+    }
+
+    /// Closes `currentEventStreamTransport`, if any, and clears the
+    /// reference -- shared by `triggerRebuild(socketPath:)` and
+    /// `handleDisconnect(socketPath:)`; see this file's header "EXPLICIT
+    /// TRANSPORT TEARDOWN". `HerdrTransport.close()` is documented
+    /// idempotent, so this is safe to call even when the transport
+    /// already ended (EOF/failure) on its own. Also cancels and clears
+    /// `burstSettleTask` -- a harmless no-op once it has already fired
+    /// or was never accumulating in the first place -- see this file's
+    /// header "SINGLE OWNER, NOT A RACE".
+    private func closeAndClearEventStreamTransport() async {
+        if let transport = currentEventStreamTransport {
+            await transport.close()
+        }
+        currentEventStreamTransport = nil
+        burstSettleTask?.cancel()
+        burstSettleTask = nil
     }
 
     /// Bounded reconnect: each attempt is gated by
@@ -728,12 +953,36 @@ final class HerdrIntegrationCoordinator {
     /// RECONNECT BUDGET), deliberately left untouched: see this file's
     /// header for why a later `start()` must stay bound by the SAME
     /// lifetime total rather than being re-armed with a fresh one.
-    /// `knownPaneIDs` in particular must not survive a full give-up --
-    /// a later-discovered herdr session may reuse pane ids the old one
-    /// had, and resubscribing against it with stale per-pane ids is
-    /// unmeasured server behavior.
+    /// `knownPaneIDs`/`recognizedPaneIDs` in particular must not survive
+    /// a full give-up -- a later-discovered herdr session may reuse
+    /// pane ids the old one had, and resubscribing (or silently treating
+    /// a genuinely new pane as already-recognized) against it with stale
+    /// per-pane ids is unmeasured server behavior. `burstSettleTask` is
+    /// already cancelled/cleared by `closeAndClearEventStreamTransport`
+    /// on every path that reaches `resetToIdle`; cleared again here
+    /// defensively, matching that method's own idempotent contract.
+    ///
+    /// `mirror.connectionLost()` is called unconditionally too, for the
+    /// identical reason: `attemptConnect`'s snapshot step (line ~582)
+    /// upserts rows into the mirror BEFORE its own, independently
+    /// fallible subscribe step runs -- a give-up reached via `start()`'s
+    /// own attemptConnect-failure branch, or via the last attempt inside
+    /// `reconnectLoop` before it gives up here, can therefore leave rows
+    /// in the mirror with no live connection behind them. Safe to call
+    /// even when this attempt never got that far (e.g. `start()`'s
+    /// candidate-detection failure, which never touched the mirror at
+    /// all, or a `handleDisconnect` that already called it once):
+    /// `HerdrAgentMirror.connectionLost()` iterates `ownedIDsBySocketPath`
+    /// and clears it, an inherent no-op when nothing is owned.
     private func resetToIdle() {
         isActive = false
+        mirror.connectionLost()
         knownPaneIDs.removeAll()
+        recognizedPaneIDs.removeAll()
+        pendingBurstPaneIDs.removeAll()
+        isAccumulatingReplayBurst = false
+        burstSettleTask?.cancel()
+        burstSettleTask = nil
+        consecutiveRebuildsWithoutProgress = 0
     }
 }

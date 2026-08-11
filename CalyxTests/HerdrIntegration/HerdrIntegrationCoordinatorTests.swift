@@ -2,81 +2,70 @@
 //  HerdrIntegrationCoordinatorTests.swift
 //  CalyxTests
 //
-//  HerdrIntegrationCoordinator's detection gate, START SEQUENCE
-//  ordering, A1's bootstrap rebuild (a cold connect's own subscribe
-//  cannot cover panes it hasn't snapshotted yet), pane-set REBUILD
-//  triggers (including the anti-storm dedup against a (re)subscribe's
-//  own replay burst), A2's bounded handshake deadline, and EOF/failure
-//  DISCONNECT HANDLING with a reconnect budget bounded across cycles for
-//  this instance's whole lifetime (A5/A6). See
+//  HerdrIntegrationCoordinator's detection gate, CONNECT SEQUENCE
+//  ordering (a one-shot `session.snapshot` on its OWN transport, applied
+//  to the mirror and used to build the per-pane subscribe list, BEFORE a
+//  SEPARATE `events.subscribe` transport is ever opened), pane-set
+//  REBUILD triggers (including the anti-storm dedup against a
+//  (re)subscribe's own replay burst), the PER-STEP handshake deadline
+//  (A2), and EOF/failure DISCONNECT HANDLING with a reconnect budget
+//  bounded across cycles for this instance's whole lifetime (A5/A6). See
 //  HerdrIntegrationCoordinator.swift's own header for the full frozen
-//  contract.
+//  contract, and HerdrConnection.swift's own header for the measured
+//  wire facts this coordinator is built from.
 //
 //  Every dependency is a fake/spy -- no real socket is ever opened.
-//  `SpyHerdrSessionFactory` builds each session over a real
-//  `InMemoryHerdrTransport` it retains (mirrors HerdrSocketSessionTests'
-//  own transport-driving style exactly: this file exercises
-//  HerdrSocketSession's REAL wire protocol, just reached indirectly
-//  through the coordinator, only the factory/discovery/resolver
-//  boundary is faked). `HerdrAgentMirror` and `AgentRegistry` are used
-//  as REAL, freshly-constructed instances (never mocked) -- registry
-//  state is this file's way of confirming the coordinator's snapshot/
-//  event/connectionLost calls actually reached the mirror.
+//  `SpyHerdrTransportFactory` hands out a fresh `InMemoryHerdrTransport`
+//  per `makeTransport()` call, retaining each so tests can drive/inspect
+//  it. `HerdrAgentMirror` and `AgentRegistry` are used as REAL, freshly-
+//  constructed instances (never mocked) -- registry state is this file's
+//  way of confirming the coordinator's snapshot/event/connectionLost
+//  calls actually reached the mirror.
 //
-//  A1 note: a cold `start()`'s very first attempt always subscribes with
-//  an empty per-pane set (nothing snapshotted yet), so most tests below
-//  that need N already-known, SETTLED panes go through
-//  `driveToSettledConnection(factory:baseIndex:paneIDs:)`, which drives
-//  the unavoidable one-time bootstrap rebuild for them, returning the
-//  transport that actually stays live; a bare `driveInitialSequence`
-//  with an EMPTY pane list is used instead wherever a test's own point
-//  is orthogonal to pane content, to avoid that extra hop entirely.
-//
-//  A2 note: `makeDetectableCoordinator`'s own `sleep` defaults to a REAL
-//  `Task.sleep(for:)`-backed closure (matching the coordinator's own
-//  production default), not a no-op -- see that helper's own doc comment
-//  for why a shared no-op default would make A2's handshake-timeout race
-//  arm resolve before a genuinely multi-hop driven handshake could ever
-//  win it.
+//  TRANSPORT ACCOUNTING: unlike the type this coordinator used to depend
+//  on (one persistent, multiplexed connection per connect attempt), EVERY
+//  successful connect attempt now opens exactly TWO transports -- an
+//  even-indexed one-shot `session.snapshot` connection (which always
+//  closes itself once answered) immediately followed by an odd-indexed,
+//  long-lived `events.subscribe` connection (the only one any test ever
+//  injects further events onto). `driveConnectAttempt(factory:baseIndex:
+//  paneIDs:)` below drives exactly one such pair and is the base every
+//  call-count assertion in this file is built from -- never hand-rolled
+//  per test.
 //
 //  Coverage:
 //  - herdr not detected (resolver nil, or no live socket) -> zero factory calls
 //  - never calling start() -> zero factory calls, no background timer
-//  - start(): connect -> ping -> subscribe -> snapshot, in that exact order
-//  - A1: a cold connect's first subscribe carries the 5 structure events and
-//    zero per-pane subscriptions; its own snapshot revealing an unsubscribed
-//    pane triggers exactly one bootstrap rebuild, never a storm
-//  - the fetched snapshot is applied to the injected mirror
+//  - start(): a one-shot session.snapshot (its own transport) completes
+//    BEFORE a separate events.subscribe transport is ever opened; the
+//    fetched snapshot is applied to the mirror; the subscribe's own
+//    per-pane list is exactly what that snapshot revealed, alongside the
+//    five structure events
 //  - start() while already connected is a no-op (repeated "app became active")
-//  - a paneCreated event for a genuinely NEW pane rebuilds the connection,
-//    and the rebuilt subscribe list includes that new pane
+//  - a paneCreated event for a genuinely NEW pane rebuilds the connection
+//    (a fresh snapshot + a fresh subscribe transport), and the rebuilt
+//    subscribe list includes that new pane
 //  - a paneCreated event for an ALREADY-known pane does NOT rebuild
 //    (anti-storm: the (re)subscribe's own replay burst must not self-trigger)
-//  - "pane_closed"/"pane_exited" events (.paneClosed(paneID:)/
-//    .paneExited(paneID:) on the wire, per HerdrEvent.swift's B1 rule)
-//    always rebuild unconditionally, regardless of knownPaneIDs
-//  - A4: closing/exiting a pane removes its id from knownPaneIDs BEFORE
-//    rebuilding, so the rebuilt connection's own resubscribe never lists
-//    a pane id herdr no longer knows about
+//  - "pane_closed"/"pane_exited" events always rebuild unconditionally,
+//    regardless of what is currently known
+//  - a rebuild's own subscribe list is derived from THAT rebuild's OWN
+//    fresh snapshot (never from separately-mutated bookkeeping) -- a
+//    closed pane is excluded because the fresh snapshot no longer reveals
+//    it, not because of any special-cased removal step; the superseded
+//    event-stream transport is explicitly closed
 //  - a paneAgentStatusChanged event reaches the mirror end-to-end
-//  - EOF calls mirror.connectionLost(), then reconnects while the socket
-//    still probes alive
+//  - EOF calls mirror.connectionLost(), then reconnects (a fresh 2-transport
+//    connect attempt) while the socket still probes alive
 //  - EOF stops entirely (no retry) once the socket no longer probes alive
 //  - A5/A6: the reconnect budget is bounded ACROSS cycles (not just within
-//    one), surviving a reconnect that completes its own handshake and then
-//    drops again before any event is ever pushed
-//  - A2: a handshake that hangs forever times out and gives up plainly,
-//    and a later start() still proceeds fresh afterward
-//  - BLOCKER regression: a handshake stuck forever inside a pending
-//    request's own continuation (herdr accepted the connection but
-//    never answers `ping`) must, once A2's deadline fires, actually
-//    terminate that session (via `HerdrSocketSession.abandon()`) and
-//    let it be released -- not merely time out `start()` while leaking
-//    the session, its socket fd, and its `DispatchSourceRead` forever
-//  - A3 (SHOULD-FIX): a pane set that never stops revealing a freshly
-//    different set on every single BOOTSTRAP REBUILD (A1) retry must
-//    stop at a bounded iteration cap, never spin `attemptConnect`
-//    forever
+//    one), surviving a reconnect that completes its own connect sequence
+//    and then drops again before any event is ever pushed
+//  - A2, per step: a snapshot that hangs forever times out and gives up
+//    plainly (no subscribe transport ever created), closing its own
+//    transport (BLOCKER-analog: proof the stuck step is actually
+//    unstuck, not merely abandoned) -- and a later start() still proceeds
+//    fresh afterward; a subscribe that hangs forever times out the same way
 //
 //  NOTE ON XCTAssert + actor-isolated values: `XCTAssertEqual`/etc. take
 //  `@autoclosure` (non-async) parameters, so `await factory.callCount`
@@ -96,9 +85,9 @@ private struct FakeHerdrBinaryResolver: HerdrBinaryResolverProtocol {
 }
 
 /// Mutable-but-genuinely-`Sendable` `HerdrSessionDiscoveryProtocol` fake
-/// (`OSAllocatedUnfairLock`-backed, mirrors `HerdrBinaryResolver`'s own
-/// cache precedent) -- `markDead(_:)` lets a test flip a socket path
-/// from "alive" to "gone" mid-run, for the DISCONNECT HANDLING tests.
+/// (`OSAllocatedUnfairLock`-backed) -- `markDead(_:)` lets a test flip a
+/// socket path from "alive" to "gone" mid-run, for the DISCONNECT
+/// HANDLING tests.
 private final class FakeHerdrSessionDiscovery: HerdrSessionDiscoveryProtocol, Sendable {
     private let candidatesBox: OSAllocatedUnfairLock<[HerdrSessionCandidate]>
     private let aliveBox: OSAllocatedUnfairLock<Set<String>>
@@ -118,52 +107,22 @@ private final class FakeHerdrSessionDiscovery: HerdrSessionDiscoveryProtocol, Se
     }
 }
 
-/// `HerdrSessionFactory` spy: each `makeSession()` call builds a fresh
-/// `HerdrSocketSession` over a NEW `InMemoryHerdrTransport`, retaining
-/// the transport so tests can drive/inspect it -- `transports.count` IS
-/// this spy's call count. Also tracks each created session via a WEAK
-/// reference (`WeakSessionBox`) -- see `isSessionAlive(at:)`'s own doc
-/// comment for why: this spy must never itself become an unaccounted-for
-/// strong retainer of a session, or a BLOCKER-class leak regression
-/// (HerdrIntegrationCoordinator.swift's own HANDSHAKE DEADLINE (A2)
-/// timeout arm) could pass by accident.
-private actor SpyHerdrSessionFactory: HerdrSessionFactory {
+/// `HerdrTransportFactory` spy: each `makeTransport()` call hands out a
+/// fresh `InMemoryHerdrTransport`, retaining it so tests can drive/
+/// inspect it -- `transports.count` IS this spy's call count.
+private actor SpyHerdrTransportFactory: HerdrTransportFactory {
     private(set) var transports: [InMemoryHerdrTransport] = []
-    private var sessionBoxes: [WeakSessionBox] = []
 
-    func makeSession() async -> HerdrSocketSession {
+    func makeTransport() async -> any HerdrTransport {
         let transport = InMemoryHerdrTransport()
         transports.append(transport)
-        let session = HerdrSocketSession(transport: transport)
-        sessionBoxes.append(WeakSessionBox(session))
-        return session
+        return transport
     }
 
     var callCount: Int { transports.count }
 
     func transport(at index: Int) -> InMemoryHerdrTransport? {
         transports.indices.contains(index) ? transports[index] : nil
-    }
-
-    /// TEST ONLY (BLOCKER regression coverage): `true` while the session
-    /// created by call `#index` is still retained SOMEWHERE OUTSIDE this
-    /// factory -- see `WeakSessionBox`'s own doc comment for why this
-    /// factory itself never counts as that somewhere.
-    func isSessionAlive(at index: Int) -> Bool {
-        guard sessionBoxes.indices.contains(index) else { return false }
-        return sessionBoxes[index].session != nil
-    }
-}
-
-/// TEST ONLY: holds a WEAK reference to a `HerdrSocketSession` so
-/// `SpyHerdrSessionFactory.isSessionAlive(at:)` can observe whether the
-/// coordinator (the only INTENDED owner of a session it creates) still
-/// retains it, without the factory itself holding a strong reference
-/// that would mask a real leak.
-private final class WeakSessionBox {
-    weak var session: HerdrSocketSession?
-    init(_ session: HerdrSocketSession) {
-        self.session = session
     }
 }
 
@@ -178,21 +137,22 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
 
     /// `sleep` defaults to the SAME real-clock closure the coordinator's
     /// own initializer defaults to (`Task.sleep(for:)`), not a no-op --
-    /// A2's HANDSHAKE DEADLINE races every driven handshake against
+    /// A2's PER-STEP handshake deadline races every driven step against
     /// `handshakeTimeout` using this SAME closure, so a no-op default
-    /// would resolve that race arm instantly, before a handshake this
-    /// suite is actively driving (over several genuine actor hops) could
-    /// ever win -- see A2's own coverage note below. `reconnectDelays`
-    /// stay effectively instant in every test that sets them because
-    /// every one of them uses `.zero`; `Task.sleep(for: .zero)` still
-    /// suspends, but not for any real, test-slowing duration.
+    /// would resolve that race arm instantly, before a step this suite is
+    /// actively driving (over several genuine actor hops) could ever win.
+    /// `reconnectDelays` stay effectively instant in every test that sets
+    /// them because every one of them uses `.zero`; `Task.sleep(for:
+    /// .zero)` still suspends, but not for any real, test-slowing
+    /// duration.
     private func makeDetectableCoordinator(
-        factory: SpyHerdrSessionFactory,
+        factory: SpyHerdrTransportFactory,
         discovery: FakeHerdrSessionDiscovery? = nil,
         mirror: HerdrAgentMirror? = nil,
         reconnectDelays: [Duration] = [],
-        maxBootstrapRebuildIterations: Int = HerdrIntegrationCoordinator.defaultMaxBootstrapRebuildIterations,
         maxLifetimeReconnectAttempts: Int = HerdrIntegrationCoordinator.defaultMaxLifetimeReconnectAttempts,
+        replayBurstSettleWindow: Duration = HerdrIntegrationCoordinator.defaultReplayBurstSettleWindow,
+        rebuildBackoffDelays: [Duration] = HerdrIntegrationCoordinator.defaultRebuildBackoffDelays,
         sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     ) -> HerdrIntegrationCoordinator {
         HerdrIntegrationCoordinator(
@@ -200,52 +160,65 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
             discovery: discovery ?? FakeHerdrSessionDiscovery(
                 candidates: [HerdrSessionCandidate(name: "default", socketPath: socketPath)], alive: [socketPath]
             ),
-            sessionFactory: factory,
+            transportFactory: factory,
             mirror: mirror ?? HerdrAgentMirror(registry: AgentRegistry()),
             reconnectDelays: reconnectDelays,
-            maxBootstrapRebuildIterations: maxBootstrapRebuildIterations,
             maxLifetimeReconnectAttempts: maxLifetimeReconnectAttempts,
+            replayBurstSettleWindow: replayBurstSettleWindow,
+            rebuildBackoffDelays: rebuildBackoffDelays,
             sleep: sleep
         )
     }
 
-    /// Drives a coordinator's very first `start()` (or a rebuild/
-    /// reconnect attempt already in flight) all the way to a SETTLED
-    /// connection when `paneIDs` is non-empty -- see A1's own
-    /// BOOTSTRAP REBUILD: a cold attempt's subscribedPaneIDs is always
-    /// empty, so its own snapshot revealing `paneIDs` unconditionally
-    /// triggers exactly one A1 rebuild before settling. Transport
-    /// `#baseIndex` is that transient, discarded bootstrap attempt;
-    /// transport `#baseIndex + 1` (driven with the SAME `paneIDs`, so
-    /// its own revealed set matches what it just subscribed) is the one
-    /// that actually settles -- returned so callers assert against the
-    /// LIVE connection, not the transient one. `paneIDs: []` never
-    /// triggers a rebuild (an empty revealed set trivially matches the
-    /// empty subscribedPaneIDs every cold attempt starts with), so it
-    /// shortcuts to a single connection, returning transport
-    /// `#baseIndex` itself. Tests that don't care about A1's own
-    /// mechanics (most of this file) use this helper to reach "N known,
-    /// settled panes" without duplicating the bootstrap dance; A1's own
-    /// dedicated tests above drive it out by hand instead.
-    private func driveToSettledConnection(
-        factory: SpyHerdrSessionFactory, baseIndex: Int, paneIDs: [String]
+    /// Drives ONE full CONNECT SEQUENCE attempt starting at transport
+    /// `#baseIndex`: answers `#baseIndex`'s own (and ONLY) request --
+    /// "session.snapshot" -- with a fixture revealing `paneIDs`; then
+    /// waits for transport `#baseIndex + 1` (the events.subscribe
+    /// connection, whose own per-pane list is therefore always exactly
+    /// `paneIDs`) to be created, and answers ITS own (and only) request
+    /// with the ack. Returns transport `#baseIndex + 1` -- the long-lived
+    /// connection every subsequent event-injection/assertion in a test
+    /// targets. `#baseIndex` itself needs no further attention: a
+    /// one-shot request always closes its own transport once answered.
+    @discardableResult
+    private func driveConnectAttempt(
+        factory: SpyHerdrTransportFactory, baseIndex: Int, paneIDs: [String]
     ) async -> InMemoryHerdrTransport? {
-        await driveInitialSequence(factory: factory, transportIndex: baseIndex, snapshotPaneIDs: paneIDs)
-        guard !paneIDs.isEmpty else {
-            return await factory.transport(at: baseIndex)
+        guard let snapshotTransport = await awaitTransport(factory, at: baseIndex) else {
+            XCTFail("expected transport #\(baseIndex) (the snapshot connection) to have been created")
+            return nil
         }
-        await driveInitialSequence(factory: factory, transportIndex: baseIndex + 1, snapshotPaneIDs: paneIDs)
-        return await factory.transport(at: baseIndex + 1)
+        let snapshotSent = await awaitSentMessages(snapshotTransport, atLeast: 1)
+        guard snapshotSent.count == 1, requestMethod(inLine: snapshotSent[0]) == "session.snapshot",
+              let snapshotID = requestID(inLine: snapshotSent[0]) else {
+            XCTFail("expected transport #\(baseIndex)'s only request to be 'session.snapshot'; got \(snapshotSent)")
+            return nil
+        }
+        await snapshotTransport.simulateLine(snapshotResponseLine(id: snapshotID, paneIDs: paneIDs))
+
+        guard let subscribeTransport = await awaitTransport(factory, at: baseIndex + 1) else {
+            XCTFail("expected transport #\(baseIndex + 1) (the events.subscribe connection) to have been created")
+            return nil
+        }
+        let subscribeSent = await awaitSentMessages(subscribeTransport, atLeast: 1)
+        guard subscribeSent.count == 1, requestMethod(inLine: subscribeSent[0]) == "events.subscribe",
+              let subscribeID = requestID(inLine: subscribeSent[0]) else {
+            XCTFail("expected transport #\(baseIndex + 1)'s only request to be 'events.subscribe'; got \(subscribeSent)")
+            return nil
+        }
+        await subscribeTransport.simulateLine(subscribeAckLine(id: subscribeID))
+
+        return subscribeTransport
     }
 
     // MARK: - Detection gate
 
     func test_start_whenHerdrNotDetected_resolverReturnsNil_doesNothing() async {
-        let factory = SpyHerdrSessionFactory()
+        let factory = SpyHerdrTransportFactory()
         let coordinator = HerdrIntegrationCoordinator(
             resolver: FakeHerdrBinaryResolver(result: nil),
             discovery: FakeHerdrSessionDiscovery(candidates: [], alive: []),
-            sessionFactory: factory,
+            transportFactory: factory,
             mirror: HerdrAgentMirror(registry: AgentRegistry()),
             reconnectDelays: [],
             sleep: { _ in }
@@ -254,11 +227,11 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
         await coordinator.start()
 
         let callCount = await factory.callCount
-        XCTAssertEqual(callCount, 0, "herdr not detected (resolver returns nil) must never touch the session factory")
+        XCTAssertEqual(callCount, 0, "herdr not detected (resolver returns nil) must never touch the transport factory")
     }
 
     func test_start_whenNoLiveSocket_doesNothing() async {
-        let factory = SpyHerdrSessionFactory()
+        let factory = SpyHerdrTransportFactory()
         let discovery = FakeHerdrSessionDiscovery(
             candidates: [HerdrSessionCandidate(name: "default", socketPath: socketPath)], alive: [] // none alive
         )
@@ -267,17 +240,13 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
         await coordinator.start()
 
         let callCount = await factory.callCount
-        XCTAssertEqual(callCount, 0, "no live socket candidate must never touch the session factory")
+        XCTAssertEqual(callCount, 0, "no live socket candidate must never touch the transport factory")
     }
 
     func test_neverCallingStart_doesNoWork_noBackgroundTimer() async {
-        let factory = SpyHerdrSessionFactory()
+        let factory = SpyHerdrTransportFactory()
         _ = makeDetectableCoordinator(factory: factory)
 
-        // Bounded cooperative yielding, not a real sleep -- gives any
-        // (hypothetical, wrongly-implemented) stray background task a
-        // chance to reveal itself without this test depending on
-        // wall-clock time.
         for _ in 0..<50 { await Task.yield() }
 
         let callCount = await factory.callCount
@@ -288,49 +257,10 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
         )
     }
 
-    // MARK: - START SEQUENCE ordering
+    // MARK: - CONNECT SEQUENCE ordering
 
-    func test_start_connectsPingsSubscribesThenSnapshots_inOrder() async {
-        let factory = SpyHerdrSessionFactory()
-        let coordinator = makeDetectableCoordinator(factory: factory)
-
-        async let startTask: Void = coordinator.start()
-
-        guard let transport = await awaitTransport(factory, at: 0) else {
-            XCTFail("expected start() to create exactly one session via the factory")
-            return
-        }
-
-        // Empty snapshot -- deliberately no panes, so this attempt's own
-        // (empty) subscribedPaneIDs trivially matches its own (empty)
-        // revealed set and settles without an A1 BOOTSTRAP REBUILD; this
-        // test is only about the wire ORDER of one handshake, not pane
-        // content -- see `test_start_bootstrapRebuild_...` below for A1
-        // itself.
-        await driveInitialSequence(factory: factory, transportIndex: 0, snapshotPaneIDs: [])
-        await startTask
-
-        // Checked only AFTER the handshake is fully driven: A2's
-        // HANDSHAKE DEADLINE races the handshake on its own unstructured
-        // `Task`, so `connect(socketPath:)` is not guaranteed to have
-        // run yet at the instant `awaitTransport` above first observes
-        // `factory.callCount` -- only "ping" having been sent (which
-        // `driveInitialSequence` already waited for) proves it did.
-        let connectedPath = await transport.lastConnectedSocketPath()
-        XCTAssertEqual(connectedPath, socketPath, "start() must connect the session to the discovered live socket path")
-
-        let sent = await transport.sentMessages()
-        XCTAssertEqual(
-            sent.compactMap { requestMethod(inLine: $0) }, ["ping", "events.subscribe", "session.snapshot"],
-            "start() must send exactly ping, then events.subscribe, then session.snapshot, in that order -- " +
-            "subscribing before snapshotting matters because herdr never replays agent-status events"
-        )
-    }
-
-    // MARK: - A1: bootstrap rebuild (first subscribe cannot cover panes it hasn't snapshotted yet)
-
-    func test_start_bootstrapRebuild_firstSubscribeHasNoPerPaneSubs_thenRebuildsToIncludeRevealedPane() async {
-        let factory = SpyHerdrSessionFactory()
+    func test_start_takesSnapshotBeforeSubscribing_appliesToMirror_subscribeListIsStructureEventsPlusRevealedPanes() async {
+        let factory = SpyHerdrTransportFactory()
         let registry = AgentRegistry()
         let mirror = HerdrAgentMirror(registry: registry)
         let coordinator = makeDetectableCoordinator(factory: factory, mirror: mirror)
@@ -338,134 +268,130 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
 
         async let startTask: Void = coordinator.start()
 
-        // Transport #0: the cold bootstrap attempt -- nothing is known
-        // yet, so its own subscribe must carry zero per-pane
-        // subscriptions, exactly the PRE-A1 behaviour this test replaces
-        // (see this file's own coverage note). Its own snapshot reveals
-        // a pane ("w1:p1") that subscribe never covered -- an A1
-        // BOOTSTRAP REBUILD trigger: transport #0 is discarded and
-        // transport #1 opened, WITHOUT transport #0 ever reaching
-        // events.subscribe's replay burst being consumed. Driven fully
-        // (not inspected mid-handshake): `sentMessages()` retains every
-        // line ever sent regardless of whether it has been acked yet, so
-        // inspecting it AFTER the fact is equivalent and avoids needing
-        // to hand-roll ping's own ack here too.
-        await driveInitialSequence(factory: factory, transportIndex: 0, snapshotPaneIDs: ["w1:p1"])
-
-        guard let firstTransport = await factory.transport(at: 0) else {
-            XCTFail("expected transport #0 to exist")
+        guard let snapshotTransport = await awaitTransport(factory, at: 0) else {
+            XCTFail("expected start() to create a transport for the one-shot session.snapshot request first")
             return
         }
-        let firstSent = await firstTransport.sentMessages()
-        guard let firstSubscribeLine = firstSent.first(where: { requestMethod(inLine: $0) == "events.subscribe" }) else {
-            XCTFail("expected transport #0 to send events.subscribe; got \(firstSent)")
+        let snapshotSent = await awaitSentMessages(snapshotTransport, atLeast: 1)
+        XCTAssertEqual(
+            snapshotSent.compactMap { requestMethod(inLine: $0) }, ["session.snapshot"],
+            "the FIRST transport's only request must be session.snapshot, sent before any subscribe transport exists"
+        )
+        let connectedPath = await snapshotTransport.lastConnectedSocketPath()
+        XCTAssertEqual(connectedPath, socketPath, "start() must connect to the discovered live socket path")
+        guard let firstSnapshotLine = snapshotSent.first, let snapshotID = requestID(inLine: firstSnapshotLine) else {
+            XCTFail("expected exactly one sent line carrying a request id, got \(snapshotSent)")
+            return
+        }
+
+        // No subscribe transport must exist yet -- the snapshot has not
+        // even been answered.
+        let callCountBeforeSnapshotAnswered = await factory.callCount
+        XCTAssertEqual(callCountBeforeSnapshotAnswered, 1, "subscribing must never happen before the snapshot completes")
+
+        await snapshotTransport.simulateLine(snapshotResponseLine(id: snapshotID, paneIDs: ["w1:p1"]))
+
+        guard let subscribeTransport = await awaitTransport(factory, at: 1) else {
+            XCTFail("expected the snapshot response to trigger a SEPARATE transport for events.subscribe")
+            return
+        }
+        let subscribeSent = await awaitSentMessages(subscribeTransport, atLeast: 1)
+        guard subscribeSent.count == 1, requestMethod(inLine: subscribeSent[0]) == "events.subscribe",
+              let subscribeID = requestID(inLine: subscribeSent[0]) else {
+            XCTFail("expected the second transport's only request to be events.subscribe; got \(subscribeSent)")
             return
         }
         XCTAssertEqual(
-            Set(subscriptionTypes(inLine: firstSubscribeLine)), Set(HerdrIntegrationCoordinator.structureEventSubscriptionTypes),
-            "the cold bootstrap subscribe must still include exactly the five type-only structure events"
+            Set(subscriptionTypes(inLine: subscribeSent[0])), Set(HerdrIntegrationCoordinator.structureEventSubscriptionTypes),
+            "the subscribe must include exactly the five type-only structure events"
         )
-        XCTAssertTrue(
-            agentStatusChangedPaneIDs(inLine: firstSubscribeLine).isEmpty,
-            "the cold bootstrap subscribe must carry zero per-pane agentStatusChanged subscriptions -- nothing " +
-            "is known yet, by construction"
+        XCTAssertEqual(
+            agentStatusChangedPaneIDs(inLine: subscribeSent[0]), ["w1:p1"],
+            "the subscribe's own per-pane list must be exactly what the snapshot -- taken BEFORE it -- revealed"
         )
+        await subscribeTransport.simulateLine(subscribeAckLine(id: subscribeID))
 
-        guard let secondTransport = await awaitTransport(factory, at: 1) else {
-            XCTFail("expected the snapshot revealing an unsubscribed pane to trigger exactly one A1 rebuild")
-            return
-        }
-        let callCountAfterBootstrapRebuild = await factory.callCount
-        XCTAssertEqual(callCountAfterBootstrapRebuild, 2, "A1 must open exactly one replacement session, not more")
-
-        // Its own snapshot matches what it just subscribed with, so this
-        // settles here -- no third session.
-        await driveInitialSequence(factory: factory, transportIndex: 1, snapshotPaneIDs: ["w1:p1"])
         await startTask
-
-        let secondSent = await secondTransport.sentMessages()
-        guard let secondSubscribeLine = secondSent.first(where: { requestMethod(inLine: $0) == "events.subscribe" }) else {
-            XCTFail("expected the rebuilt session to send its own events.subscribe request; got \(secondSent)")
-            return
-        }
-        XCTAssertEqual(
-            agentStatusChangedPaneIDs(inLine: secondSubscribeLine), ["w1:p1"],
-            "the rebuilt subscribe must now include the pane the cold bootstrap's own snapshot revealed"
-        )
 
         let finalCallCount = await factory.callCount
-        XCTAssertEqual(finalCallCount, 2, "a matching revealed set must settle immediately -- no further rebuild")
-        XCTAssertNotNil(
-            registry.externalEntries[expectedID],
-            "the settled connection's own snapshot must still reach the mirror"
-        )
+        XCTAssertEqual(finalCallCount, 2, "one connect attempt must open exactly 2 transports: snapshot, then subscribe")
+        XCTAssertNotNil(registry.externalEntries[expectedID], "the fetched snapshot must be applied to the injected mirror")
     }
 
-    func test_start_bootstrapRebuild_stablePaneSet_neverRebuildsAgain_noStorm() async {
-        let factory = SpyHerdrSessionFactory()
-        let coordinator = makeDetectableCoordinator(factory: factory)
-
-        async let startTask: Void = coordinator.start()
-        await driveInitialSequence(factory: factory, transportIndex: 0, snapshotPaneIDs: ["w1:p1"])
-        _ = await awaitTransport(factory, at: 1)
-        await driveInitialSequence(factory: factory, transportIndex: 1, snapshotPaneIDs: ["w1:p1"])
-        await startTask
-
-        let callCountAfterSettling = await factory.callCount
-        XCTAssertEqual(callCountAfterSettling, 2, "Precondition: settles after exactly one A1 rebuild")
-
-        // Bounded cooperative yielding: a stable, already-matching pane
-        // set must never trigger a THIRD session on its own -- this is
-        // the storm guard itself (A1's retry-only-on-mismatch shape).
-        for _ in 0..<200 { await Task.yield() }
-
-        let callCountAfterWaiting = await factory.callCount
-        XCTAssertEqual(
-            callCountAfterWaiting, 2,
-            "a stable pane set (revealed == subscribed) must never trigger a rebuild storm"
-        )
-    }
-
-    func test_start_appliesFetchedSnapshotToMirror() async {
-        let factory = SpyHerdrSessionFactory()
+    /// `panes[]` and `agents[]` are two SEPARATE schema arrays feeding two
+    /// SEPARATE consumers (HerdrIntegrationCoordinator.swift's own
+    /// header, CONNECT SEQUENCE step 3): this coordinator seeds its
+    /// per-pane subscription list from `panes[]` alone, while
+    /// `HerdrAgentMirror.applySnapshot` creates rows only from
+    /// `agents[]`. Measured live: a pane with no agent detected yet is
+    /// present in `panes[]` but absent from `agents[]` -- exactly
+    /// `panes = [wB:p1, wC:p1]`, `agents = [wB:p1]` here.
+    func test_snapshot_paneWithoutAgent_isStillSubscribed_butGetsNoMirrorRow() async {
+        let factory = SpyHerdrTransportFactory()
         let registry = AgentRegistry()
         let mirror = HerdrAgentMirror(registry: registry)
         let coordinator = makeDetectableCoordinator(factory: factory, mirror: mirror)
-        let expectedID = HerdrStableID.make(socketPath: socketPath, paneID: "w1:p1")
+        let subscribedWithAgentID = HerdrStableID.make(socketPath: socketPath, paneID: "wB:p1")
+        let agentlessID = HerdrStableID.make(socketPath: socketPath, paneID: "wC:p1")
 
         async let startTask: Void = coordinator.start()
-        guard await driveToSettledConnection(factory: factory, baseIndex: 0, paneIDs: ["w1:p1"]) != nil else {
-            XCTFail("expected the coordinator to settle on a connection with \"w1:p1\" known")
+        guard let snapshotTransport = await awaitTransport(factory, at: 0) else {
+            XCTFail("expected start() to create a transport for the one-shot session.snapshot request")
             return
         }
+        let snapshotSent = await awaitSentMessages(snapshotTransport, atLeast: 1)
+        guard let snapshotID = requestID(inLine: snapshotSent[0]) else {
+            XCTFail("expected a request id, got \(snapshotSent)")
+            return
+        }
+        // panes = [wB:p1, wC:p1] (both open panes); agents = [wB:p1] only
+        // -- "wC:p1" is a plain shell pane with no agent detected yet.
+        await snapshotTransport.simulateLine(
+            snapshotResponseLine(id: snapshotID, paneIDs: ["wB:p1", "wC:p1"], agentPaneIDs: ["wB:p1"])
+        )
+
+        guard let subscribeTransport = await awaitTransport(factory, at: 1) else {
+            XCTFail("expected the snapshot response to trigger the events.subscribe transport")
+            return
+        }
+        let subscribeSent = await awaitSentMessages(subscribeTransport, atLeast: 1)
+        guard let subscribeID = requestID(inLine: subscribeSent[0]) else {
+            XCTFail("expected a request id, got \(subscribeSent)")
+            return
+        }
+        XCTAssertEqual(
+            Set(agentStatusChangedPaneIDs(inLine: subscribeSent[0])), Set(["wB:p1", "wC:p1"]),
+            "an agent-less pane (\"wC:p1\", present in panes[] but absent from agents[]) must still be " +
+            "subscribed -- otherwise an agent started there later is never noticed"
+        )
+        await subscribeTransport.simulateLine(subscribeAckLine(id: subscribeID))
         await startTask
 
-        XCTAssertNotNil(
-            registry.externalEntries[expectedID],
-            "start() must apply the fetched snapshot to the injected mirror, producing an external row"
+        XCTAssertNotNil(registry.externalEntries[subscribedWithAgentID], "\"wB:p1\" has an agent -- it must get a mirror row")
+        XCTAssertNil(
+            registry.externalEntries[agentlessID],
+            "\"wC:p1\" has NO agent (absent from agents[]) -- it must get NO mirror row, even though it IS subscribed"
         )
+        XCTAssertEqual(registry.externalEntries.count, 1, "exactly ONE external row must exist -- for \"wB:p1\" only")
     }
 
     // MARK: - Already-connected guard
 
-    func test_start_calledAgainWhileAlreadyConnected_doesNotOpenASecondSession() async {
-        let factory = SpyHerdrSessionFactory()
+    func test_start_calledAgainWhileAlreadyConnected_doesNotOpenAnotherConnection() async {
+        let factory = SpyHerdrTransportFactory()
         let coordinator = makeDetectableCoordinator(factory: factory)
 
         async let startTask: Void = coordinator.start()
-        // Empty snapshot -- avoids an A1 bootstrap rebuild so "exactly
-        // one session so far" stays true; this test is only about the
-        // already-connected guard, not pane content.
-        await driveInitialSequence(factory: factory, transportIndex: 0, snapshotPaneIDs: [])
+        await driveConnectAttempt(factory: factory, baseIndex: 0, paneIDs: [])
         await startTask
         let firstCallCount = await factory.callCount
-        XCTAssertEqual(firstCallCount, 1, "Precondition: exactly one session must exist after the first start()")
+        XCTAssertEqual(firstCallCount, 2, "Precondition: exactly 2 transports must exist after the first start()")
 
         await coordinator.start() // e.g. "app became active" firing again while already live
 
         let secondCallCount = await factory.callCount
         XCTAssertEqual(
-            secondCallCount, 1,
+            secondCallCount, 2,
             "start() must be a no-op while already connected -- \"app became active\" can fire repeatedly and " +
             "must never open a duplicate connection"
         )
@@ -473,65 +399,96 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
 
     // MARK: - Rebuild triggers
 
-    func test_paneCreatedEvent_forNewPane_rebuildsConnection_andSubscribesWithNewPaneIncluded() async {
-        let factory = SpyHerdrSessionFactory()
-        let coordinator = makeDetectableCoordinator(factory: factory)
+    func test_paneCreatedEvent_forNewPane_rebuildsConnection_freshSnapshotAndSubscribe_withNewPaneIncluded() async {
+        let factory = SpyHerdrTransportFactory()
+        // `.zero` -- real-clock but effectively instant, same idiom as
+        // `reconnectDelays: [.zero]` elsewhere in this file -- so the
+        // REPLAY BURST RECONCILIATION accumulating phase this connect's
+        // own subscribe always opens with (HerdrIntegrationCoordinator
+        // .swift's own header) settles almost immediately, without racing
+        // `handshakeTimeout` (left at its real default, so the CONNECT
+        // SEQUENCE steps below are unaffected).
+        let coordinator = makeDetectableCoordinator(factory: factory, replayBurstSettleWindow: .zero)
 
         async let startTask: Void = coordinator.start()
-        // Empty snapshot -- avoids an A1 bootstrap rebuild, keeping this
-        // test's own transport #0/#1 numbering focused on the
-        // EVENT-driven rebuild trigger it actually exercises.
-        await driveInitialSequence(factory: factory, transportIndex: 0, snapshotPaneIDs: [])
-        await startTask
-        guard let firstTransport = await factory.transport(at: 0) else {
-            XCTFail("expected transport #0 to exist")
+        guard let settledTransport = await driveConnectAttempt(factory: factory, baseIndex: 0, paneIDs: []) else {
+            XCTFail("expected the coordinator to settle on an initial connection")
             return
         }
+        await startTask
         let firstCallCount = await factory.callCount
-        XCTAssertEqual(firstCallCount, 1, "Precondition")
+        XCTAssertEqual(firstCallCount, 2, "Precondition")
 
-        await firstTransport.simulateLine(paneCreatedEventLine(paneID: "w1:p2"))
+        // This test's subject is the STEADY-STATE trigger (REBUILD
+        // TRIGGERS, HerdrIntegrationCoordinator.swift's own header): a
+        // "pane.created" for a pane id not already recognized, once this
+        // connection's own accumulating replay-burst phase has already
+        // settled. Injecting it WHILE still accumulating would only add
+        // it to `pendingBurstPaneIDs` instead (REPLAY BURST
+        // RECONCILIATION) -- a deliberately different, separately-fixed
+        // code path, not what this test is named for. `testOnlyIsAccumulatingReplayBurst`
+        // exists precisely for this synchronization -- see its own doc
+        // comment.
+        await waitUntil { !coordinator.testOnlyIsAccumulatingReplayBurst }
 
-        guard let secondTransport = await awaitTransport(factory, at: 1) else {
+        await settledTransport.simulateLine(paneCreatedEventLine(paneID: "w1:p2"))
+
+        guard let rebuiltTransport = await driveConnectAttempt(factory: factory, baseIndex: 2, paneIDs: ["w1:p2"]) else {
             XCTFail(
-                "expected a paneCreated event for a genuinely NEW pane to rebuild the connection " +
-                "(open a second session)"
+                "expected a paneCreated event for a genuinely NEW pane to rebuild the connection (a fresh " +
+                "snapshot + a fresh subscribe transport)"
             )
             return
         }
         let afterRebuildCallCount = await factory.callCount
-        XCTAssertEqual(afterRebuildCallCount, 2, "a pane-set change must tear down and open exactly one new session")
+        XCTAssertEqual(afterRebuildCallCount, 4, "a pane-set change must open exactly 2 new transports, not more")
 
-        await driveInitialSequence(factory: factory, transportIndex: 1, snapshotPaneIDs: ["w1:p2"])
-
-        let sentOnSecond = await secondTransport.sentMessages()
-        guard let subscribeLine = sentOnSecond.first(where: { requestMethod(inLine: $0) == "events.subscribe" }) else {
-            XCTFail("expected the rebuilt session to send its own events.subscribe request; got \(sentOnSecond)")
-            return
-        }
+        let rebuiltSent = await rebuiltTransport.sentMessages()
         XCTAssertTrue(
-            agentStatusChangedPaneIDs(inLine: subscribeLine).contains("w1:p2"),
+            agentStatusChangedPaneIDs(inLine: rebuiltSent[0]).contains("w1:p2"),
             "the rebuilt subscription must include a per-pane agentStatusChanged subscription for the NEW pane"
         )
     }
 
     func test_paneCreatedEvent_forAlreadyKnownPane_doesNotRebuild_antiStorm() async {
-        let factory = SpyHerdrSessionFactory()
-        let coordinator = makeDetectableCoordinator(factory: factory)
+        let factory = SpyHerdrTransportFactory()
+        // `.zero` -- same idiom as the "new pane" test above -- so this
+        // connection's own accumulating replay-burst phase settles almost
+        // immediately; `rebuildBackoffDelays: [.zero]` so a WRONGLY
+        // triggered rebuild (the defect this test exists to catch) would
+        // manifest within a handful of task hops, comfortably inside the
+        // 200-yield window below, rather than sitting behind a real
+        // (unmockable via this helper) 200ms default backoff.
+        let coordinator = makeDetectableCoordinator(factory: factory, replayBurstSettleWindow: .zero, rebuildBackoffDelays: [.zero])
 
         async let startTask: Void = coordinator.start()
-        guard let settledTransport = await driveToSettledConnection(factory: factory, baseIndex: 0, paneIDs: ["w1:p1"]) else {
+        guard let settledTransport = await driveConnectAttempt(factory: factory, baseIndex: 0, paneIDs: ["w1:p1"]) else {
             XCTFail("expected the coordinator to settle on a connection with \"w1:p1\" known")
             return
         }
         await startTask
         let callCountAfterSettling = await factory.callCount
-        XCTAssertEqual(callCountAfterSettling, 2, "Precondition: settles after exactly one A1 bootstrap rebuild")
+        XCTAssertEqual(callCountAfterSettling, 2, "Precondition")
 
-        // Simulates a (re)subscribe's own replay burst re-announcing an
-        // ALREADY-snapshotted pane -- must never itself trigger a
-        // rebuild, or every (re)subscribe would immediately rebuild
-        // once per replayed pane (an exploding reconnect storm).
+        // This test's subject is the STEADY-STATE dedup (REBUILD
+        // TRIGGERS, HerdrIntegrationCoordinator.swift's own header): a
+        // "pane.created" for an ALREADY-recognized pane id, once this
+        // connection's own accumulating replay-burst phase has already
+        // settled. Injecting it WHILE still accumulating would instead
+        // land in the FIRST `paneCreated` switch case
+        // (`where isAccumulatingReplayBurst`), which unconditionally
+        // accumulates into `pendingBurstPaneIDs` without ever consulting
+        // `recognizedPaneIDs` -- a different code path this test is not
+        // named for. `testOnlyIsAccumulatingReplayBurst` exists precisely
+        // for this synchronization -- see its own doc comment, and the
+        // sibling "new pane" test above.
+        await waitUntil { !coordinator.testOnlyIsAccumulatingReplayBurst }
+
+        // Simulates a pane.created event re-announcing an ALREADY-known
+        // pane (e.g. a stray duplicate push, or a late replay straggler)
+        // -- must never itself trigger a rebuild, or every already-known
+        // pane reappearing would immediately rebuild (an exploding
+        // reconnect storm).
         await settledTransport.simulateLine(paneCreatedEventLine(paneID: "w1:p1"))
         for _ in 0..<200 { await Task.yield() }
 
@@ -542,128 +499,270 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
     }
 
     func test_paneClosedEvent_alwaysRebuildsConnection_unconditionally() async {
-        let factory = SpyHerdrSessionFactory()
+        let factory = SpyHerdrTransportFactory()
         let coordinator = makeDetectableCoordinator(factory: factory)
 
         async let startTask: Void = coordinator.start()
-        // Empty snapshot -- pane_closed/pane_exited rebuild
-        // unconditionally regardless of `knownPaneIDs` (see this file's
-        // own header), so no pre-existing pane is needed to exercise it.
-        await driveInitialSequence(factory: factory, transportIndex: 0, snapshotPaneIDs: [])
-        await startTask
-        guard let firstTransport = await factory.transport(at: 0) else {
-            XCTFail("expected transport #0 to exist")
+        guard let settledTransport = await driveConnectAttempt(factory: factory, baseIndex: 0, paneIDs: []) else {
+            XCTFail("expected the coordinator to settle on an initial connection")
             return
         }
+        await startTask
         let firstCallCount = await factory.callCount
-        XCTAssertEqual(firstCallCount, 1, "Precondition")
+        XCTAssertEqual(firstCallCount, 2, "Precondition")
 
-        // "w1:neverKnown" was never in knownPaneIDs (this attempt's own
-        // snapshot above was empty) -- deliberately, to prove this is
-        // truly UNCONDITIONAL, not merely triggered because the pane
-        // happened to already be known.
-        await firstTransport.simulateLine(paneClosedEventLine(paneID: "w1:neverKnown"))
+        // "w1:neverKnown" was never revealed by any snapshot this
+        // coordinator has taken -- deliberately, to prove this is truly
+        // UNCONDITIONAL, not merely triggered because the pane happened
+        // to already be known.
+        await settledTransport.simulateLine(paneClosedEventLine(paneID: "w1:neverKnown"))
 
-        _ = await awaitTransport(factory, at: 1)
+        guard await driveConnectAttempt(factory: factory, baseIndex: 2, paneIDs: []) != nil else {
+            XCTFail("expected the pane_closed event to rebuild the connection")
+            return
+        }
         let callCountAfter = await factory.callCount
         XCTAssertEqual(
-            callCountAfter, 2,
-            "a \"pane_closed\" event (decoded to .paneClosed(paneID:), per HerdrEvent.swift's own B1 rule) must " +
-            "unconditionally rebuild the connection, even for a pane id this connection never knew about"
+            callCountAfter, 4,
+            "a \"pane_closed\" event must unconditionally rebuild the connection (2 new transports), even for a " +
+            "pane id this connection never knew about"
         )
     }
 
-    /// Companion to the test above -- identical shape, "pane_exited" /
-    /// `.paneExited(paneID:)` instead of "pane_closed" / `.paneClosed(paneID:)`.
+    /// Companion to the test above -- identical shape, "pane_exited"
+    /// instead of "pane_closed".
     func test_paneExitedEvent_alwaysRebuildsConnection_unconditionally() async {
-        let factory = SpyHerdrSessionFactory()
+        let factory = SpyHerdrTransportFactory()
         let coordinator = makeDetectableCoordinator(factory: factory)
 
         async let startTask: Void = coordinator.start()
-        await driveInitialSequence(factory: factory, transportIndex: 0, snapshotPaneIDs: [])
-        await startTask
-        guard let firstTransport = await factory.transport(at: 0) else {
-            XCTFail("expected transport #0 to exist")
+        guard let settledTransport = await driveConnectAttempt(factory: factory, baseIndex: 0, paneIDs: []) else {
+            XCTFail("expected the coordinator to settle on an initial connection")
             return
         }
+        await startTask
         let firstCallCount = await factory.callCount
-        XCTAssertEqual(firstCallCount, 1, "Precondition")
+        XCTAssertEqual(firstCallCount, 2, "Precondition")
 
-        await firstTransport.simulateLine(paneExitedEventLine(paneID: "w1:neverKnown"))
+        await settledTransport.simulateLine(paneExitedEventLine(paneID: "w1:neverKnown"))
 
-        _ = await awaitTransport(factory, at: 1)
+        guard await driveConnectAttempt(factory: factory, baseIndex: 2, paneIDs: []) != nil else {
+            XCTFail("expected the pane_exited event to rebuild the connection")
+            return
+        }
         let callCountAfter = await factory.callCount
         XCTAssertEqual(
-            callCountAfter, 2,
-            "a \"pane_exited\" event (decoded to .paneExited(paneID:), per HerdrEvent.swift's own B1 rule) must " +
-            "unconditionally rebuild the connection, even for a pane id this connection never knew about"
+            callCountAfter, 4,
+            "a \"pane_exited\" event must unconditionally rebuild the connection (2 new transports), even for a " +
+            "pane id this connection never knew about"
         )
     }
 
-    // MARK: - A4: closing/exiting a pane removes it from knownPaneIDs before rebuilding
+    // MARK: - REPLAY BURST RECONCILIATION (direct coverage)
+
+    /// Direct coverage for REPLAY BURST RECONCILIATION
+    /// (HerdrIntegrationCoordinator.swift's own header) -- the measured
+    /// production defect this whole rewrite exists to fix: a fresh
+    /// subscribe's own replay burst can be a strict SUPERSET of the
+    /// snapshot (ghost panes from workspaces closed before either probe
+    /// ever connected, which replay forever but never appear in any
+    /// snapshot). Mirrors the task's own measured example exactly:
+    /// snapshot `{wB:p1, wC:p1}`, replay burst `{w8:p1, w9:p1, wA:p1,
+    /// wB:p1, wC:p1}`. Expected: EXACTLY one rebuild -- connection 1's
+    /// burst reveals `{w8, w9, wA}` as newly recognized; connection 2's
+    /// OWN fresh snapshot is unchanged, and its own replay burst (the
+    /// IDENTICAL 5 ids) reveals nothing new, so it converges with no
+    /// further rebuild.
+    ///
+    /// Deliberately does NOT follow the code-review sketch's
+    /// `replayBurstSettleWindow: .zero` + real-clock approach: that races
+    /// a zero-duration `Task.sleep` against genuine in-memory event
+    /// delivery (transport actor hop -> `HerdrEventStream`'s own relay
+    /// task, itself NOT `@MainActor` -- HerdrConnection.swift's own doc
+    /// comment on `subscribe(...)` -- -> the `AsyncThrowingStream`
+    /// `consumeEvents` reads). If the settle task's sleep happened to
+    /// resolve before all 5 burst lines were relayed and processed,
+    /// `pendingBurstPaneIDs` would be incomplete at settle time -- a
+    /// premature, empty-or-partial settle that either drops burst ids
+    /// entirely (never unioned into `recognizedPaneIDs`) or lets the
+    /// STEADY-STATE trigger fire per-id instead, in EITHER case risking
+    /// this test asserting a MISLEADING pass/count (or a genuinely
+    /// flaky failure) that does not actually pin the accumulating-phase
+    /// dedup this mechanism exists to prove. Instead, the settle
+    /// window's sleep call is intercepted BY DURATION (matching only
+    /// `burstSettleWindow` below) and blocked on an explicit gate; a
+    /// trailing "sentinel" event whose effect on the mirror IS
+    /// independently observable (unlike `paneCreated`, a pure no-op for
+    /// `HerdrAgentMirror` -- see that file's own header) proves, via the
+    /// SAME `AsyncStream`/`AsyncThrowingStream` FIFO-ordering guarantee
+    /// this file's own `test_reconnect_connectionThatDeliversAnEvent_...`
+    /// test already relies on, that every burst line queued before it on
+    /// the SAME transport has already been fully absorbed into
+    /// `pendingBurstPaneIDs` BEFORE the gate is opened. Every OTHER sleep
+    /// in this flow (the A2 handshake-timeout arms, and the rebuild
+    /// backoff) is left to resolve via real `Task.sleep`, exactly like
+    /// every other test in this file that does not override `sleep`.
+    func test_replayBurst_stalePanesBeyondSnapshot_rebuildsExactlyOnce_thenConverges() async {
+        let factory = SpyHerdrTransportFactory()
+        let registry = AgentRegistry()
+        let mirror = HerdrAgentMirror(registry: registry)
+        let burstSettleWindow = Duration.milliseconds(1)
+        let settleGate = OSAllocatedUnfairLock(initialState: false)
+        let coordinator = makeDetectableCoordinator(
+            factory: factory,
+            mirror: mirror,
+            replayBurstSettleWindow: burstSettleWindow,
+            rebuildBackoffDelays: [.zero],
+            sleep: { duration in
+                guard duration == burstSettleWindow else {
+                    try? await Task.sleep(for: duration)
+                    return
+                }
+                while !settleGate.withLock({ $0 }) {
+                    if Task.isCancelled { return }
+                    await Task.yield()
+                }
+            }
+        )
+        let sentinelID = HerdrStableID.make(socketPath: socketPath, paneID: "wB:p1")
+
+        async let startTask: Void = coordinator.start()
+        guard let firstSubscribe = await driveConnectAttempt(factory: factory, baseIndex: 0, paneIDs: ["wB:p1", "wC:p1"]) else {
+            XCTFail("expected the coordinator to settle on an initial connection")
+            return
+        }
+        await startTask
+        let firstCallCount = await factory.callCount
+        XCTAssertEqual(firstCallCount, 2, "Precondition")
+
+        // Replay burst: a strict SUPERSET of the snapshot -- "w8:p1"/
+        // "w9:p1"/"wA:p1" are ghost panes that replay forever but never
+        // appear in any snapshot.
+        await firstSubscribe.simulateLine(paneCreatedEventLine(paneID: "w8:p1"))
+        await firstSubscribe.simulateLine(paneCreatedEventLine(paneID: "w9:p1"))
+        await firstSubscribe.simulateLine(paneCreatedEventLine(paneID: "wA:p1"))
+        await firstSubscribe.simulateLine(paneCreatedEventLine(paneID: "wB:p1"))
+        await firstSubscribe.simulateLine(paneCreatedEventLine(paneID: "wC:p1"))
+        // Sentinel -- see this test's own doc comment above for why this
+        // (rather than a fixed real-clock margin) is what proves the 5
+        // lines above are already fully absorbed into
+        // `pendingBurstPaneIDs` at this point.
+        await firstSubscribe.simulateLine(statusChangedEventLine(paneID: "wB:p1", status: "blocked"))
+        await waitUntil { registry.externalEntries[sentinelID]?.state == .blocked }
+
+        // Only NOW let the settle window "elapse".
+        settleGate.withLock { $0 = true }
+        await waitUntil { !coordinator.testOnlyIsAccumulatingReplayBurst }
+        // Reset immediately: connection 2's OWN burstSettleTask (created
+        // inside the rebuild this settle is about to trigger) must block
+        // on the gate independently, not sail through because it was
+        // left open from connection 1's use. Safe to reset here --
+        // connection 2's `attemptConnect` cannot even begin until this
+        // test drives its snapshot below, so nothing can have consulted
+        // the gate again yet.
+        settleGate.withLock { $0 = false }
+
+        guard let rebuiltSubscribe = await driveConnectAttempt(factory: factory, baseIndex: 2, paneIDs: ["wB:p1", "wC:p1"]) else {
+            XCTFail("expected the burst-settle reconciliation to rebuild exactly once")
+            return
+        }
+        let afterFirstRebuild = await factory.callCount
+        XCTAssertEqual(
+            afterFirstRebuild, 4,
+            "the burst-settle reconciliation must rebuild exactly ONCE (2 connect sequences x 2 transports each " +
+            "= 2 event-stream transports total, settling here, never climbing further)"
+        )
+
+        // Identical replay burst again on the REBUILT connection -- every
+        // id is already in `recognizedPaneIDs` (unioned by the first
+        // settle), so this repeat must converge with NO further rebuild.
+        await rebuiltSubscribe.simulateLine(paneCreatedEventLine(paneID: "w8:p1"))
+        await rebuiltSubscribe.simulateLine(paneCreatedEventLine(paneID: "w9:p1"))
+        await rebuiltSubscribe.simulateLine(paneCreatedEventLine(paneID: "wA:p1"))
+        await rebuiltSubscribe.simulateLine(paneCreatedEventLine(paneID: "wB:p1"))
+        await rebuiltSubscribe.simulateLine(paneCreatedEventLine(paneID: "wC:p1"))
+        await rebuiltSubscribe.simulateLine(statusChangedEventLine(paneID: "wB:p1", status: "idle"))
+        await waitUntil { registry.externalEntries[sentinelID]?.state == .idle }
+
+        settleGate.withLock { $0 = true }
+        await waitUntil { !coordinator.testOnlyIsAccumulatingReplayBurst }
+
+        let final = await factory.callCount
+        XCTAssertEqual(
+            final, 4,
+            "a repeat of the SAME replay burst on the rebuilt connection must converge, not rebuild again -- " +
+            "every id was already unioned into recognizedPaneIDs by the first settle"
+        )
+    }
+
+    // MARK: - Rebuild's subscribe list comes from ITS OWN fresh snapshot; superseded transport is closed
 
     /// Settles a connection whose subscription covers "w1:p1", closes
-    /// that pane, then asserts the REBUILT transport's own
-    /// `events.subscribe` no longer lists it -- see this file's header
-    /// "A4" and `HerdrIntegrationCoordinator.swift`'s own "REBUILD
-    /// TRIGGERS" section. Without A4, the rebuilt subscribe would still
-    /// carry a `.agentStatusChanged(paneID: "w1:p1")` entry for a pane
-    /// herdr just said is gone -- unmeasured server behavior this fix
-    /// exists to avoid.
-    func test_paneClosedEvent_removesPaneFromKnownPaneIDs_beforeRebuilding_soRebuiltSubscribeExcludesIt() async {
-        let factory = SpyHerdrSessionFactory()
+    /// that pane, then asserts: (1) the REBUILT transport's own
+    /// `events.subscribe` no longer lists it -- because the REBUILD's OWN
+    /// fresh snapshot fixture no longer reveals it, not because of any
+    /// separately-mutated bookkeeping (there is none anymore -- see
+    /// HerdrIntegrationCoordinator.swift's own header "REBUILD TRIGGERS");
+    /// and (2) the SUPERSEDED subscribe transport was explicitly closed
+    /// (see that file's own header "EXPLICIT TRANSPORT TEARDOWN") --
+    /// probed via a second `send()` throwing `.alreadyClosed`, since
+    /// `InMemoryHerdrTransport` exposes no direct `isClosed()` accessor.
+    func test_paneClosedEvent_rebuildSubscribeListComesFromItsOwnFreshSnapshot_andClosesSupersededTransport() async {
+        let factory = SpyHerdrTransportFactory()
         let coordinator = makeDetectableCoordinator(factory: factory)
 
         async let startTask: Void = coordinator.start()
-        guard let settledTransport = await driveToSettledConnection(factory: factory, baseIndex: 0, paneIDs: ["w1:p1"]) else {
+        guard let settledTransport = await driveConnectAttempt(factory: factory, baseIndex: 0, paneIDs: ["w1:p1"]) else {
             XCTFail("expected the coordinator to settle on a connection with \"w1:p1\" known")
             return
         }
         await startTask
         let callCountAfterSettling = await factory.callCount
-        XCTAssertEqual(callCountAfterSettling, 2, "Precondition: settles after exactly one A1 bootstrap rebuild")
+        XCTAssertEqual(callCountAfterSettling, 2, "Precondition")
 
         await settledTransport.simulateLine(paneClosedEventLine(paneID: "w1:p1"))
 
-        guard let rebuiltTransport = await awaitTransport(factory, at: 2) else {
-            XCTFail("expected the pane_closed event to rebuild the connection")
+        // The rebuild's OWN fresh snapshot reveals an EMPTY pane set --
+        // herdr no longer knows about "w1:p1" either, matching what just
+        // closed.
+        guard let rebuiltTransport = await driveConnectAttempt(factory: factory, baseIndex: 2, paneIDs: []) else {
+            XCTFail("expected the pane_closed event to open a fresh snapshot+subscribe connection")
             return
         }
-        let callCountAfterRebuild = await factory.callCount
-        XCTAssertEqual(callCountAfterRebuild, 3, "the pane_closed event must open exactly one replacement session")
-
-        // The rebuilt attempt's own snapshot also reveals an empty pane
-        // set -- herdr no longer knows about "w1:p1" either, matching
-        // what just closed, so this settles without a further A1 rebuild.
-        await driveInitialSequence(factory: factory, transportIndex: 2, snapshotPaneIDs: [])
 
         let rebuiltSent = await rebuiltTransport.sentMessages()
-        guard let subscribeLine = rebuiltSent.first(where: { requestMethod(inLine: $0) == "events.subscribe" }) else {
-            XCTFail("expected the rebuilt session to send its own events.subscribe request; got \(rebuiltSent)")
-            return
-        }
         XCTAssertTrue(
-            agentStatusChangedPaneIDs(inLine: subscribeLine).isEmpty,
-            "A4: closing a pane must remove its id from knownPaneIDs BEFORE rebuilding, so the rebuilt " +
-            "connection's own subscribe must not resubscribe an agentStatusChanged for a pane herdr no longer " +
-            "knows about"
+            agentStatusChangedPaneIDs(inLine: rebuiltSent[0]).isEmpty,
+            "the rebuilt subscribe list must be derived from the rebuild's OWN fresh snapshot -- which no longer " +
+            "reveals \"w1:p1\" -- not from any separately-mutated bookkeeping"
         )
 
+        do {
+            try await settledTransport.send(#"{"id":"probe","method":"probe","params":{}}"#)
+            XCTFail("expected the superseded event-stream transport to already be closed")
+        } catch let error as HerdrTransportError {
+            XCTAssertEqual(
+                error, .alreadyClosed, "a rebuild must explicitly close the superseded event-stream transport"
+            )
+        } catch {
+            XCTFail("expected HerdrTransportError.alreadyClosed, got \(type(of: error)): \(error)")
+        }
+
         let finalCallCount = await factory.callCount
-        XCTAssertEqual(finalCallCount, 3, "a matching (empty) revealed set must settle immediately -- no further rebuild")
+        XCTAssertEqual(finalCallCount, 4, "the rebuild must open exactly 2 new transports, no more")
     }
 
     // MARK: - paneAgentStatusChanged reaches the mirror end-to-end
 
     func test_paneAgentStatusChangedEvent_isForwardedToMirror() async {
-        let factory = SpyHerdrSessionFactory()
+        let factory = SpyHerdrTransportFactory()
         let registry = AgentRegistry()
         let mirror = HerdrAgentMirror(registry: registry)
         let coordinator = makeDetectableCoordinator(factory: factory, mirror: mirror)
         let id = HerdrStableID.make(socketPath: socketPath, paneID: "w1:p1")
 
         async let startTask: Void = coordinator.start()
-        guard let transport = await driveToSettledConnection(factory: factory, baseIndex: 0, paneIDs: ["w1:p1"]) else {
+        guard let transport = await driveConnectAttempt(factory: factory, baseIndex: 0, paneIDs: ["w1:p1"]) else {
             XCTFail("expected the coordinator to settle on a connection with \"w1:p1\" known")
             return
         }
@@ -682,7 +781,7 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
     // MARK: - DISCONNECT HANDLING
 
     func test_streamEOF_callsConnectionLost_thenReconnectsWhileSocketStillAlive() async {
-        let factory = SpyHerdrSessionFactory()
+        let factory = SpyHerdrTransportFactory()
         let registry = AgentRegistry()
         let mirror = HerdrAgentMirror(registry: registry)
         let discovery = FakeHerdrSessionDiscovery(
@@ -694,29 +793,29 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
         let id = HerdrStableID.make(socketPath: socketPath, paneID: "w1:p1")
 
         async let startTask: Void = coordinator.start()
-        guard let settledTransport = await driveToSettledConnection(factory: factory, baseIndex: 0, paneIDs: ["w1:p1"]) else {
+        guard let settledTransport = await driveConnectAttempt(factory: factory, baseIndex: 0, paneIDs: ["w1:p1"]) else {
             XCTFail("expected the coordinator to settle on a connection with \"w1:p1\" known")
             return
         }
         await startTask
         XCTAssertNotNil(registry.externalEntries[id], "Precondition: the snapshot must have created a row")
         let callCountAfterSettling = await factory.callCount
-        XCTAssertEqual(callCountAfterSettling, 2, "Precondition: settled after exactly one A1 bootstrap rebuild")
+        XCTAssertEqual(callCountAfterSettling, 2, "Precondition")
 
         await settledTransport.simulateEOF()
 
-        _ = await awaitTransport(factory, at: 2)
+        guard await driveConnectAttempt(factory: factory, baseIndex: 2, paneIDs: []) != nil else {
+            XCTFail("expected a clean EOF to be followed by a bounded reconnect attempt while the socket still probes alive")
+            return
+        }
         let callCountAfterEOF = await factory.callCount
-        XCTAssertEqual(
-            callCountAfterEOF, 3,
-            "a clean EOF must be followed by a bounded reconnect attempt while the socket still probes alive"
-        )
+        XCTAssertEqual(callCountAfterEOF, 4, "the reconnect attempt must open exactly 2 new transports")
         await waitUntil { registry.externalEntries.isEmpty }
         XCTAssertTrue(registry.externalEntries.isEmpty, "an EOF must call mirror.connectionLost()")
     }
 
     func test_streamEOF_whenSocketNoLongerProbesAlive_stopsWithoutRetrying() async {
-        let factory = SpyHerdrSessionFactory()
+        let factory = SpyHerdrTransportFactory()
         let discovery = FakeHerdrSessionDiscovery(
             candidates: [HerdrSessionCandidate(name: "default", socketPath: socketPath)], alive: [socketPath]
         )
@@ -725,16 +824,13 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
         )
 
         async let startTask: Void = coordinator.start()
-        // Empty snapshot -- avoids an A1 bootstrap rebuild; this test
-        // only cares about the reconnect-vs-dead-socket gate.
-        await driveInitialSequence(factory: factory, transportIndex: 0, snapshotPaneIDs: [])
-        await startTask
-        guard let firstTransport = await factory.transport(at: 0) else {
-            XCTFail("expected transport #0 to exist")
+        guard let firstTransport = await driveConnectAttempt(factory: factory, baseIndex: 0, paneIDs: []) else {
+            XCTFail("expected the coordinator to settle on an initial connection")
             return
         }
+        await startTask
         let firstCallCount = await factory.callCount
-        XCTAssertEqual(firstCallCount, 1, "Precondition")
+        XCTAssertEqual(firstCallCount, 2, "Precondition")
 
         discovery.markDead(socketPath) // the socket is genuinely gone now
         await firstTransport.simulateEOF()
@@ -743,95 +839,77 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
 
         let callCountAfter = await factory.callCount
         XCTAssertEqual(
-            callCountAfter, 1,
+            callCountAfter, 2,
             "once the socket no longer probes alive, the coordinator must stop entirely -- no reconnect attempt"
         )
     }
 
     // MARK: - A5/A6: lifetime reconnect budget survives a healthy-looking-but-flapping cycle
 
-    /// Replaces the old `test_reconnect_isBoundedByReconnectDelaysCount_thenGivesUp`,
-    /// which EOFed reconnect sessions immediately after creation without
-    /// ever driving them through a handshake -- it never exercised a
-    /// successful reconnect, so it provided no protection for A5's own
-    /// cross-cycle budget (a fresh `[1s,2s,4s]`-style budget handed out
-    /// on every disconnect). This version drives every reconnect all the
-    /// way through a completed handshake, then drops it again before any
-    /// event is ever pushed, proving `maxLifetimeReconnectAttempts`
-    /// bounds the TOTAL across cycles even when each individual cycle's
-    /// own first attempt "succeeds".
-    func test_reconnect_isBoundedAcrossCycles_evenWhenEachAttemptCompletesItsHandshake_thenGivesUpPermanently() async {
-        let factory = SpyHerdrSessionFactory()
+    func test_reconnect_isBoundedAcrossCycles_evenWhenEachAttemptCompletesItsConnectSequence_thenGivesUpPermanently() async {
+        let factory = SpyHerdrTransportFactory()
         let discovery = FakeHerdrSessionDiscovery(
             candidates: [HerdrSessionCandidate(name: "default", socketPath: socketPath)], alive: [socketPath]
         )
         // `reconnectDelays.count` (3) is deliberately LARGER than
         // `maxLifetimeReconnectAttempts` (2) -- what stops this must be
         // the CROSS-CYCLE lifetime budget, not any single cycle's own
-        // per-cycle exhaustion (which never gets the chance to fire
-        // here: every attempt below succeeds, so each cycle only ever
-        // consumes its own first delay before handing off to
-        // `consumeEvents` again).
+        // per-cycle exhaustion.
         let coordinator = makeDetectableCoordinator(
             factory: factory, discovery: discovery, reconnectDelays: [.zero, .zero, .zero], maxLifetimeReconnectAttempts: 2
         )
 
         async let startTask: Void = coordinator.start()
-        await driveInitialSequence(factory: factory, transportIndex: 0, snapshotPaneIDs: [])
-        await startTask
-        guard let firstTransport = await factory.transport(at: 0) else {
-            XCTFail("expected transport #0 to exist")
+        guard let firstTransport = await driveConnectAttempt(factory: factory, baseIndex: 0, paneIDs: []) else {
+            XCTFail("expected the coordinator to settle on an initial connection")
             return
         }
+        await startTask
         let firstCallCount = await factory.callCount
-        XCTAssertEqual(firstCallCount, 1, "Precondition")
+        XCTAssertEqual(firstCallCount, 2, "Precondition")
 
         await firstTransport.simulateEOF()
 
         // Reconnect #1 (lifetime attempt 1 of 2): completes its FULL
-        // handshake -- a real reconnect, not a bare connect failure --
-        // then drops again before any event is ever pushed, so it never
-        // earns the HEALTHY reset (A5).
-        guard let secondTransport = await awaitTransport(factory, at: 1) else {
-            XCTFail("expected reconnect attempt #1 (session #2)")
+        // connect sequence -- a real reconnect, not a bare connect
+        // failure -- then drops again before any event is ever pushed,
+        // so it never earns the HEALTHY reset (A5).
+        guard let secondTransport = await driveConnectAttempt(factory: factory, baseIndex: 2, paneIDs: []) else {
+            XCTFail("expected reconnect attempt #1")
             return
         }
-        await driveInitialSequence(factory: factory, transportIndex: 1, snapshotPaneIDs: [])
         await secondTransport.simulateEOF()
 
         // Reconnect #2 (lifetime attempt 2 of 2): same shape.
-        guard let thirdTransport = await awaitTransport(factory, at: 2) else {
-            XCTFail("expected reconnect attempt #2 (session #3)")
+        guard let thirdTransport = await driveConnectAttempt(factory: factory, baseIndex: 4, paneIDs: []) else {
+            XCTFail("expected reconnect attempt #2")
             return
         }
-        await driveInitialSequence(factory: factory, transportIndex: 2, snapshotPaneIDs: [])
         await thirdTransport.simulateEOF()
 
-        // The lifetime budget (2) is now exhausted -- no further
-        // attempt, even though reconnectDelays' own per-cycle count (3)
-        // was never exhausted and the socket still probes alive.
+        // The lifetime budget (2) is now exhausted -- no further attempt,
+        // even though reconnectDelays' own per-cycle count (3) was never
+        // exhausted and the socket still probes alive.
         for _ in 0..<200 { await Task.yield() }
 
         let finalCallCount = await factory.callCount
         XCTAssertEqual(
-            finalCallCount, 3,
+            finalCallCount, 6,
             "maxLifetimeReconnectAttempts (2) must bound reconnects ACROSS cycles even when every attempt " +
-            "completes its own handshake before dropping again -- 3 sessions total (original + 2 reconnects), " +
-            "then a permanent give-up, never a 4th"
+            "completes its own connect sequence before dropping again -- 3 connect sequences total " +
+            "(original + 2 reconnects) x 2 transports each = 6, then a permanent give-up, never more"
         )
     }
 
-    /// The other half of A5's "healthy" bar (see `consumeEvents`'s own
-    /// `hasEarnedHealthyReset` comment): a connection that DOES deliver at
-    /// least one event after its handshake completes must reset
-    /// `totalReconnectAttempts` back to zero, so a later, unrelated cycle of
-    /// disconnects gets a full fresh lifetime budget again. The sibling
-    /// test above only proves a handshake-only connection does NOT reset
-    /// the budget -- this proves the positive case actually fires, which is
-    /// the load-bearing half of A5 (it is what separates a transient blip
-    /// from a permanent give-up).
+    /// The other half of A5's "healthy" bar: a connection that DOES
+    /// deliver at least one event after its subscribe ack completes must
+    /// reset `totalReconnectAttempts` back to zero, so a later, unrelated
+    /// cycle of disconnects gets a full fresh lifetime budget again. The
+    /// sibling test above only proves a connect-sequence-only connection
+    /// does NOT reset the budget -- this proves the positive case
+    /// actually fires.
     func test_reconnect_connectionThatDeliversAnEvent_resetsLifetimeBudget_soLaterCyclesGetAFreshBudget() async {
-        let factory = SpyHerdrSessionFactory()
+        let factory = SpyHerdrTransportFactory()
         let discovery = FakeHerdrSessionDiscovery(
             candidates: [HerdrSessionCandidate(name: "default", socketPath: socketPath)], alive: [socketPath]
         )
@@ -840,55 +918,52 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
         )
 
         async let startTask: Void = coordinator.start()
-        await driveInitialSequence(factory: factory, transportIndex: 0, snapshotPaneIDs: [])
-        await startTask
-        guard let firstTransport = await factory.transport(at: 0) else {
-            XCTFail("expected transport #0 to exist")
+        guard let firstTransport = await driveConnectAttempt(factory: factory, baseIndex: 0, paneIDs: []) else {
+            XCTFail("expected the coordinator to settle on an initial connection")
             return
         }
+        await startTask
         let firstCallCount = await factory.callCount
-        XCTAssertEqual(firstCallCount, 1, "Precondition")
+        XCTAssertEqual(firstCallCount, 2, "Precondition")
 
         await firstTransport.simulateEOF()
 
-        // Reconnect #1 (lifetime attempt 1 of 2): completes its handshake,
-        // THEN is pushed one event ("layout_updated", decoded generically
-        // as `.unknown(eventType:)` -- not a rebuild trigger) before it is
-        // dropped again. That pushed event is the ONLY thing distinguishing
-        // this connection from the sibling test's non-resetting ones.
-        // `simulateLine` then `simulateEOF`, called back to back on the
-        // same actor, are delivered into the coordinator's event stream in
-        // that same order (`AsyncStream` preserves FIFO order of yields),
-        // so the event is guaranteed to be fully processed by
-        // `consumeEvents` -- including its `totalReconnectAttempts = 0`
-        // reset -- before the EOF ends this connection's loop.
-        guard let secondTransport = await awaitTransport(factory, at: 1) else {
-            XCTFail("expected reconnect attempt #1 (session #2)")
+        // Reconnect #1 (lifetime attempt 1 of 2): completes its connect
+        // sequence, THEN is pushed one event ("layout_updated", decoded
+        // generically as `.unknown(eventType:)` -- not a rebuild trigger)
+        // before it is dropped again. That pushed event is the ONLY thing
+        // distinguishing this connection from the sibling test's
+        // non-resetting ones. `simulateLine` then `simulateEOF`, called
+        // back to back on the same actor, are delivered in that same
+        // order (`AsyncStream` preserves FIFO order of yields), so the
+        // event is guaranteed fully processed -- including its
+        // `totalReconnectAttempts = 0` reset -- before the EOF ends this
+        // connection's loop.
+        guard let secondTransport = await driveConnectAttempt(factory: factory, baseIndex: 2, paneIDs: []) else {
+            XCTFail("expected reconnect attempt #1")
             return
         }
-        await driveInitialSequence(factory: factory, transportIndex: 1, snapshotPaneIDs: [])
         await secondTransport.simulateLine(#"{"event":"layout_updated"}"#)
         await secondTransport.simulateEOF()
 
         // Reconnect #2 (lifetime attempt 1 of the RESET budget) and
         // reconnect #3 (lifetime attempt 2 of the reset budget): same
-        // handshake-only-then-drop shape as the sibling test's cycles --
-        // neither earns HEALTHY, so nothing resets the budget again.
-        guard let thirdTransport = await awaitTransport(factory, at: 2) else {
-            XCTFail("expected reconnect attempt #2 (session #3) -- the budget must have been reset by the event above")
+        // connect-sequence-only-then-drop shape as the sibling test's
+        // cycles -- neither earns HEALTHY, so nothing resets the budget
+        // again.
+        guard let thirdTransport = await driveConnectAttempt(factory: factory, baseIndex: 4, paneIDs: []) else {
+            XCTFail("expected reconnect attempt #2 -- the budget must have been reset by the event above")
             return
         }
-        await driveInitialSequence(factory: factory, transportIndex: 2, snapshotPaneIDs: [])
         await thirdTransport.simulateEOF()
 
-        guard let fourthTransport = await awaitTransport(factory, at: 3) else {
+        guard let fourthTransport = await driveConnectAttempt(factory: factory, baseIndex: 6, paneIDs: []) else {
             XCTFail(
-                "expected reconnect attempt #3 (session #4) -- proves the reset granted a FULL fresh budget " +
-                "(2 more attempts), not merely one bonus attempt"
+                "expected reconnect attempt #3 -- proves the reset granted a FULL fresh budget (2 more " +
+                "attempts), not merely one bonus attempt"
             )
             return
         }
-        await driveInitialSequence(factory: factory, transportIndex: 3, snapshotPaneIDs: [])
         await fourthTransport.simulateEOF()
 
         // The reset budget (2), consumed by reconnects #2 and #3, is now
@@ -897,29 +972,25 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
 
         let finalCallCount = await factory.callCount
         XCTAssertEqual(
-            finalCallCount, 4,
-            "a connection that delivered an event must reset the lifetime budget -- 4 sessions total (original + " +
-            "the reconnect that earned the reset + 2 more reconnects consuming a FRESH budget), then a permanent " +
-            "give-up. Without the reset this would stop at 3, identical to the sibling non-resetting test above."
+            finalCallCount, 8,
+            "a connection that delivered an event must reset the lifetime budget -- 4 connect sequences total " +
+            "(original + the reconnect that earned the reset + 2 more reconnects consuming a FRESH budget) x 2 " +
+            "transports each = 8, then a permanent give-up. Without the reset this would stop at 6, identical to " +
+            "the sibling non-resetting test above."
         )
     }
 
-    // MARK: - A2: handshake deadline
+    // MARK: - A2: PER-STEP handshake deadline
 
-    func test_attemptConnect_handshakeHangsForever_timesOutAndGivesUpPlainly_thenAllowsFreshStart() async {
-        let factory = SpyHerdrSessionFactory()
-        // Gated, NOT an instant no-op -- BLOCKER fix note: the TIMEOUT
-        // arm now calls `session.abandon()` (closing the transport) the
-        // moment it actually wins the race, so an instant no-op `sleep`
-        // could let it win BEFORE the handshake arm ever reaches
-        // `transport.send("ping")`, closing the transport out from under
-        // it and making "ping" never actually get sent -- turning this
-        // test's own precondition check below flaky. Gating on an
-        // explicit flag, opened only once "ping" is confirmed in flight,
-        // keeps this test's actual subject (a handshake that hangs
-        // forever AFTER sending ping, never getting a reply)
-        // deterministic -- mirrors the identical gate (and its own doc
-        // comment) in the BLOCKER regression test below.
+    func test_attemptConnect_snapshotHangsForever_timesOutAndGivesUpPlainly_closesItsTransport_thenAllowsFreshStart() async {
+        let factory = SpyHerdrTransportFactory()
+        // Gated, NOT an instant no-op -- an instant no-op `sleep` could
+        // let the timeout arm win BEFORE the snapshot's own request is
+        // even sent, closing the transport out from under it and making
+        // this test's own precondition check flaky. Gating on an
+        // explicit flag, opened only once the request is confirmed in
+        // flight, keeps this test's actual subject (a request that hangs
+        // forever AFTER being sent, never getting a reply) deterministic.
         let timeoutGate = OSAllocatedUnfairLock(initialState: false)
         let coordinator = makeDetectableCoordinator(
             factory: factory,
@@ -934,28 +1005,43 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
         async let startTask: Void = coordinator.start()
 
         guard let transport = await awaitTransport(factory, at: 0) else {
-            XCTFail("expected start() to create a session before its handshake hangs")
+            XCTFail("expected start() to create a snapshot transport before its request hangs")
             return
         }
         let sent = await awaitSentMessages(transport, atLeast: 1)
         XCTAssertEqual(
-            sent.compactMap { requestMethod(inLine: $0) }, ["ping"],
-            "Precondition: ping must have been sent before this test leaves it unanswered forever"
+            sent.compactMap { requestMethod(inLine: $0) }, ["session.snapshot"],
+            "Precondition: session.snapshot must have been sent before this test leaves it unanswered forever"
         )
-        timeoutGate.withLock { $0 = true } // ping is confirmed in flight -- now let the timeout arm resolve
+        timeoutGate.withLock { $0 = true } // the request is confirmed in flight -- now let the timeout arm resolve
 
-        // Deliberately never respond to "ping" -- the handshake hangs
-        // forever awaiting its response. `await startTask` below must
-        // still return (never hang the TEST itself) because of the A2
-        // bounded handshake deadline.
+        // Deliberately never respond -- the step hangs forever awaiting
+        // its response. `await startTask` below must still return (never
+        // hang the TEST itself) because of the A2 per-step deadline.
         await startTask
 
         let callCountAfterTimeout = await factory.callCount
         XCTAssertEqual(
             callCountAfterTimeout, 1,
-            "a hung FIRST connect must give up plainly once its deadline expires -- no retry, mirrors an " +
-            "ordinary connect failure"
+            "a hung snapshot must give up plainly once its deadline expires -- no subscribe transport is ever " +
+            "created, and no retry"
         )
+
+        // BLOCKER-analog: the timed-out step's own transport must
+        // actually be closed (not merely abandoned) -- probed via a
+        // second send() throwing .alreadyClosed, since
+        // InMemoryHerdrTransport exposes no direct isClosed() accessor.
+        // This is what lets the still-suspended session.snapshot() call
+        // actually throw and its own Task release every reference it
+        // captured, instead of leaking forever.
+        do {
+            try await transport.send(#"{"id":"probe","method":"probe","params":{}}"#)
+            XCTFail("expected the timed-out transport to already be closed")
+        } catch let error as HerdrTransportError {
+            XCTAssertEqual(error, .alreadyClosed, "a timed-out step must close its own transport")
+        } catch {
+            XCTFail("expected HerdrTransportError.alreadyClosed, got \(type(of: error)): \(error)")
+        }
 
         // A later start() must behave like a fresh attempt, proving
         // `isActive` was reset rather than left stuck "connecting"
@@ -964,28 +1050,12 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
         let callCountAfterFreshStart = await factory.callCount
         XCTAssertEqual(
             callCountAfterFreshStart, 2,
-            "start() after a timed-out handshake must attempt a fresh connection, not stay stuck"
+            "start() after a timed-out snapshot must attempt a fresh connection, not stay stuck"
         )
     }
 
-    // MARK: - BLOCKER regression: a timed-out handshake must not leak its session/socket/task
-
-    /// Traces the exact mechanism the BLOCKER report described: herdr
-    /// accepts the connection but never answers `ping()`, so
-    /// `performHandshake` is suspended forever inside
-    /// `HerdrSocketSession.awaitEntry`'s own
-    /// `withCheckedThrowingContinuation` -- a `CheckedContinuation` that
-    /// does not resume itself on cancellation. Unlike the sibling A2
-    /// test above (which can safely use an instant no-op `sleep` because
-    /// its handshake is NEVER driven to completion at all), this test's
-    /// own `sleep` closure is gated on an explicit flag, opened only
-    /// once `ping` is confirmed actually in flight -- otherwise the
-    /// timeout arm could fire before `ping` is even sent, and this test
-    /// would pass by accident via a different, unrelated race (the send
-    /// path) instead of actually pinning the STUCK-CONTINUATION
-    /// mechanism the BLOCKER report traced.
-    func test_attemptConnect_handshakeHangsForever_timesOut_abandonsSession_releasingItWithoutLeaking() async {
-        let factory = SpyHerdrSessionFactory()
+    func test_attemptConnect_subscribeHangsForever_timesOutAndGivesUpPlainly_afterASuccessfulSnapshot() async {
+        let factory = SpyHerdrTransportFactory()
         let timeoutGate = OSAllocatedUnfairLock(initialState: false)
         let coordinator = makeDetectableCoordinator(
             factory: factory,
@@ -999,120 +1069,195 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
 
         async let startTask: Void = coordinator.start()
 
-        guard let transport = await awaitTransport(factory, at: 0) else {
-            XCTFail("expected start() to create a session before its handshake hangs")
+        guard let snapshotTransport = await awaitTransport(factory, at: 0) else {
+            XCTFail("expected start() to create a snapshot transport")
             return
         }
-        let sent = await awaitSentMessages(transport, atLeast: 1)
-        XCTAssertEqual(
-            sent.compactMap { requestMethod(inLine: $0) }, ["ping"],
-            "Precondition: ping must be in flight -- and deliberately never answered -- before the timeout arm opens"
-        )
+        let snapshotSent = await awaitSentMessages(snapshotTransport, atLeast: 1)
+        guard let firstSnapshotLine = snapshotSent.first, let snapshotID = requestID(inLine: firstSnapshotLine) else {
+            XCTFail("expected exactly one sent line carrying a request id, got \(snapshotSent)")
+            return
+        }
+        await snapshotTransport.simulateLine(snapshotResponseLine(id: snapshotID, paneIDs: []))
 
-        // Only NOW let the timeout arm's `sleep` resolve: ping is
-        // confirmed stuck inside `awaitEntry`, exactly the mechanism the
-        // BLOCKER report traced.
+        guard let subscribeTransport = await awaitTransport(factory, at: 1) else {
+            XCTFail("expected the successful snapshot to trigger a subscribe transport before it hangs")
+            return
+        }
+        let subscribeSent = await awaitSentMessages(subscribeTransport, atLeast: 1)
+        XCTAssertEqual(
+            subscribeSent.compactMap { requestMethod(inLine: $0) }, ["events.subscribe"],
+            "Precondition: events.subscribe must have been sent before this test leaves it unanswered forever"
+        )
         timeoutGate.withLock { $0 = true }
 
-        // (1) resolve the awaiting caller -- same as the sibling A2 test.
         await startTask
-
-        // (3) not retain the session -- assert release with a weak
-        // reference, once the timeout path completes. This necessarily
-        // also proves (2) (the session actually terminated its pending
-        // request): the session can only become releasable once its own
-        // stuck `ping()` continuation actually resolved and let
-        // `performHandshake`'s `Task` closure unwind and drop its
-        // captures.
-        await waitUntil { await factory.isSessionAlive(at: 0) == false }
-        let sessionAlive = await factory.isSessionAlive(at: 0)
-        XCTAssertFalse(
-            sessionAlive,
-            "BLOCKER: a timed-out handshake must not leak its HerdrSocketSession -- abandon() must let the " +
-            "stuck ping() throw, unwind performHandshake's Task, and release every strong reference to it"
-        )
-
-        // (2) actually terminate the session -- probed AFTER the release
-        // poll above, so `abandon()` (and therefore `transport.close()`)
-        // is guaranteed to have already fully run: a new send must now
-        // be rejected, proving `abandon()` reached `transport.close()`,
-        // not merely `Task.cancel()`, which would have left the
-        // transport, its fd, and its `DispatchSourceRead` all still open.
-        do {
-            try await transport.send(#"{"id":"probe","method":"ping"}"#)
-            XCTFail("expected the abandoned transport to already be closed")
-        } catch let error as HerdrTransportError {
-            XCTAssertEqual(
-                error, .alreadyClosed, "abandon() must actually close() the transport, not merely cancel the Task"
-            )
-        } catch {
-            XCTFail("expected HerdrTransportError.alreadyClosed, got \(type(of: error)): \(error)")
-        }
 
         let callCountAfterTimeout = await factory.callCount
-        XCTAssertEqual(callCountAfterTimeout, 1, "a hung FIRST connect must give up plainly -- no retry")
+        XCTAssertEqual(
+            callCountAfterTimeout, 2,
+            "a hung subscribe must give up plainly after exactly 2 transports (the completed snapshot plus the " +
+            "hung subscribe), no retry"
+        )
     }
 
-    // MARK: - A3 (SHOULD-FIX): bootstrap rebuild iteration cap
+    // MARK: - Failed connect attempt leaves no state behind
 
-    /// A pane set that never stops revealing a freshly different set on
-    /// every single BOOTSTRAP REBUILD (A1) retry would otherwise spin
-    /// `attemptConnect`'s own loop forever -- see this file's header and
-    /// HerdrIntegrationCoordinator.swift's own "A3". Caps at 3 (well
-    /// below the production default of 5) so this test does not need to
-    /// drive an impractical number of full handshake round trips; the
-    /// real-clock default `sleep` is fine here since every one of those
-    /// round trips completes well under `handshakeTimeout`.
-    func test_attemptConnect_bootstrapRebuild_neverConverges_stopsAtIterationCap_ratherThanSpinningForever() async {
-        let factory = SpyHerdrSessionFactory()
-        let coordinator = makeDetectableCoordinator(factory: factory, maxBootstrapRebuildIterations: 3)
+    /// CRITICAL + WARNING: `attemptConnect`'s snapshot step (which upserts
+    /// rows into the mirror and unions pane ids into `recognizedPaneIDs`)
+    /// can succeed before its OWN, independently-fallible subscribe step
+    /// then fails -- `start()`'s failure branch must not leave either
+    /// behind. Two halves, both pinned here:
+    ///   1. the mirror must not keep a ghost row with no live connection
+    ///      behind it (`resetToIdle()` must call `mirror.connectionLost()`)
+    ///   2. a LATER, successful `start()` must build its subscribe list
+    ///      AND its "is this pane genuinely new" judgment purely from ITS
+    ///      OWN state, never `recognizedPaneIDs` left over from the
+    ///      abandoned attempt -- `resetToIdle()`'s own doc comment: a
+    ///      later-discovered session may reuse pane ids the old one had.
+    func test_failedStart_clearsMirrorGhostRow_andRecognizedPaneIDs_soTheNextSuccessfulStartIsClean() async {
+        let factory = SpyHerdrTransportFactory()
+        let registry = AgentRegistry()
+        let mirror = HerdrAgentMirror(registry: registry)
+        let coordinator = makeDetectableCoordinator(
+            factory: factory, mirror: mirror, replayBurstSettleWindow: .zero, rebuildBackoffDelays: [.zero]
+        )
+        let staleID = HerdrStableID.make(socketPath: socketPath, paneID: "w1:stale")
 
-        async let startTask: Void = coordinator.start()
+        // First attempt: the snapshot succeeds, revealing "w1:stale"
+        // (upserting a mirror row and unioning it into
+        // `recognizedPaneIDs`) -- but the subscribe step is then rejected
+        // outright, herdr's own measured "pane_not_found" shape (this
+        // file's own header CONNECT SEQUENCE step 4), so `attemptConnect`
+        // returns `false`.
+        async let firstStartTask: Void = coordinator.start()
+        guard let firstSnapshotTransport = await awaitTransport(factory, at: 0) else {
+            XCTFail("expected start() to create a snapshot transport")
+            return
+        }
+        let firstSnapshotSent = await awaitSentMessages(firstSnapshotTransport, atLeast: 1)
+        guard let firstSnapshotID = requestID(inLine: firstSnapshotSent[0]) else {
+            XCTFail("expected a request id, got \(firstSnapshotSent)")
+            return
+        }
+        await firstSnapshotTransport.simulateLine(snapshotResponseLine(id: firstSnapshotID, paneIDs: ["w1:stale"]))
 
-        // Transport #0 subscribes {} but reveals {"p0"}; transport #1
-        // subscribes {"p0"} but reveals {"p1"}; transport #2 subscribes
-        // {"p1"} but reveals {"p2"} -- A1's own mismatch-triggers-retry
-        // rule never lets this converge.
-        await driveInitialSequence(factory: factory, transportIndex: 0, snapshotPaneIDs: ["p0"])
-        await driveInitialSequence(factory: factory, transportIndex: 1, snapshotPaneIDs: ["p1"])
-        await driveInitialSequence(factory: factory, transportIndex: 2, snapshotPaneIDs: ["p2"])
+        guard let firstSubscribeTransport = await awaitTransport(factory, at: 1) else {
+            XCTFail("expected the successful snapshot to trigger a subscribe transport")
+            return
+        }
+        // Precondition: `mirror.applySnapshot` runs synchronously, before
+        // the subscribe transport is even requested from the factory --
+        // by the time transport #1 exists, the row below is guaranteed to
+        // already be there. Proves the later `isEmpty` check is not
+        // trivially true because no row was ever created in the first
+        // place.
+        XCTAssertNotNil(registry.externalEntries[staleID], "Precondition: the snapshot step must have upserted a mirror row")
 
-        await startTask
+        let firstSubscribeSent = await awaitSentMessages(firstSubscribeTransport, atLeast: 1)
+        guard let firstSubscribeID = requestID(inLine: firstSubscribeSent[0]) else {
+            XCTFail("expected a request id, got \(firstSubscribeSent)")
+            return
+        }
+        await firstSubscribeTransport.simulateLine(
+            errorResponseLine(id: firstSubscribeID, code: "pane_not_found", message: "pane w1:stale not found")
+        )
+        await firstStartTask
 
-        let callCountAtCap = await factory.callCount
-        XCTAssertEqual(
-            callCountAtCap, 3,
-            "SHOULD-FIX: a never-converging pane set must stop at the injected iteration cap (3), never open a " +
-            "4th session"
+        let callCountAfterFailedStart = await factory.callCount
+        XCTAssertEqual(callCountAfterFailedStart, 2, "Precondition: the failed attempt opened exactly 2 transports, no retry")
+        XCTAssertTrue(
+            registry.externalEntries.isEmpty,
+            "a failed start() must not leave a ghost mirror row behind -- resetToIdle() must call mirror.connectionLost()"
         )
 
-        // Bounded cooperative yielding: proves this is a genuine STOP,
-        // not merely "hasn't gotten to a 4th iteration yet".
-        for _ in 0..<200 { await Task.yield() }
+        // Second, successful start(): a FRESH snapshot reveals a
+        // DIFFERENT pane, "w1:p9" -- deliberately NOT "w1:stale".
+        async let secondStartTask: Void = coordinator.start()
+        guard let secondSubscribeTransport = await driveConnectAttempt(factory: factory, baseIndex: 2, paneIDs: ["w1:p9"]) else {
+            XCTFail("expected the second start() to connect fresh")
+            return
+        }
+        await secondStartTask
 
-        let callCountAfterWaiting = await factory.callCount
-        XCTAssertEqual(callCountAfterWaiting, 3, "must not spin past the cap even after waiting")
+        let secondSubscribeSent = await secondSubscribeTransport.sentMessages()
+        XCTAssertEqual(
+            agentStatusChangedPaneIDs(inLine: secondSubscribeSent[0]), ["w1:p9"],
+            "the second attempt's subscribe list must be built purely from ITS OWN fresh snapshot"
+        )
+        XCTAssertFalse(
+            agentStatusChangedPaneIDs(inLine: secondSubscribeSent[0]).contains("w1:stale"),
+            "a pane id from the ABANDONED first attempt must not leak into the second attempt's subscribe list"
+        )
+
+        // Discriminating probe: "w1:stale" -- the id the FIRST, abandoned
+        // attempt's own snapshot revealed -- reappears as a "pane_created"
+        // event on the SECOND connection, once it has settled past its own
+        // accumulating phase (so this is judged by the STEADY-STATE
+        // `!recognizedPaneIDs.contains(...)` check, HerdrIntegrationCoordinator
+        // .swift's own header "REBUILD TRIGGERS"). If `recognizedPaneIDs`
+        // had survived the failed first attempt (the leak this test
+        // pins), this would be silently treated as "already recognized"
+        // -- no rebuild, and `driveConnectAttempt` below would time out.
+        // `resetToIdle()` clearing `recognizedPaneIDs` means it must
+        // instead be judged genuinely NEW.
+        await waitUntil { !coordinator.testOnlyIsAccumulatingReplayBurst }
+        await secondSubscribeTransport.simulateLine(paneCreatedEventLine(paneID: "w1:stale"))
+
+        guard await driveConnectAttempt(factory: factory, baseIndex: 4, paneIDs: ["w1:p9"]) != nil else {
+            XCTFail(
+                "expected \"w1:stale\" to be treated as a genuinely NEW pane and rebuild the connection -- a " +
+                "timeout here means recognizedPaneIDs leaked across the failed first attempt"
+            )
+            return
+        }
+        let finalCallCount = await factory.callCount
+        XCTAssertEqual(finalCallCount, 6, "the rebuild triggered by \"w1:stale\" must open exactly 2 new transports")
     }
 
     // MARK: - Fixture builders (exact shapes measured against real herdr 0.8.0)
-
-    private func pingResponseLine(id: String) -> String {
-        #"{"id":"\#(id)","result":{"type":"pong","version":"0.8.0","protocol":19,"capabilities":{"live_handoff":true,"detached_server_daemon":false}}}"#
-    }
 
     private func subscribeAckLine(id: String) -> String {
         #"{"id":"\#(id)","result":{"type":"subscription_started"}}"#
     }
 
-    private func snapshotResponseLine(id: String, paneIDs: [String]) -> String {
-        let agentsJSON = paneIDs.map { paneID in
+    /// herdr's measured error response shape --
+    /// {"id":"..","error":{"code":"..","message":".."}} -- see
+    /// HerdrConnection.swift's own header. Used to fail a step
+    /// deterministically (e.g. an `events.subscribe` rejected with
+    /// "pane_not_found", this file's own header CONNECT SEQUENCE step 4)
+    /// without needing a hung-request/timeout-gate rig.
+    private func errorResponseLine(id: String, code: String, message: String) -> String {
+        #"{"id":"\#(id)","error":{"code":"\#(code)","message":"\#(message)"}}"#
+    }
+
+    /// `panes[]` is always exactly `paneIDs` -- required-fields-only per
+    /// pane (see this file's own project-level fixture rule: a fixture
+    /// must carry only what the schema requires) -- and is what
+    /// `HerdrIntegrationCoordinator` itself seeds `knownPaneIDs` from
+    /// (its own header, CONNECT SEQUENCE step 3: "Deliberately NOT
+    /// `agents[]`"), so it alone drives the subscribe's own per-pane
+    /// list, regardless of `agentPaneIDs` below.
+    ///
+    /// `agentPaneIDs` independently controls `agents[]` -- `nil` (every
+    /// existing call site) defaults to `paneIDs`, matching every pane
+    /// having a detected agent, the fixture's original behavior. Passing
+    /// a STRICT SUBSET of `paneIDs` models the real, measured shape
+    /// `panes[] ⊋ agents[]` -- a pane with no agent detected yet is still
+    /// a pane (still subscribed), but gets no row from `HerdrAgentMirror
+    /// .applySnapshot`, which reads `agents[]` alone.
+    private func snapshotResponseLine(id: String, paneIDs: [String], agentPaneIDs: [String]? = nil) -> String {
+        let agentsJSON = (agentPaneIDs ?? paneIDs).map { paneID in
             #"{"terminal_id":"term_\#(paneID)","agent":"claude","agent_status":"working","workspace_id":"w1","tab_id":"w1:t1","pane_id":"\#(paneID)","focused":false,"state_change_seq":0,"cwd":"/Users/dev/project","foreground_cwd":"/Users/dev/project","revision":0}"#
         }.joined(separator: ",")
-        return #"{"id":"\#(id)","result":{"type":"session_snapshot","snapshot":{"focused_workspace_id":"w1","focused_tab_id":"w1:t1","focused_pane_id":null,"workspaces":[],"tabs":[],"panes":[],"layouts":[],"agents":[\#(agentsJSON)]}}}"#
+        let panesJSON = paneIDs.map { paneID in
+            #"{"terminal_id":"term_\#(paneID)","agent_status":"working","workspace_id":"w1","tab_id":"w1:t1","pane_id":"\#(paneID)","focused":false,"revision":0}"#
+        }.joined(separator: ",")
+        return #"{"id":"\#(id)","result":{"type":"session_snapshot","snapshot":{"version":"0.8.0","protocol":19,"focused_workspace_id":"w1","focused_tab_id":"w1:t1","focused_pane_id":null,"workspaces":[],"tabs":[],"panes":[\#(panesJSON)],"layouts":[],"agents":[\#(agentsJSON)]}}}"#
     }
 
     private func paneCreatedEventLine(paneID: String, workspaceID: String = "w1") -> String {
-        #"{"data":{"pane":{"terminal_id":"term_\#(paneID)","agent":null,"agent_status":"unknown","workspace_id":"\#(workspaceID)","tab_id":"\#(workspaceID):t1","pane_id":"\#(paneID)","focused":false,"state_change_seq":0,"cwd":null,"foreground_cwd":null,"revision":0},"type":"pane_created"},"event":"pane_created"}"#
+        #"{"data":{"pane":{"terminal_id":"term_\#(paneID)","agent":null,"agent_status":"unknown","workspace_id":"\#(workspaceID)","tab_id":"\#(workspaceID):t1","pane_id":"\#(paneID)","focused":false,"cwd":null,"foreground_cwd":null,"revision":0},"type":"pane_created"},"event":"pane_created"}"#
     }
 
     /// Real B1 shape (flat `data.pane_id`) -- see HerdrEvent.swift's own
@@ -1153,8 +1298,15 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
         return params["subscriptions"] as? [[String: Any]] ?? []
     }
 
+    /// Type-only (structure) entries only -- excludes per-pane entries
+    /// (e.g. pane.agent_status_changed), which always carry a pane_id
+    /// alongside their type. Wire shape is a single flat array mixing
+    /// both kinds (see HerdrConnectionTests
+    /// .test_subscribe_sendsExactlyOneEventsSubscribeLine_withFullSubscriptionList),
+    /// so callers wanting just the five structure-event types must filter
+    /// out the per-pane ones first.
     private func subscriptionTypes(inLine line: String) -> [String] {
-        subscriptionEntries(inLine: line).compactMap { $0["type"] as? String }
+        subscriptionEntries(inLine: line).filter { $0["pane_id"] == nil }.compactMap { $0["type"] as? String }
     }
 
     private func agentStatusChangedPaneIDs(inLine line: String) -> [String] {
@@ -1163,15 +1315,8 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
             .compactMap { $0["pane_id"] as? String }
     }
 
-    // MARK: - Bounded async polling (mirrors HerdrSocketSessionTests' own waitUntil precedent)
+    // MARK: - Bounded async polling
 
-    /// Cooperatively yields until `condition()` is true, bounded by
-    /// `maxYields` as a safety valve -- a regression that leaves
-    /// `condition()` permanently false (e.g. a session/transport that
-    /// never gets created, or one that leaks instead of being released)
-    /// exhausts this bound instead of hanging the test; the subsequent
-    /// `guard ... else { XCTFail }` / `XCTAssert...` in each test above
-    /// is what turns that into a clean, informative failure.
     private func waitUntil(maxYields: Int = 10_000, _ condition: () async -> Bool) async {
         var iterations = 0
         while await !condition(), iterations < maxYields {
@@ -1180,7 +1325,7 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
         }
     }
 
-    private func awaitTransport(_ factory: SpyHerdrSessionFactory, at index: Int) async -> InMemoryHerdrTransport? {
+    private func awaitTransport(_ factory: SpyHerdrTransportFactory, at index: Int) async -> InMemoryHerdrTransport? {
         await waitUntil { await factory.callCount > index }
         return await factory.transport(at: index)
     }
@@ -1188,49 +1333,5 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
     private func awaitSentMessages(_ transport: InMemoryHerdrTransport, atLeast count: Int) async -> [String] {
         await waitUntil { await transport.sentMessages().count >= count }
         return await transport.sentMessages()
-    }
-
-    /// Drives transport #`index` through ping -> subscribe -> snapshot,
-    /// in that STRICT order (position 0/1/2 in `sentMessages()`),
-    /// replying to each as soon as it is sent. Returns once the
-    /// snapshot response has been handed to the transport; callers still
-    /// `await` their own `start()`/reconnect task afterward.
-    private func driveInitialSequence(
-        factory: SpyHerdrSessionFactory, transportIndex: Int, snapshotPaneIDs: [String]
-    ) async {
-        guard let transport = await awaitTransport(factory, at: transportIndex) else {
-            XCTFail("expected transport #\(transportIndex) to have been created")
-            return
-        }
-
-        let afterPing = await awaitSentMessages(transport, atLeast: 1)
-        guard afterPing.count >= 1, requestMethod(inLine: afterPing[0]) == "ping",
-              let pingID = requestID(inLine: afterPing[0]) else {
-            XCTFail("expected the FIRST request on transport #\(transportIndex) to be 'ping'; got \(afterPing)")
-            return
-        }
-        await transport.simulateLine(pingResponseLine(id: pingID))
-
-        let afterSubscribe = await awaitSentMessages(transport, atLeast: 2)
-        guard afterSubscribe.count >= 2, requestMethod(inLine: afterSubscribe[1]) == "events.subscribe",
-              let subscribeID = requestID(inLine: afterSubscribe[1]) else {
-            XCTFail(
-                "expected the SECOND request on transport #\(transportIndex) to be 'events.subscribe'; " +
-                "got \(afterSubscribe)"
-            )
-            return
-        }
-        await transport.simulateLine(subscribeAckLine(id: subscribeID))
-
-        let afterSnapshot = await awaitSentMessages(transport, atLeast: 3)
-        guard afterSnapshot.count >= 3, requestMethod(inLine: afterSnapshot[2]) == "session.snapshot",
-              let snapshotID = requestID(inLine: afterSnapshot[2]) else {
-            XCTFail(
-                "expected the THIRD request on transport #\(transportIndex) to be 'session.snapshot'; " +
-                "got \(afterSnapshot)"
-            )
-            return
-        }
-        await transport.simulateLine(snapshotResponseLine(id: snapshotID, paneIDs: snapshotPaneIDs))
     }
 }

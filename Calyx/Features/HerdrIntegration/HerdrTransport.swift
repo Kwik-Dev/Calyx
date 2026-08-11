@@ -1,27 +1,30 @@
 // HerdrTransport.swift
 // Calyx
 //
-// Abstract bidirectional line transport used by `HerdrSocketSession` to
-// talk to a herdr Unix-domain-socket server. Mirrors
+// Abstract bidirectional line transport used by `HerdrOneShotRequest`
+// and `HerdrEventStream` (HerdrConnection.swift) to talk to a herdr
+// Unix-domain-socket server. Mirrors
 // Calyx/Features/LSP/Transport/LSPTransport.swift's split between a
 // protocol and an in-memory test double, with one deliberate
 // difference: herdr's wire protocol is newline-delimited JSON (NDJSON)
 // -- one complete JSON value per line -- so this transport moves whole
 // decoded-to-`String` LINES, not raw byte chunks. Splitting bytes on
-// "\n" is this transport's own job (done below `HerdrSocketSession`,
-// inside whichever type implements `HerdrTransport`), not something
-// `HerdrSocketSession` or `HerdrEvent` need to know about.
+// "\n" is this transport's own job (done below, inside whichever type
+// implements `HerdrTransport`), not something `HerdrOneShotRequest`/
+// `HerdrEventStream` or `HerdrEvent` need to know about.
 //
 // EOF vs error: stopping a herdr server makes recv() return zero bytes
 // on a subscribed BSD socket -- a reliably observable, CLEAN
 // disconnect, distinct from a genuine transport-level failure (a
 // recv() errno, or -- in this test double -- an injected failure).
 // `HerdrTransportEvent` keeps these as separate cases so a consumer
-// (`HerdrSocketSession`) can react differently: a pending request must
-// still fail either way (there is no more result coming), but a
-// long-lived event subscription can treat EOF as a graceful, expected
-// end of stream and an actual failure as something worth surfacing as
-// an error -- see `HerdrSocketSession.subscribe(_:)`'s own doc comment.
+// (`HerdrOneShotRequest`/`HerdrEventStream`) can react differently: a
+// pending request/subscribe ack must fail either way (there is no more
+// result coming), but a long-lived, already-subscribed event stream
+// treats EOF as a graceful, expected end of stream and an actual
+// failure as something worth surfacing as an error -- see
+// `HerdrEventStream.subscribe(_:socketPath:)`'s own doc comment
+// (HerdrConnection.swift).
 //
 // `BSDHerdrTransport` below is the production implementation: a BSD
 // Unix-domain socket driven by `DispatchSourceRead`, NOT `NWConnection`
@@ -31,11 +34,11 @@
 // doc comment for the empirically-verified detail), whereas a raw
 // recv() returning zero bytes is a simple, reliable EOF signal.
 //
-// `InMemoryHerdrTransport` above is what `HerdrSocketSession`'s own
-// tests drive. `BSDHerdrTransport` below has its own real-socket
-// integration tests in HerdrTransportTests.swift, which bind and listen
-// on a local Unix-domain socket the test itself owns and controls both
-// ends of -- the same fixture approach
+// `InMemoryHerdrTransport` above is what `HerdrConnectionTests`/
+// `HerdrIntegrationCoordinatorTests` drive. `BSDHerdrTransport` below
+// has its own real-socket integration tests in HerdrTransportTests.swift,
+// which bind and listen on a local Unix-domain socket the test itself
+// owns and controls both ends of -- the same fixture approach
 // `HerdrSessionDiscovery.isAlive(socketPath:)`'s own tests
 // (HerdrSessionDiscoveryTests.swift) already established, and the
 // direct precedent for the `sockaddr_un` construction below. There is
@@ -54,8 +57,10 @@ import Foundation
 /// event instead of another `.line` -- carries only a diagnostic
 /// message, never the underlying `any Error` (stream elements cross
 /// actor isolation -- the real transport yields from a
-/// `DispatchSourceRead` callback into `HerdrSocketSession` -- and
-/// heterogeneous `Error` existentials are not `Sendable`).
+/// `DispatchSourceRead` callback into whichever type is currently
+/// consuming `incoming` (`HerdrOneShotRequest`/`HerdrEventStream`,
+/// HerdrConnection.swift) -- and heterogeneous `Error` existentials are
+/// not `Sendable`).
 struct HerdrTransportFailure: Sendable, Equatable, Error {
     let message: String
 }
@@ -76,12 +81,13 @@ enum HerdrTransportEvent: Sendable, Equatable {
 
 // MARK: - HerdrTransport
 
-/// Bidirectional line transport that connects `HerdrSocketSession` to a
-/// herdr server's Unix-domain socket.
+/// Bidirectional line transport that connects `HerdrOneShotRequest`/
+/// `HerdrEventStream` (HerdrConnection.swift) to a herdr server's
+/// Unix-domain socket.
 ///
 /// Implementations are responsible for moving NDJSON lines; they do
-/// not parse JSON-RPC-ish envelopes, correlate request/response ids, or
-/// anything above the line layer -- that is `HerdrSocketSession`'s job.
+/// not parse request/response envelopes or anything above the line
+/// layer -- that is `HerdrOneShotRequest`/`HerdrEventStream`'s job.
 protocol HerdrTransport: Sendable {
     /// Opens the connection to the herdr server listening at
     /// `socketPath`. Throws if no listener accepts the connection.
@@ -109,16 +115,17 @@ protocol HerdrTransport: Sendable {
 // MARK: - InMemoryHerdrTransport
 
 /// In-memory `HerdrTransport` test double. Captures every line
-/// `HerdrSocketSession` writes (so tests can inspect the exact request
-/// envelopes sent) and lets tests inject server-originated lines, EOF,
-/// or a failure via `simulateLine` / `simulateEOF` / `simulateFailure`.
+/// `HerdrOneShotRequest`/`HerdrEventStream` write (so tests can inspect
+/// the exact request/subscribe envelopes sent) and lets tests inject
+/// server-originated lines, EOF, or a failure via `simulateLine` /
+/// `simulateEOF` / `simulateFailure`.
 ///
 /// Mirrors `InMemoryLSPTransport`'s shape exactly (actor, continuation
 /// captured at init, `nonisolated let incoming`, idempotent `close`);
 /// the only difference is the element type (`HerdrTransportEvent`
 /// carrying whole NDJSON lines, vs raw `Data` chunks there). This is
-/// the test double `HerdrSocketSessionTests` drives -- see
-/// `BSDHerdrTransport` below for the production conformer.
+/// the test double `HerdrConnectionTests`/`HerdrIntegrationCoordinatorTests`
+/// drive -- see `BSDHerdrTransport` below for the production conformer.
 actor InMemoryHerdrTransport: HerdrTransport {
 
     // MARK: - State
@@ -140,14 +147,18 @@ actor InMemoryHerdrTransport: HerdrTransport {
 
     /// B3 test seam: invoked at the very top of `send`, before the
     /// `isClosed` check -- lets a test deterministically interleave
-    /// other concurrent actor work (e.g. `HerdrSocketSession`'s receive
-    /// loop fully processing a just-simulated terminal transport event,
-    /// including `terminate()` setting `terminationError`) with an
-    /// in-flight `send` call, reproducing a "send raced session
-    /// termination" race that would otherwise depend on incidental
-    /// Task-scheduling order. `nil` (the default) is a complete no-op;
-    /// see `HerdrSocketSessionTests`' own "racesSessionTermination"
-    /// tests for the only place this is set.
+    /// other concurrent actor work (e.g. a consumer fully processing a
+    /// just-simulated terminal transport event) with an in-flight `send`
+    /// call, reproducing a "send raced termination" race that would
+    /// otherwise depend on incidental Task-scheduling order. `nil` (the
+    /// default) is a complete no-op. Currently unused by any test in
+    /// this codebase -- its only consumer lived in the now-deleted
+    /// `HerdrSocketSessionTests.swift` (its own "racesSessionTermination"
+    /// tests, against `HerdrSocketSession`'s multiplexed receive loop).
+    /// Retained as a general-purpose seam: `HerdrOneShotRequest`/
+    /// `HerdrEventStream` (HerdrConnection.swift) each still have exactly
+    /// one in-flight outbound `send` (the request/subscribe line) that
+    /// could in principle race a concurrent close/terminal-event path.
     private var beforeSend: (@Sendable () async -> Void)?
 
     // MARK: - Init
@@ -331,17 +342,23 @@ final class BSDHerdrTransport: HerdrTransport, @unchecked Sendable {
 
     deinit {
         // Safety net mirroring `StdioLSPTransport.ProcessHandle.deinit`:
-        // `HerdrSocketSession` (this transport's only intended owner)
-        // exposes no `close()` of its own (see HerdrSocketSession.swift),
-        // so deallocation without an explicit `close()` is this
-        // transport's EXPECTED teardown path, not a rare edge case.
-        // `continuation.finish()` is unconditional and safe to call even
-        // when already finished (idempotent, thread-safe per
-        // `AsyncStream`'s own contract) -- it is what unblocks
-        // `HerdrSocketSession`'s receive-loop `Task` (which holds its
-        // own copy of `incoming`, independent of this instance's
-        // lifetime) instead of leaving it suspended forever when this
-        // transport disappears without `close()` ever running.
+        // unlike `HerdrIntegrationCoordinator`'s own ordinary paths --
+        // which now ALWAYS close explicitly (`HerdrOneShotRequest.send`
+        // closes on every exit; `HerdrEventStream.subscribe` closes on
+        // every failure path and otherwise hands the still-open
+        // transport to the coordinator's own EXPLICIT TRANSPORT
+        // TEARDOWN -- see HerdrIntegrationCoordinator.swift's own
+        // header) -- this `deinit` is a BACKSTOP for whatever does NOT
+        // go through one of those explicit paths (a bug, or a future
+        // caller of this transport that forgets to), not the expected
+        // teardown path itself. `continuation.finish()` is unconditional
+        // and safe to call even when already finished (idempotent,
+        // thread-safe per `AsyncStream`'s own contract) -- it is what
+        // unblocks a still-running consumer `Task` (e.g.
+        // `HerdrEventStream`'s own relay task, which holds its own copy
+        // of `incoming`, independent of this instance's lifetime)
+        // instead of leaving it suspended forever when this transport
+        // disappears without `close()` ever running.
         //
         // Reading `state` directly here (rather than via `queue.async`)
         // is safe: by the time `deinit` runs, ARC guarantees no other
@@ -532,10 +549,10 @@ final class BSDHerdrTransport: HerdrTransport, @unchecked Sendable {
     /// actually released the OS-level descriptor -- not merely flipped
     /// `state` -- which is otherwise unobservable from outside this
     /// file: `state`'s fd is deliberately never exposed to production
-    /// callers (`HerdrSocketSession` has no legitimate reason to reach
-    /// the raw descriptor). Hops onto `queue` like every other
-    /// `state`-touching entry point above, so this reads a consistent
-    /// snapshot, never a torn value.
+    /// callers (`HerdrOneShotRequest`/`HerdrEventStream` have no
+    /// legitimate reason to reach the raw descriptor). Hops onto `queue`
+    /// like every other `state`-touching entry point above, so this
+    /// reads a consistent snapshot, never a torn value.
     internal func testOnlyConnectedFileDescriptor() async -> Int32? {
         await withCheckedContinuation { (completion: CheckedContinuation<Int32?, Never>) in
             queue.async { [self] in
@@ -590,11 +607,17 @@ final class BSDHerdrTransport: HerdrTransport, @unchecked Sendable {
     /// in `receiveBuffer`. Returns `false` if a line's bytes were not
     /// valid UTF-8 -- NDJSON is always UTF-8 by protocol, so this is a
     /// transport-integrity failure, not a routine "unexpected content"
-    /// case (contrast `HerdrSocketSession.handleLine`, which silently
-    /// drops an individual malformed/undecodable JSON line); it is
-    /// surfaced as `.failure`, already handled internally via
+    /// case; it is surfaced as `.failure`, already handled internally via
     /// `terminate(with:)`, rather than a caller having to notice a
-    /// dropped, unaccounted-for line.
+    /// dropped, unaccounted-for line. Contrast a line that IS valid
+    /// UTF-8 and valid JSON, but does not match a higher-level type's own
+    /// expected shape (e.g. a malformed pushed event once already
+    /// subscribed) -- that is `HerdrEventStream`'s own relay task's
+    /// concern (HerdrConnection.swift), which finishes the returned
+    /// stream BY THROWING rather than silently dropping the line; this
+    /// method's own concern is strictly byte-level (valid UTF-8 or not),
+    /// surfaced as `.failure` here regardless of which higher-level type
+    /// ends up consuming it.
     @discardableResult
     private func extractLines() -> Bool {
         while let newlineIndex = receiveBuffer.firstIndex(of: UInt8(ascii: "\n")) {
