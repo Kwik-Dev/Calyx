@@ -49,6 +49,23 @@ final class AgentRegistry {
 
     private(set) var entries: [UUID: AgentEntry] = [:]
 
+    /// Rows describing agents Calyx learned about from an external
+    /// source (herdr's own event stream) rather than its own hooks or
+    /// title/screen heuristics. Deliberately a SEPARATE store from
+    /// `entries`, never merged into it: mixing the two would require
+    /// auditing every source-arbitration site in `handleHookEvent` /
+    /// `handleTitleChange` / `handleScreenClassification` (each already
+    /// reasons carefully about `.hooks` vs. `.titleHeuristic`
+    /// precedence) and forking `reset()`'s clearing semantics, whereas
+    /// separate storage makes "herdr rows survive `AgentRegistry.reset()`"
+    /// true by construction -- `reset()` only ever clears `entries`, so
+    /// it leaves this store alone without needing to know it exists.
+    /// Populated/depopulated via `upsertExternalEntry` /
+    /// `removeExternalEntry` / `removeAllExternalEntries` below; queried
+    /// via `hasExternalEntries`. `sortedEntries` merges both stores for
+    /// sidebar display -- see that property's doc comment.
+    private(set) var externalEntries: [UUID: AgentEntry] = [:]
+
     /// Human-readable descriptions of hooks the app failed to install,
     /// surfaced as a persistent warning banner instead of the one-shot
     /// enable-time alert. Set wholesale by `setHooksIssues` (called by
@@ -135,8 +152,15 @@ final class AgentRegistry {
     /// each entry's sort key (priority + basename) is computed once, up
     /// front, rather than recomputing `basename` on both sides of every
     /// comparison the sort performs.
+    ///
+    /// Merges both stores -- `entries` (native hooks/titleHeuristic rows)
+    /// and `externalEntries` (herdr rows) -- through the same priority/
+    /// basename ordering: a row's store of origin never affects its sort
+    /// position. No dedup: `externalEntries` is keyed by a herdr-derived
+    /// id, never a `SurfaceRegistry` UUID, so it cannot collide with an
+    /// `entries` key by construction.
     var sortedEntries: [AgentEntry] {
-        entries.values
+        (Array(entries.values) + Array(externalEntries.values))
             .map { entry in (entry: entry, priority: Self.sortPriority(for: entry.state), basename: Self.basename(entry.cwd)) }
             .sorted { lhs, rhs in
                 if lhs.priority != rhs.priority { return lhs.priority < rhs.priority }
@@ -177,6 +201,34 @@ final class AgentRegistry {
         isServerRunning = false
         sweepTask?.cancel()
         sweepTask = nil
+    }
+
+    // MARK: - External Entries (Herdr)
+
+    /// Inserts or replaces `entry` in `externalEntries`, keyed by its
+    /// `id` (`entry.surfaceID`). Never touches `entries`.
+    func upsertExternalEntry(_ entry: AgentEntry) {
+        externalEntries[entry.id] = entry
+    }
+
+    /// Removes the external entry keyed by `id`, if any. A no-op for an
+    /// `id` with no external entry. Never touches `entries`.
+    func removeExternalEntry(id: UUID) {
+        externalEntries.removeValue(forKey: id)
+    }
+
+    /// Clears every external entry. Never touches `entries` -- unlike
+    /// `reset()`, this is scoped to `externalEntries` alone.
+    func removeAllExternalEntries() {
+        externalEntries.removeAll()
+    }
+
+    /// Whether `externalEntries` currently holds at least one row.
+    /// Consulted by `AgentSidebarGate.decide` (`AgentStatusView.swift`)
+    /// so the Agents sidebar keeps showing rows even while
+    /// `isServerRunning` is `false`.
+    var hasExternalEntries: Bool {
+        !externalEntries.isEmpty
     }
 
     // MARK: - Hook Events
@@ -439,6 +491,36 @@ final class AgentRegistry {
     /// entry is authoritative and is left untouched. Routes an update to
     /// an existing `.titleHeuristic` entry through `applyHeuristicState`
     /// as a non-authoritative signal — see that method's doc comment.
+    ///
+    /// C1 fix: creating a NEW row additionally requires `isServerRunning`
+    /// — mirroring `pollScreenClassificationIfAgentsSidebarVisible`'s own
+    /// gate (a) in `CalyxWindowController`, which already refuses to feed
+    /// `handleScreenClassification` while the server is stopped, for
+    /// exactly the same reason: classifying into the registry while IPC
+    /// is off would only produce a row this app can't retire on its own.
+    /// This call site (fed unconditionally by every pane's title change,
+    /// via `handleSetTitleNotification`) was the one heuristic-creation
+    /// path that never got that gate — with herdr connected, the Agents
+    /// sidebar stays visible (`AgentSidebarGate`) even while
+    /// `isServerRunning` is `false`, so a `.titleHeuristic` row created
+    /// here in that combination had NO way to ever retire: the miss-streak
+    /// sweep that would clean it up lives inside `handleScreenClassification`,
+    /// reachable only from that same isServerRunning-gated poll. Gating
+    /// creation the same way makes creation and retirement symmetric —
+    /// both now require the server to be running. Updating an EXISTING
+    /// `.titleHeuristic` entry is not separately guarded: no such entry
+    /// can exist while `isServerRunning` is `false` in the first place,
+    /// since `CalyxMCPServer.stop()` unconditionally clears `entries` via
+    /// `reset()` before flipping `isServerRunning` false, so the update
+    /// branch below is already unreachable in that state.
+    ///
+    /// Option considered and rejected: decoupling the retirement sweep
+    /// from `isServerRunning` instead (running it whenever the sidebar is
+    /// showing rows). That sweep lives inside `handleScreenClassification`
+    /// itself, inseparable from ITS OWN row-creation path — un-gating the
+    /// poll that feeds it would let screen classification start creating
+    /// rows while IPC is off too, reintroducing this exact asymmetry one
+    /// layer over instead of fixing it.
     func handleTitleChange(surfaceID: UUID, title: String) {
         guard let classified = ClaudeTitleHeuristic.classify(title: title) else { return }
 
@@ -451,6 +533,8 @@ final class AgentRegistry {
             applyHeuristicState(surfaceID: surfaceID, newState: classified, isAuthoritative: false)
             return
         }
+
+        guard isServerRunning else { return }
 
         entries[surfaceID] = AgentEntry(
             surfaceID: surfaceID,

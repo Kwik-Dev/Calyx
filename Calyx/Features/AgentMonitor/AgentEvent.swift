@@ -16,6 +16,11 @@ enum AgentState: Sendable, Equatable {
 
 enum AgentSource: Sendable, Equatable {
     case hooks, titleHeuristic
+    /// A row sourced from an external agent runtime (herdr) rather than
+    /// Calyx's own hooks/title-heuristic pipeline. Stored in
+    /// `AgentRegistry.externalEntries`, a separate store from `entries`
+    /// -- see that property's doc comment.
+    case external
 }
 
 // MARK: - AgentEntry
@@ -37,6 +42,15 @@ struct AgentEntry: Identifiable, Sendable, Equatable {
     /// surface, kept in sync by `AgentRegistry.updateInbox` /
     /// `syncInboxCounts` from `IPCStore`'s current inbox count.
     var unreadCount: Int = 0
+    /// The Calyx surface (if any) an `.external` entry's row should
+    /// focus when clicked -- an external entry's own `surfaceID` is not
+    /// necessarily a Calyx `SurfaceRegistry` UUID, so this is a
+    /// separate, optional pointer to a Calyx-hosted surface that
+    /// represents the same agent (if one exists). `nil` for every
+    /// `.hooks`/`.titleHeuristic` entry, whose own `surfaceID` already
+    /// IS the surface to focus. Defaulted so every existing call site
+    /// is unaffected.
+    var focusSurfaceID: UUID? = nil
 }
 
 extension AgentEntry {

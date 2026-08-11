@@ -4,6 +4,7 @@
 // Sidebar view that displays AI agent panes and their lifecycle state,
 // sourced live from `AgentRegistry.shared`.
 
+import AppKit
 import SwiftUI
 
 struct AgentStatusView: View {
@@ -15,7 +16,14 @@ struct AgentStatusView: View {
             // `CalyxWindowController`'s screen-classification poll can
             // gate on "visible in any window" rather than each window's
             // own local sidebar state — see that property's doc comment.
-            .onAppear { AgentRegistry.shared.incrementAgentsSidebarVisible() }
+            // Also the herdr Stage 2 integration's third start() trigger
+            // (alongside app launch / `applicationDidBecomeActive`) —
+            // see `AppDelegate.startHerdrIntegrationIfNeeded()`'s own
+            // doc comment.
+            .onAppear {
+                AgentRegistry.shared.incrementAgentsSidebarVisible()
+                (NSApp.delegate as? AppDelegate)?.startHerdrIntegrationIfNeeded()
+            }
             .onDisappear { AgentRegistry.shared.decrementAgentsSidebarVisible() }
     }
 
@@ -25,8 +33,15 @@ struct AgentStatusView: View {
             // CalyxMCPServer.isRunning: CalyxMCPServer is a plain
             // @MainActor class, not @Observable, so a view reading its
             // isRunning directly would never get a re-render signal when
-            // the server starts/stops.
-            if !AgentRegistry.shared.isServerRunning {
+            // the server starts/stops. Also reads hasExternalEntries
+            // (registering the @Observable dependency on externalEntries
+            // too) so a herdr row appearing/disappearing while the IPC
+            // server is stopped re-renders this gate on its own -- see
+            // AgentSidebarGate.decide's doc comment.
+            if !AgentSidebarGate.decide(
+                isServerRunning: AgentRegistry.shared.isServerRunning,
+                hasExternal: AgentRegistry.shared.hasExternalEntries
+            ) {
                 disabledPlaceholder
             } else {
                 let entries = AgentRegistry.shared.sortedEntries
@@ -121,6 +136,59 @@ struct AgentStatusView: View {
     }
 }
 
+// MARK: - Sidebar Gate
+
+/// Pure decision behind `AgentStatusView.content`'s placeholder branch,
+/// extracted so it's directly testable without mounting the view --
+/// mirrors `HerdrChildExitedPolicy`'s own extraction shape (herdr Stage
+/// 1): the caller resolves its own inputs (`AgentRegistry.shared
+/// .isServerRunning` / `.hasExternalEntries`) before calling in.
+enum AgentSidebarGate {
+
+    /// Whether the sidebar should render its entries list (`true`)
+    /// rather than the "AI Agent IPC is disabled" placeholder
+    /// (`false`). An external (herdr) row must keep the sidebar showing
+    /// rows even while Calyx's own IPC server is stopped, since it
+    /// doesn't depend on it -- so the placeholder is shown only when
+    /// BOTH `isServerRunning` is `false` AND there are no external
+    /// entries.
+    static func decide(isServerRunning: Bool, hasExternal: Bool) -> Bool {
+        isServerRunning || hasExternal
+    }
+}
+
+// MARK: - Row Focus Target (C2)
+
+/// Pure resolution of the surface a row's click should focus, extracted
+/// from `AgentRowView.body` so it's directly testable without mounting
+/// the view — mirrors `AgentSidebarGate` / `AgentRowDisplay`'s own
+/// extraction shape. Not `@MainActor`: unlike `AgentRowDisplay` (which
+/// calls into `AgentRegistry`, a `@MainActor` type), this touches only
+/// plain `Sendable` values.
+enum AgentRowFocusTarget {
+
+    /// The surface to focus when a row is clicked, or `nil` when the row
+    /// has no resolvable focus target at all — `AgentRowView` renders a
+    /// `nil` result as a non-interactive row (no tap, no hover
+    /// highlight) rather than posting `.calyxFocusSurface` for a surface
+    /// nothing can resolve. Resolution order:
+    ///   1. `focusSurfaceID`, when set, always wins — it is the explicit
+    ///      "focus this Calyx surface instead" pointer `AgentEntry`
+    ///      documents for an `.external` row whose own `surfaceID` isn't
+    ///      a `SurfaceRegistry` id.
+    ///   2. Otherwise, a `.hooks`/`.titleHeuristic` row's own `surfaceID`
+    ///      IS a real `SurfaceRegistry` id (that's where those sources
+    ///      get it from) and is always resolvable.
+    ///   3. Otherwise — an `.external` row with no `focusSurfaceID` (true
+    ///     of every herdr row as of this stage, which never resolves one
+    ///     — see `HerdrAgentMirror.swift`'s header) — there is nothing
+    ///     valid to focus.
+    static func resolve(source: AgentSource, surfaceID: UUID, focusSurfaceID: UUID?) -> UUID? {
+        if let focusSurfaceID { return focusSurfaceID }
+        return source == .external ? nil : surfaceID
+    }
+}
+
 // MARK: - Agent Row View
 
 private struct AgentRowView: View {
@@ -149,16 +217,55 @@ private struct AgentRowView: View {
         }
     }
 
-    /// The row's primary label: the pane's working directory basename, or
-    /// "Claude Code" when no `cwd` has been reported yet. Reuses
-    /// `AgentRegistry.basename` rather than re-deriving it, so the
-    /// basename logic exists in exactly one place.
+    /// The row's primary label. Delegates to `AgentRowDisplay.primaryLabel`
+    /// so the derivation exists in exactly one place, directly testable
+    /// without mounting this view.
     private var displayName: String {
-        let basename = AgentRegistry.basename(entry.cwd)
-        return basename.isEmpty ? "Claude Code" : basename
+        AgentRowDisplay.primaryLabel(cwd: entry.cwd, kind: entry.kind)
+    }
+
+    /// C2 fix: the surface this row's click should focus, per
+    /// `AgentRowFocusTarget.resolve`'s doc comment — `nil` for a row
+    /// with no resolvable target (every herdr row as of this stage).
+    private var focusTarget: UUID? {
+        AgentRowFocusTarget.resolve(source: entry.source, surfaceID: entry.surfaceID, focusSurfaceID: entry.focusSurfaceID)
     }
 
     var body: some View {
+        // C2 fix: presentation choice for a row with no resolvable focus
+        // target (`focusTarget == nil`) — rather than keeping the tap
+        // gesture wired to `entry.surfaceID` (a synthetic herdr id no
+        // `SurfaceRegistry` knows, making the click a silent no-op today),
+        // the row is rendered as plain, non-interactive content: no
+        // `.onTapGesture` and no hover highlight (`isHovering` is only
+        // ever flipped by the `.onAssumeInsideHover` attached in the
+        // interactive branch below, so it stays permanently `false` here
+        // and the background fill in `rowContent` never appears). This
+        // was chosen as the least surprising option over, say, a visibly
+        // "disabled" treatment (dimmed/greyed row) — the row still needs
+        // to convey real, current agent state at a glance; only the
+        // click AFFORDANCE (hover feedback inviting a tap) is removed,
+        // matching how every other purely-informational element in this
+        // sidebar (e.g. `hooksIssuesBanner`) already has no hover/tap
+        // treatment at all.
+        Group {
+            if let focusTarget {
+                rowContent
+                    .onAssumeInsideHover($isHovering)
+                    .onTapGesture {
+                        NotificationCenter.default.post(
+                            name: .calyxFocusSurface,
+                            object: nil,
+                            userInfo: ["surfaceID": focusTarget]
+                        )
+                    }
+            } else {
+                rowContent
+            }
+        }
+    }
+
+    private var rowContent: some View {
         HStack(spacing: 8) {
             // State dot
             Circle()
@@ -196,15 +303,26 @@ private struct AgentRowView: View {
                     .fill(Color.white.opacity(reduceTransparency ? 0.08 : 0.05))
             }
         }
-        .onAssumeInsideHover($isHovering)
         .opacity(controlActiveState == .key ? 1.0 : 0.5)
         .accessibilityIdentifier(AccessibilityID.Sidebar.agentRow(id: entry.id))
-        .onTapGesture {
-            NotificationCenter.default.post(
-                name: .calyxFocusSurface,
-                object: nil,
-                userInfo: ["surfaceID": entry.surfaceID]
-            )
-        }
+    }
+}
+
+// MARK: - Row Display
+
+/// Pure label derivation extracted from `AgentRowView.displayName` so
+/// it's directly testable without mounting the view.
+@MainActor
+enum AgentRowDisplay {
+
+    /// The Agents sidebar row's primary label: the pane's working
+    /// directory basename, or `AgentEntry.displayName(forKind:)` when
+    /// no `cwd` has been reported yet. Reuses `AgentRegistry.basename`
+    /// rather than re-deriving it, so the basename logic exists in
+    /// exactly one place (same reasoning as `AgentRowView.displayName`
+    /// itself already documented).
+    static func primaryLabel(cwd: String?, kind: String) -> String {
+        let basename = AgentRegistry.basename(cwd)
+        return basename.isEmpty ? AgentEntry.displayName(forKind: kind) : basename
     }
 }

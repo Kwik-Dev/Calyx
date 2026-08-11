@@ -2,7 +2,7 @@
 //  AgentRegistryTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for AgentRegistry: hook-event state transitions, session
+//  Tests for AgentRegistry: hook-event state transitions, session
 //  reconciliation, title-heuristic fallback, and sidebar sort order.
 //
 //  Coverage:
@@ -335,6 +335,9 @@ final class AgentRegistryTests: XCTestCase {
 
     func test_handleSurfaceDestroyed_removesTitleHeuristicEntry() {
         let registry = AgentRegistry()
+        // C1 fix: handleTitleChange only creates a row while the server
+        // is running -- see that method's own doc comment.
+        registry.markServerStarted()
         let surfaceID = UUID()
         registry.handleTitleChange(surfaceID: surfaceID, title: "✳ Compacting conversation")
         XCTAssertEqual(registry.entries.count, 1,
@@ -343,12 +346,16 @@ final class AgentRegistryTests: XCTestCase {
         registry.handleSurfaceDestroyed(surfaceID: surfaceID)
 
         XCTAssertTrue(registry.entries.isEmpty)
+        registry.reset()
     }
 
     // MARK: - Title heuristic fallback
 
     func test_handleTitleChange_unregisteredSurfaceWorkingTitle_createsTitleHeuristicEntry() {
         let registry = AgentRegistry()
+        // C1 fix: handleTitleChange only creates a row while the server
+        // is running -- see that method's own doc comment.
+        registry.markServerStarted()
         let surfaceID = UUID()
 
         registry.handleTitleChange(surfaceID: surfaceID, title: "✳ Compacting conversation")
@@ -356,6 +363,32 @@ final class AgentRegistryTests: XCTestCase {
         let entry = registry.entries[surfaceID]
         XCTAssertEqual(entry?.source, .titleHeuristic)
         XCTAssertEqual(entry?.state, .working)
+        registry.reset()
+    }
+
+    func test_handleTitleChange_serverNotRunning_neverCreatesARow() {
+        // C1 fix / regression pin: the herdr-connected + IPC-disabled
+        // combination this fix targets -- an external (herdr) row keeps
+        // the Agents sidebar visible (AgentSidebarGate) even while
+        // isServerRunning is false, so without this guard a title-change
+        // notification arriving in that state would create a
+        // .titleHeuristic row with no way to ever retire (see
+        // handleTitleChange's own doc comment for the full reasoning).
+        let registry = AgentRegistry()
+        XCTAssertFalse(registry.isServerRunning, "Precondition: a fresh registry has the server stopped")
+        registry.upsertExternalEntry(AgentEntry(
+            surfaceID: UUID(), sessionID: nil, source: .external, state: .working,
+            cwd: "/Users/dev/herdr-project", kind: AgentEntry.claudeCodeKind, lastEventAt: Date()
+        ))
+        XCTAssertTrue(registry.hasExternalEntries, "Precondition: a herdr row is present")
+        let surfaceID = UUID()
+
+        registry.handleTitleChange(surfaceID: surfaceID, title: "✳ Compacting conversation")
+
+        XCTAssertNil(registry.entries[surfaceID],
+                     "handleTitleChange must not create a row while isServerRunning is false, " +
+                     "even with a herdr row keeping the sidebar itself visible")
+        XCTAssertTrue(registry.entries.isEmpty)
     }
 
     func test_handleTitleChange_hooksEntryUnaffectedByTitleSignal() {
@@ -373,6 +406,9 @@ final class AgentRegistryTests: XCTestCase {
 
     func test_titleHeuristicEntry_promotedToHooksOnSubsequentHookEvent() {
         let registry = AgentRegistry()
+        // C1 fix: handleTitleChange only creates a row while the server
+        // is running -- see that method's own doc comment.
+        registry.markServerStarted()
         let surfaceID = UUID()
         registry.handleTitleChange(surfaceID: surfaceID, title: "✳ Compacting conversation")
         XCTAssertEqual(registry.entries[surfaceID]?.source, .titleHeuristic)
@@ -383,6 +419,7 @@ final class AgentRegistryTests: XCTestCase {
         XCTAssertEqual(entry?.source, .hooks,
                        "The first hook event must promote a titleHeuristic entry to hooks")
         XCTAssertEqual(registry.entries.count, 1, "Promotion must replace, not add, the entry")
+        registry.reset()
     }
 
     // MARK: - Sort order
@@ -451,11 +488,15 @@ final class AgentRegistryTests: XCTestCase {
 
     func test_handleTitleChange_setsClaudeCodeKind() {
         let registry = AgentRegistry()
+        // C1 fix: handleTitleChange only creates a row while the server
+        // is running -- see that method's own doc comment.
+        registry.markServerStarted()
         let surfaceID = UUID()
 
         registry.handleTitleChange(surfaceID: surfaceID, title: "✳ Compacting conversation")
 
         XCTAssertEqual(registry.entries[surfaceID]?.kind, "claude-code")
+        registry.reset()
     }
 
     // MARK: - PermissionRequest (Phase 2: Codex)
@@ -735,6 +776,9 @@ final class AgentRegistryTests: XCTestCase {
 
     func test_handleScreenClassification_hooksEntryUnaffected_titleHeuristicEntryReflectsClassification() {
         let registry = AgentRegistry()
+        // C1 fix: handleTitleChange only creates a row while the server
+        // is running -- see that method's own doc comment.
+        registry.markServerStarted()
         let hooksSurface = UUID()
         registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: hooksSurface)
         registry.handleHookEvent(event("UserPromptSubmit", sessionID: "session-a"), surfaceID: hooksSurface)
@@ -753,10 +797,14 @@ final class AgentRegistryTests: XCTestCase {
                        "A screen classification must never override a hooks-sourced entry")
         XCTAssertEqual(registry.entries[heuristicSurface]?.state, .blocked,
                        "A screen classification must update a titleHeuristic-sourced entry")
+        registry.reset()
     }
 
     func test_handleScreenClassification_titleHeuristicEntry_reflectsWorkingThenNilBecomesIdle() {
         let registry = AgentRegistry()
+        // C1 fix: handleTitleChange only creates a row while the server
+        // is running -- see that method's own doc comment.
+        registry.markServerStarted()
         let surfaceID = UUID()
         registry.handleTitleChange(surfaceID: surfaceID, title: "✳ Compacting conversation")
         XCTAssertEqual(registry.entries[surfaceID]?.state, .working,
@@ -773,6 +821,7 @@ final class AgentRegistryTests: XCTestCase {
         registry.handleScreenClassification(surfaceID: surfaceID, state: nil)
         XCTAssertEqual(registry.entries[surfaceID]?.state, .idle,
                        "A nil screen classification (no known pattern matched) must fall back to idle")
+        registry.reset()
     }
 
     func test_handleScreenClassification_unregisteredSurface_createsEntryOnlyForBlockedOrWorking() {
@@ -798,6 +847,9 @@ final class AgentRegistryTests: XCTestCase {
 
     func test_handleProgressReport_hooksEntryUnaffected_heuristicEntryReflectsActiveState() {
         let registry = AgentRegistry()
+        // C1 fix: handleTitleChange only creates a row while the server
+        // is running -- see that method's own doc comment.
+        registry.markServerStarted()
         let hooksSurface = UUID()
         registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: hooksSurface)
         XCTAssertEqual(registry.entries[hooksSurface]?.state, .idle, "Precondition: hooks entry starts idle")
@@ -818,6 +870,7 @@ final class AgentRegistryTests: XCTestCase {
         registry.handleProgressReport(surfaceID: hooksSurface, isActive: true)
         XCTAssertEqual(registry.entries[hooksSurface]?.state, .idle,
                        "handleProgressReport must never override a hooks-sourced entry")
+        registry.reset()
     }
 
     // MARK: - Round 3: hooksIssues
@@ -1117,6 +1170,12 @@ final class AgentRegistryTests: XCTestCase {
 
     func test_handleScreenClassification_missStreakResetByTitleWorkingSignal() {
         let registry = AgentRegistry()
+        // C1 fix: handleTitleChange (called below, on an already-existing
+        // titleHeuristic row) only resets the miss streak while the
+        // server is running -- see that method's own doc comment. The
+        // row itself is created via handleScreenClassification, which
+        // this test's own C1-independent call site does not gate.
+        registry.markServerStarted()
         let surfaceID = UUID()
         registry.handleScreenClassification(surfaceID: surfaceID, state: .working)
 
@@ -1134,6 +1193,7 @@ final class AgentRegistryTests: XCTestCase {
         }
         XCTAssertNotNil(registry.entries[surfaceID],
                         "A title-heuristic working signal must reset the miss streak")
+        registry.reset()
     }
 
     func test_handleScreenClassification_missStreakResetByProgressActiveSignal() {

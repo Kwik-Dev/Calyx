@@ -15,6 +15,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var pendingURLs: [URL] = []
     private var quickTerminalController: QuickTerminalController?
 
+    /// Herdr Stage 2 lifecycle owner -- see `HerdrIntegrationCoordinator.swift`'s
+    /// own header. Eagerly constructed: `HerdrIntegrationCoordinator.init`
+    /// does no I/O of its own and starts no timer
+    /// (`HerdrIntegrationCoordinatorTests.test_neverCallingStart_doesNoWork_noBackgroundTimer`
+    /// pins that), so constructing this instance up front is
+    /// behaviorally inert until `startHerdrIntegrationIfNeeded()` below
+    /// actually calls `start()`.
+    private let herdrIntegrationCoordinator = HerdrIntegrationCoordinator(
+        resolver: HerdrBinaryResolver(),
+        discovery: HerdrSessionDiscovery(),
+        sessionFactory: LiveHerdrSessionFactory(),
+        mirror: HerdrAgentMirror(registry: .shared)
+    )
+
     /// Captured explicitly by `applicationShouldTerminate` (the only
     /// termination route now that closing a window never terminates the
     /// app any more — see `applicationShouldTerminateAfterLastWindowClosed`),
@@ -289,6 +303,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    // MARK: - Herdr Integration
+
+    /// Starts (or no-ops, per `HerdrIntegrationCoordinator.start()`'s
+    /// own idempotent contract) the herdr Stage 2 integration. Every
+    /// production call site -- app launch (`applicationDidFinishLaunching`
+    /// below, alongside `HerdrHostedSurfaces.shared.startObserving()`),
+    /// `applicationDidBecomeActive` below, and the Agents sidebar
+    /// becoming visible (`AgentStatusView.onAppear`) -- calls this SAME
+    /// method; none of them are distinguished internally, mirroring
+    /// `HerdrIntegrationCoordinator.start()`'s own "none of them are
+    /// distinguished internally" contract one level up.
+    ///
+    /// Gated on `LaunchEnvironmentPolicy.isUnitTestHost()` as a single
+    /// choke point for all three triggers, rather than duplicating the
+    /// gate at each call site -- mirrors `applicationDidFinishLaunching`'s
+    /// / `applicationWillTerminate`'s own identical gate (see that
+    /// method's own doc comment for the incident this guards against),
+    /// so a unit-test host launch never opens a real herdr connection
+    /// even when herdr happens to be installed on the development
+    /// machine running the suite.
+    func startHerdrIntegrationIfNeeded() {
+        guard !LaunchEnvironmentPolicy.isUnitTestHost() else { return }
+        Task { await herdrIntegrationCoordinator.start() }
+    }
+
     // MARK: - NSApplicationDelegate
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -356,6 +395,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         installGlobalEventTap()
         SurfacePropertyStore.shared.startObserving()
         HerdrHostedSurfaces.shared.startObserving()
+        startHerdrIntegrationIfNeeded()
 
         browserTabBroker.appDelegate = self
         let browserHandler = BrowserToolHandler(broker: browserTabBroker)
@@ -555,6 +595,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let scheme: ghostty_color_scheme_e = isDark ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT
             ghostty_app_set_color_scheme(app, scheme)
         }
+    }
+
+    /// Herdr Stage 2's second lifecycle trigger -- see
+    /// `startHerdrIntegrationIfNeeded()`'s own doc comment.
+    func applicationDidBecomeActive(_ notification: Notification) {
+        startHerdrIntegrationIfNeeded()
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {

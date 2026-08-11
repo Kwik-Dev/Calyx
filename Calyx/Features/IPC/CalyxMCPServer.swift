@@ -1066,10 +1066,14 @@ final class CalyxMCPServer {
         peerRegistrationTask = nil
         port = 0
         AgentEndpointFile.remove(directory: agentEndpointDirectory)
-        // Clears every Agents sidebar row and flips AgentStatusView back
-        // to its "disabled" placeholder — without this, disabling IPC
-        // (or a start()-triggered restart) leaves stale rows on screen
-        // for panes the registry will never hear from again.
+        // Clears every native Agents sidebar row (hooks/title-heuristic)
+        // — without this, disabling IPC (or a start()-triggered restart)
+        // leaves stale rows on screen for panes the registry will never
+        // hear from again. AgentStatusView returns to its "disabled"
+        // placeholder only when this ALSO leaves no external (herdr) rows
+        // behind: reset() deliberately never touches externalEntries (see
+        // that property's own doc comment), and AgentSidebarGate keeps
+        // showing rows while AgentRegistry.hasExternalEntries is true.
         agentRegistry.reset()
         // Synchronously drains every pending Cockpit approval request so
         // a stopped server never strands an MCP caller waiting on a

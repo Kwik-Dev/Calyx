@@ -2410,17 +2410,25 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// Three gates, cheapest first, before the expensive per-surface
+    /// Four gates, cheapest first, before the expensive per-surface
     /// `ghostty_surface_read_text` call:
-    /// (a) `AgentRegistry.isServerRunning` — IPC disabled means no
-    ///     Agents sidebar row can be shown at all, so classifying screens
-    ///     into the registry in the background would only produce
-    ///     entries that immediately (and confusingly) populate the
-    ///     sidebar the moment IPC is re-enabled.
+    /// (a) `AgentRegistry.isServerRunning` — IPC disabled means Calyx's
+    ///     own native (hooks/title-heuristic) tracking is off (a herdr
+    ///     row can still keep the sidebar itself visible via
+    ///     `AgentSidebarGate` — see `AgentRegistry.handleTitleChange`'s
+    ///     own C1 fix comment for the row-retirement reason this still
+    ///     matters), so classifying screens into the registry in the
+    ///     background would only produce native entries that immediately
+    ///     (and confusingly) populate the sidebar the moment IPC is
+    ///     re-enabled, with no way to retire themselves until then.
     /// (b) Per-surface: a `.hooks`-sourced entry is authoritative —
     ///     `handleScreenClassification` already no-ops for one, but
     ///     skipping here avoids the read itself, not just its effect.
-    /// (c) `AgentRegistry.isAgentsSidebarVisibleAnywhere` (rather than
+    /// (c) Per-surface: `HerdrHeuristicIngestionPolicy.shouldIngest` —
+    ///     a herdr-hosted surface's "real" state already arrives as an
+    ///     external `AgentRegistry` row over herdr's own event stream, so
+    ///     classifying its screen too would only produce a duplicate row.
+    /// (d) `AgentRegistry.isAgentsSidebarVisibleAnywhere` (rather than
     ///     this window's own `sidebarMode`/`showSidebar`) — see that
     ///     property's doc comment for the cross-window gap this closes.
     private func pollScreenClassificationIfAgentsSidebarVisible() {
@@ -2431,6 +2439,12 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
             for tab in group.tabs {
                 for surfaceID in tab.registry.allIDs {
                     guard AgentRegistry.shared.entries[surfaceID]?.source != .hooks else { continue }
+                    // Herdr-hosted surfaces are skipped before the expensive
+                    // read below too — see HerdrHeuristicIngestionPolicy's
+                    // doc comment.
+                    guard HerdrHeuristicIngestionPolicy.shouldIngest(
+                        isHerdrHosted: HerdrHostedSurfaces.shared.contains(surfaceID)
+                    ) else { continue }
                     guard let surface = tab.registry.controller(for: surfaceID)?.surface else { continue }
                     guard let bottomText = GhosttySurfaceSelectionReader(surface: surface)
                         .readActiveBottomText(rows: 12) else { continue }
@@ -4071,7 +4085,12 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         // Feed the title-heuristic fallback for every pane's title change,
         // not just the tab's focused surface — a background split running
         // Claude Code still needs to report into the Agents sidebar.
-        if let surfaceID = surfaceView.surfaceController?.id {
+        // Skipped for a herdr-hosted surface (HerdrHeuristicIngestionPolicy):
+        // its "real" agent state already arrives as an external AgentRegistry
+        // row over herdr's own event stream, so heuristic ingestion here
+        // would only produce a duplicate sidebar row.
+        if let surfaceID = surfaceView.surfaceController?.id,
+           HerdrHeuristicIngestionPolicy.shouldIngest(isHerdrHosted: HerdrHostedSurfaces.shared.contains(surfaceID)) {
             AgentRegistry.shared.handleTitleChange(surfaceID: surfaceID, title: title)
         }
 
