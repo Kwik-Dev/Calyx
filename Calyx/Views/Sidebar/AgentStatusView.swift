@@ -37,11 +37,13 @@ struct AgentStatusView: View {
             // (registering the @Observable dependency on externalEntries
             // too) so a herdr row appearing/disappearing while the IPC
             // server is stopped re-renders this gate on its own -- see
-            // AgentSidebarGate.decide's doc comment.
-            if !AgentSidebarGate.decide(
-                isServerRunning: AgentRegistry.shared.isServerRunning,
-                hasExternal: AgentRegistry.shared.hasExternalEntries
-            ) {
+            // AgentSidebarGate.decide's doc comment. Both are captured
+            // once here and reused below for
+            // AgentSidebarGate.showsMonitoringDisabledBanner, decide's
+            // companion -- see that function's own doc comment.
+            let isServerRunning = AgentRegistry.shared.isServerRunning
+            let hasExternal = AgentRegistry.shared.hasExternalEntries
+            if !AgentSidebarGate.decide(isServerRunning: isServerRunning, hasExternal: hasExternal) {
                 disabledPlaceholder
             } else {
                 let entries = AgentRegistry.shared.sortedEntries
@@ -49,6 +51,9 @@ struct AgentStatusView: View {
                 VStack(spacing: 0) {
                     if !hooksIssues.isEmpty {
                         hooksIssuesBanner(hooksIssues)
+                    }
+                    if AgentSidebarGate.showsMonitoringDisabledBanner(isServerRunning: isServerRunning, hasExternal: hasExternal) {
+                        monitoringDisabledBanner
                     }
                     if entries.isEmpty {
                         emptyPlaceholder
@@ -103,6 +108,34 @@ struct AgentStatusView: View {
         .accessibilityIdentifier(AccessibilityID.Sidebar.agentHooksIssuesBanner)
     }
 
+    /// Companion to `hooksIssuesBanner`, gated by
+    /// `AgentSidebarGate.showsMonitoringDisabledBanner` -- flags that
+    /// Calyx's own agent monitoring is off while rows are showing
+    /// (sourced from herdr alone), so a user's own locally-run agents
+    /// don't appear to have silently vanished from the list. Same
+    /// stacked-independent-condition shape and `VStack` position as
+    /// `hooksIssuesBanner` above.
+    private var monitoringDisabledBanner: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.yellow)
+                Text("Calyx's own agent monitoring is off")
+                    .font(.system(size: 11.5, weight: .medium, design: .rounded))
+                    .foregroundStyle(.primary)
+            }
+            Text("Locally-run agents won't be listed. Open Command Palette → Enable AI Agent IPC")
+                .font(.system(size: 10.5))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(Color.yellow.opacity(0.15))
+        .accessibilityIdentifier(AccessibilityID.Sidebar.agentMonitoringDisabledBanner)
+    }
+
     // MARK: - Placeholders
 
     private var disabledPlaceholder: some View {
@@ -154,6 +187,29 @@ enum AgentSidebarGate {
     /// entries.
     static func decide(isServerRunning: Bool, hasExternal: Bool) -> Bool {
         isServerRunning || hasExternal
+    }
+
+    /// Companion to `decide(isServerRunning:hasExternal:)`: whether the
+    /// rows branch should ALSO show an explanatory banner that Calyx's
+    /// own agent monitoring is disabled, modeled on `hooksIssuesBanner`
+    /// (both are independent conditions stacked at the top of the rows
+    /// branch's `VStack`, not alternatives to the placeholder/rows
+    /// choice `decide` already makes).
+    ///
+    /// The old all-or-nothing gate was incoherent either way: hiding
+    /// everything while herdr was connected threw away real, useful
+    /// rows; showing rows with no indication was silently misleading,
+    /// since a user's own locally-run agents (which DO depend on
+    /// Calyx's own IPC server) would be missing from the list with no
+    /// explanation. The coherent design shows the rows AND flags why
+    /// Calyx's own agents might be absent -- so this is `true` only when
+    /// Calyx's own server is off AND something else (herdr) is why rows
+    /// are showing at all: `isServerRunning == true` never warns (Calyx's
+    /// own monitoring IS running, herdr or not), and `hasExternal ==
+    /// false` with the server off never reaches the rows branch to begin
+    /// with (see `decide`).
+    static func showsMonitoringDisabledBanner(isServerRunning: Bool, hasExternal: Bool) -> Bool {
+        !isServerRunning && hasExternal
     }
 }
 

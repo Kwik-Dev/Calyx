@@ -22,6 +22,7 @@ enum AccessibilityID {
         }
         static func agentRow(id: UUID) -> String { "calyx.sidebar.agentRow.\(id.uuidString)" }
         static let agentHooksIssuesBanner = "calyx.sidebar.agentHooksIssuesBanner"
+        static let agentMonitoringDisabledBanner = "calyx.sidebar.agentMonitoringDisabledBanner"
     }
     enum TabBar {
         static let container = "calyx.tabBar"

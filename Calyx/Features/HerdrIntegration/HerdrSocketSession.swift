@@ -6,12 +6,16 @@
 // server, protocol 19):
 //
 //   - Every request is one NDJSON line:
-//     {"id":"...","method":"...","params":{...}} -- `params` omitted
-//     entirely for methods that take none (e.g. `ping`): there is no
-//     measured evidence herdr requires an empty `{}` placeholder, and
-//     omitting an absent Optional is Foundation's own default
-//     `Encodable` synthesis behavior for an Optional stored property
-//     (`encodeIfPresent`, not `encode(nil)`).
+//     {"id":"...","method":"...","params":{...}} -- `params` is
+//     REQUIRED and must be a JSON object on EVERY request, even for a
+//     method that takes no arguments of its own (e.g. `ping`,
+//     `session.snapshot`): measured directly against a real herdr
+//     0.8.0 server, a request with `params` omitted entirely, or sent
+//     as `null`, is rejected with {"error":{"code":"invalid_request",
+//     "message":"..."}} AND the connection is closed. A method with
+//     nothing of its own to send still encodes `params` as an empty
+//     object (`{}`, via `HerdrEmptyParams` below) rather than omitting
+//     the key.
 //   - A response echoes the SAME "id": either {"id":..,"result":{...}}
 //     or {"id":..,"error":{"code":"...","message":"..."}} -- note
 //     `code` is a STRING here (see `HerdrRPCError`'s own doc comment),
@@ -290,12 +294,22 @@ enum HerdrSocketSessionError: Error, Sendable, Equatable {
 
 // MARK: - Outbound request envelopes
 
-/// `ping` / `session.snapshot` -- methods that take no params. `params`
-/// is omitted entirely from the wire, not sent as `{}` -- see this
-/// file's header.
-private struct HerdrNoParamsRequest: Encodable {
+/// Empty JSON object payload for a request whose method takes no
+/// arguments of its own (`ping`, `session.snapshot`) -- a
+/// zero-stored-property struct's synthesized `Encodable` conformance
+/// encodes as `{}`, which is what herdr requires there instead of
+/// `params` being omitted or `null` -- see this file's header.
+private struct HerdrEmptyParams: Encodable {}
+
+/// `ping` / `session.snapshot` -- methods that take no arguments of
+/// their own, but still carry `"params":{}` on the wire (via
+/// `HerdrEmptyParams` above), the same as `HerdrSubscribeRequest`
+/// below always carries its own non-empty `params` -- see this file's
+/// header.
+private struct HerdrEmptyParamsRequest: Encodable {
     let id: String
     let method: String
+    let params = HerdrEmptyParams()
 }
 
 /// `events.subscribe`'s own params object.
@@ -530,7 +544,7 @@ actor HerdrSocketSession {
             throw terminationError
         }
         let id = makeRequestID()
-        let requestData = try jsonEncoder.encode(HerdrNoParamsRequest(id: id, method: method))
+        let requestData = try jsonEncoder.encode(HerdrEmptyParamsRequest(id: id, method: method))
         let line = String(decoding: requestData, as: UTF8.self)
 
         let entry = PendingEntry()

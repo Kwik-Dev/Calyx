@@ -58,6 +58,26 @@
 //    `HerdrIntegrationCoordinatorTests`' own end-to-end coverage of the
 //    same fix from the caller side (HANDSHAKE DEADLINE (A2)'s timeout
 //    arm)
+//  - R1 wire-shape pin: ping()'s and session.snapshot()'s request lines
+//    are each a JSON object with EXACTLY the keys "id"/"method"/
+//    "params" -- "params" PRESENT and a JSON OBJECT, never omitted and
+//    never `null`. Decodes the ACTUAL line handed to the transport and
+//    asserts its parsed JSON structure (never a string match --
+//    JSONEncoder's key order is not stable). events.subscribe()'s own
+//    request line (believed already correct) is pinned the same way,
+//    plus its params.subscriptions array, so it stays correct. See
+//    HerdrSocketSession.swift's own header for why herdr's real server
+//    rejects a request with "params" omitted or `null`.
+//  - R2 BLOCKER regression pin, the check that would have caught the
+//    shipped bug regardless of which method regressed: every request
+//    line a full handshake can produce (ping, events.subscribe,
+//    session.snapshot) independently satisfies herdr's documented
+//    minimum request envelope -- non-empty string "id", non-empty
+//    string "method", "params" present and a JSON object. The shipped
+//    bug was `HerdrNoParamsRequest` omitting "params" entirely for BOTH
+//    ping and session.snapshot, discovered only by probing a real herdr
+//    0.8.0 server directly -- the pre-existing test suite never pinned
+//    the actual wire shape, only the request's "method".
 //
 //  None of the guard/XCTFail-and-return checks below use a force
 //  unwrap (`!`) on anything derived from `HerdrSocketSession` /
@@ -468,6 +488,162 @@ final class HerdrSocketSessionTests: XCTestCase {
         )
     }
 
+    // MARK: - Wire shape (R1): pins the FULL request envelope, not just "method"
+    //
+    // The bug these catch: `HerdrNoParamsRequest` (the type ping()/
+    // snapshot() currently use) omits "params" entirely. Measured
+    // directly against a real herdr 0.8.0 server: a request with
+    // "params" omitted, or sent as `null`, is rejected with
+    // {"error":{"code":"invalid_request",...}} AND the connection is
+    // closed -- see HerdrSocketSession.swift's own header. Every test
+    // below decodes the ACTUAL line handed to `transport.send`, never a
+    // string match (JSONEncoder's key order is not stable).
+
+    func test_ping_requestLine_hasExactlyIdMethodParams_withParamsAsAnObject() async throws {
+        let transport = InMemoryHerdrTransport()
+        let session = HerdrSocketSession(transport: transport)
+        try await session.start(socketPath: "/tmp/herdr-wireshape-ping-test/herdr.sock")
+
+        async let pingTask = session.ping()
+
+        let sent = await awaitSentMessages(transport, atLeast: 1)
+        guard let line = sent.first, let object = jsonObject(inLine: line) else {
+            XCTFail("expected ping() to send exactly one decodable JSON request; got \(sent)")
+            return
+        }
+
+        XCTAssertEqual(
+            Set(object.keys), ["id", "method", "params"],
+            "expected ping()'s request line to contain EXACTLY id/method/params, got \(line)"
+        )
+        XCTAssertEqual(object["method"] as? String, "ping")
+        assertSatisfiesMinimumRequestEnvelope(line)
+
+        // Resolve the still-pending ping() so this test doesn't hang.
+        guard let id = object["id"] as? String else {
+            XCTFail("expected \"id\" to be a String, got \(line)")
+            return
+        }
+        await transport.simulateLine(pingResponseLine(id: id))
+        _ = try await pingTask
+    }
+
+    func test_snapshot_requestLine_hasExactlyIdMethodParams_withParamsAsAnObject() async throws {
+        let transport = InMemoryHerdrTransport()
+        let session = HerdrSocketSession(transport: transport)
+        try await session.start(socketPath: "/tmp/herdr-wireshape-snapshot-test/herdr.sock")
+
+        async let snapshotTask = session.snapshot()
+
+        let sent = await awaitSentMessages(transport, atLeast: 1)
+        guard let line = sent.first, let object = jsonObject(inLine: line) else {
+            XCTFail("expected snapshot() to send exactly one decodable JSON request; got \(sent)")
+            return
+        }
+
+        XCTAssertEqual(
+            Set(object.keys), ["id", "method", "params"],
+            "expected snapshot()'s request line to contain EXACTLY id/method/params, got \(line)"
+        )
+        XCTAssertEqual(object["method"] as? String, "session.snapshot")
+        assertSatisfiesMinimumRequestEnvelope(line)
+
+        // Resolve the still-pending snapshot() so this test doesn't hang.
+        guard let id = object["id"] as? String else {
+            XCTFail("expected \"id\" to be a String, got \(line)")
+            return
+        }
+        await transport.simulateLine(snapshotResponseLine(id: id))
+        _ = try await snapshotTask
+    }
+
+    /// Believed already correct today -- pinned so it STAYS correct.
+    func test_subscribe_requestLine_hasIdMethodAndParamsObjectContainingSubscriptionsArray() async throws {
+        let transport = InMemoryHerdrTransport()
+        let session = HerdrSocketSession(transport: transport)
+        try await session.start(socketPath: "/tmp/herdr-wireshape-subscribe-test/herdr.sock")
+
+        async let streamTask = session.subscribe([.typeOnly("pane.created")])
+
+        let sent = await awaitSentMessages(transport, atLeast: 1)
+        guard let line = sent.first, let object = jsonObject(inLine: line) else {
+            XCTFail("expected subscribe() to send exactly one decodable JSON request; got \(sent)")
+            return
+        }
+
+        XCTAssertEqual(object["method"] as? String, "events.subscribe")
+        assertSatisfiesMinimumRequestEnvelope(line)
+
+        guard let params = object["params"] as? [String: Any] else {
+            XCTFail("expected \"params\" to be a JSON object, got \(line)")
+            return
+        }
+        guard let subscriptions = params["subscriptions"] as? [Any] else {
+            XCTFail("expected params.subscriptions to be a JSON array, got \(line)")
+            return
+        }
+        XCTAssertEqual(subscriptions.count, 1, "expected exactly the one subscription passed to subscribe(_:), got \(line)")
+        guard let firstSubscription = subscriptions.first as? [String: Any] else {
+            XCTFail("expected params.subscriptions[0] to be a JSON object, got \(line)")
+            return
+        }
+        XCTAssertEqual(firstSubscription["type"] as? String, "pane.created")
+
+        // Resolve the still-pending subscribe() so this test doesn't hang.
+        guard let id = object["id"] as? String else {
+            XCTFail("expected \"id\" to be a String, got \(line)")
+            return
+        }
+        await transport.simulateLine(subscribeAckLine(id: id))
+        _ = try await streamTask
+    }
+
+    // MARK: - Regression (R2): every handshake request line, independently, against herdr's minimum envelope
+    //
+    // This is the check that would have caught the shipped bug
+    // regardless of which method regressed: unlike the per-method tests
+    // above (which also pin the exact key set / a specific "method"
+    // value), this one is deliberately generic -- it says nothing about
+    // WHICH method a request line belongs to, only that every line the
+    // session hands to the transport during a full handshake carries a
+    // non-empty "id", a non-empty "method", and a "params" that is
+    // present and a JSON object.
+
+    func test_everyHandshakeRequestLine_independently_satisfiesHerdrsMinimumEnvelope() async throws {
+        let transport = InMemoryHerdrTransport()
+        let session = HerdrSocketSession(transport: transport)
+        try await session.start(socketPath: "/tmp/herdr-envelope-regression-test/herdr.sock")
+
+        async let pingTask = session.ping()
+        async let snapshotTask = session.snapshot()
+        async let subscribeTask = session.subscribe([.typeOnly("pane.created")])
+
+        let sent = await awaitSentMessages(transport, atLeast: 3)
+        guard sent.count == 3,
+              let pingLine = sent.first(where: { requestMethod(inLine: $0) == "ping" }),
+              let snapshotLine = sent.first(where: { requestMethod(inLine: $0) == "session.snapshot" }),
+              let subscribeLine = sent.first(where: { requestMethod(inLine: $0) == "events.subscribe" }),
+              let pingID = requestID(inLine: pingLine),
+              let snapshotID = requestID(inLine: snapshotLine),
+              let subscribeID = requestID(inLine: subscribeLine)
+        else {
+            XCTFail("expected exactly one ping / session.snapshot / events.subscribe request, each with an id; got \(sent)")
+            return
+        }
+
+        for line in [pingLine, snapshotLine, subscribeLine] {
+            assertSatisfiesMinimumRequestEnvelope(line)
+        }
+
+        // Resolve every still-pending call so this test doesn't hang.
+        await transport.simulateLine(pingResponseLine(id: pingID))
+        await transport.simulateLine(snapshotResponseLine(id: snapshotID))
+        await transport.simulateLine(subscribeAckLine(id: subscribeID))
+        _ = try await pingTask
+        _ = try await snapshotTask
+        _ = try await subscribeTask
+    }
+
     // MARK: - Fixture builders (exact shapes measured against real herdr 0.8.0)
 
     private func pingResponseLine(id: String) -> String {
@@ -509,6 +685,63 @@ final class HerdrSocketSessionTests: XCTestCase {
 
     private func requestMethod(inLine line: String) -> String? {
         jsonObject(inLine: line)?["method"] as? String
+    }
+
+    // MARK: - Minimum request envelope assertion (R1/R2)
+
+    /// Asserts that `line` decodes to a JSON object satisfying herdr's
+    /// own documented MINIMUM request envelope, measured directly
+    /// against a real herdr 0.8.0 server (see HerdrSocketSession.swift's
+    /// own header): a non-empty string "id", a non-empty string
+    /// "method", and a "params" value that is PRESENT and a JSON
+    /// OBJECT -- never omitted entirely, never `null`. Both "params"
+    /// omitted and "params": null make herdr respond with an
+    /// "invalid_request" error AND close the connection.
+    ///
+    /// `object["params"]` is `nil` ONLY when the key is absent entirely
+    /// -- `JSONSerialization` represents a JSON `null` as `NSNull`, a
+    /// PRESENT dictionary value -- so the two guards below correctly
+    /// distinguish "omitted" (first guard fails) from "null" (second
+    /// guard's `is [String: Any]` check fails, since `NSNull` is not a
+    /// dictionary) from a genuine object (both pass).
+    ///
+    /// Deliberately does NOT assert an exact key set or reject extra
+    /// fields inside "params" -- this is a MINIMUM envelope check, used
+    /// by the cross-cutting R2 regression test where the exact shape is
+    /// intentionally out of scope; the per-method R1 tests above assert
+    /// the exact key set themselves where the task calls for it.
+    private func assertSatisfiesMinimumRequestEnvelope(
+        _ line: String,
+        file: StaticString = #filePath,
+        line callLine: UInt = #line
+    ) {
+        guard let object = jsonObject(inLine: line) else {
+            XCTFail("expected a decodable JSON object, got raw line: \(line)", file: file, line: callLine)
+            return
+        }
+
+        guard let id = object["id"] as? String, !id.isEmpty else {
+            XCTFail("expected a non-empty string \"id\", got \(String(describing: object["id"])) in \(line)", file: file, line: callLine)
+            return
+        }
+
+        guard let method = object["method"] as? String, !method.isEmpty else {
+            XCTFail("expected a non-empty string \"method\", got \(String(describing: object["method"])) in \(line)", file: file, line: callLine)
+            return
+        }
+
+        guard let paramsValue = object["params"] else {
+            XCTFail(
+                "expected a \"params\" key to be PRESENT (herdr rejects a request with \"params\" omitted entirely), got \(line)",
+                file: file, line: callLine
+            )
+            return
+        }
+        XCTAssertTrue(
+            paramsValue is [String: Any],
+            "expected \"params\" to be a JSON OBJECT, not \(String(describing: paramsValue)) (herdr also rejects \"params\": null), in \(line)",
+            file: file, line: callLine
+        )
     }
 
     // MARK: - Bounded async polling (mirrors HerdrSessionDiscoveryTests' own waitUntil precedent)
