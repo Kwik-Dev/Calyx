@@ -8,6 +8,15 @@ import AppKit
 import SwiftUI
 
 struct AgentStatusView: View {
+    /// The rows block's rendered height, published by the
+    /// `.onGeometryChange` modifier on the rows block in `content`.
+    /// Read by `content` to give `monitoringDisabledPlaceholder` the
+    /// viewport space left over below the rows to center itself in.
+    /// Measured from the rendered view rather than derived from
+    /// `entries.count` and a row-height constant, which would silently
+    /// drift the moment row height, spacing, or padding change.
+    @State private var rowsHeight: CGFloat = 0
+
     var body: some View {
         content
             // Tracks how many windows currently have this view mounted
@@ -52,24 +61,51 @@ struct AgentStatusView: View {
                     if !hooksIssues.isEmpty {
                         hooksIssuesBanner(hooksIssues)
                     }
-                    if AgentSidebarGate.showsMonitoringDisabledBanner(isServerRunning: isServerRunning, hasExternal: hasExternal) {
-                        monitoringDisabledNotice
-                    }
                     if entries.isEmpty {
                         emptyPlaceholder
                     } else {
                         // TimelineView re-renders every second so each row's
                         // relative "time ago" label stays live; it also stops
                         // firing automatically while the sidebar isn't visible.
-                        TimelineView(.periodic(from: .now, by: 1)) { context in
-                            ScrollView {
-                                VStack(spacing: 4) {
-                                    ForEach(entries) { entry in
-                                        AgentRowView(entry: entry, now: context.date)
+                        //
+                        // Wrapped in a GeometryReader purely to measure the
+                        // viewport height for monitoringDisabledPlaceholder's
+                        // centering below -- layout-neutral for the rows
+                        // themselves, since TimelineView/ScrollView both
+                        // accept whatever size is proposed and fill it
+                        // exactly as they filled their parent before this
+                        // was added.
+                        GeometryReader { viewport in
+                            TimelineView(.periodic(from: .now, by: 1)) { context in
+                                ScrollView {
+                                    // A single VStack, not bare ScrollView
+                                    // siblings, so the scroll content's total
+                                    // height is exactly rowsHeight plus the
+                                    // placeholder block's own height -- no
+                                    // implicit, unmeasured inter-sibling
+                                    // spacing to throw off the minHeight math
+                                    // below.
+                                    VStack(spacing: 0) {
+                                        VStack(spacing: 4) {
+                                            ForEach(entries) { entry in
+                                                AgentRowView(entry: entry, now: context.date)
+                                            }
+                                        }
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .onGeometryChange(for: CGFloat.self) { proxy in
+                                            proxy.size.height
+                                        } action: { height in
+                                            rowsHeight = height
+                                        }
+
+                                        if AgentSidebarGate.showsMonitoringDisabledBanner(isServerRunning: isServerRunning, hasExternal: hasExternal) && rowsHeight > 0 {
+                                            monitoringDisabledPlaceholder(
+                                                minHeight: max(0, (viewport.size.height - rowsHeight).rounded(.down) - 1)
+                                            )
+                                        }
                                     }
                                 }
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
                             }
                         }
                     }
@@ -107,37 +143,6 @@ struct AgentStatusView: View {
         .accessibilityIdentifier(AccessibilityID.Sidebar.agentHooksIssuesBanner)
     }
 
-    /// Companion to `hooksIssuesBanner`, gated by
-    /// `AgentSidebarGate.showsMonitoringDisabledBanner` -- flags that
-    /// Calyx's own agent monitoring is off while rows are showing
-    /// (sourced from herdr alone), so a user's own locally-run agents
-    /// don't appear to have silently vanished from the list. Same
-    /// stacked-independent-condition shape and `VStack` position as
-    /// `hooksIssuesBanner` above. Rendered as plain, quiet text -- no
-    /// icon, no background -- matching `hooksIssuesBanner`'s own idiom;
-    /// named `monitoringDisabledNotice` rather than `...Banner` (see
-    /// `AgentSidebarGate.showsMonitoringDisabledBanner`'s own doc
-    /// comment for why the gating function keeps the old name).
-    ///
-    /// A single line rather than a title+body pair: the how-to-enable
-    /// instruction already lives in `disabledPlaceholder` above, so this
-    /// only needs to state the fact plus the command name that makes it
-    /// actionable. Uses `.fixedSize(horizontal: false, vertical: true)`
-    /// and no `lineLimit`, so it cannot truncate at any sidebar width
-    /// (see `SidebarLayout`'s min/max clamp) -- the old yellow-box
-    /// banner used to cut off mid-word ("Calyx's own agent
-    /// monitorin...", "...Enable AI...").
-    private var monitoringDisabledNotice: some View {
-        Text("Local agent monitoring is off. Enable AI Agent IPC")
-            .font(.system(size: 11.5, weight: .medium, design: .rounded))
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .accessibilityIdentifier(AccessibilityID.Sidebar.agentMonitoringDisabledBanner)
-    }
-
     // MARK: - Placeholders
 
     private var disabledPlaceholder: some View {
@@ -169,6 +174,51 @@ struct AgentStatusView: View {
         .padding(.horizontal, 16)
         .frame(maxWidth: .infinity)
     }
+
+    /// Same two lines, same typography, as `disabledPlaceholder` above
+    /// (the fact is the same: AI Agent IPC is disabled) but shown below
+    /// the rows rather than in place of them, for the case where herdr
+    /// rows keep the sidebar showing rows even while Calyx's own IPC
+    /// server is stopped. Gated by
+    /// `AgentSidebarGate.showsMonitoringDisabledBanner`.
+    ///
+    /// `minHeight` is the viewport space left over below the rows
+    /// (`content`'s `GeometryReader` minus the rows height measured by
+    /// `.onGeometryChange`), so the block centers the way
+    /// `emptyPlaceholder` centers in an empty list: few rows leave a lot
+    /// of leftover space and the block sits in the middle of it; many
+    /// rows leave none (`minHeight` clamped to 0) and the block just
+    /// follows the rows with its own padding.
+    ///
+    /// The caller (`content`) rounds that leftover down and subtracts
+    /// one more point, so the scroll content is always at least 1pt
+    /// shorter than the viewport: fractional measurement can otherwise
+    /// round `rowsHeight + minHeight` up past the viewport height by a
+    /// hair, which is enough for `ScrollView` to draw a phantom
+    /// scrollbar with nothing to actually scroll to. The caller also
+    /// withholds this call entirely until `rowsHeight > 0` (the first
+    /// real measurement has landed), since `rowsHeight`'s default `0`
+    /// on the very first frame would otherwise read as "rows measure
+    /// zero" and hand this a `minHeight` of the FULL viewport for one
+    /// frame, forcing a scrollbar flash before the real measurement
+    /// corrects it.
+    private func monitoringDisabledPlaceholder(minHeight: CGFloat) -> some View {
+        VStack(spacing: 12) {
+            Text("AI Agent IPC is disabled")
+                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Text("Open Command Palette → Enable AI Agent IPC")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 32)
+        .frame(maxWidth: .infinity)
+        .frame(minHeight: minHeight, alignment: .center)
+        .accessibilityIdentifier(AccessibilityID.Sidebar.agentMonitoringDisabledBanner)
+    }
 }
 
 // MARK: - Sidebar Gate
@@ -192,16 +242,15 @@ enum AgentSidebarGate {
     }
 
     /// Companion to `decide(isServerRunning:hasExternal:)`: whether the
-    /// rows branch should ALSO show `monitoringDisabledNotice`, an
+    /// rows branch should ALSO show `monitoringDisabledPlaceholder`, an
     /// explanatory notice that Calyx's own agent monitoring is disabled,
-    /// modeled on `hooksIssuesBanner` (both are independent conditions
-    /// stacked at the top of the rows branch's `VStack`, not
-    /// alternatives to the placeholder/rows choice `decide` already
-    /// makes). Keeps the `...Banner` name here for API/test stability
-    /// even though the gated view was renamed to
-    /// `monitoringDisabledNotice` once its yellow-box styling was
-    /// dropped for plain, quiet text matching `hooksIssuesBanner`'s own
-    /// idiom.
+    /// rendered below the rows (not stacked at the top of the rows
+    /// branch's `VStack` like `hooksIssuesBanner`) and centered in
+    /// whatever viewport space is left over once the rows are measured
+    /// -- see that view's own doc comment. Keeps the `...Banner` name
+    /// here for API/test stability even though the gated view is named
+    /// `monitoringDisabledPlaceholder` and matches `disabledPlaceholder`'s
+    /// typography rather than `hooksIssuesBanner`'s.
     ///
     /// The old all-or-nothing gate was incoherent either way: hiding
     /// everything while herdr was connected threw away real, useful
@@ -287,6 +336,13 @@ private struct AgentRowView: View {
         AgentRowDisplay.primaryLabel(cwd: entry.cwd, kind: entry.kind)
     }
 
+    /// The row's secondary label. Delegates to `AgentRowDisplay.subtitle`
+    /// so the derivation exists in exactly one place, directly testable
+    /// without mounting this view.
+    private var subtitle: String {
+        AgentRowDisplay.subtitle(kind: entry.kind, source: entry.source)
+    }
+
     /// C2 fix: the surface this row's click should focus, per
     /// `AgentRowFocusTarget.resolve`'s doc comment — `nil` for a row
     /// with no resolvable target (every herdr row as of this stage).
@@ -340,10 +396,11 @@ private struct AgentRowView: View {
                 Text(displayName)
                     .font(.system(size: 12.5, weight: .semibold, design: .rounded))
                     .lineLimit(1)
-                Text(AgentEntry.displayName(forKind: entry.kind))
+                Text(subtitle)
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .truncationMode(.middle)
             }
 
             Spacer()
@@ -387,5 +444,22 @@ enum AgentRowDisplay {
     static func primaryLabel(cwd: String?, kind: String) -> String {
         let basename = AgentRegistry.basename(cwd)
         return basename.isEmpty ? AgentEntry.displayName(forKind: kind) : basename
+    }
+
+    /// The Agents sidebar row's secondary label: `AgentEntry
+    /// .displayName(forKind:)`, with a plain `" via herdr"` suffix for
+    /// `.external` rows so a row sourced from herdr rather than Calyx's
+    /// own hooks/title-heuristic pipeline is distinguishable at a
+    /// glance ("Claude Code via herdr"). Kept in natural reading order
+    /// (kind first): `AgentRowView` pairs this with
+    /// `.truncationMode(.middle)` on the rendered `Text`, so
+    /// `.lineLimit(1)` truncating in the narrow (~60pt) subtitle column
+    /// elides the MIDDLE of the string ("Clau...herdr") rather than the
+    /// tail, keeping the marker visible without reordering the text.
+    /// Native (`.hooks`/`.titleHeuristic`) rows are unchanged.
+    static func subtitle(kind: String, source: AgentSource) -> String {
+        let kindLabel = AgentEntry.displayName(forKind: kind)
+        guard source == .external else { return kindLabel }
+        return "\(kindLabel) via herdr"
     }
 }
