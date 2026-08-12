@@ -339,8 +339,8 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
 
     /// Test seam, herdr auto-close: when non-nil,
     /// called with `surfaceID` alongside `processChildExited`'s real
-    /// close action for a herdr-hosted surface -- mirrors
-    /// `_killSessionIfPersistentRouteObserverForTesting`'s exact
+    /// close action for a herdr-hosted OR a herdr-bridged surface --
+    /// mirrors `_killSessionIfPersistentRouteObserverForTesting`'s exact
     /// "observe right alongside the real (tracked) work; the real work
     /// still runs unmodified" style, NOT a replacement/bypass hook like
     /// `_openHerdrAttachTabSurfaceCreationHookForTesting`: closing a
@@ -352,17 +352,18 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// Implementation contract: inside
     /// `processChildExited`, immediately after resolving `surfaceID`,
     /// consult `HerdrChildExitedPolicy.shouldAutoClose(isHerdrHosted:
-    /// HerdrHostedSurfaces.shared.contains(surfaceID))`. On `true`, fire
-    /// this observer with `surfaceID`, close the pane SYNCHRONOUSLY
+    /// HerdrHostedSurfaces.shared.contains(surfaceID), isBridgeSurface:
+    /// HerdrPaneRegistry.shared.isBridgeSurface(surfaceID))`. On `true`,
+    /// fire this observer with `surfaceID`, close the pane SYNCHRONOUSLY
     /// through the same `findTabAndGroup` + `closeSurfaceAndCleanUp`
     /// shape `closeDeadPersistentSessionSurface` uses (default
     /// `killSessions: true` is safe here: `SessionSurfaceMap.shared
-    /// .sessionID(for:)` is always `nil` for a herdr surface, so
-    /// `SessionCloseKillPolicy.shouldKill`'s `hasSession` gate is always
-    /// `false` and no kill call ever fires -- herdr's child process is
-    /// already dead, nothing left to signal), and `return` BEFORE the
-    /// `childExitedTasks` Task insert below: a herdr decision needs no
-    /// daemon round-trip, so it must never reach
+    /// .sessionID(for:)` is always `nil` for either kind of herdr
+    /// surface, so `SessionCloseKillPolicy.shouldKill`'s `hasSession`
+    /// gate is always `false` and no kill call ever fires -- herdr's
+    /// child process is already dead, nothing left to signal), and
+    /// `return` BEFORE the `childExitedTasks` Task insert below: a herdr
+    /// decision needs no daemon round-trip, so it must never reach
     /// `sessionReconnectCoordinator` at all. On `false`, fall through to
     /// the existing (unchanged) reconnect-coordinator path. DO NOT use
     /// from production code.
@@ -2747,22 +2748,33 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         guard let tab = findTab(for: surfaceView)?.0,
               let surfaceID = tab.registry.id(for: surfaceView) else { return }
 
-        // Herdr auto-close: a herdr-hosted surface is
-        // deliberately never registered in `SessionSurfaceMap` (see
-        // `HerdrHostedSurfaces.swift`'s header), so
+        // Herdr auto-close: a herdr-hosted surface (full-TUI attach) or
+        // a herdr-bridged surface (HerdrPaneRegistry, a native-tab pane
+        // bridge) is deliberately never registered in `SessionSurfaceMap`
+        // (see `HerdrHostedSurfaces.swift`'s header), so
         // `sessionReconnectCoordinator.childExited` below provably
-        // no-ops for it -- nothing else would ever close this pane,
+        // no-ops for either -- nothing else would ever close this pane,
         // leaving ghostty's own "process exited" banner up forever.
         // Closed here instead, synchronously and BEFORE the
         // `childExitedTasks` Task insert below: a herdr decision needs
         // no daemon round-trip, so it must never reach
         // `sessionReconnectCoordinator` at all. `killSessions` stays at
         // its default `true` -- safe here since `SessionSurfaceMap
-        // .shared.sessionID(for:)` is always `nil` for a herdr surface,
-        // so `SessionCloseKillPolicy.shouldKill`'s `hasSession` gate is
-        // always `false` and no kill call ever fires (herdr's child
-        // process is already dead, nothing left to signal).
-        if HerdrChildExitedPolicy.shouldAutoClose(isHerdrHosted: HerdrHostedSurfaces.shared.contains(surfaceID)) {
+        // .shared.sessionID(for:)` is always `nil` for either kind of
+        // herdr surface, so `SessionCloseKillPolicy.shouldKill`'s
+        // `hasSession` gate is always `false` and no kill call ever
+        // fires (herdr's child process is already dead, nothing left to
+        // signal). For a bridged surface, `closeSurfaceAndCleanUp` below
+        // also runs the same `HerdrPaneRegistry.shared.isBridgeSurface`
+        // check `closeHerdrTrackedSurface` already runs for a
+        // herdr-initiated close, landing on `HerdrTabCoordinator
+        // .handleCalyxSurfaceClosed` -- the coordinator's own bookkeeping
+        // and the registry entry are pruned exactly as they are for a
+        // Cmd+W close of the same pane, and nothing is sent to herdr.
+        if HerdrChildExitedPolicy.shouldAutoClose(
+            isHerdrHosted: HerdrHostedSurfaces.shared.contains(surfaceID),
+            isBridgeSurface: HerdrPaneRegistry.shared.isBridgeSurface(surfaceID)
+        ) {
             #if DEBUG
             _herdrHostedAutoCloseObserverForTesting?(surfaceID)
             #endif
