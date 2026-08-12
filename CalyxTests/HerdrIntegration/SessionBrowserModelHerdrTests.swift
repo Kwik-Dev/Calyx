@@ -53,10 +53,15 @@
 //    `daemonQueryBoundTimeoutSeconds` `SessionDaemonClient
 //    .listAllBounded()` uses, degrading `herdrRows` to `[]` rather than
 //    hanging forever when the provider call never completes
-//  - HerdrSessionRow.displayName / .statusLineText: the pure
-//    display-string derivations HerdrSessionRowView's three-line row
-//    anatomy renders (name-or-socket-path title; fixed status text that
-//    never fabricates a client-count summary from paneCount/agentCount)
+//  - HerdrSessionRow.displayName: the pure name-or-socket-path title
+//    derivation HerdrSessionRowView's line 1 renders
+//  - HerdrAttachGate.decide (and HerdrSessionRow.statusLineText/
+//    .attachButtonLabel, which delegate to it): the pure status-text and
+//    button-title decision for all three count states -- unknown, known
+//    with zero workspaces, known with at least one workspace. The
+//    button itself is never disabled in any of them -- see
+//    HerdrAttachOrCreateFlowTests.swift for the create-versus-attach
+//    decision this file does not cover
 //  - HerdrSessionRow.attachTabTitle: the pure "herdr: <name>" / "herdr"
 //    derivation SessionBrowserWindowController.attachHerdr(_:) uses for
 //    its new tab's title -- pinned for both a named session and the
@@ -156,7 +161,7 @@ final class SessionBrowserModelHerdrTests: XCTestCase {
 
     func test_refresh_herdrAvailableWithSessions_populatesHerdrRowsAndShowsSection() async {
         let provider = FakeHerdrSessionProvider()
-        let info = HerdrSessionInfo(id: "test-herdr-socket-1", name: "work", paneCount: 3, agentCount: 1)
+        let info = HerdrSessionInfo(id: "test-herdr-socket-1", name: "work", workspaceCount: 2, paneCount: 3, agentCount: 1)
         provider.sessionsToReturn = [info]
         let model = makeModel(herdrProvider: provider, herdrAvailability: { true })
 
@@ -187,7 +192,7 @@ final class SessionBrowserModelHerdrTests: XCTestCase {
     /// `DispatchQueue.global()`.
     func test_refresh_herdrAvailabilityGenuinelySuspends_stillGatesCorrectly() async {
         let provider = FakeHerdrSessionProvider()
-        let info = HerdrSessionInfo(id: "test-herdr-socket-1", name: "work", paneCount: nil, agentCount: nil)
+        let info = HerdrSessionInfo(id: "test-herdr-socket-1", name: "work", workspaceCount: nil, paneCount: nil, agentCount: nil)
         provider.sessionsToReturn = [info]
         let model = makeModel(herdrProvider: provider, herdrAvailability: {
             await Task.yield()
@@ -224,7 +229,7 @@ final class SessionBrowserModelHerdrTests: XCTestCase {
     func test_attachHerdr_invokesOnHerdrAttachRequested_withTheRow() {
         let model = makeModel(herdrProvider: FakeHerdrSessionProvider(), herdrAvailability: { false })
         let row = HerdrSessionRow(
-            info: HerdrSessionInfo(id: "test-herdr-socket-1", name: nil, paneCount: nil, agentCount: nil)
+            info: HerdrSessionInfo(id: "test-herdr-socket-1", name: nil, workspaceCount: nil, paneCount: nil, agentCount: nil)
         )
 
         var requestedRow: HerdrSessionRow?
@@ -243,7 +248,7 @@ final class SessionBrowserModelHerdrTests: XCTestCase {
     func test_refresh_herdrUnavailable_neverCallsHerdrProviderListSessions() async {
         let provider = FakeHerdrSessionProvider()
         provider.sessionsToReturn = [
-            HerdrSessionInfo(id: "test-herdr-socket-1", name: nil, paneCount: nil, agentCount: nil)
+            HerdrSessionInfo(id: "test-herdr-socket-1", name: nil, workspaceCount: nil, paneCount: nil, agentCount: nil)
         ]
         let model = makeModel(herdrProvider: provider, herdrAvailability: { false })
 
@@ -271,7 +276,7 @@ final class SessionBrowserModelHerdrTests: XCTestCase {
     /// `await` separates the check from the assignment.
     func test_refresh_cancelledDuringUnavailableCheck_doesNotOverwriteHerdrRows() async {
         let provider = FakeHerdrSessionProvider()
-        let info = HerdrSessionInfo(id: "test-herdr-socket-1", name: "work", paneCount: nil, agentCount: nil)
+        let info = HerdrSessionInfo(id: "test-herdr-socket-1", name: "work", workspaceCount: nil, paneCount: nil, agentCount: nil)
         provider.sessionsToReturn = [info]
         let box = HerdrAvailabilityCancelBox()
         let model = makeModel(
@@ -354,7 +359,7 @@ final class SessionBrowserModelHerdrTests: XCTestCase {
 
     func test_displayName_returnsNameWhenPresent() {
         let row = HerdrSessionRow(
-            info: HerdrSessionInfo(id: "/fixture/config/herdr/sessions/work/herdr.sock", name: "work", paneCount: nil, agentCount: nil)
+            info: HerdrSessionInfo(id: "/fixture/config/herdr/sessions/work/herdr.sock", name: "work", workspaceCount: nil, paneCount: nil, agentCount: nil)
         )
 
         XCTAssertEqual(row.displayName, "work")
@@ -362,7 +367,7 @@ final class SessionBrowserModelHerdrTests: XCTestCase {
 
     func test_displayName_fallsBackToSocketPathWhenNameIsNil() {
         let row = HerdrSessionRow(
-            info: HerdrSessionInfo(id: "/fixture/config/herdr-env-override/herdr.sock", name: nil, paneCount: nil, agentCount: nil)
+            info: HerdrSessionInfo(id: "/fixture/config/herdr-env-override/herdr.sock", name: nil, workspaceCount: nil, paneCount: nil, agentCount: nil)
         )
 
         XCTAssertEqual(row.displayName, "/fixture/config/herdr-env-override/herdr.sock")
@@ -376,34 +381,72 @@ final class SessionBrowserModelHerdrTests: XCTestCase {
     /// unnamed (`nil`) row would.
     func test_displayName_defaultSessionRow_showsDefaultLabel_notRawSocketPath() {
         let row = HerdrSessionRow(
-            info: HerdrSessionInfo(id: "/fixture/config/herdr/herdr.sock", name: "default", paneCount: nil, agentCount: nil)
+            info: HerdrSessionInfo(id: "/fixture/config/herdr/herdr.sock", name: "default", workspaceCount: nil, paneCount: nil, agentCount: nil)
         )
 
         XCTAssertEqual(row.displayName, "default")
     }
 
-    // MARK: - HerdrSessionRow.statusLineText (HerdrSessionRowView line 3)
+    // MARK: - HerdrAttachGate.decide (status text + button title)
+    //
+    // Pure decision behind HerdrSessionRowView's status line (line 3) and
+    // its trailing button's title, mirroring AgentSidebarGate.decide's
+    // own extraction shape (AgentSidebarGateTests.swift). Three cases:
+    // counts unknown, counts known with zero workspaces, counts known
+    // with at least one workspace. The button is never disabled in any
+    // of them -- see this file's own header.
 
-    /// Every row `SessionBrowserModel.herdrRows` ever carries already
-    /// passed a live connect() probe, and never populates
-    /// paneCount/agentCount -- so this text must be the identical fixed
-    /// label regardless of those fields, never a fabricated
-    /// client-count summary built from them.
-    func test_statusLineText_isFixedLabel_regardlessOfPaneOrAgentCount() {
-        let rowWithNilCounts = HerdrSessionRow(
-            info: HerdrSessionInfo(id: "socket-a", name: "work", paneCount: nil, agentCount: nil)
-        )
-        let rowWithPopulatedCounts = HerdrSessionRow(
-            info: HerdrSessionInfo(id: "socket-b", name: "personal", paneCount: 5, agentCount: 2)
-        )
+    func test_decide_countsUnknown_keepsRunningTextUnchanged_buttonReadsAttach() {
+        let decision = HerdrAttachGate.decide(workspaceCount: nil, paneCount: nil)
 
-        XCTAssertEqual(rowWithNilCounts.statusLineText, "Running")
+        XCTAssertEqual(decision.statusText, "Running")
         XCTAssertEqual(
-            rowWithPopulatedCounts.statusLineText, "Running",
-            "statusLineText must never fabricate a client-count summary from paneCount/agentCount -- " +
-            "it's a fixed \"the socket answered a connect() probe\" label, not a per-row derivation " +
-            "over data this integration doesn't reliably have yet"
+            decision.buttonTitle, "Attach",
+            "Unknown counts (a snapshot that failed or never answered) is not proof there is nothing to " +
+            "attach, so the button keeps its ordinary title"
         )
+    }
+
+    func test_decide_zeroWorkspaces_statesNothingToAttach_buttonReadsNew() {
+        let decision = HerdrAttachGate.decide(workspaceCount: 0, paneCount: 0)
+
+        XCTAssertEqual(decision.statusText, "Running · nothing to attach")
+        XCTAssertEqual(decision.buttonTitle, "New", "Zero workspaces means pressing the button must create one")
+    }
+
+    func test_decide_atLeastOneWorkspace_statesWorkspaceAndPaneCounts_buttonReadsAttach() {
+        let decision = HerdrAttachGate.decide(workspaceCount: 2, paneCount: 5)
+
+        XCTAssertEqual(decision.statusText, "Running · 2 workspace(s) · 5 pane(s)")
+        XCTAssertEqual(decision.buttonTitle, "Attach")
+    }
+
+    // MARK: - HerdrSessionRow.statusLineText / .attachButtonLabel (HerdrSessionRowView line 3 + button)
+    //
+    // Both delegate to HerdrAttachGate.decide -- pinned here too,
+    // mirroring displayName/attachTabTitle's own row-level precedent
+    // above, so a caller reading only this row type (not the gate
+    // directly) still sees the delegation covered.
+
+    func test_statusLineTextAndAttachButtonLabel_delegateToHerdrAttachGate() {
+        let rowWithUnknownCounts = HerdrSessionRow(
+            info: HerdrSessionInfo(id: "socket-a", name: "work", workspaceCount: nil, paneCount: nil, agentCount: nil)
+        )
+        let rowWithZeroWorkspaces = HerdrSessionRow(
+            info: HerdrSessionInfo(id: "socket-b", name: "empty", workspaceCount: 0, paneCount: 0, agentCount: 0)
+        )
+        let rowWithWorkspaces = HerdrSessionRow(
+            info: HerdrSessionInfo(id: "socket-c", name: "personal", workspaceCount: 3, paneCount: 5, agentCount: 2)
+        )
+
+        XCTAssertEqual(rowWithUnknownCounts.statusLineText, "Running")
+        XCTAssertEqual(rowWithUnknownCounts.attachButtonLabel, "Attach")
+
+        XCTAssertEqual(rowWithZeroWorkspaces.statusLineText, "Running · nothing to attach")
+        XCTAssertEqual(rowWithZeroWorkspaces.attachButtonLabel, "New")
+
+        XCTAssertEqual(rowWithWorkspaces.statusLineText, "Running · 3 workspace(s) · 5 pane(s)")
+        XCTAssertEqual(rowWithWorkspaces.attachButtonLabel, "Attach")
     }
 
     // MARK: - HerdrSessionRow.attachTabTitle (SessionBrowserWindowController.attachHerdr(_:)'s tab title)
@@ -420,7 +463,7 @@ final class SessionBrowserModelHerdrTests: XCTestCase {
 
     func test_attachTabTitle_namedSession_returnsHerdrPrefixedName() {
         let row = HerdrSessionRow(
-            info: HerdrSessionInfo(id: "/fixture/config/herdr/sessions/work/herdr.sock", name: "work", paneCount: nil, agentCount: nil)
+            info: HerdrSessionInfo(id: "/fixture/config/herdr/sessions/work/herdr.sock", name: "work", workspaceCount: nil, paneCount: nil, agentCount: nil)
         )
 
         XCTAssertEqual(row.attachTabTitle, "herdr: work")
@@ -434,7 +477,7 @@ final class SessionBrowserModelHerdrTests: XCTestCase {
     /// as an unreviewed accident.
     func test_attachTabTitle_defaultSession_returnsHerdrPrefixedDefaultLabel() {
         let row = HerdrSessionRow(
-            info: HerdrSessionInfo(id: "/fixture/config/herdr/herdr.sock", name: "default", paneCount: nil, agentCount: nil)
+            info: HerdrSessionInfo(id: "/fixture/config/herdr/herdr.sock", name: "default", workspaceCount: nil, paneCount: nil, agentCount: nil)
         )
 
         XCTAssertEqual(
@@ -452,7 +495,7 @@ final class SessionBrowserModelHerdrTests: XCTestCase {
     /// row to apply to.
     func test_attachTabTitle_noName_fallsBackToBareHerdr() {
         let row = HerdrSessionRow(
-            info: HerdrSessionInfo(id: "/fixture/config/herdr-env-override/herdr.sock", name: nil, paneCount: nil, agentCount: nil)
+            info: HerdrSessionInfo(id: "/fixture/config/herdr-env-override/herdr.sock", name: nil, workspaceCount: nil, paneCount: nil, agentCount: nil)
         )
 
         XCTAssertEqual(row.attachTabTitle, "herdr")
@@ -479,7 +522,7 @@ final class SessionBrowserModelHerdrTests: XCTestCase {
     func test_showSessionsHeader_herdrVisibleAndRowsNonEmpty_isTrue() async {
         let herdrProvider = FakeHerdrSessionProvider()
         herdrProvider.sessionsToReturn = [
-            HerdrSessionInfo(id: "test-herdr-socket-1", name: "work", paneCount: nil, agentCount: nil)
+            HerdrSessionInfo(id: "test-herdr-socket-1", name: "work", workspaceCount: nil, paneCount: nil, agentCount: nil)
         ]
         let daemonClient = FakeDaemonClient()
         daemonClient.sessionsToReturn = [makeRunningSessionInfo(id: "session-a")]
@@ -513,7 +556,7 @@ final class SessionBrowserModelHerdrTests: XCTestCase {
     func test_showSessionsHeader_siblingVisibleButRowsEmpty_isFalse() async {
         let herdrProvider = FakeHerdrSessionProvider()
         herdrProvider.sessionsToReturn = [
-            HerdrSessionInfo(id: "test-herdr-socket-1", name: "work", paneCount: nil, agentCount: nil)
+            HerdrSessionInfo(id: "test-herdr-socket-1", name: "work", workspaceCount: nil, paneCount: nil, agentCount: nil)
         ]
         // daemonClient omitted -- defaults to an empty FakeDaemonClient(), so rows stays [].
         let model = makeModel(herdrProvider: herdrProvider, herdrAvailability: { true })

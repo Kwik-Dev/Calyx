@@ -201,18 +201,19 @@ private struct RemoteHostRowView: View {
 /// found one, herdr's `"default"` term for the unnamed default session
 /// included, falling back to its socket path only when discovery found
 /// no name at all); line 2 is `row.info.id`, the session's socket path,
-/// shown directly with no cwd/pane-count summary -- herdr does expose a
-/// JSON session-list subcommand (`herdr session list --json`, verified
-/// against real herdr 0.8.0) that could supply `paneCount`/`agentCount`,
-/// but this view deliberately doesn't shell out to it on every poll tick,
-/// deriving names and liveness from the filesystem plus a `connect()`
-/// probe instead (see `HerdrSessionProvider.swift`'s own doc comment);
-/// pane/agent counts stay unpopulated and could come from that
-/// subcommand later. Line 3 is `row.statusLineText`. The dot itself is
-/// a fixed green, never gray/orange -- every row here already passed a
-/// live `connect()` probe (see `HerdrSessionRow.statusLineText`'s own
-/// doc comment), so there is no "not running" or "orphaned" state for
-/// it to represent, unlike `SessionBrowserRowView.dotColor`.
+/// shown directly with no cwd summary. Line 3 is `row.statusLineText`,
+/// which states the workspace/pane counts once known (`HerdrAttachGate
+/// .decide`'s own doc comment, `SessionBrowserModel.swift`) -- those
+/// counts come from a `session.snapshot` request per socket
+/// (`HerdrSessionProvider.swift`'s own doc comment), never a
+/// `herdr session list --json` shell-out. The dot itself is a fixed
+/// green, never gray/orange -- every row here already passed a live
+/// `connect()` probe (see `HerdrAttachGate`'s own doc comment), so there
+/// is no "not running" or "orphaned" state for it to represent, unlike
+/// `SessionBrowserRowView.dotColor`. The trailing button's title is
+/// `row.attachButtonLabel` ("New" or "Attach", same `HerdrAttachGate
+/// .decide`) and it is never disabled -- pressing it always leads
+/// somewhere (`SessionBrowserWindowController.attachHerdr(_:)`).
 private struct HerdrSessionRowView: View {
     let row: HerdrSessionRow
     let model: SessionBrowserModel
@@ -240,7 +241,7 @@ private struct HerdrSessionRowView: View {
 
             Spacer()
 
-            Button("Attach") { model.attachHerdr(row) }
+            Button(row.attachButtonLabel) { model.attachHerdr(row) }
                 .buttonStyle(.bordered)
                 .accessibilityIdentifier(AccessibilityID.SessionBrowser.herdrAttachButton(row.id))
         }

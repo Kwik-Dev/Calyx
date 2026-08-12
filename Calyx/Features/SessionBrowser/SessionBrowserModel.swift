@@ -97,15 +97,67 @@ struct HerdrSessionRow: Identifiable, Equatable, Sendable {
     }
 
     /// Row status text (`HerdrSessionRowView`'s short line-3 status
-    /// line): every row `SessionBrowserModel.herdrRows` ever carries
-    /// already passed `HerdrSessionDiscovery.isAlive(socketPath:)`'s
-    /// connect() probe -- `HerdrSessionProviderProtocol.listSessions()`
-    /// only ever returns already-alive candidates -- so this is a fixed
-    /// label, not a per-row derivation: `HerdrSessionInfo.paneCount`/
-    /// `.agentCount` stay `nil` until CLI JSON enrichment lands, and
-    /// this text must never fabricate a client-count/timestamp summary
-    /// from them.
-    var statusLineText: String { "Running" }
+    /// line) and the trailing button's own title -- both delegate to the
+    /// pure `HerdrAttachGate.decide(workspaceCount:paneCount:)` below, so
+    /// the decision is testable independent of the view.
+    var statusLineText: String {
+        HerdrAttachGate.decide(workspaceCount: info.workspaceCount, paneCount: info.paneCount).statusText
+    }
+
+    /// See `statusLineText`'s own doc comment; mirrors
+    /// `SessionBrowserRow.attachButtonLabel`'s naming for the sibling
+    /// row type. The button is never disabled: `"New"` once
+    /// `info.workspaceCount` is known AND zero, `"Attach"` otherwise.
+    /// Either way, pressing it always leads somewhere --
+    /// `SessionBrowserWindowController.attachHerdr(_:)` decides
+    /// create-versus-attach from a FRESH snapshot at click time
+    /// (`HerdrAttachOrCreateFlow.run`, HerdrAttachOrCreateFlow.swift),
+    /// not from these cached counts, so even a stale `"Attach"` title
+    /// still opens or creates something rather than doing nothing.
+    var attachButtonLabel: String {
+        HerdrAttachGate.decide(workspaceCount: info.workspaceCount, paneCount: info.paneCount).buttonTitle
+    }
+}
+
+/// Pure decision behind `HerdrSessionRow.statusLineText`/
+/// `.attachButtonLabel` -- extracted so both are directly testable
+/// without mounting `HerdrSessionRowView`, mirroring
+/// `AgentSidebarGate.decide`'s own extraction shape (`AgentStatusView.swift`).
+///
+/// `workspaceCount`/`paneCount` mirror `HerdrSessionInfo`'s own fields:
+/// `HerdrCLISessionProvider` always populates both together (from the
+/// same successful `session.snapshot`) or leaves both `nil` together (a
+/// snapshot that failed or never answered). Three outcomes:
+///   - either is `nil` ("unknown"): the socket's own liveness is still
+///     proven (every `HerdrSessionRow` already passed a live `connect()`
+///     probe), but its contents are not, so the status line stays the
+///     unchanged "Running" and the button reads "Attach" -- there is no
+///     proof there is nothing to attach.
+///   - both known, `workspaceCount == 0`: nothing on this socket to
+///     attach to yet, so the button reads "New" -- pressing it creates a
+///     workspace instead of opening nothing.
+///   - both known, `workspaceCount > 0`: states the workspace/pane
+///     counts, in the same "label · fact · fact" style
+///     `SessionBrowserRowView.detailLine` uses for calyx-session rows
+///     (same " · " separator); the button reads "Attach".
+enum HerdrAttachGate {
+    struct Decision: Equatable {
+        let statusText: String
+        let buttonTitle: String
+    }
+
+    static func decide(workspaceCount: Int?, paneCount: Int?) -> Decision {
+        guard let workspaceCount, let paneCount else {
+            return Decision(statusText: "Running", buttonTitle: "Attach")
+        }
+        guard workspaceCount > 0 else {
+            return Decision(statusText: "Running · nothing to attach", buttonTitle: "New")
+        }
+        return Decision(
+            statusText: "Running · \(workspaceCount) workspace(s) · \(paneCount) pane(s)",
+            buttonTitle: "Attach"
+        )
+    }
 }
 
 @MainActor
@@ -127,8 +179,9 @@ final class SessionBrowserModel {
     private let surfaceMap: SessionSurfaceMap
     private let hostCandidateProvider: SSHHostCandidateProvider
     /// Herdr session lister -- see `HerdrSessionProvider.swift`. Defaults
-    /// to the production `HerdrCLISessionProvider` (bare discovery +
-    /// liveness probe; CLI enrichment isn't wired in yet).
+    /// to the production `HerdrCLISessionProvider`: discovery + liveness
+    /// probe, then one `session.snapshot` per alive socket for
+    /// workspace/pane/agent counts.
     private let herdrProvider: HerdrSessionProviderProtocol
     /// Reports whether the herdr integration should currently be
     /// treated as available: a CHEAP binary-resolution check only, no
@@ -298,10 +351,12 @@ final class SessionBrowserModel {
     /// after herdr dies, rather than showing a frozen last-known list.
     /// When available, routes through `boundedHerdrListSessions()`
     /// rather than a bare `await`, for the identical reason
-    /// `listAllBounded()` exists above: a provider call (this stage's
-    /// own bare discovery+probe is fast, but the protocol boundary is
-    /// still an injection point a future CLI-enrichment implementation
-    /// could make slow) must never freeze this shared poll loop.
+    /// `listAllBounded()` exists above: a provider call now genuinely
+    /// performs a `session.snapshot` network round trip per alive
+    /// socket (`HerdrCLISessionProvider.fetchCounts(socketPath:)`, worst
+    /// case a handful of sequential `snapshotTimeout` expiries against a
+    /// stalled server), so this bound is load-bearing, not
+    /// future-proofing: it must never freeze this shared poll loop.
     func refresh() async {
         guard !isRefreshing else { return }
         isRefreshing = true
