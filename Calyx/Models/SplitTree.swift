@@ -624,6 +624,54 @@ struct SplitTree: Codable, Equatable, Sendable {
         return nil
     }
 
+    /// Returns the LOCAL rect (before this split subdivides it into its
+    /// own two children) of the split identified unambiguously by
+    /// `(firstChildFirstLeafID, secondChildFirstLeafID, direction)` --
+    /// the SAME matching triple `setRatioForSpecificSplit` above uses to
+    /// locate the split it mutates -- narrowed down from `bounds` (the
+    /// tree's own root-level rect) via the same per-split subdivision
+    /// `splitBounds(_:direction:ratio:)` already performs elsewhere in
+    /// this file (`buildSpatialSlots`, for spatial focus navigation) and
+    /// `SplitContainerView.layoutNode(_:in:)` performs for real on-screen
+    /// layout (a caller with no live divider-drag rect to read, e.g. a
+    /// herdr layout-sync ratio mutation, needs this same geometry
+    /// computed rather than captured). `nil` if no such split exists
+    /// (e.g. the split named by the triple has already been collapsed
+    /// away) -- mirrors `setRatioForSpecificSplit`'s own `nil` contract.
+    func localSplitRect(
+        firstChildFirstLeafID: UUID, secondChildFirstLeafID: UUID, direction: SplitDirection, bounds: CGRect
+    ) -> CGRect? {
+        guard let root else { return nil }
+        return Self.localSplitRect(
+            root, firstChildFirstLeafID: firstChildFirstLeafID, secondChildFirstLeafID: secondChildFirstLeafID,
+            direction: direction, bounds: bounds
+        )
+    }
+
+    private static func localSplitRect(
+        _ node: SplitNode, firstChildFirstLeafID: UUID, secondChildFirstLeafID: UUID, direction: SplitDirection, bounds: CGRect
+    ) -> CGRect? {
+        guard case .split(let data) = node else { return nil }
+
+        if data.direction == direction,
+           firstLeafID(of: data.first) == firstChildFirstLeafID,
+           firstLeafID(of: data.second) == secondChildFirstLeafID {
+            return bounds
+        }
+
+        let (firstBounds, secondBounds) = splitBounds(bounds, direction: data.direction, ratio: data.ratio)
+        if let found = localSplitRect(
+            data.first, firstChildFirstLeafID: firstChildFirstLeafID, secondChildFirstLeafID: secondChildFirstLeafID,
+            direction: direction, bounds: firstBounds
+        ) {
+            return found
+        }
+        return localSplitRect(
+            data.second, firstChildFirstLeafID: firstChildFirstLeafID, secondChildFirstLeafID: secondChildFirstLeafID,
+            direction: direction, bounds: secondBounds
+        )
+    }
+
     // MARK: - Queries
 
     func allLeafIDs() -> [UUID] {

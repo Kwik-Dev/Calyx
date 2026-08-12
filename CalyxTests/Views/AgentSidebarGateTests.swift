@@ -2,7 +2,7 @@
 //  AgentSidebarGateTests.swift
 //  CalyxTests
 //
-//  Tests (herdr Stage 2, TRACK B): AgentSidebarGate.decide, the
+//  Tests (herdr TRACK B): AgentSidebarGate.decide, the
 //  pure decision behind AgentStatusView.content's placeholder branch.
 //  Mirrors HerdrChildExitedPolicyTests' shape: a plain (non-@MainActor)
 //  XCTestCase directly calling a pure, already-computed-discriminator

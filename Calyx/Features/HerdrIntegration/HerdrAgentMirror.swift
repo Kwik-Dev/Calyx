@@ -10,7 +10,7 @@
 // titleHeuristic rows), matching `AgentRegistry.upsertExternalEntry` /
 // `.removeExternalEntry`'s own "never touches entries" contract.
 //
-// `HerdrIntegrationCoordinator` (this stage's lifecycle owner,
+// `HerdrIntegrationCoordinator` (the herdr integration's lifecycle owner,
 // HerdrIntegrationCoordinator.swift) is this type's only intended
 // caller: it forwards every `session.snapshot()` result to
 // `applySnapshot(_:socketPath:)`, every pushed `HerdrEvent` to
@@ -25,7 +25,7 @@
 //   - herdr `HerdrAgentStatus` -> Calyx `AgentState`: idle -> .idle,
 //     working -> .working, blocked -> .blocked, done -> .done.
 //     `.unknown` and `.unrecognized(_)` are NOT rendered as a state --
-//     decided and documented HERE (per this stage's own instructions):
+//     decided and documented HERE:
 //     a record/event whose status is unknown/unrecognized never CREATES
 //     a row (herdr's own "unknown" is the documented default for a
 //     plain shell pane with no agent, per HerdrEvent.swift's header),
@@ -43,7 +43,7 @@
 //     raw string for anything it doesn't recognize, so an unmapped kind
 //     still renders sensibly rather than needing a decode error.
 //
-//   - C3 fix: both `cwd` (on `HerdrAgentRecord`) and `agent` (on both
+//   - Both `cwd` (on `HerdrAgentRecord`) and `agent` (on both
 //     `HerdrAgentRecord` and `HerdrPaneAgentStatusChangedEvent`) are
 //     OPTIONAL on the wire, and can legitimately go missing on a record/
 //     event for a pane this file already has a row for (a snapshot's
@@ -82,7 +82,7 @@
 //     this codebase's established "a degraded row beats no row"
 //     precedent (e.g. `HerdrSessionInfo`'s own doc comment).
 //
-//   - `paneClosed(paneID:)`/`paneExited(paneID:)` (A6) each remove that
+//   - `paneClosed(paneID:)`/`paneExited(paneID:)` each remove that
 //     pane's external row IMMEDIATELY, rather than waiting for the next
 //     `applySnapshot`'s own removal pass to notice its absence --
 //     `HerdrIntegrationCoordinator` already rebuilds its connection on
@@ -99,7 +99,7 @@
 //     see HerdrEvent.swift's own header) is a pure no-op here.
 //
 //   - `focusSurfaceID` stays `nil` on every entry this file produces --
-//     this stage never resolves a herdr pane to a Calyx-hosted surface.
+//     this type never resolves a herdr pane to a Calyx-hosted surface.
 //
 //   - `applySnapshot(_:socketPath:)` also REMOVES any external entry
 //     this instance previously created for `socketPath` that is no
@@ -156,7 +156,7 @@ final class HerdrAgentMirror {
                 continue
             }
 
-            // C3 fix: a nil `cwd`/`agent` on this record must not blank
+            // A nil `cwd`/`agent` on this record must not blank
             // out or relabel an already-known row -- fall back to its
             // previous value rather than the degraded creation-time
             // default. See this file's header.
@@ -190,7 +190,7 @@ final class HerdrAgentMirror {
 
     /// Applies one pushed `HerdrEvent`: `paneAgentStatusChanged` updates
     /// (or creates) that pane's row; `paneClosed`/`paneExited` remove
-    /// that pane's row immediately (A6); `paneCreated` and `unknown` are
+    /// that pane's row immediately; `paneCreated` and `unknown` are
     /// no-ops -- see this file's header for the exact rules.
     func apply(event: HerdrEvent, socketPath: String) {
         switch event {
@@ -219,7 +219,7 @@ final class HerdrAgentMirror {
         ownedIDsBySocketPath.removeAll()
     }
 
-    // MARK: - paneClosed / paneExited (A6)
+    // MARK: - paneClosed / paneExited
 
     /// `apply(event:socketPath:)`'s real work for `.paneClosed`/
     /// `.paneExited` -- see this file's header. Removes the row for
@@ -242,7 +242,7 @@ final class HerdrAgentMirror {
     /// -- see this file's header ("MAY create a new row... when no row
     /// exists yet for that pane"). Updating an EXISTING row only touches
     /// `state`/`lastEventAt`, and `kind` when `changed.agent` is non-nil
-    /// (C3 fix: a nil `agent` must not relabel an already-known row --
+    /// (a nil `agent` must not relabel an already-known row --
     /// see this file's header). `cwd` is never touched on update, full
     /// stop -- this event carries no cwd field at all, and a status
     /// change must never wipe out a cwd a prior snapshot already
@@ -309,7 +309,7 @@ final class HerdrAgentMirror {
     /// this is only the right default for a brand-new row. `agent` CAN
     /// be nil alongside a KNOWN (non-"unknown") status too, not only
     /// herdr's documented "unknown"-status default (see this file's
-    /// header, C3 fix), so `applySnapshot` / `applyStatusChanged` never
+    /// header), so `applySnapshot` / `applyStatusChanged` never
     /// call this with `nil` when UPDATING an already-known row -- they
     /// preserve that row's previous `kind` instead.
     private static func mapKind(_ agent: String?) -> String {

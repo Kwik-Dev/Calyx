@@ -2,7 +2,7 @@
 //  AgentRegistryExternalEntriesTests.swift
 //  CalyxTests
 //
-//  Tests (herdr Stage 2, TRACK B): AgentRegistry's external
+//  Tests (herdr TRACK B): AgentRegistry's external
 //  (herdr) entry store -- a SEPARATE dictionary from `entries`, so
 //  herdr rows survive AgentRegistry.reset() and never interact with the
 //  native hooks/titleHeuristic arbitration in handleHookEvent /

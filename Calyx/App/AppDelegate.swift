@@ -15,7 +15,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var pendingURLs: [URL] = []
     private var quickTerminalController: QuickTerminalController?
 
-    /// Herdr Stage 2 lifecycle owner -- see `HerdrIntegrationCoordinator.swift`'s
+    /// Herdr integration lifecycle owner -- see `HerdrIntegrationCoordinator.swift`'s
     /// own header. Eagerly constructed: `HerdrIntegrationCoordinator.init`
     /// does no I/O of its own and starts no timer
     /// (`HerdrIntegrationCoordinatorTests.test_neverCallingStart_doesNoWork_noBackgroundTimer`
@@ -28,6 +28,96 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         transportFactory: LiveHerdrTransportFactory(),
         mirror: HerdrAgentMirror(registry: .shared)
     )
+
+    /// Shared across `herdrTabCoordinator`'s own lazy
+    /// construction AND `createSurfaceWithPwd`'s restore-time
+    /// `HerdrRestoreCommandPolicy` consultation, so both benefit from
+    /// `HerdrBinaryResolver`'s own per-instance memoization of a FOUND
+    /// path (that type's own doc comment) instead of each re-scanning
+    /// PATH independently.
+    private let herdrBinaryResolver = HerdrBinaryResolver()
+    /// `createSurfaceWithPwd`'s restore-time socket-liveness
+    /// probe (`HerdrRestoreCommandPolicy.decide`'s own `isSocketAlive:`
+    /// input).
+    private let herdrSessionDiscovery = HerdrSessionDiscovery()
+
+    /// Native-tab coordinator -- see `HerdrTabCoordinator.swift`'s
+    /// own header. `nil` when herdr itself isn't resolvable, OR before
+    /// `startHerdrIntegrationIfNeeded()`'s own async resolution below has
+    /// completed -- every call site here guards on that `nil` identically
+    /// to how herdr's absence already means zero behavior change
+    /// everywhere else in this integration (`openHerdrAttachTab`'s own
+    /// doc comment). A herdr installed AFTER launch is not picked up
+    /// until the next one (this property is set at most once per launch,
+    /// mirroring every other "resolved once" property in this codebase)
+    /// -- an accepted limitation, not a bug: there is no live re-poll here.
+    ///
+    /// Populated asynchronously, off `@MainActor`, by
+    /// `startHerdrIntegrationIfNeeded()` below: a `lazy var` here would run
+    /// `herdrBinaryResolver.resolve()`'s real, uncached `PATH` walk
+    /// synchronously on first access, forced unconditionally on every
+    /// launch by that same method -- see that method's own doc comment
+    /// for the resolve-then-construct sequence.
+    ///
+    /// Read-only outside this file (`private(set)`):
+    /// `SessionBrowserWindowController.attachHerdr(_:)` and
+    /// `CalyxWindowController`'s `herdr.attachTUI` palette command
+    /// (indirectly, via `openHerdrAttachTab`, which does not need this
+    /// property at all) both only ever READ it.
+    private(set) var herdrTabCoordinator: HerdrTabCoordinator?
+
+    /// Builds the real `HerdrTabCoordinator` once `herdrBinPath` is
+    /// already resolved -- extracted out of `herdrTabCoordinator`'s own
+    /// former `lazy var` initializer so `startHerdrIntegrationIfNeeded()`
+    /// can call it only AFTER resolving off `@MainActor` (see that
+    /// method's own doc comment).
+    private func makeHerdrTabCoordinator(herdrBinPath: String) -> HerdrTabCoordinator {
+        let attacher = HerdrNativeTabAttacherLive(
+            tabsProvider: { [weak self] in
+                guard let self else { return [] }
+                // Mirrors `focusWindowForExistingSession`'s own
+                // `!controller.isClosingForShutdown` guard: a mid-teardown
+                // window's tabs are about to be torn down or preserved
+                // into a snapshot, never a valid focus target.
+                return self.windowControllers
+                    .filter { !$0.isClosingForShutdown }
+                    .flatMap { $0.windowSession.groups }
+                    .flatMap { $0.tabs }
+            },
+            attachHook: { [weak self] tab in self?.attachHerdrNativeTab(tab) ?? false },
+            focusHook: { [weak self] tabID in self?.focusHerdrNativeTab(tabID) },
+            ratioMutationHook: { [weak self] leafA, leafB, direction, ratio in
+                self?.applyHerdrNativeRatioMutation(leafA: leafA, leafB: leafB, direction: direction, ratio: ratio)
+            },
+            closeLeafHook: { [weak self] surfaceID in self?.closeHerdrNativeLeaf(surfaceID) },
+            sessionKillHook: { surfaceID in
+                // Never actually invoked by the attacher -- see
+                // `HerdrNativeTabAttacherLive`'s own header (a herdr pane
+                // carries no calyx-session identity, so there is never a
+                // session to kill here). Wired to the real
+                // "kill this surface's tracked session" primitive anyway,
+                // purely so that never-kill invariant is provable rather
+                // than papered over with a no-op closure.
+                guard let sessionID = SessionSurfaceMap.shared.sessionID(for: surfaceID) else { return }
+                SessionKillTracker.track { await SessionDaemonClient.shared.kill(id: sessionID) }
+            }
+        )
+
+        return HerdrTabCoordinator(
+            transportFactory: LiveHerdrTransportFactory(),
+            herdrBinPath: herdrBinPath,
+            registry: HerdrPaneRegistry.shared,
+            surfaceFactory: HerdrAppDelegateSurfaceFactory(appDelegate: self),
+            attacher: attacher
+        )
+    }
+
+    /// The `SurfaceRegistry` every surface `herdrCreateSurface(
+    /// command:)` creates for ONE in-flight `HerdrTabCoordinator
+    /// .openWorkspace` call lands in -- see that method's own doc
+    /// comment for why sharing exactly one instance across a whole open
+    /// is both necessary and safe. `nil` between opens.
+    private var herdrPendingSurfaceRegistry: SurfaceRegistry?
 
     /// Captured explicitly by `applicationShouldTerminate` (the only
     /// termination route now that closing a window never terminates the
@@ -53,35 +143,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     #endif
 
-    /// P4 round-6 fix (R6-A/R6-D, r6-fix-spec.md): app-wide "the app is
-    /// actually terminating" discriminator, distinct from any single
-    /// `CalyxWindowController.isClosingForShutdown`. That per-window flag
-    /// means only "this window is tearing down" (round-5 review finding
-    /// I2: `closeLastWindow`/F7 sets it even for a non-terminating close),
-    /// so it cannot alone tell a deferred-event drain or `windowWillClose`'s
+    /// App-wide "the app is actually terminating" discriminator, distinct
+    /// from any single `CalyxWindowController.isClosingForShutdown`. That
+    /// per-window flag means only "this window is tearing down"
+    /// (`closeLastWindow` sets it even for a non-terminating close), so it
+    /// cannot alone tell a deferred-event drain or `windowWillClose`'s
     /// destroy loop whether the whole app is quitting. This flag must be
     /// consulted (in addition to, not instead of, the per-window flag) by:
     /// the deferred-reconnect-event drain (must NOT replay into teardown
-    /// while the app is mid-quit, see r5-verdicts.md V5), and
-    /// `windowWillClose`'s destroy loop (must preserve `sessionRefs`
-    /// into the snapshot only while this is true; otherwise it must run
-    /// the normal kill/detach close policy, see r5-verdicts.md's sweep
-    /// finding). Set `true` in `applicationShouldTerminate` on every
+    /// while the app is mid-quit), and `windowWillClose`'s destroy loop
+    /// (must preserve `sessionRefs` into the snapshot only while this is
+    /// true; otherwise it must run the normal kill/detach close policy).
+    /// Set `true` in `applicationShouldTerminate` on every
     /// `.terminateNow` return (alongside `markAllControllersClosingForShutdown`)
     /// and again in `applicationWillTerminate` as a belt-and-suspenders
     /// safety net. Never reset back to `false`: once the app is genuinely
     /// terminating, it stays that way for the remainder of the process's
-    /// life. The ONE canonical "is the app actually terminating" query —
-    /// window-lifetime redesign: closing a window is no longer a second
-    /// termination route, so every reader that used to also need
-    /// `isTerminationConfirmed` (`CalyxWindowController.isAppActuallyTerminating`,
+    /// life. The one canonical "is the app actually terminating" query:
+    /// `CalyxWindowController.isAppActuallyTerminating`,
     /// consulted directly by `detachSessionIfPersistent` and passed
     /// explicitly as `killSessionIfPersistent`'s `isTerminating` parameter
-    /// by its callers) now reads this flag alone.
+    /// by its callers, reads this flag alone.
     private(set) var isApplicationTerminating = false
 
     #if DEBUG
-    /// Test seam (P4 round-6 fix RED phase): mirrors
+    /// Test seam: mirrors
     /// `_setConfirmingQuitForTesting`'s convention for `isApplicationTerminating`.
     /// DO NOT use from production code.
     func _setApplicationTerminatingForTesting(_ value: Bool) {
@@ -94,7 +180,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     #if DEBUG
-    /// Test seam (P4 round-6 fix RED phase, R6-D/R6-E): appends
+    /// Test seam: appends
     /// `controller` directly to `windowControllers`, bypassing
     /// `createNewWindow`/`makeRestoringWindowController`'s real window/
     /// surface construction. Lets tests exercise `focusWindowForExistingSession`
@@ -110,14 +196,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     #if DEBUG
     /// Test seam: `quickTerminalController` is `private`, and its only
     /// production writer is `toggleQuickTerminal()`, which also opens a
-    /// REAL window — unsafe to call from a unit test (see this file's own
+    /// REAL window -- unsafe to call from a unit test (see this file's own
     /// close-path test suites' shared warning about the `NSApp.terminate`
     /// cascade a real window close can trigger in the XCTest host). Lets
     /// `closeAllWindows()`'s "a quick terminal being open changes nothing"
-    /// invariant (window-lifetime redesign; pre-merge this was CODE REVIEW
-    /// fix CRITICAL 1's `willTerminate` branch, since deleted along with
-    /// `isTerminationConfirmed`) be exercised without ever calling
-    /// `toggleQuickTerminal()` for real — a plain `QuickTerminalController()`
+    /// invariant be exercised without ever calling
+    /// `toggleQuickTerminal()` for real -- a plain `QuickTerminalController()`
     /// is safe to construct directly, since its `init` only registers
     /// notification observers (config-change and close-surface) and
     /// neither creates a window nor a ghostty surface (both deferred to
@@ -306,7 +390,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Herdr Integration
 
     /// Starts (or no-ops, per `HerdrIntegrationCoordinator.start()`'s
-    /// own idempotent contract) the herdr Stage 2 integration. Every
+    /// own idempotent contract) the herdr integration. Every
     /// production call site -- app launch (`applicationDidFinishLaunching`
     /// below, alongside `HerdrHostedSurfaces.shared.startObserving()`),
     /// `applicationDidBecomeActive` below, and the Agents sidebar
@@ -325,7 +409,229 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// machine running the suite.
     func startHerdrIntegrationIfNeeded() {
         guard !LaunchEnvironmentPolicy.isUnitTestHost() else { return }
-        Task { await herdrIntegrationCoordinator.start() }
+        Task {
+            // Resolves off `@MainActor` before
+            // ever constructing `herdrTabCoordinator` -- mirrors
+            // `HerdrIntegrationCoordinator.detectLiveCandidate()`'s own
+            // `DispatchQueue.global()` hop for the identical reason (that
+            // type's own doc comment: "never blocks @MainActor"). A plain
+            // `Task { }` created from this (`@MainActor`) method inherits
+            // `@MainActor` isolation, so calling `herdrBinaryResolver
+            // .resolve()` directly here, without the hop, would still run
+            // this real, uncached `PATH` walk on the main thread -- only
+            // deferring WHEN, never WHERE.
+            if herdrTabCoordinator == nil, let herdrBinPath = await resolveHerdrBinPathOffMainThread() {
+                // Re-checked (not just re-assigned) after the await:
+                // applicationDidFinishLaunching and
+                // applicationDidBecomeActive both call this method, so a
+                // second call's own Task can reach this point before the
+                // first one's own await above has resumed. This check,
+                // then the assignment below, are themselves synchronous
+                // on `@MainActor` with no further `await` in between, so
+                // two concurrent calls can never both construct one.
+                if herdrTabCoordinator == nil {
+                    herdrTabCoordinator = makeHerdrTabCoordinator(herdrBinPath: herdrBinPath)
+                }
+            }
+            // Wires HerdrTabCoordinator (`nil` when herdr itself isn't
+            // resolvable -- setStructureEventObserver stores it as-is,
+            // and a coordinator that never connects never has anything to
+            // notify anyway) as the observer of herdr's pane.closed/
+            // layout.updated events, BEFORE the start() call below, so a
+            // connection never exists before this coordinator has
+            // somewhere to send its own structure events.
+            herdrIntegrationCoordinator.setStructureEventObserver(herdrTabCoordinator)
+            await herdrIntegrationCoordinator.start()
+        }
+    }
+
+    /// Runs `herdrBinaryResolver.resolve()` off `@MainActor`, on
+    /// `DispatchQueue.global()` -- see `startHerdrIntegrationIfNeeded()`'s
+    /// own doc comment for why a plain `Task { }` alone is not enough.
+    /// `HerdrBinaryResolver` is `Sendable` (its own doc comment), so
+    /// capturing it into the background closure is sound without any
+    /// actor hop of its own -- mirrors `detectLiveCandidate()`'s
+    /// identical `resolver`/`discovery` capture in
+    /// `HerdrIntegrationCoordinator.swift`.
+    private func resolveHerdrBinPathOffMainThread() async -> String? {
+        let resolver = herdrBinaryResolver
+        return await withCheckedContinuation { (continuation: CheckedContinuation<String?, Never>) in
+            DispatchQueue.global().async {
+                continuation.resume(returning: resolver.resolve())
+            }
+        }
+    }
+
+    // MARK: - Herdr Native Tab Wiring
+
+    /// `herdrTabCoordinator`'s own `HerdrNativeSurfaceFactory.createSurface(
+    /// command:)`: creates ONE ghostty surface for a herdr-bridged pane,
+    /// running `command` (`HerdrAttachBridgeCommand.build(...)`'s own
+    /// output) as its child process -- mirrors `openHerdrAttachTab`'s own
+    /// creation recipe (command variant), except the surface is created
+    /// into `herdrPendingSurfaceRegistry` rather than a Tab's own
+    /// registry: `HerdrTabCoordinator.openWorkspace`'s own Phase 2 creates
+    /// every one of ONE workspace open's surfaces BEFORE any Tab exists
+    /// to own a registry at all (`HerdrNativeTabAttacherLive.attachTab`'s
+    /// pinned interface takes no registry of its own), so this method and
+    /// `attachHerdrNativeTab(_:)` below share exactly one `SurfaceRegistry`
+    /// instance across a whole open -- lazily created on this method's
+    /// first call for that open, consumed (and reset to `nil`) by
+    /// `attachHerdrNativeTab(_:)` once Phase 2 fully completes -- so the
+    /// Tab eventually presented has every one of its own leaves' surfaces
+    /// already registered in the SAME `SurfaceRegistry` instance
+    /// `SplitContainerView` reads from
+    /// (`CalyxWindowController.rebuildSplitContainer`'s own
+    /// `SplitContainerView(registry: tab.registry)`; `Tab.registry` is a
+    /// `let`, so it cannot be swapped in after construction, only chosen
+    /// at construction time -- see `attachHerdrNativeTab(_:)` below).
+    ///
+    /// Safe as a single mutable property with no locking of its own:
+    /// `HerdrTabCoordinator.openWorkspace`'s own Phase-2-through-attachTab
+    /// stretch runs as ONE uninterrupted synchronous `@MainActor` sequence
+    /// with no `await` in between (`HerdrTabCoordinator.swift`'s own
+    /// header, "TWO-PHASE SURFACE CREATION"), so no second, concurrent
+    /// open can ever interleave its own Phase 2 calls into this one's.
+    private func herdrCreateSurface(command: String) -> UUID? {
+        guard let app = GhosttyAppController.shared.app,
+              let window = (windowControllers.first(where: { $0.window?.isKeyWindow == true }) ?? windowControllers.first)?.window
+        else {
+            return nil
+        }
+
+        let registry = herdrPendingSurfaceRegistry ?? SurfaceRegistry()
+        herdrPendingSurfaceRegistry = registry
+
+        var config = GhosttyFFI.surfaceConfigNew()
+        config.scale_factor = Double(window.backingScaleFactor)
+        return registry.createSurface(app: app, config: config, pwd: nil, command: command)
+    }
+
+    /// `herdrTabCoordinator`'s own `HerdrNativeSurfaceFactory
+    /// .destroySurface(_:)`: destroys a surface `herdrCreateSurface(
+    /// command:)` created, via "the registry's existing removal path"
+    /// (`SurfaceRegistry.destroySurface(_:)`) on the SAME
+    /// `herdrPendingSurfaceRegistry` it was created in.
+    ///
+    /// Deliberately does NOT clear `herdrPendingSurfaceRegistry` to `nil`
+    /// here: a rollback destroys every surface from ONE failed open in a
+    /// tight loop (`HerdrTabCoordinator.openWorkspace`'s own rollback
+    /// paths), and each of those calls still needs to find the SAME
+    /// registry the others do. Once every surface from a failed open is
+    /// destroyed this way, the registry holds zero entries -- functionally
+    /// indistinguishable from a fresh one -- so leaving the (now-empty)
+    /// reference in place for `herdrCreateSurface(command:)`'s own next
+    /// call to reuse is harmless.
+    private func herdrDestroySurface(_ id: UUID) {
+        herdrPendingSurfaceRegistry?.destroySurface(id)
+    }
+
+    /// `herdrTabCoordinator`'s own attacher's `attachHook`: replaces the
+    /// "shell" `Tab` `HerdrNativeTabAttacherLive.attachTab` built (a
+    /// fresh, empty default `SurfaceRegistry` -- that type's own pinned
+    /// interface carries no registry parameter of its own) with a
+    /// corrected one sharing `herdrPendingSurfaceRegistry` -- the SAME
+    /// registry `herdrCreateSurface(command:)` actually created this
+    /// tab's own surfaces in. Copies over `title`/`splitTree`/
+    /// `herdrPaneRefs`; `sessionRefs` stays empty (`Tab.init`'s own
+    /// default) and `SessionSurfaceMap` is never touched, mirroring
+    /// `openHerdrAttachTab`'s own tail exactly.
+    ///
+    /// `false` when no target window is available (every Calyx window
+    /// closed), OR that target's own `windowSession.activeGroup` is `nil`
+    /// (`attachRestoredTab` itself silently no-ops on that same condition,
+    /// and its `Void` return gives this method no way to observe that, so
+    /// this guard checks the condition directly rather than trusting
+    /// `attachRestoredTab`'s return) -- no new-window fallback, mirroring
+    /// `openHerdrAttachTab`'s own identical "no dialog, no fallback window"
+    /// choice for the same edge case.
+    /// `herdrPendingSurfaceRegistry` is deliberately left untouched on
+    /// this path: `HerdrTabCoordinator.openWorkspace`'s own "ATTACHTAB
+    /// FAILURE" rollback destroys every already-created surface right
+    /// after this returns `false`, via `herdrDestroySurface(_:)`, which
+    /// still needs to find them through this SAME property.
+    private func attachHerdrNativeTab(_ tab: Tab) -> Bool {
+        guard let target = windowControllers.first(where: { $0.window?.isKeyWindow == true }) ?? windowControllers.first,
+              let registry = herdrPendingSurfaceRegistry,
+              target.windowSession.activeGroup != nil
+        else {
+            return false
+        }
+
+        let realTab = Tab(title: tab.title, splitTree: tab.splitTree, registry: registry)
+        realTab.herdrPaneRefs = tab.herdrPaneRefs
+        herdrPendingSurfaceRegistry = nil
+
+        target.attachRestoredTab(realTab)
+        return true
+    }
+
+    /// `herdrTabCoordinator`'s own attacher's `focusHook`: finds the
+    /// window controller owning the tab `tabID` names and switches to it,
+    /// mirroring `focusWindowForExistingSession`'s own "find the owning
+    /// controller, then act" shape one level up (tab id, not surface id).
+    private func focusHerdrNativeTab(_ tabID: UUID) {
+        guard let wc = windowControllers.first(where: { wc in
+            wc.windowSession.groups.contains { $0.tabs.contains { $0.id == tabID } }
+        }) else {
+            return
+        }
+        wc.switchToTab(id: tabID)
+        wc.showWindow(nil)
+    }
+
+    /// `herdrTabCoordinator`'s own attacher's `ratioMutationHook`: finds
+    /// the window controller whose some tab owns `leafA` as a registry
+    /// entry and routes to `CalyxWindowController.applyHerdrRatioMutation(
+    /// leafA:leafB:direction:ratio:)`.
+    private func applyHerdrNativeRatioMutation(leafA: UUID, leafB: UUID, direction: SplitDirection, ratio: Double) {
+        guard let wc = windowControllers.first(where: { wc in
+            wc.windowSession.groups.contains { $0.tabs.contains { $0.registry.contains(leafA) } }
+        }) else {
+            return
+        }
+        wc.applyHerdrRatioMutation(leafA: leafA, leafB: leafB, direction: direction, ratio: ratio)
+    }
+
+    /// `herdrTabCoordinator`'s own attacher's `closeLeafHook`: finds the
+    /// window controller owning `surfaceID` and routes to
+    /// `CalyxWindowController.closeHerdrTrackedSurface(_:)` -- the
+    /// existing pane-close path for that surface.
+    private func closeHerdrNativeLeaf(_ surfaceID: UUID) {
+        guard let wc = windowControllers.first(where: { wc in
+            wc.windowSession.groups.contains { $0.tabs.contains { $0.registry.contains(surfaceID) } }
+        }) else {
+            return
+        }
+        wc.closeHerdrTrackedSurface(surfaceID)
+    }
+
+    /// Thin `HerdrNativeSurfaceFactory` conformer delegating to
+    /// `herdrCreateSurface(command:)`/`herdrDestroySurface(_:)` above --
+    /// exists only so `HerdrTabCoordinator` (which stores its own
+    /// `surfaceFactory` as `any HerdrNativeSurfaceFactory`, a hard
+    /// reference) does not retain `AppDelegate` itself, which would
+    /// cycle back through `herdrTabCoordinator`'s own stored
+    /// `surfaceFactory`/`attacher` -- `appDelegate` is captured `weak`
+    /// for exactly that reason (harmless in practice either way, since
+    /// `AppDelegate` lives for the process's whole lifetime, but avoiding
+    /// the cycle costs nothing). Mirrors `FullScreenRestoreBox`'s own
+    /// "small reference-typed helper nested inside `AppDelegate`" shape.
+    @MainActor
+    private final class HerdrAppDelegateSurfaceFactory: HerdrNativeSurfaceFactory {
+        private weak var appDelegate: AppDelegate?
+
+        init(appDelegate: AppDelegate) {
+            self.appDelegate = appDelegate
+        }
+
+        func createSurface(command: String) -> UUID? {
+            appDelegate?.herdrCreateSurface(command: command)
+        }
+
+        func destroySurface(_ id: UUID) {
+            appDelegate?.herdrDestroySurface(id)
+        }
     }
 
     // MARK: - NSApplicationDelegate
@@ -395,6 +701,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         installGlobalEventTap()
         SurfacePropertyStore.shared.startObserving()
         HerdrHostedSurfaces.shared.startObserving()
+        // Started unconditionally here (not deferred to herdrTabCoordinator's
+        // own lazy construction, HerdrTabCoordinator.init's own idempotent
+        // startObserving() call): a restore-time bridge-command surface
+        // (AppDelegate.createSurfaceWithPwd) can register into
+        // HerdrPaneRegistry.shared before herdrTabCoordinator is ever
+        // accessed at all (e.g. herdr resolves, but the coordinator's own
+        // first access happens later, or never, this launch), and its
+        // .calyxSurfaceDestroyed self-pruning (HerdrPaneRegistry.swift's
+        // own header) must be armed before that can happen.
+        HerdrPaneRegistry.shared.startObserving()
         startHerdrIntegrationIfNeeded()
 
         browserTabBroker.appDelegate = self
@@ -425,16 +741,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 applyDemoWindowFrameIfNeeded()
             }
         }
-        // issue #37 recurrence guard (window-lifetime redesign): issue #37
-        // ("Calyx closes after opening") was a snapshot restoring a
-        // window with no tabs, that window closing immediately, and
-        // `removeWindowController` reading the resulting empty
-        // `windowControllers` as "last window closed" and terminating the
-        // app outright — fixed by `SessionSnapshot.removingEmptyWindows()`
-        // below `restoreSession()`, still in place, still load-bearing.
-        // Closing the last window no longer terminates the app at all
-        // (see `applicationShouldTerminateAfterLastWindowClosed`), so the
-        // same gap can no longer manifest as a silent quit — but with
+        // issue #37 recurrence guard: issue #37 ("Calyx closes after
+        // opening") was a snapshot restoring a window with no tabs, that
+        // window closing immediately, and `removeWindowController` reading
+        // the resulting empty `windowControllers` as "last window closed"
+        // and terminating the app outright -- fixed by
+        // `SessionSnapshot.removingEmptyWindows()` below `restoreSession()`,
+        // still in place, still load-bearing. Closing the last window no
+        // longer terminates the app at all (see
+        // `applicationShouldTerminateAfterLastWindowClosed`), so the same
+        // gap can no longer manifest as a silent quit -- but with
         // nothing above having produced a window (an edge case
         // `removingEmptyWindows()` doesn't fully rule out) and no URL
         // still pending one (`application(_:open:)` runs below and
@@ -445,7 +761,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if windowControllers.isEmpty && pendingURLs.isEmpty {
             createNewWindow()
         }
-        // Bug 3c gap-close: a snapshot preserved by a PREVIOUS run's
+        // A snapshot preserved by a PREVIOUS run's
         // restoreSession() (via preserveSnapshotForRecovery()) still sits
         // on disk at launch even though THIS run never called that method
         // itself -- without this, `session.recoverPreviousSession` would
@@ -462,7 +778,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Ghostty parity (window-lifetime redesign): closing the last window
+    /// Ghostty parity: closing the last window
     /// never terminates Calyx any more, matching Ghostty's own
     /// last-window-doesn't-quit behavior. The app instead keeps running
     /// with zero windows open until the user explicitly quits (Cmd+Q /
@@ -476,7 +792,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// its Dock icon, while it's already running) with no window already
     /// coming to the front on its own. Mirrors Ghostty's own
     /// `applicationShouldHandleReopen` (ghostty/macos/Sources/App/macOS/AppDelegate.swift).
-    /// Window-lifetime redesign: now that closing every window no longer
+    /// Now that closing every window no longer
     /// terminates the app (see `applicationShouldTerminateAfterLastWindowClosed`),
     /// this is how a user gets a window back after closing them all
     /// without quitting.
@@ -493,10 +809,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return false
     }
 
-    /// The Cmd+Q / "Quit Calyx" path — window-lifetime redesign: the only
-    /// remaining termination route now that closing a window never
-    /// terminates the app (see `applicationShouldTerminateAfterLastWindowClosed`),
-    /// so unlike before, there is no second, already-confirmed route to
+    /// The Cmd+Q / "Quit Calyx" path: the only remaining termination
+    /// route now that closing a window never terminates the app (see
+    /// `applicationShouldTerminateAfterLastWindowClosed`), so unlike
+    /// before, there is no second, already-confirmed route to
     /// short-circuit here.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if ProcessInfo.processInfo.arguments.contains("--uitesting") {
@@ -516,8 +832,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Flag all controllers so windowDidExitFullScreen preserves tracking state
         // during app teardown (the red-button / Cmd+W path sets its own flag).
         markAllControllersClosingForShutdown()
-        // R6-A/R6-D (r6-fix-spec.md): app-wide termination signal,
-        // alongside markAllControllersClosingForShutdown, consulted by
+        // App-wide termination signal, alongside
+        // markAllControllersClosingForShutdown, consulted by
         // the deferred-reconnect-event drain and windowWillClose's
         // destroy loop (see isApplicationTerminating's own doc comment).
         isApplicationTerminating = true
@@ -543,7 +859,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // was ever gated by a window/session-emptiness check alone.
         if LaunchEnvironmentPolicy.isUnitTestHost() { return }
 
-        // R6-A/R6-D (r6-fix-spec.md): belt-and-suspenders alongside
+        // Belt-and-suspenders alongside
         // applicationShouldTerminate's own set, in case this notification
         // ever fires without that method having run first (see
         // isApplicationTerminating's own doc comment).
@@ -597,7 +913,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Herdr Stage 2's second lifecycle trigger -- see
+    /// Herdr integration's second lifecycle trigger -- see
     /// `startHerdrIntegrationIfNeeded()`'s own doc comment.
     func applicationDidBecomeActive(_ notification: Notification) {
         startHerdrIntegrationIfNeeded()
@@ -646,8 +962,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // `.ghosttyRingBell`'s effects (system beep, custom audio, dock
         // bounce) are app-wide, not scoped to any one window, so its
         // observer lives here rather than in `CalyxWindowController
-        // .registerNotificationObservers` (missing-observer investigation
-        // -- see `processRingBell`'s own doc comment). `.ghosttyConfigChange`
+        // .registerNotificationObservers` (see `processRingBell`'s own
+        // doc comment). `.ghosttyConfigChange`
         // keeps `cachedBellFeatures` in sync with the user's live config.
         center.addObserver(self, selector: #selector(handleRingBellNotification(_:)), name: .ghosttyRingBell, object: nil)
         center.addObserver(
@@ -679,7 +995,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         openNewWindow(initialHost: nil)
     }
 
-    /// `initialHost` (P5, remote sessions): forwarded to
+    /// `initialHost` (remote sessions): forwarded to
     /// `CalyxWindowController.init(initialHost:)` for the new window's
     /// sole initial tab. `nil` (`createNewWindow()` above, every
     /// existing caller) is unchanged, a local window exactly as before
@@ -724,8 +1040,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     #if DEBUG
-    /// Test seam (spawnRemoteSessionTab latent-bug RED phase, confirmed
-    /// in scope): called with the chosen target controller immediately
+    /// Test seam: called with the chosen target controller immediately
     /// before `spawnRemoteSessionTab` calls `keyWC.createNewTab(host:)`.
     /// Needed because `createNewTab` itself would silently no-op if
     /// driven for real here: it guards on `GhosttyAppController.shared.app`,
@@ -738,7 +1053,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// production code.
     var _spawnRemoteSessionTabAddTabHookForTesting: ((CalyxWindowController) -> Void)?
 
-    /// Test seam (spawnRemoteSessionTab latent-bug RED phase): called
+    /// Test seam: called
     /// immediately before `spawnRemoteSessionTab` calls
     /// `openNewWindow(initialHost:)`, mirroring
     /// `_attachWindowCreationHookForTesting`'s exact "intercept right
@@ -761,23 +1076,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// `attachWindow` always does for a session with no live surface
     /// anywhere yet.
     ///
-    /// LATENT BUG (confirmed, in scope for this cycle's Green phase, same
-    /// round as the session-browser attach-as-tab fix): every real caller
-    /// of this method fires from inside the Session Browser's own button
-    /// action, at which point the Session Browser's own window (not any
-    /// `CalyxWindowController`'s window) is key -- so
-    /// `windowControllers.first(where: { $0.window?.isKeyWindow == true })`
-    /// never matches in practice, and this method always falls through to
-    /// `openNewWindow`, even when a main window is already open. See
-    /// `AppDelegateAttachSessionAsTabTests`'s scope-1 fix for the
-    /// identical defect and chosen resolution
-    /// (`windowControllers.first(where: { $0.window?.isKeyWindow == true }) ?? windowControllers.first`,
-    /// team-confirmed); this method's own fix is Green-phase work, not
-    /// yet applied here -- the two new hooks above exist solely to make
-    /// today's (buggy) behavior observable without hanging the test
-    /// process, see `AppDelegateSpawnRemoteSessionTabWindowLookupTests`.
+    /// Every real caller of this method fires from inside the Session
+    /// Browser's own button action, at which point the Session Browser's
+    /// own window (not any `CalyxWindowController`'s window) is key -- so
+    /// an isKeyWindow-only lookup never matches in practice. This method
+    /// falls back to `windowControllers.first` when no controller is
+    /// literally key (`AppDelegateAttachSessionAsTabTests` covers the
+    /// identical case for the local session-browser Attach flow), so a
+    /// main window that exists but isn't key still receives the new tab
+    /// instead of a redundant new window opening. See
+    /// `AppDelegateSpawnRemoteSessionTabWindowLookupTests` for coverage;
+    /// the two hooks above make this lookup observable without driving a
+    /// real window/surface in the test process.
     func spawnRemoteSessionTab(host: String?) {
-        // FIX (see this method's own doc comment): the real caller fires
+        // The real caller fires
         // from inside the Session Browser's own button action, at which
         // point the Session Browser's plain NSWindow, not any
         // CalyxWindowController's window, is key -- so an isKeyWindow-
@@ -828,7 +1140,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// single-leaf case of a snapshot restore rather than a second,
     /// parallel code path.
     #if DEBUG
-    /// Test seam (P4 round-4 fix RED phase): when non-nil, consulted
+    /// Test seam: when non-nil, consulted
     /// right where `attachWindow` is about to construct a real window
     /// and ghostty surface, invoked instead of that real work, which
     /// never runs. Driving `attachWindow` end-to-end with a live
@@ -837,18 +1149,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// this suite creates a real ghostty surface or calls
     /// `showWindow`). This seam lets `AppDelegateAttachWindowTests`
     /// observe WHETHER `attachWindow` reaches its window-creation step
-    /// at all, exactly what F6's double-attach guard must prevent for
-    /// an already-attached sessionID, without ever performing that
+    /// at all, exactly what the double-attach guard above must prevent
+    /// for an already-attached sessionID, without ever performing that
     /// real, unsafe-to-test work. Does not affect production behavior:
     /// `nil` (the default) leaves this line as a no-op; every guard
-    /// ABOVE this point (including the fix this seam was added for)
-    /// still runs for real, unmodified. DO NOT use from production
-    /// code.
+    /// ABOVE this point still runs for real, unmodified. DO NOT use
+    /// from production code.
     var _attachWindowCreationHookForTesting: (() -> Void)?
 
-    /// Test seam (P5, remote sessions, contract 3c): called with the
+    /// Test seam: called with the
     /// constructed placeholder `tab`, immediately before
-    /// `_attachWindowCreationHookForTesting`'s own check -- today's hook
+    /// `_attachWindowCreationHookForTesting`'s own check -- that hook
     /// fires and returns BEFORE the placeholder tab is even constructed,
     /// so no existing seam can observe the `SessionRef` it would have
     /// produced. A second, independent, purely additive observer instead
@@ -865,7 +1176,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func attachWindow(sessionID: String, cwd: String?, host: String? = nil) {
         guard let app = GhosttyAppController.shared.app else { return }
 
-        // F6 (S1, HIGH, r4-fix-spec.md): a sessionID already registered
+        // A sessionID already registered
         // in SessionSurfaceMap already has a live surface somewhere in
         // this process. This covers the session browser's double-click/
         // stale-row race (rows only refresh on poll, and this method has
@@ -875,7 +1186,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // observe the guard firing without ever reaching real window/
         // surface creation.
         //
-        // R6-D (r6-fix-spec.md, sweep finding): `focusWindowForExistingSession`
+        // `focusWindowForExistingSession`
         // returns `false` for a STALE mapping (registered, but no
         // controller anywhere actually contains the surfaceID, e.g. left
         // behind by a non-terminating window close), having already
@@ -889,14 +1200,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let placeholderLeafID = UUID()
         let tab = Tab(
-            // NSHomeDirectory() ignores a HOME env override (P4 root-resolver lesson); use the canonical resolver.
+            // NSHomeDirectory() ignores a HOME env override; use the canonical resolver.
             title: SessionTabTitle.fromCwd(cwd, home: SessionRootResolver().resolve()),
             pwd: cwd,
             splitTree: SplitTree(leafID: placeholderLeafID),
             sessionRefs: [placeholderLeafID: SessionRef(sessionID: sessionID, host: host)]
         )
 
-        // P5 (remote sessions): Tab's own init has no side effects (no
+        // Tab's own init has no side effects (no
         // FFI, no SessionSurfaceMap/global registration), so constructing
         // it ahead of the creation hook below is behaviorally inert for
         // every existing caller -- the hook still fires (and still
@@ -917,7 +1228,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             windowSession: windowSession
         )
 
-        // R6-C (r6-fix-spec.md, r5-verdicts.md R5-blocking): starts the
+        // Starts the
         // fetch without waiting on it, window/surface creation proceeds
         // immediately (see fetchSessionsForAgentResume's doc comment).
         fetchSessionsForAgentResume()
@@ -932,7 +1243,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     #if DEBUG
-    /// Test seam (P4 round-6 fix RED phase, R6-E): when non-nil, called
+    /// Test seam: when non-nil, called
     /// instead of the real `wc.showWindow(nil)` inside
     /// `focusWindowForExistingSession`, mirroring
     /// `_attachWindowCreationHookForTesting`'s "hook right before the
@@ -944,23 +1255,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var _focusWindowForExistingSessionShowHookForTesting: ((CalyxWindowController) -> Void)?
     #endif
 
-    /// F6: brings the window already hosting `sessionID`'s live surface
+    /// Brings the window already hosting `sessionID`'s live surface
     /// to the front, instead of `attachWindow` creating a second one for
     /// the same session. Returns `true` once a live controller was found
     /// and focused, `false` when the mapping was stale (see below); the
     /// caller (`attachWindow`) falls through to a fresh attach on `false`.
     ///
-    /// R6-D (r6-fix-spec.md, sweep finding): when NO controller contains
+    /// When NO controller contains
     /// the mapped surfaceID at all (a stale mapping left behind by, e.g.,
     /// a non-terminating window close that unregistered every OTHER
     /// tracked surface but somehow left this one stale, or a window
     /// that's mid-teardown, skipped below), unregisters the stale entry
     /// and returns `false` instead of silently doing nothing.
     ///
-    /// R6-E (r6-fix-spec.md, A2): also activates the tab/group
+    /// Also activates the tab/group
     /// containing `surfaceID` (`CalyxWindowController.activateTabContaining`,
     /// reusing that controller's existing tab-switch logic instead of
-    /// reimplementing containment, reuse finding F3f) before showing the
+    /// reimplementing containment) before showing the
     /// window, so a session living in a background tab is actually
     /// visible, not just the window with whatever tab happened to
     /// already be active. Skips any controller mid-teardown
@@ -991,7 +1302,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     #if DEBUG
-    /// Test seam (session browser Attach-consistency RED phase): when
+    /// Test seam: when
     /// non-nil, called with the `SessionAttachRoutingPolicy.Decision`
     /// `attachSessionAsTab` just computed, immediately before acting on
     /// it. Mirrors `_attachWindowPlaceholderTabObserverForTesting`'s
@@ -1008,7 +1319,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// per `SessionAttachRoutingPolicy`'s own doc comment. Computes both
     /// of that policy's inputs from real `AppDelegate` state --
     /// `isAttachedHere` from `SessionSurfaceMap` (identical to
-    /// `attachWindow`'s own F6 guard), `hasAvailableWindow` from the same
+    /// `attachWindow`'s own double-attach guard), `hasAvailableWindow` from the same
     /// "prefer the key window, else the first available one" lookup
     /// `spawnRemoteSessionTab` now also uses (see that method's own doc
     /// comment for why an `isKeyWindow`-only lookup never matches a real
@@ -1036,7 +1347,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         case .focusExistingSurface:
             if focusWindowForExistingSession(sessionID: sessionID) { return }
             // Stale mapping: focusWindowForExistingSession already
-            // unregistered it above (R6-D precedent). Re-decide now that
+            // unregistered it above. Re-decide now that
             // isAttachedHere is no longer true, exactly one recursion.
             attachSessionAsTab(sessionID: sessionID, cwd: cwd, host: host)
         case .attachAsTab:
@@ -1049,7 +1360,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     #if DEBUG
-    /// Test seam (attached-tab placeholder title RED phase): mirrors
+    /// Test seam: mirrors
     /// `_attachWindowPlaceholderTabObserverForTesting` exactly -- same
     /// "new, narrow, DEBUG-gated, nil-by-default, purely additive"
     /// shape, just for `attachSessionAsNewTab`'s placeholder `Tab`
@@ -1081,12 +1392,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// unchanged. DO NOT use from production code.
     var _attachSessionAsNewTabCreationHookForTesting: (() -> Void)?
 
-    /// Test seam (Stage 1 herdr attach, RED phase): mirrors
+    /// Test seam: mirrors
     /// `_attachSessionAsNewTabPlaceholderTabObserverForTesting` exactly
     /// -- fires once, immediately after `openHerdrAttachTab` builds its
     /// placeholder `Tab` (deliberately empty `sessionRefs`: herdr
     /// session identity must never enter `Tab.sessionRefs`/
-    /// `SessionSurfaceMap`, Stage 1 plan's explicit decision), so a test
+    /// `SessionSurfaceMap`), so a test
     /// can inspect that shape without reaching real surface creation.
     /// `nil` (the default) leaves production behavior unchanged. DO NOT
     /// use from production code.
@@ -1105,7 +1416,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// otherwise reach `createSurface`, and its return value stands in
     /// for the surface UUID that call would have produced.
     ///
-    /// GREEN CONTRACT (binding on Stage 1-C's implementation): when this
+    /// When this
     /// hook is set, `openHerdrAttachTab` must still perform
     /// `HerdrHostedSurfaces.shared.register(_:)` with the returned UUID,
     /// then return -- exactly like
@@ -1117,16 +1428,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var _openHerdrAttachTabSurfaceCreationHookForTesting: ((String) -> UUID)?
     #endif
 
-    /// Stage 1 herdr attach: opens `command` (an already-synthesized,
+    /// Herdr attach: opens `command` (an already-synthesized,
     /// escaped `<herdrBin>`/`<herdrBin> --session <name>` invocation --
     /// see `HerdrAttachCommandSynthesizer`) as a new tab, `title`-labeled.
     /// Mirrors `attachSessionAsNewTab` (below) with every session-identity
     /// concern stripped: no `SessionRef`, no `SessionSurfaceMap`
-    /// registration -- herdr's own identity must never enter either
-    /// (Stage 1 plan's explicit decision; `SessionReconnectCoordinator
+    /// registration -- herdr's own identity must never enter either:
+    /// `SessionReconnectCoordinator
     /// .childExited`'s surfaceMap-registration guard is what keeps herdr
     /// panes structurally unreachable from calyx-session's own
-    /// reconnect/kill/restore paths).
+    /// reconnect/kill/restore paths.
     ///
     /// Builds the placeholder `Tab` (empty `sessionRefs`, fires the
     /// observer above), resolves a target window the same "prefer key,
@@ -1138,10 +1449,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// silently does nothing -- no new-window fallback: unlike
     /// `attachSessionAsTab`'s `SessionAttachRoutingPolicy`, herdr has no
     /// daemon-backed session to justify spawning a brand-new window for,
-    /// and Stage 1's own no-dialog philosophy (herdr absence/death never
+    /// and the no-dialog philosophy (herdr absence/death never
     /// surfaces an error) extends naturally to this edge case too.
     ///
-    /// GREEN CONTRACT: when `_openHerdrAttachTabSurfaceCreationHookForTesting`
+    /// When `_openHerdrAttachTabSurfaceCreationHookForTesting`
     /// is set, its returned UUID is registered with `HerdrHostedSurfaces`
     /// and this method returns immediately after -- mirrors
     /// `attachSessionAsNewTab`'s own `_attachSessionAsNewTabCreationHookForTesting`
@@ -1198,7 +1509,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let placeholderLeafID = UUID()
         let tab = Tab(
-            // NSHomeDirectory() ignores a HOME env override (P4 root-resolver lesson); use the canonical resolver.
+            // NSHomeDirectory() ignores a HOME env override; use the canonical resolver.
             title: SessionTabTitle.fromCwd(cwd, home: SessionRootResolver().resolve()),
             pwd: cwd,
             splitTree: SplitTree(leafID: placeholderLeafID),
@@ -1223,12 +1534,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         target.attachRestoredTab(tab)
     }
 
-    /// F11 (V13, WARNING, r4-fix-spec.md): the window-construction +
+    /// The window-construction +
     /// registration boilerplate shared identically by `attachWindow` and
     /// `restoreWindow`. Does NOT cover the tab-restoration control flow
     /// around it (single guard vs. loop+accumulator) or the fullscreen
-    /// branch, which genuinely differ and must stay separate (see
-    /// r4-verdicts.md V13). Registers `windowSession` with `appSession`
+    /// branch, which genuinely differ and must stay separate. Registers
+    /// `windowSession` with `appSession`
     /// and appends the new controller to `windowControllers` as a side
     /// effect, exactly matching both callers' prior inline code.
     private func makeRestoringWindowController(
@@ -1247,7 +1558,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return (window, wc)
     }
 
-    /// F11 (V13, WARNING): the failure-cleanup triple shared identically
+    /// The failure-cleanup triple shared identically
     /// by `attachWindow` and `restoreWindow` when no surface could be
     /// restored at all. Closes the just-created (never shown) window,
     /// undoes its `appSession`/`windowControllers` registration, and
@@ -1315,30 +1626,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// `GHOSTTY_ACTION_CLOSE_ALL_WINDOWS`. Closes every managed window.
     ///
-    /// Window-lifetime redesign (merged from `main`'s "Keep Calyx running
-    /// after the last window closes"): closing windows — one at a time or
-    /// all at once — never terminates the app any more
+    /// Closing windows -- one at a time or
+    /// all at once -- never terminates the app any more
     /// (`applicationShouldTerminateAfterLastWindowClosed` always returns
-    /// `false`), and every OTHER close path in this codebase stopped
-    /// confirming anything before closing as part of that same redesign —
+    /// `false`), and every OTHER close path in this codebase closes/kills
+    /// silently, without confirming anything first:
     /// `CalyxWindowController.closeLastWindow()`, `processCloseWindow()`,
     /// `closeTab`/`closeActiveGroup`/`closeAllTabsInGroup`/
-    /// `closeFocusedSessionSurface` all just close/kill silently now (see
+    /// `closeFocusedSessionSurface` (see
     /// each's own doc comment in `CalyxWindowController.swift`).
     /// `confirmQuitIfNeeded()` below documents itself as having exactly
-    /// one legitimate caller, `applicationShouldTerminate` (Cmd+Q) —
-    /// adding a second call site here would contradict that. The OLD
-    /// `isTerminationConfirmed`/`closingWouldTerminate(_:)`/
-    /// `isClosingLastManagedWindow(_:)` machinery this method used to
-    /// gate on (this branch's pre-merge history, and this cycle's own
-    /// code review) was deleted wholesale by the redesign and is
-    /// deliberately NOT reintroduced here.
+    /// one legitimate caller, `applicationShouldTerminate` (Cmd+Q) --
+    /// adding a second call site here would contradict that.
     ///
     /// So: closing every window in one action is no different in kind
     /// from closing them one at a time. Each closed window's own
     /// `windowWillClose` sees `isAppActuallyTerminating == false` and
     /// kills (never detaches) its own persistent sessions exactly like an
-    /// ordinary individual close would — this is what keeps this method
+    /// ordinary individual close would -- this is what keeps this method
     /// honoring the "close=kill / quit=detach" contract
     /// (`SessionCloseKillPolicy.swift`) even with a Quick Terminal open,
     /// which needs no special-casing here any more either: nothing about
@@ -1347,7 +1652,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// `removeWindowController` synchronously saves the (eventually
     /// empty) snapshot once the last managed window is removed, exactly
     /// like any other close that happens to empty `windowControllers`
-    /// (see that method's own doc comment) — no separate save call is
+    /// (see that method's own doc comment) -- no separate save call is
     /// needed here.
     ///
     /// This also matches upstream ghostty's own product decision that
@@ -1368,9 +1673,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// `isClosingForShutdown` is set for every target in its own loop,
     /// BEFORE any window closes (not interleaved one-at-a-time with the
     /// close loop below): mirrors `closeLastWindow()`'s own "set before
-    /// `window?.close()`" ordering — needed so `windowDidExitFullScreen`'s
+    /// `window?.close()`" ordering -- needed so `windowDidExitFullScreen`'s
     /// stale-snapshot guard sees it in time (see that flag's own doc
-    /// comment) — applied to the whole batch up front so a fullscreen
+    /// comment) -- applied to the whole batch up front so a fullscreen
     /// window later in `targets` is already protected even while an
     /// earlier window in the same batch is still mid-close.
     func closeAllWindows() {
@@ -1455,7 +1760,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Set for the duration of `confirmQuitIfNeeded`'s `alert.runModal()`
-    /// call (see Patch 2's header comment there). While `true`, other
+    /// call (see that method's own doc comment). While `true`, other
     /// MainActor entry points that could mutate window/tab state out
     /// from under an in-flight confirm-quit prompt, currently
     /// `CalyxWindowController.handleShowChildExitedNotification` and
@@ -1463,7 +1768,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// acting immediately (see each's doc comment). The `didSet` below
     /// posts `.calyxConfirmingQuitDidEnd` on the `true` -> `false`
     /// transition so every live `CalyxWindowController` can replay
-    /// whatever it deferred (F4, r4-fix-spec.md). This fires for both
+    /// whatever it deferred. This fires for both
     /// the real `alert.runModal()` return path below AND the
     /// `_setConfirmingQuitForTesting` test seam, since both assign this
     /// same property.
@@ -1475,7 +1780,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     #if DEBUG
-    /// Test seam (P4 round-4 fix RED phase): lets tests simulate the
+    /// Test seam: lets tests simulate the
     /// `isConfirmingQuit` gate flipping on/off without driving a real,
     /// blocking `NSAlert.runModal()` through `confirmQuitIfNeeded`,
     /// mirrors `SurfaceRegistry._testInsert`'s naming/gating convention.
@@ -1489,7 +1794,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Returns true if the app should proceed with quit, false if user
     /// cancelled. Called only from `applicationShouldTerminate` (the
-    /// Cmd+Q / "Quit Calyx" path) — window-lifetime redesign: closing a
+    /// Cmd+Q / "Quit Calyx" path): closing a
     /// window, tab, or pane never terminates the app any more (see
     /// `applicationShouldTerminateAfterLastWindowClosed`), so this is the
     /// only remaining route to this prompt, and its wording is always
@@ -1524,8 +1829,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Main Menu
 
-    /// Not `private` any more (session-browser menu-item RED phase):
-    /// mirrors `closeAllTabsInGroup(id:)`'s/`processChildExited`'s/
+    /// Not `private` any more: mirrors
+    /// `closeAllTabsInGroup(id:)`'s/`processChildExited`'s/
     /// `handleSessionReconnectDecision`'s own identical "un-privated for
     /// direct test access" precedent. Builds and assigns a fresh
     /// `NSApp.mainMenu` -- pure menu/item construction, no ghostty
@@ -2127,8 +2432,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             var restoredAny = false
+            let herdrTerminalIDCache = HerdrRestoreTerminalIDCache()
             for windowSnap in snapshot.windows {
-                if restoreWindow(windowSnap) {
+                if restoreWindow(windowSnap, herdrTerminalIDCache: herdrTerminalIDCache) {
                     restoredAny = true
                 }
             }
@@ -2371,15 +2677,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return handleEmptyRestoredSnapshot()
         }
 
-        // F10 (V11, WARNING, r4-fix-spec.md): one listAll() subprocess
+        // One listAll() subprocess
         // for the whole restore pass, instead of one per surface (see
-        // fetchSessionsForAgentResume's doc comment). R6-C: no longer
+        // fetchSessionsForAgentResume's doc comment). Not
         // waited on here, window/tab restoration proceeds immediately.
         fetchSessionsForAgentResume()
         var restoredAny = false
 
+        let herdrTerminalIDCache = HerdrRestoreTerminalIDCache()
         for windowSnap in snapshot.windows {
-            if restoreWindow(windowSnap) {
+            if restoreWindow(windowSnap, herdrTerminalIDCache: herdrTerminalIDCache) {
                 restoredAny = true
             }
         }
@@ -2393,7 +2700,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
-    private func restoreWindow(_ windowSnap: WindowSnapshot) -> Bool {
+    private func restoreWindow(_ windowSnap: WindowSnapshot, herdrTerminalIDCache: HerdrRestoreTerminalIDCache) -> Bool {
         guard let app = GhosttyAppController.shared.app else { return false }
 
         // Clamp window frame to screen
@@ -2413,11 +2720,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     anyTabRestored = true
                     continue
                 }
-                if restoreTabSurfaces(tab: tab, app: app, window: window) {
+                if restoreTabSurfaces(tab: tab, app: app, window: window, herdrTerminalIDCache: herdrTerminalIDCache) {
                     anyTabRestored = true
                 } else {
                     // Fallback: create a single new surface for this tab
-                    if fallbackCreateSurface(tab: tab, app: app, window: window) {
+                    if fallbackCreateSurface(tab: tab, app: app, window: window, herdrTerminalIDCache: herdrTerminalIDCache) {
                         anyTabRestored = true
                     }
                 }
@@ -2492,16 +2799,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         var activate: (() -> Void)?
     }
 
-    /// Not `private` (P4 round-8 fix RED phase, T-B):
+    /// Not `private`:
     /// `AppDelegateRestoreTabSurfacesOwnershipTests`/
     /// `AppDelegateOfferAgentResumePipelineBoundTests` call this directly
     /// (with `_createSurfaceWithPwdHookForTesting` set, see that seam's
     /// own doc comment on `createSurfaceWithPwd`) to drive its
     /// partial-failure cleanup and per-surface agent-resume dispatch
     /// deterministically, without a real, live ghostty surface, mirroring
-    /// `fetchSessionsForAgentResume`'s identical round-6 RED phase
-    /// precedent.
-    func restoreTabSurfaces(tab: Tab, app: ghostty_app_t, window: NSWindow) -> Bool {
+    /// `fetchSessionsForAgentResume`'s identical precedent.
+    func restoreTabSurfaces(
+        tab: Tab, app: ghostty_app_t, window: NSWindow,
+        herdrTerminalIDCache: HerdrRestoreTerminalIDCache = HerdrRestoreTerminalIDCache()
+    ) -> Bool {
         let oldLeafIDs = tab.splitTree.allLeafIDs()
         guard !oldLeafIDs.isEmpty else { return false }
 
@@ -2517,20 +2826,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         var mapping: [UUID: UUID] = [:]
-        // R8-D item 3 (H2, r8-fix-spec.md): collected here, fanned out
+        // Collected here, fanned out
         // through a single shared Task below instead of
         // `createSurfaceWithPwd` spawning its own per-surface Task (see
         // its own doc comment).
         var agentResumeCandidates: [(tab: Tab, surfaceID: UUID, sessionID: String)] = []
 
         for oldID in oldLeafIDs {
-            guard let created = createSurfaceWithPwd(tab: tab, app: app, window: window, oldLeafID: oldID) else {
+            guard let created = createSurfaceWithPwd(
+                tab: tab, app: app, window: window, oldLeafID: oldID, herdrTerminalIDCache: herdrTerminalIDCache
+            ) else {
                 continue
             }
             let newID = created.surfaceID
             mapping[oldID] = newID
             if let sessionRef = tab.sessionRefs[oldID] {
-                // R6-C (V4 constraint, r6-fix-spec.md): re-checked
+                // Re-checked
                 // immediately before registering, defense in depth
                 // against a future async gap between this check and the
                 // register call (this whole loop stays fully synchronous
@@ -2548,7 +2859,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // R8-D item 3 (H2): one shared Task awaits the shared fetch
+        // One shared Task awaits the shared fetch
         // once and calls `offerAgentResume` for every reattached leaf
         // from this single restore pass, an O(1) Task count regardless
         // of how many persistent-session leaves this tab has.
@@ -2573,12 +2884,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if mapping.count == oldLeafIDs.count {
             tab.splitTree = tab.splitTree.remapLeafIDs(mapping)
             tab.sessionRefs = tab.sessionRefs.remappingKeys(mapping)
+            // herdrPaneRefs is a parallel side-channel to
+            // sessionRefs (Tab.swift's own header) that needs the
+            // identical old-leaf-ID -> new-surface-ID re-key -- without
+            // this, a restored bridge leaf's ref would still point at the
+            // OLD (pre-restore) leaf UUID, so focusExistingTab could never
+            // match this tab again, and the next snapshot would persist an
+            // orphaned key.
+            tab.herdrPaneRefs = tab.herdrPaneRefs.remappingKeys(mapping)
             return true
         }
 
         // Partial failure: destroy any surfaces we created (undoing
         // their SessionSurfaceMap registration too) and return false.
-        // R8-B (r8-fix-spec.md; r7-verdicts.md R7-V3): unregisters only
+        // Unregisters only
         // when the mapping still actually points at THIS (failed)
         // restore's own surface. A duplicate sessionID across two tabs
         // (a corrupted/hand-edited sessions.json, explicitly in this
@@ -2598,8 +2917,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return false
     }
 
-    private func fallbackCreateSurface(tab: Tab, app: ghostty_app_t, window: NSWindow) -> Bool {
-        guard let created = createSurfaceWithPwd(tab: tab, app: app, window: window) else {
+    private func fallbackCreateSurface(
+        tab: Tab, app: ghostty_app_t, window: NSWindow,
+        herdrTerminalIDCache: HerdrRestoreTerminalIDCache = HerdrRestoreTerminalIDCache()
+    ) -> Bool {
+        guard let created = createSurfaceWithPwd(
+            tab: tab, app: app, window: window, herdrTerminalIDCache: herdrTerminalIDCache
+        ) else {
             return false
         }
         let newID = created.surfaceID
@@ -2610,6 +2934,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // (and get written back out by the next snapshot) pointing at a
         // leaf that no longer exists.
         tab.pruneSessionRefs()
+        // Identical orphaned-ref reasoning for herdrPaneRefs
+        // (Tab.swift's own header, "parallel side-channel to sessionRefs").
+        tab.pruneHerdrPaneRefs(keeping: Set(tab.splitTree.allLeafIDs()))
         return true
     }
 
@@ -2630,17 +2957,81 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// always `nil` for that call, matching this method's pre-feature
     /// behavior exactly for that rare failure case).
     ///
-    /// R6-C (r6-fix-spec.md): no longer takes a `sessions` parameter.
     /// The surface is created immediately, synchronously; a caller that
     /// gets a non-nil `agentResumeSessionID` back awaits
     /// `agentResumeSessionsTask`'s result itself before calling
-    /// `offerAgentResume` (see `restoreTabSurfaces`'s R8-D/H2 fan-out),
+    /// `offerAgentResume` (see `restoreTabSurfaces`'s fan-out dispatch),
     /// so this method never waits on the daemon.
     private func createSurfaceWithPwd(
-        tab: Tab, app: ghostty_app_t, window: NSWindow, oldLeafID: UUID? = nil
+        tab: Tab, app: ghostty_app_t, window: NSWindow, oldLeafID: UUID? = nil,
+        herdrTerminalIDCache: HerdrRestoreTerminalIDCache
     ) -> (surfaceID: UUID, agentResumeSessionID: String?)? {
         var config = GhosttyFFI.surfaceConfigNew()
         config.scale_factor = Double(window.backingScaleFactor)
+
+        // Consulted before the existing plain/sessionRef path
+        // below -- mirrors this same method's own invalid-ULID SessionRef
+        // precedent (restoreTabSurfaces, "Reject any persisted SessionRef
+        // whose sessionID isn't shaped like a genuine ULID..."). A leaf
+        // with no HerdrPaneRef at all decides .plainShell WITHOUT ever
+        // resolving the herdr binary or probing socket liveness: both are
+        // real, uncached filesystem/socket I/O
+        // (HerdrBinaryResolver.swift's own doc comment on why a miss is
+        // never cached), and most restored leaves carry no HerdrPaneRef
+        // at all, so evaluating them unconditionally here scales that
+        // work with every restored leaf on every launch, herdr installed
+        // or not.
+        if let oldLeafID {
+            let herdrPaneRef = tab.herdrPaneRefs[oldLeafID]
+            let outcome: HerdrRestoreCommandOutcome
+            if let herdrPaneRef {
+                // The bridge command needs the pane's TERMINAL id, not
+                // persisted on HerdrPaneRef (terminal ids are not stable
+                // across a herdr server restart). Resolved from a live
+                // `session.snapshot` via `herdrTerminalIDCache`, which
+                // only runs for a leaf that actually has a ref, so a
+                // launch with no herdr refs performs zero herdr work.
+                let terminalIDs = herdrTerminalIDCache.terminalIDs(forSocketPath: herdrPaneRef.socketPath)
+                outcome = HerdrRestoreCommandPolicy.decide(
+                    herdrPaneRef: herdrPaneRef,
+                    herdrBinPath: herdrBinaryResolver.resolve(),
+                    isSocketAlive: herdrSessionDiscovery.isAlive(socketPath: herdrPaneRef.socketPath),
+                    terminalID: terminalIDs[
+                        HerdrRestoreTerminalIDResolver.key(
+                            socketPath: herdrPaneRef.socketPath, paneID: herdrPaneRef.paneID
+                        )
+                    ]
+                )
+            } else {
+                outcome = .plainShell
+            }
+            switch outcome {
+            case .bridgeCommand(let command):
+                #if DEBUG
+                _createSurfaceWithPwdCommandObserverForTesting?(oldLeafID, command)
+                #endif
+                guard let surfaceID = createRegistrySurface(tab: tab, app: app, config: config, pwd: tab.pwd, command: command, oldLeafID: oldLeafID) else {
+                    return nil
+                }
+                if let herdrPaneRef {
+                    HerdrPaneRegistry.shared.register(surfaceID: surfaceID, ref: herdrPaneRef)
+                }
+                // A herdr-bridged leaf carries no calyx-session identity
+                // (see HerdrHostedSurfaces.swift's header) -- nothing to
+                // offer agent resume for.
+                return (surfaceID, nil)
+            case .plainShellAndPrune:
+                // A ref that can never be reattached (herdr unresolvable,
+                // its socket dead, or the ref itself invalid) -- drop JUST
+                // this leaf's ref (mirrors the invalid-ULID SessionRef
+                // prune's own per-leaf removal) and fall through to the
+                // ordinary passthrough-shell path below, exactly like a
+                // rejected SessionRef does.
+                tab.pruneHerdrPaneRefs(keeping: Set(tab.herdrPaneRefs.keys).subtracting([oldLeafID]))
+            case .plainShell:
+                break // No HerdrPaneRef for this leaf at all -- falls through to the plain/sessionRef path below, unaffected by herdr bridging.
+            }
+        }
 
         if let oldLeafID, let sessionRef = tab.sessionRefs[oldLeafID] {
             let command: String?
@@ -2674,13 +3065,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     #if DEBUG
-    /// Test seam (P4 round-8 fix RED phase, T-B/T-D): when non-nil,
+    /// Test seam: when non-nil,
     /// called INSTEAD of the real `tab.registry.createSurface(...)` FFI
     /// call inside `createRegistrySurface`, keyed by `oldLeafID` (`nil`
     /// for the no-old-leaf/fallback path). Returns the UUID to report as
     /// the newly created surface (simulating success), or `nil` to
     /// simulate surface-creation failure for that one leaf, letting
-    /// `restoreTabSurfaces`'s partial-failure bookkeeping (and, R8-D/H2,
+    /// `restoreTabSurfaces`'s partial-failure bookkeeping (and
     /// its shared agent-resume fan-out `Task`) be driven deterministically
     /// without a real, live ghostty surface (confirmed unsafe from this
     /// test host, see `_attachWindowCreationHookForTesting`'s doc comment
@@ -2691,22 +3082,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// production behavior unchanged. DO NOT use from production code.
     var _createSurfaceWithPwdHookForTesting: ((UUID?) -> UUID?)?
 
-    /// Test seam (P4 round-8 fix RED phase, T-D): when non-nil, called
+    /// Test seam: when non-nil, called
     /// once `restoreTabSurfaces`'s shared agent-resume fan-out `Task`
-    /// (R8-D/H2, r8-fix-spec.md; formerly a per-surface `Task` spawned
-    /// directly inside `createSurfaceWithPwd`, before that fan-out
-    /// consolidated it) has awaited `agentResumeSessionsTask`'s result
+    /// has awaited `agentResumeSessionsTask`'s result
     /// and called `offerAgentResume` for ONE reattached leaf, i.e. once
     /// that leaf's pipeline reaches a terminal state, regardless of
     /// whether `offerAgentResume` actually found a resumable session to
     /// act on. Fires once per candidate leaf in the fan-out, not once
-    /// per restore pass. No such observable existed before this seam:
-    /// the fan-out `Task` is otherwise fire-and-forget, with nothing to
-    /// await from a test. `nil` (the default) leaves production
+    /// per restore pass. The fan-out `Task` is otherwise fire-and-forget,
+    /// with nothing else to await from a test. `nil` (the default) leaves production
     /// behavior unchanged. DO NOT use from production code.
     var _createSurfaceWithPwdOfferAgentResumeCompletedHookForTesting: (() -> Void)?
 
-    /// Test seam (P5, remote sessions, contract R2): when non-nil,
+    /// Test seam: when non-nil,
     /// called with `(oldLeafID, command)` from inside
     /// `createSurfaceWithPwd`, immediately before `createRegistrySurface`
     /// is invoked, in both of that method's branches -- the
@@ -2739,7 +3127,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     #if DEBUG
-    /// Test seam (P4 round-6 fix RED phase, R6-C): when non-nil, used
+    /// Test seam: when non-nil, used
     /// instead of `SessionDaemonClient.shared` inside
     /// `fetchSessionsForAgentResume`. Mirrors the
     /// `SessionDaemonClientProtocol` fake pattern already established by
@@ -2754,40 +3142,39 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var _sessionDaemonClientForTesting: SessionDaemonClientProtocol?
     #endif
 
-    /// R6-C (r6-fix-spec.md, r5-verdicts.md R5-blocking): the async
+    /// The async
     /// fetch task `fetchSessionsForAgentResume()` starts, shared by
     /// every surface created during the SAME restore/attach pass so
-    /// `restoreTabSurfaces`'s fan-out `Task` (R8-D/H2) can await its
+    /// `restoreTabSurfaces`'s fan-out `Task` can await its
     /// result, right before calling `offerAgentResume`, instead of
     /// blocking on it. `restoreSession`/`attachWindow` each make exactly
-    /// one call per pass (matching F10's original "one `listAll()` per
+    /// one call per pass (matching the "one `listAll()` per
     /// pass" intent); `restoreWindow`/`restoreTabSurfaces` read this
     /// property synchronously afterward, within that same call stack.
     ///
-    /// R8-D item 2 (H1, r8-fix-spec.md): no longer unconditionally
-    /// overwritten. `fetchSessionsForAgentResume()` reuses an already
+    /// `fetchSessionsForAgentResume()` reuses an already
     /// in-flight task instead of starting a second daemon subprocess
     /// for the same purpose (a `listAll()` round-trip reflects the
     /// whole daemon-wide ledger regardless of which pass triggered it,
     /// so an overlapping pass reusing a still-in-flight fetch from a
     /// previous one is exactly as correct as waiting for a fresh one).
-    /// Not `private` (P4 round-8 fix RED phase, G5): exposed read-only
+    /// Not `private`: exposed read-only
     /// so `AppDelegateFetchSessionsForAgentResumeTests` can observe that
     /// a task was actually started, now that
     /// `fetchSessionsForAgentResume()` itself no longer returns a
     /// meaningful synchronous result.
     ///
-    /// R10-B (r10-fix-spec.md): reset back to `nil` once the task it
+    /// Reset back to `nil` once the task it
     /// holds actually COMPLETES (see `agentResumeFetchGeneration`'s doc
-    /// comment), not only when agent resume is disabled. Before this
-    /// fix, the `== nil` reuse guard in `fetchSessionsForAgentResume()`
-    /// never reset after a successful fetch, so every call after the
-    /// very first one silently reused the launch-time snapshot forever;
-    /// a first fetch that timed out permanently pinned an empty `[:]`
+    /// comment), not only when agent resume is disabled. Without this,
+    /// the `== nil` reuse guard in `fetchSessionsForAgentResume()`
+    /// would never reset after a successful fetch, so every call after the
+    /// very first one would silently reuse the launch-time snapshot forever;
+    /// a first fetch that timed out would permanently pin an empty `[:]`
     /// result.
     private(set) var agentResumeSessionsTask: Task<[String: SessionInfo], Never>?
 
-    /// R10-B (r10-fix-spec.md): monotonic counter identifying which
+    /// Monotonic counter identifying which
     /// `fetchSessionsForAgentResume()` call started the currently
     /// in-flight `agentResumeSessionsTask`, mirroring
     /// `BrowserTabController.snapshotGeneration`'s established pattern.
@@ -2799,22 +3186,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// task's reference.
     private var agentResumeFetchGeneration = 0
 
-    /// R8-D item 1 (r8-fix-spec.md; r7-verdicts.md's "Unbounded await
-    /// (D1)" finding): the deadline `SessionDaemonClientProtocol
+    /// The deadline `SessionDaemonClientProtocol
     /// .listAllBounded()` races the real daemon round-trip against, so
     /// `agentResumeSessionsTask` always reaches a terminal state even
     /// if the daemon never responds at all.
     /// `AppDelegateOfferAgentResumePipelineBoundTests`'s 15s `XCTWaiter`
-    /// bound comfortably exceeds this (R10-C item 2/5, r10-fix-spec.md:
-    /// shared with `SessionBrowserModel.refresh()` via `listAllBounded()`'s
-    /// `daemonQueryBoundTimeoutSeconds`. R14-B (r14-fix-spec.md) later gave
-    /// `sessionStateBounded(id:)`'s reconnect-decision path its own,
+    /// bound comfortably exceeds this: shared with
+    /// `SessionBrowserModel.refresh()` via `listAllBounded()`'s
+    /// `daemonQueryBoundTimeoutSeconds`. `sessionStateBounded(id:)`'s
+    /// reconnect-decision path uses its own,
     /// longer `sessionStateBoundTimeoutSeconds` instead of reusing this
-    /// one, so the low- and high-consequence callers now deliberately use
-    /// two separate bounds, not the single shared constant this comment
-    /// used to describe).
+    /// one: the low- and high-consequence callers deliberately use
+    /// two separate bounds, not a single shared constant.
 
-    /// F10 (V11, WARNING, r4-fix-spec.md): starts (but does not wait
+    /// Starts (but does not wait
     /// for) the daemon's session list fetch, keyed by session ID, gated
     /// on `SessionSettings.agentResumeEnabled` (off, the default, spawns
     /// no subprocess at all, the same gate `offerAgentResume` itself
@@ -2827,45 +3212,44 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// and `attachWindow` (one call for the single session being
     /// attached).
     ///
-    /// R6-C (r6-fix-spec.md, r5-verdicts.md R5-blocking) fix: this used
+    /// This used
     /// to `RunLoop.current.run` spin the calling (main) thread in 10ms
     /// steps for up to 2.0s, synchronously, on both call sites above,
     /// the opposite of this method's stated purpose. Now it only starts
     /// `agentResumeSessionsTask` and returns immediately; window/tab
     /// restoration proceeds without ever waiting on the daemon, and
-    /// `restoreTabSurfaces`'s fan-out `Task` (R8-D/H2) awaits
+    /// `restoreTabSurfaces`'s fan-out `Task` awaits
     /// `agentResumeSessionsTask` itself, only where the result is
     /// actually needed.
     ///
-    /// G5 (r8-fix-spec.md): returns `Void`, not a dictionary. The old
+    /// Returns `Void`, not a dictionary. The old
     /// return value was always `[:]` (no daemon response is ever
     /// available synchronously), never a meaningful result to report;
     /// `agentResumeSessionsTask` itself (see its own doc comment) is
-    /// what callers actually need. Not `private` (round-6 RED phase):
+    /// what callers actually need. Not `private`:
     /// `AppDelegateFetchSessionsForAgentResumeTests` calls this directly
     /// to measure that it no longer blocks, matching this file's
     /// `offerAgentResume`/`attachWindow` direct-drive precedent.
     func fetchSessionsForAgentResume() {
         guard SessionSettings.agentResumeEnabled else {
-            // R10-B item 2 (r10-fix-spec.md): cancel a still-in-flight
+            // Cancel a still-in-flight
             // fetch instead of merely dropping the reference.
-            // `Task.cancel()` only sets a cooperative flag, but R14-A
-            // (r14-fix-spec.md) made `SessionDaemonClientProtocol
+            // `Task.cancel()` only sets a cooperative flag; `SessionDaemonClientProtocol
             // .bounded(...)` (the race `listAllSessionsBounded` below
-            // ultimately awaits) honor that flag with a
+            // ultimately awaits) honors that flag with a
             // `withTaskCancellationHandler` that cancels both its
             // internal race arms and resumes promptly -- reaching, in
-            // turn, `SystemCommandRunner.run()`'s own R12-A cancellation
+            // turn, `SystemCommandRunner.run()`'s own cancellation
             // handler, which SIGTERMs the underlying `calyx-session`
-            // subprocess -- so a disable mid-flight now genuinely ends
+            // subprocess -- so a disable mid-flight genuinely ends
             // the daemon round-trip promptly instead of merely dropping
-            // an unobserved reference to it (or, pre-R14-A, riding out
-            // the full bound regardless of this cancel() call).
+            // an unobserved reference to it while it rides out
+            // the full bound regardless of this cancel() call.
             agentResumeSessionsTask?.cancel()
             agentResumeSessionsTask = nil
             return
         }
-        // R8-D item 2 (H1): reuse whatever fetch is already in flight
+        // Reuse whatever fetch is already in flight
         // rather than starting a second daemon subprocess for the
         // identical purpose.
         guard agentResumeSessionsTask == nil else { return }
@@ -2878,7 +3262,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let generation = agentResumeFetchGeneration
         agentResumeSessionsTask = Task {
             let result = await AppDelegate.listAllSessionsBounded(client: client)
-            // R10-B item 1 (r10-fix-spec.md): reset back to nil once
+            // Reset back to nil once
             // THIS fetch completes, so the next
             // fetchSessionsForAgentResume() call starts a fresh daemon
             // round-trip instead of reusing an already-resolved (or
@@ -2893,7 +3277,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// P6 (R-B4): the attach-spawned calyx-session daemon always starts
+    /// The attach-spawned calyx-session daemon always starts
     /// with history OFF (`DaemonConfig::history_enabled`'s bind-time
     /// default; see `ControlMsg::SetHistoryEnabled`'s own doc comment --
     /// a live, in-memory override, never persisted daemon-side),
@@ -2935,18 +3319,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         await client.setHistoryEnabled(true)
     }
 
-    /// R8-D item 1 (r8-fix-spec.md; r7-verdicts.md's "Unbounded await
-    /// (D1)" finding): delegates to
-    /// `SessionDaemonClientProtocol.listAllBounded()` (R10-C item 2,
-    /// r10-fix-spec.md, lifted from this method's own former
-    /// implementation so `SessionBrowserModel.refresh()` shares the
-    /// same bounded race and the same timeout constant instead of
+    /// Delegates to
+    /// `SessionDaemonClientProtocol.listAllBounded()` (lifted from this
+    /// method's own former implementation so `SessionBrowserModel.refresh()`
+    /// shares the same bounded race and the same timeout constant instead of
     /// awaiting `listAll()` unbounded), then keys the result by session
     /// ID for `offerAgentResume`'s lookup.
     @MainActor
     private static func listAllSessionsBounded(client: SessionDaemonClientProtocol) async -> [String: SessionInfo] {
         let sessions = await client.listAllBounded()
-        // R12-A item 4 (r12-fix-spec.md): a disable mid-flight
+        // A disable mid-flight
         // (`fetchSessionsForAgentResume`'s guard above) cancels this
         // call's enclosing Task; skip the otherwise-pointless keying
         // work once cancelled instead of building a dictionary nobody
@@ -2955,10 +3337,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return Dictionary(sessions.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
     }
 
-    /// P4: once a reattached persistent-session surface exists, checks
+    /// Once a reattached persistent-session surface exists, checks
     /// the daemon's per-session meta (`AgentSessionMetaBridge`'s
     /// recording, resolved from the caller-supplied `sessions`, i.e.
-    /// `fetchSessionsForAgentResume`'s result (F10), rather than this
+    /// `fetchSessionsForAgentResume`'s result, rather than this
     /// method querying the daemon itself) for a resumable agent CLI
     /// session and, if `SessionSettings.agentResumeEnabled`, types
     /// `SessionResumePlanner.initialInput` into the live surface via
@@ -2974,19 +3356,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// rather than `ghostty_surface_config_s.initial_input`: the
     /// `initial_input` path only queues bytes into the surface's pty at
     /// creation time, before `calyx-session attach`'s reattach
-    /// connection is even established, which is unverified — this
+    /// connection is even established, which is unverified -- this
     /// method waits for a live, reattached surface first, at the cost
     /// of one caveat verified against ghostty's core (`Surface
     /// .textCallback`): pasted text goes through the same completion
     /// path a real clipboard paste does, and most shells' bracketed
     /// paste handling does not treat a pasted trailing newline as
-    /// Return — so this reliably reproduces "propose" mode
+    /// Return -- so this reliably reproduces "propose" mode
     /// (`agentResumeAutoExecute == false`, no trailing newline, user
     /// presses Return themselves) but "auto-execute" mode's trailing
-    /// newline may not actually submit the command. Flagged in this
-    /// feature's P4 handoff as needing live verification.
+    /// newline may not actually submit the command; needs live
+    /// verification.
     ///
-    /// Not `private` (P4 round-4 fix RED phase): `AppDelegateOfferAgentResumeTests`
+    /// Not `private`: `AppDelegateOfferAgentResumeTests`
     /// calls this directly to drive its decode/selection/sendText
     /// pipeline without a live daemon round-trip, matching this file's
     /// existing `attachWindow` direct-drive precedent.
@@ -3017,7 +3399,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     #if DEBUG
-    /// Test seam (P4 round-4 fix, F14): when non-nil, called instead of
+    /// Test seam: when non-nil, called instead of
     /// `tab.registry.controller(for: surfaceID)?.sendText(_:)` inside
     /// `offerAgentResume`'s fire-and-forget `Task`. Lets
     /// `AppDelegateOfferAgentResumeTests` observe the exact text
@@ -3400,7 +3782,7 @@ extension Notification.Name {
     /// confirm-quit gate has cleared, whether via a real
     /// `NSAlert.runModal()` return or the `_setConfirmingQuitForTesting`
     /// test seam. `CalyxWindowController` observes this to replay events
-    /// it deferred while the gate was up (F4, r4-fix-spec.md); see
+    /// it deferred while the gate was up; see
     /// `drainDeferredReconnectEvents()`.
     static let calyxConfirmingQuitDidEnd = Notification.Name("com.calyx.session.confirmingQuitDidEnd")
 }

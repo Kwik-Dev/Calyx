@@ -278,6 +278,20 @@
 // is nothing here it would be used for); it simply `return`s right
 // after this call and the task self-terminates.
 //
+// STRUCTURE EVENT OBSERVER (`HerdrStructureEventObserver`, set via
+// `setStructureEventObserver`): a `pane.closed` event notifies
+// `herdrPaneClosed(paneID:socketPath:)` BEFORE the pre-existing
+// unconditional rebuild above runs -- both happen, the observer call is
+// simply ordered first since a successful rebuild `return`s this Task.
+// `pane.exited` deliberately does NOT notify the observer: the herdr
+// pane itself still exists after its own child process exits, so closing
+// a Calyx bridge surface for it would be wrong. A `layout.updated` event
+// (decoded generically as `.unknown(eventType: "layout_updated")`)
+// notifies `herdrLayoutUpdated(socketPath:)` ONLY in steady state --
+// never while still accumulating a fresh subscribe's own replay burst,
+// for the identical storm-avoidance reason REPLAY BURST RECONCILIATION
+// above already applies to `pane.created`.
+//
 // EXPLICIT TRANSPORT TEARDOWN: unlike the type this coordinator used to
 // depend on (`HerdrSocketSession`, whose `BSDHerdrTransport` cleans
 // itself up via `deinit` once ARC drops the session's own last strong
@@ -286,9 +300,9 @@
 // captures ONLY the stream, never the transport or this coordinator --
 // so ARC alone dropping `currentEventStreamTransport` is NOT enough to
 // guarantee prompt teardown, particularly for the `InMemoryHerdrTransport`
-// test double, which (per HerdrTransport.swift's own contract, left
-// unchanged by this stage) has no `deinit` safety net of its own. Every
-// path that supersedes or gives up on the current event-stream connection
+// test double, which (per HerdrTransport.swift's own contract) has no
+// `deinit` safety net of its own. Every path that supersedes or gives up
+// on the current event-stream connection
 // -- REBUILD TRIGGERS above, and DISCONNECT HANDLING below -- therefore
 // closes `currentEventStreamTransport` EXPLICITLY before dropping it,
 // rather than relying on ARC, and ALSO explicitly cancels
@@ -342,6 +356,22 @@
 //
 
 import Foundation
+
+// MARK: - HerdrStructureEventObserver
+
+/// Notified of herdr-side structural events relevant to a native tab
+/// already bridged via `HerdrTabCoordinator` -- see that file's own
+/// header. `setStructureEventObserver` stores its argument WEAKLY: this
+/// coordinator never owns an observer's own lifecycle.
+@MainActor
+protocol HerdrStructureEventObserver: AnyObject {
+    /// A `layout.updated` event was pushed for `socketPath`, in steady
+    /// state only -- never during a fresh subscribe's own replay burst;
+    /// see this file's header "REPLAY BURST RECONCILIATION".
+    func herdrLayoutUpdated(socketPath: String)
+    /// A `pane.closed` event was pushed for `paneID` on `socketPath`.
+    func herdrPaneClosed(paneID: String, socketPath: String)
+}
 
 // MARK: - HerdrIntegrationCoordinator
 
@@ -409,6 +439,10 @@ final class HerdrIntegrationCoordinator {
     private let maxConsecutiveRebuildsWithoutProgress: Int
     private let rebuildBackoffDelays: [Duration]
     private let sleep: @Sendable (Duration) async -> Void
+
+    /// See `HerdrStructureEventObserver`'s own doc comment -- stored
+    /// WEAKLY, set via `setStructureEventObserver`, never through `init`.
+    private weak var structureEventObserver: (any HerdrStructureEventObserver)?
 
     /// The transport behind the CURRENT, subscribed event-stream
     /// connection, once `attemptConnect(socketPath:)` has succeeded --
@@ -528,6 +562,17 @@ final class HerdrIntegrationCoordinator {
         }
     }
 
+    // MARK: - Structure event observer
+
+    /// Registers `observer` to be notified of herdr-side structural
+    /// events -- see `HerdrStructureEventObserver`'s own doc comment.
+    /// Stored WEAKLY: pass `nil` to clear; a deallocated observer simply
+    /// stops being notified rather than being kept alive by this
+    /// coordinator.
+    func setStructureEventObserver(_ observer: (any HerdrStructureEventObserver)?) {
+        structureEventObserver = observer
+    }
+
     // MARK: - TEST ONLY instrumentation
 
     /// TEST ONLY: whether this instance is currently in REPLAY BURST
@@ -578,12 +623,13 @@ final class HerdrIntegrationCoordinator {
     /// decides what "this attempt failed" means).
     private func attemptConnect(socketPath: String) async -> Bool {
         let snapshotTransport = await transportFactory.makeTransport()
-        guard let snapshot: HerdrSessionSnapshot = await runWithDeadline(transport: snapshotTransport, operation: {
+        guard let snapshotResult: HerdrSnapshotRPCResult = await runWithDeadline(transport: snapshotTransport, operation: {
             let request = HerdrOneShotRequest(transport: snapshotTransport)
             return try await request.send(method: "session.snapshot", socketPath: socketPath)
         }) else {
             return false
         }
+        let snapshot = snapshotResult.snapshot
 
         mirror.applySnapshot(snapshot, socketPath: socketPath)
         // CONNECT SEQUENCE step 3: REPLACES `knownPaneIDs`, never merges
@@ -778,12 +824,34 @@ final class HerdrIntegrationCoordinator {
                     // snapshot (inside `triggerRebuild`, below) already
                     // updates both.
                     if await triggerRebuild(socketPath: socketPath) { return }
-                case .paneClosed, .paneExited:
+                case .paneClosed(let paneID):
+                    // Forwarded to the observer BEFORE the pre-existing
+                    // unconditional rebuild below -- a successful rebuild
+                    // `return`s this Task, so forwarding AFTER it would
+                    // silently skip the call on that path.
+                    structureEventObserver?.herdrPaneClosed(paneID: paneID, socketPath: socketPath)
                     // ALWAYS a rebuild trigger, unconditionally, at ANY
                     // time (accumulating or steady state) -- neither
-                    // event is ever replayed at subscribe time, so there
-                    // is no storm risk to guard against here.
+                    // pane_closed nor pane_exited is ever replayed at
+                    // subscribe time, so there is no storm risk to guard
+                    // against here.
                     if await triggerRebuild(socketPath: socketPath) { return }
+                case .paneExited:
+                    // Deliberately NOT forwarded to the observer: the
+                    // herdr pane itself still exists after its own child
+                    // process exits (only what was running inside it
+                    // died) -- closing the Calyx bridge surface for a
+                    // pane that is still there would be wrong. The
+                    // pre-existing unconditional rebuild is unaffected.
+                    if await triggerRebuild(socketPath: socketPath) { return }
+                case .unknown(eventType: "layout_updated") where !isAccumulatingReplayBurst:
+                    // Steady state only -- a layout_updated event
+                    // replayed WHILE still accumulating a fresh
+                    // subscribe's own burst is suppressed here (falls to
+                    // `default` below): forwarding every replay on every
+                    // (re)subscribe would trigger a re-export storm. See
+                    // this file's header "REPLAY BURST RECONCILIATION".
+                    structureEventObserver?.herdrLayoutUpdated(socketPath: socketPath)
                 default:
                     break
                 }

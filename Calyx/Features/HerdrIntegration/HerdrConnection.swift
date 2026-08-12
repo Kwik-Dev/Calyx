@@ -171,10 +171,11 @@ struct HerdrCapabilities: Sendable, Equatable, Decodable {
 }
 
 /// `session.snapshot`'s full RPC result wrapper --
-/// {"type":"session_snapshot","snapshot":{...}}. Private: only this
-/// file's own decode path needs the outer "type" discriminator stripped
-/// away; every other caller works with `HerdrSessionSnapshot` directly.
-private struct HerdrSnapshotRPCResult: Sendable, Decodable {
+/// {"type":"session_snapshot","snapshot":{...}}. This is the wire shape
+/// of `session.snapshot`'s own "result" -- callers of a one-shot
+/// `session.snapshot` request ask for THIS type, never
+/// `HerdrSessionSnapshot` directly, and read `.snapshot`.
+struct HerdrSnapshotRPCResult: Sendable, Decodable {
     let snapshot: HerdrSessionSnapshot
 }
 
@@ -232,11 +233,13 @@ enum HerdrConnectionError: Error, Sendable, Equatable {
 
 /// The full outbound envelope both `HerdrOneShotRequest.send` and
 /// `HerdrEventStream.subscribe` write -- {"id":..,"method":..,
-/// "params":{...}}. Generic over `Params` so ONE type serves both: an
-/// empty object for `send` (no current one-shot method takes arguments
-/// of its own), `HerdrSubscribeParams` for `subscribe`. `params` is
-/// never optional -- see this file's header, fact 1: herdr rejects a
-/// request with `params` omitted or `null`.
+/// "params":{...}}. Generic over `Params` so ONE type serves every
+/// caller: `HerdrEmptyParams` for an argument-less one-shot method
+/// (`ping`, `session.snapshot`), a caller-supplied `Encodable` for one
+/// that takes its own (e.g. `layout.export`'s `{"tab_id":...}` --
+/// HerdrTabCoordinator.swift), `HerdrSubscribeParams` for `subscribe`.
+/// `params` is never optional -- see this file's header, fact 1: herdr
+/// rejects a request with `params` omitted or `null`.
 private struct HerdrRequestEnvelope<Params: Encodable>: Encodable {
     let id: String
     let method: String
@@ -247,8 +250,11 @@ private struct HerdrRequestEnvelope<Params: Encodable>: Encodable {
 /// method (`ping`, `session.snapshot`) still encodes -- see this file's
 /// header, fact 1. A synthesized `encode(to:)` for a zero-property
 /// struct still opens a KEYED container, so this reliably serializes as
-/// `{}`, never omitted and never `null`.
-private struct HerdrEmptyParams: Encodable {}
+/// `{}`, never omitted and never `null`. Not `private`: HerdrSyncSnapshotFetch.swift's
+/// own bounded, synchronous `session.snapshot` request (used only by
+/// AppDelegate's herdr-restore path) reuses this exact shape rather than
+/// declaring a second, identical empty-params type.
+struct HerdrEmptyParams: Encodable {}
 
 /// `events.subscribe`'s own `params` shape -- {"subscriptions":[...]}.
 private struct HerdrSubscribeParams: Encodable {
@@ -289,7 +295,17 @@ private struct HerdrResponseKeyProbe: Decodable {
 /// .subscribe`'s own ack-read -- both are "write one request line, await
 /// exactly one response line" (this file's header, facts 2 and 3), so
 /// nothing is served by duplicating this logic across the two types.
-private enum HerdrConnectionWire {
+/// Not `private`: `requestLine`/`decodeResult` (NOT `nextEvent`/
+/// `awaitResponseLine`, both `AsyncStream`-based and therefore still
+/// only reachable from the two `async` types below) are also reused by
+/// HerdrSyncSnapshotFetch.swift's own bounded, SYNCHRONOUS
+/// `session.snapshot` request -- see that file's own header for why a
+/// third, hand-rolled connection type exists at all instead of a third
+/// caller of `HerdrOneShotRequest` -- so the wire ENVELOPE shape (the
+/// request line's own JSON shape; the response's own "result"/"error"
+/// probe) stays defined in exactly this one place, never duplicated a
+/// second time.
+enum HerdrConnectionWire {
     /// Serializes `HerdrRequestEnvelope(id:method:params:)` to a single
     /// NDJSON line -- WITHOUT a trailing newline; `HerdrTransport.send`
     /// owns newline framing (see that protocol's own doc comment).
@@ -351,20 +367,10 @@ private enum HerdrConnectionWire {
     /// all, per `HerdrConnectionError.malformedResponse`'s own doc
     /// comment.
     ///
-    /// `HerdrSessionSnapshot` is the one `Result` this file knows whose
-    /// own "result" value is NOT `Result` directly, but a
-    /// `{"type":..,"snapshot":{...}}` wrapper (`HerdrSnapshotRPCResult`)
-    /// -- see that type's own doc comment. `HerdrOneShotRequest.send`'s
-    /// signature is generic over every current and future one-shot
-    /// method, so unwrapping that ONE exception here (rather than
-    /// hard-coding a second, non-generic method the way this file's own
-    /// predecessor did) is what lets `send` stay a single
-    /// implementation. The `as?`/`guard` below is unreachable by
-    /// construction (this branch only runs once `Result.self` has
-    /// already been confirmed to BE `HerdrSessionSnapshot.self`), kept
-    /// as a thrown `.malformedResponse` rather than a force-cast so a
-    /// future, genuinely mismatched caller fails loudly rather than
-    /// crashing the process.
+    /// `Result` decodes straight from "result" -- no type-identity
+    /// dispatch. A wrapped result (`session.snapshot`'s own
+    /// `{"type":..,"snapshot":{...}}`) is requested as its own wrapper
+    /// type (`HerdrSnapshotRPCResult`), not unwrapped here.
     static func decodeResult<Result: Decodable>(from line: String) throws -> Result {
         let data = Data(line.utf8)
         guard let probe = try? JSONDecoder().decode(HerdrResponseKeyProbe.self, from: data) else {
@@ -376,13 +382,6 @@ private enum HerdrConnectionWire {
         }
         guard probe.hasResult else {
             throw HerdrConnectionError.malformedResponse(line)
-        }
-        if Result.self == HerdrSessionSnapshot.self {
-            let envelope = try JSONDecoder().decode(HerdrResponseEnvelope<HerdrSnapshotRPCResult>.self, from: data)
-            guard let snapshot = envelope.result.snapshot as? Result else {
-                throw HerdrConnectionError.malformedResponse(line)
-            }
-            return snapshot
         }
         let envelope = try JSONDecoder().decode(HerdrResponseEnvelope<Result>.self, from: data)
         return envelope.result
@@ -422,9 +421,11 @@ struct LiveHerdrTransportFactory: HerdrTransportFactory {
 /// A single request/response exchange over its OWN, freshly-created
 /// transport -- see this file's header, fact 2: "a request/response
 /// connection serves EXACTLY ONE request." Used for `ping` and
-/// `session.snapshot` (both take no params of their own, so `send`
-/// always encodes `"params":{}` -- see this file's header, fact 1) --
-/// and any future no-argument one-shot method.
+/// `session.snapshot` (both argument-less, via `send(method:socketPath:)`,
+/// which always encodes `"params":{}` -- see this file's header, fact 1)
+/// and for a one-shot method that DOES take its own params, e.g.
+/// `layout.export`'s `{"tab_id":...}` (HerdrTabCoordinator.swift), via
+/// `send(method:params:socketPath:)`.
 ///
 /// `send(...)` CONSUMES `self` (this type is `~Copyable`) -- a SECOND
 /// call on the same `HerdrOneShotRequest` value is therefore a COMPILE
@@ -467,11 +468,33 @@ struct HerdrOneShotRequest: ~Copyable {
     /// transport ends before any response line arrives, rather than
     /// hanging forever; `.malformedResponse` when a response line has
     /// neither "result" nor "error".
+    ///
+    /// Delegates to `send(method:params:socketPath:)` with
+    /// `HerdrEmptyParams()` -- every current no-argument one-shot method
+    /// (`ping`, `session.snapshot`) still needs `"params":{}` on the wire
+    /// (this file's header, fact 1), so this overload exists only to keep
+    /// those call sites free of an explicit `HerdrEmptyParams()` argument;
+    /// the wire behavior is byte-for-byte identical to before this
+    /// overload existed.
     consuming func send<Result: Decodable>(method: String, socketPath: String) async throws -> Result {
+        try await send(method: method, params: HerdrEmptyParams(), socketPath: socketPath)
+    }
+
+    /// Same contract as `send(method:socketPath:)` above, generalized
+    /// over a caller-supplied `params` payload -- e.g. `layout.export`'s
+    /// own `{"pane_id":...}`/`{"tab_id":...}`, both allowed by the schema
+    /// (`HerdrTabCoordinator.swift`, this type's own caller, only ever
+    /// sends `"tab_id"`). `params` is still never optional on the wire
+    /// (this file's header, fact 1): a caller passing a genuinely empty
+    /// payload uses `HerdrEmptyParams()` explicitly, or the zero-argument
+    /// overload above, which does exactly that.
+    consuming func send<Params: Encodable, Result: Decodable>(
+        method: String, params: Params, socketPath: String
+    ) async throws -> Result {
         let transport = self.transport
         do {
             try await transport.connect(socketPath: socketPath)
-            let line = try HerdrConnectionWire.requestLine(id: UUID().uuidString, method: method, params: HerdrEmptyParams())
+            let line = try HerdrConnectionWire.requestLine(id: UUID().uuidString, method: method, params: params)
             try await transport.send(line)
             let responseLine = try await HerdrConnectionWire.awaitResponseLine(on: transport)
             let result: Result = try HerdrConnectionWire.decodeResult(from: responseLine)

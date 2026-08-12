@@ -2,7 +2,7 @@
 //  HerdrAgentMirrorTests.swift
 //  CalyxTests
 //
-//  Tests (herdr Stage 2): HerdrAgentMirror translating herdr
+//  Tests (herdr ): HerdrAgentMirror translating herdr
 //  session state into AgentRegistry's external-entry store. See
 //  HerdrAgentMirror.swift's own header for the frozen mapping rules,
 //  which the implementation below follows.

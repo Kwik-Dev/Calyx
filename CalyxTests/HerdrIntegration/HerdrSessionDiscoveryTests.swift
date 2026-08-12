@@ -6,7 +6,7 @@
 //  socket locations (discover()) and probing whether each is actually
 //  alive (isAlive(socketPath:)).
 //
-//  Contract this file pins for Stage 1-C (deliberate design decisions
+//  Contract this file pins for -C (deliberate design decisions
 //  not otherwise specified elsewhere):
 //  - discover()'s default-session candidate is ALWAYS present, even
 //    when configRootDirectory doesn't exist on disk at all --

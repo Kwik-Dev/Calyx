@@ -2,7 +2,7 @@
 //  AgentRowDisplayTests.swift
 //  CalyxTests
 //
-//  Tests (herdr Stage 2, TRACK B): AgentRowDisplay.primaryLabel,
+//  Tests (herdr TRACK B): AgentRowDisplay.primaryLabel,
 //  extracted from AgentStatusView's AgentRowView.displayName so it's
 //  directly testable. Pins a deliberate behavior change: an empty-cwd
 //  row's primary label must fall back to AgentEntry.displayName(forKind:)

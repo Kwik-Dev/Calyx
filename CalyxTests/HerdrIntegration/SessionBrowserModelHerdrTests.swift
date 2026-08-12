@@ -385,7 +385,7 @@ final class SessionBrowserModelHerdrTests: XCTestCase {
     // MARK: - HerdrSessionRow.statusLineText (HerdrSessionRowView line 3)
 
     /// Every row `SessionBrowserModel.herdrRows` ever carries already
-    /// passed a live connect() probe, and Stage 1 never populates
+    /// passed a live connect() probe, and never populates
     /// paneCount/agentCount -- so this text must be the identical fixed
     /// label regardless of those fields, never a fabricated
     /// client-count summary built from them.

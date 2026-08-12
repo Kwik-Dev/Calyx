@@ -8,7 +8,7 @@
 //  either an injected environment or an injected candidate list --
 //  NONE of these tests may depend on this machine's real PATH or real
 //  install locations, both because that would be nondeterministic
-//  across dev machines/CI, and because Stage 1's own manual smoke test
+//  across dev machines/CI, and because own manual smoke test
 //  `brew install`s herdr onto this exact development machine, which
 //  would silently flip any test relying on real defaults from red to
 //  green (or vice versa) the day that happens.

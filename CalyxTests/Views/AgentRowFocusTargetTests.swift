@@ -2,7 +2,7 @@
 //  AgentRowFocusTargetTests.swift
 //  CalyxTests
 //
-//  C2 fix (herdr Stage 2, TRACK C): AgentRowFocusTarget.resolve, the pure
+//  C2 fix (herdr TRACK C): AgentRowFocusTarget.resolve, the pure
 //  decision behind AgentRowView's tap gesture. Mirrors AgentSidebarGateTests'
 //  shape: a plain (non-@MainActor) XCTestCase directly calling a pure,
 //  already-computed-argument static function.

@@ -56,6 +56,17 @@ class Tab: Identifiable {
     /// `Tab.snapshot()` (as `nil` when empty) and restored back by
     /// `Tab.init(snapshot:)`.
     var sessionRefs: [UUID: SessionRef]
+    /// herdr pane-bridge references for this tab's leaves that are
+    /// currently bridging a herdr pane, keyed by leaf (surface) UUID.
+    /// Empty for a tab with none. A parallel side-channel to (never
+    /// merged with) `sessionRefs`: herdr pane identity must never flow
+    /// into `sessionRefs` or `SessionSurfaceMap`. Mirrored to
+    /// `TabSnapshot.herdrPaneRefs` by `Tab.snapshot()` (as `nil` when
+    /// empty) and restored back by `Tab.init(snapshot:)`. Deliberately
+    /// not a designated-init parameter (mirrors `unreadNotifications`/
+    /// `renameRequest` below): production writers mutate it directly,
+    /// the same way `tab.sessionRefs[surfaceID] = ...` is set today.
+    var herdrPaneRefs: [UUID: HerdrPaneRef] = [:]
     /// Set by `CalyxWindowController.processPromptTitle(surfaceView:scope:)`
     /// (`GHOSTTY_ACTION_PROMPT_TITLE`) to request that `host`'s inline
     /// rename editor open for this tab. Purely transient UI-routing state:
@@ -107,5 +118,15 @@ extension Tab {
     func pruneSessionRefs() {
         let liveLeafIDs = Set(splitTree.allLeafIDs())
         sessionRefs = sessionRefs.filter { liveLeafIDs.contains($0.key) }
+    }
+
+    /// The herdr-bridge counterpart of `pruneSessionRefs()`: drops any
+    /// `herdrPaneRefs` entries whose leaf UUID is not in `keeping`.
+    /// Parameterized with an explicit kept-leaf-ID set, rather than
+    /// deriving it from `splitTree` internally: callers prune while the
+    /// old leaf ids are still the live ones, before the tree is
+    /// remapped, so the kept set cannot be derived from `splitTree`.
+    func pruneHerdrPaneRefs(keeping: Set<UUID>) {
+        herdrPaneRefs = herdrPaneRefs.filter { keeping.contains($0.key) }
     }
 }

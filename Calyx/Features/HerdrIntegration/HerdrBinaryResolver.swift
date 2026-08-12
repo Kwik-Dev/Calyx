@@ -31,7 +31,7 @@ protocol HerdrBinaryResolverProtocol: Sendable {
 /// injectable so tests never depend on this machine's actual PATH or
 /// on real system install locations (`/opt/homebrew/...` etc. may or
 /// may not exist on the machine running the test suite -- especially
-/// once Stage 1's own manual smoke test `brew install`s herdr onto
+/// once a manual smoke test `brew install`s herdr onto
 /// this same development machine).
 ///
 /// A FOUND path is memoized for the rest of this *instance's* lifetime

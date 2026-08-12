@@ -1215,6 +1215,314 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
         XCTAssertEqual(finalCallCount, 6, "the rebuild triggered by \"w1:stale\" must open exactly 2 new transports")
     }
 
+    // MARK: - Item 2: HerdrStructureEventObserver routing
+
+    /// `HerdrStructureEventObserver` spy: records every call for later
+    /// inspection. Plain strong-reference spy -- see
+    /// `DeinitTrackingStructureEventObserverSpy` below for the SEPARATE,
+    /// more specialized type the weak-storage test needs.
+    @MainActor
+    private final class RecordingStructureEventObserverSpy: HerdrStructureEventObserver {
+        private(set) var layoutUpdatedCalls: [String] = []
+        private(set) var paneClosedCalls: [(paneID: String, socketPath: String)] = []
+
+        func herdrLayoutUpdated(socketPath: String) {
+            layoutUpdatedCalls.append(socketPath)
+        }
+
+        func herdrPaneClosed(paneID: String, socketPath: String) {
+            paneClosedCalls.append((paneID: paneID, socketPath: socketPath))
+        }
+    }
+
+    /// Deinit-tracking `HerdrStructureEventObserver` spy -- proves
+    /// `setStructureEventObserver` stores its argument WEAKLY, not
+    /// strongly. `deinitFlag` is an `OSAllocatedUnfairLock`-backed box
+    /// (mirrors this file's own `FakeHerdrSessionDiscovery` precedent for
+    /// a genuinely `Sendable` mutable box, above), set exactly once from
+    /// `deinit` -- `deinit` on a `@MainActor` class is not itself
+    /// actor-isolated, but reading/locking a `let`-bound, independently
+    /// `Sendable` `OSAllocatedUnfairLock` is sound regardless of
+    /// isolation. A test constructs this inside a narrow scope, drops its
+    /// own only strong reference, then polls `deinitFlag` to know
+    /// precisely when ARC has actually collected it -- never a fixed
+    /// `sleep`.
+    @MainActor
+    private final class DeinitTrackingStructureEventObserverSpy: HerdrStructureEventObserver {
+        private let deinitFlag: OSAllocatedUnfairLock<Bool>
+
+        init(deinitFlag: OSAllocatedUnfairLock<Bool>) {
+            self.deinitFlag = deinitFlag
+        }
+
+        deinit {
+            deinitFlag.withLock { $0 = true }
+        }
+
+        func herdrLayoutUpdated(socketPath: String) {
+            // Unused by this spy's own test -- present only to satisfy
+            // the protocol.
+        }
+
+        func herdrPaneClosed(paneID: String, socketPath: String) {
+            // Unused by this spy's own test -- present only to satisfy
+            // the protocol.
+        }
+    }
+
+    /// {"event":"layout_updated"} -- the MEASURED wire shape this same
+    /// suite's own `test_reconnect_connectionThatDeliversAnEvent_...` test
+    /// above already uses inline (kept there untouched; factored out here
+    /// only for reuse across this section's own NEW tests). No "data" key
+    /// is required for `HerdrEvent.init(from:)` to decode this to
+    /// `.unknown(eventType: "layout_updated")` -- only the top-level
+    /// "event" key (present on every envelope shape) is read to dispatch
+    /// (HerdrEvent.swift's own header) -- so this shape, not the richer
+    /// `{"data":{"type":"layout_updated"},...}` guess, is what this file
+    /// actually verifies against.
+    private func layoutUpdatedEventLine() -> String {
+        #"{"event":"layout_updated"}"#
+    }
+
+    /// STEADY STATE: after a connection has settled past its own
+    /// accumulating replay-burst phase, each pushed `layout_updated` event
+    /// must invoke `herdrLayoutUpdated(socketPath:)` on the registered
+    /// observer EXACTLY once -- proven by pushing TWO events and asserting
+    /// an EXACT two-element result (not merely "at least two"), mirroring
+    /// this file's own anti-storm test's settle-then-recount idiom.
+    func test_layoutUpdatedEvent_steadyState_invokesObserverExactlyOncePerEvent() async {
+        let factory = SpyHerdrTransportFactory()
+        let coordinator = makeDetectableCoordinator(factory: factory, replayBurstSettleWindow: .zero)
+        let observer = RecordingStructureEventObserverSpy()
+        coordinator.setStructureEventObserver(observer)
+
+        async let startTask: Void = coordinator.start()
+        guard let settledTransport = await driveConnectAttempt(factory: factory, baseIndex: 0, paneIDs: []) else {
+            XCTFail("expected the coordinator to settle on an initial connection")
+            return
+        }
+        await startTask
+
+        // Steady state only -- see
+        // test_layoutUpdatedEvent_duringReplayBurst_notForwarded_thenForwardedOnceSettled
+        // below for why injecting before this point lands in a
+        // DIFFERENT, deliberately-suppressed code path.
+        await waitUntil { !coordinator.testOnlyIsAccumulatingReplayBurst }
+
+        await settledTransport.simulateLine(layoutUpdatedEventLine())
+        await waitUntil { observer.layoutUpdatedCalls.count >= 1 }
+        await settledTransport.simulateLine(layoutUpdatedEventLine())
+        await waitUntil { observer.layoutUpdatedCalls.count >= 2 }
+
+        // Bounded settle, then a STRICT recount -- proves "exactly two",
+        // not merely "at least two".
+        for _ in 0..<200 { await Task.yield() }
+        XCTAssertEqual(
+            observer.layoutUpdatedCalls, [socketPath, socketPath],
+            "each pushed layout_updated event must invoke herdrLayoutUpdated(socketPath:) EXACTLY once, with " +
+            "the connection's own socketPath"
+        )
+    }
+
+    /// A `pane_closed` event for a KNOWN pane must invoke
+    /// `herdrPaneClosed(paneID:socketPath:)` on the observer AND still
+    /// perform the pre-existing rebuild behavior (this file's own
+    /// `test_paneClosedEvent_alwaysRebuildsConnection_unconditionally`
+    /// above) -- adding the observer seam must never replace or skip the
+    /// existing rebuild.
+    func test_paneClosedEvent_knownPane_invokesObserver_andStillPerformsExistingRebuild() async {
+        let factory = SpyHerdrTransportFactory()
+        let coordinator = makeDetectableCoordinator(factory: factory)
+        let observer = RecordingStructureEventObserverSpy()
+        coordinator.setStructureEventObserver(observer)
+
+        async let startTask: Void = coordinator.start()
+        guard let settledTransport = await driveConnectAttempt(factory: factory, baseIndex: 0, paneIDs: ["w1:p1"]) else {
+            XCTFail("expected the coordinator to settle on a connection with \"w1:p1\" known")
+            return
+        }
+        await startTask
+        let firstCallCount = await factory.callCount
+        XCTAssertEqual(firstCallCount, 2, "Precondition")
+
+        await settledTransport.simulateLine(paneClosedEventLine(paneID: "w1:p1"))
+
+        guard await driveConnectAttempt(factory: factory, baseIndex: 2, paneIDs: []) != nil else {
+            XCTFail("expected the pane_closed event to still rebuild the connection (existing behavior, unchanged)")
+            return
+        }
+        let callCountAfter = await factory.callCount
+        XCTAssertEqual(
+            callCountAfter, 4,
+            "the existing rebuild behavior must still fire (2 new transports) even with an observer attached"
+        )
+
+        XCTAssertEqual(
+            observer.paneClosedCalls.map { $0.paneID }, ["w1:p1"],
+            "a pane_closed event for a KNOWN pane must invoke herdrPaneClosed(paneID:socketPath:) exactly once"
+        )
+        XCTAssertEqual(observer.paneClosedCalls.map { $0.socketPath }, [socketPath])
+    }
+
+    /// Cheap regression pin: with NO observer ever registered, existing
+    /// behavior (no crash, the pane_closed rebuild still firing) must
+    /// survive this whole feature's addition untouched. Also pushes a
+    /// layout_updated event first, proving that code path tolerates an
+    /// absent observer too.
+    func test_noObserverSet_layoutUpdatedAndPaneClosedEvents_stillProcessedAsToday_noCrash() async {
+        let factory = SpyHerdrTransportFactory()
+        let coordinator = makeDetectableCoordinator(factory: factory, replayBurstSettleWindow: .zero)
+        // Deliberately never calls setStructureEventObserver.
+
+        async let startTask: Void = coordinator.start()
+        guard let settledTransport = await driveConnectAttempt(factory: factory, baseIndex: 0, paneIDs: []) else {
+            XCTFail("expected the coordinator to settle on an initial connection")
+            return
+        }
+        await startTask
+        await waitUntil { !coordinator.testOnlyIsAccumulatingReplayBurst }
+
+        await settledTransport.simulateLine(layoutUpdatedEventLine()) // must not crash
+        for _ in 0..<50 { await Task.yield() }
+
+        await settledTransport.simulateLine(paneClosedEventLine(paneID: "w1:neverKnown"))
+
+        guard await driveConnectAttempt(factory: factory, baseIndex: 2, paneIDs: []) != nil else {
+            XCTFail("expected the pane_closed event to still rebuild the connection with no observer ever set")
+            return
+        }
+        let callCountAfter = await factory.callCount
+        XCTAssertEqual(
+            callCountAfter, 4,
+            "a pane_closed event must still unconditionally rebuild the connection with no observer set -- " +
+            "adding the observer seam must never regress pre-existing behavior"
+        )
+    }
+
+    /// The observer is not retained strongly: once the test's own only
+    /// strong reference goes out of scope, the spy actually deallocates
+    /// (proven by polling `deinitFlag`, never a fixed `sleep`) -- and a
+    /// LATER event neither crashes nor invokes anything on it (there is
+    /// nothing left to invoke), while pre-existing behavior (the
+    /// pane_closed rebuild) continues to work normally.
+    func test_structureEventObserver_isNotRetainedStrongly_deallocatesAfterLocalReferenceDrops_laterEventDoesNotCrash() async {
+        let factory = SpyHerdrTransportFactory()
+        let coordinator = makeDetectableCoordinator(factory: factory, replayBurstSettleWindow: .zero)
+        let deinitFlag = OSAllocatedUnfairLock(initialState: false)
+
+        async let startTask: Void = coordinator.start()
+        guard let settledTransport = await driveConnectAttempt(factory: factory, baseIndex: 0, paneIDs: []) else {
+            XCTFail("expected the coordinator to settle on an initial connection")
+            return
+        }
+        await startTask
+        await waitUntil { !coordinator.testOnlyIsAccumulatingReplayBurst }
+
+        do {
+            let observer = DeinitTrackingStructureEventObserverSpy(deinitFlag: deinitFlag)
+            coordinator.setStructureEventObserver(observer)
+            // `observer`'s only strong reference is this local -- goes out
+            // of scope at the end of this `do` block.
+        }
+
+        await waitUntil { deinitFlag.withLock { $0 } }
+        XCTAssertTrue(
+            deinitFlag.withLock { $0 },
+            "expected the observer to have been deallocated after its only strong reference (this test's own " +
+            "local) went out of scope -- setStructureEventObserver must store its argument WEAKLY, not strongly"
+        )
+
+        await settledTransport.simulateLine(layoutUpdatedEventLine()) // must not crash
+        for _ in 0..<50 { await Task.yield() }
+
+        // Pre-existing behavior must still work with a now-nil observer
+        // reference.
+        await settledTransport.simulateLine(paneClosedEventLine(paneID: "w1:neverKnown"))
+        guard await driveConnectAttempt(factory: factory, baseIndex: 2, paneIDs: []) != nil else {
+            XCTFail("expected the pane_closed event to still rebuild the connection after the observer deallocated")
+            return
+        }
+        let callCountAfter = await factory.callCount
+        XCTAssertEqual(callCountAfter, 4, "existing behavior must survive a deallocated (weakly-held) observer")
+    }
+
+    /// REPLAY BURST caveat (this section's own task brief): a replayed
+    /// `layout_updated` arriving WHILE this connection's own accumulating
+    /// phase is still open must NOT be forwarded to the observer --
+    /// forwarding every replayed layout_updated on every fresh
+    /// (re)subscribe would trigger a re-export per replayed event on
+    /// every reconnect. Once the burst settles (steady state), forwarding
+    /// resumes normally. Uses the SAME gated-sleep interception as
+    /// `test_replayBurst_stalePanesBeyondSnapshot_rebuildsExactlyOnce_thenConverges`
+    /// above (see that test's own doc comment for why a real-clock
+    /// `.zero` window cannot deterministically catch the "still
+    /// accumulating" instant this test needs to hold open on demand).
+    func test_layoutUpdatedEvent_duringReplayBurst_notForwarded_thenForwardedOnceSettled() async {
+        let factory = SpyHerdrTransportFactory()
+        let registry = AgentRegistry()
+        let mirror = HerdrAgentMirror(registry: registry)
+        let burstSettleWindow = Duration.milliseconds(1)
+        let settleGate = OSAllocatedUnfairLock(initialState: false)
+        let coordinator = makeDetectableCoordinator(
+            factory: factory,
+            mirror: mirror,
+            replayBurstSettleWindow: burstSettleWindow,
+            rebuildBackoffDelays: [.zero],
+            sleep: { duration in
+                guard duration == burstSettleWindow else {
+                    try? await Task.sleep(for: duration)
+                    return
+                }
+                while !settleGate.withLock({ $0 }) {
+                    if Task.isCancelled { return }
+                    await Task.yield()
+                }
+            }
+        )
+        let observer = RecordingStructureEventObserverSpy()
+        coordinator.setStructureEventObserver(observer)
+        let sentinelID = HerdrStableID.make(socketPath: socketPath, paneID: "w1:p1")
+
+        async let startTask: Void = coordinator.start()
+        guard let subscribeTransport = await driveConnectAttempt(factory: factory, baseIndex: 0, paneIDs: ["w1:p1"]) else {
+            XCTFail("expected the coordinator to settle on an initial connection")
+            return
+        }
+        await startTask
+        XCTAssertTrue(
+            coordinator.testOnlyIsAccumulatingReplayBurst, "Precondition: still accumulating -- the gate has not been opened yet"
+        )
+
+        // Pushed WHILE still accumulating -- must NOT be forwarded.
+        await subscribeTransport.simulateLine(layoutUpdatedEventLine())
+        // Sentinel -- an independently observable event (mirrors
+        // test_replayBurst_stalePanesBeyondSnapshot's own technique)
+        // proving the layout_updated line above has already been fully
+        // consumed by consumeEvents' own read loop before the assertion
+        // below runs.
+        await subscribeTransport.simulateLine(statusChangedEventLine(paneID: "w1:p1", status: "blocked"))
+        await waitUntil { registry.externalEntries[sentinelID]?.state == .blocked }
+
+        XCTAssertEqual(
+            observer.layoutUpdatedCalls.count, 0,
+            "a layout_updated event replayed WHILE still accumulating the burst must NOT be forwarded to the " +
+            "observer -- forwarding every replay on every reconnect would trigger a re-export storm"
+        )
+
+        // Now let the burst settle.
+        settleGate.withLock { $0 = true }
+        await waitUntil { !coordinator.testOnlyIsAccumulatingReplayBurst }
+
+        // Pushed in STEADY STATE -- must be forwarded.
+        await subscribeTransport.simulateLine(layoutUpdatedEventLine())
+        await waitUntil { observer.layoutUpdatedCalls.count >= 1 }
+
+        XCTAssertEqual(
+            observer.layoutUpdatedCalls, [socketPath],
+            "once the replay burst has settled (steady state), a layout_updated event must be forwarded normally"
+        )
+    }
+
     // MARK: - Fixture builders (exact shapes measured against real herdr 0.8.0)
 
     private func subscribeAckLine(id: String) -> String {

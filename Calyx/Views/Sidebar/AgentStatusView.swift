@@ -24,9 +24,9 @@ struct AgentStatusView: View {
             // `AgentRegistry.agentsSidebarVisibleCount`, so
             // `CalyxWindowController`'s screen-classification poll can
             // gate on "visible in any window" rather than each window's
-            // own local sidebar state — see that property's doc comment.
-            // Also the herdr Stage 2 integration's third start() trigger
-            // (alongside app launch / `applicationDidBecomeActive`) —
+            // own local sidebar state -- see that property's doc comment.
+            // Also the herdr integration's third start() trigger
+            // (alongside app launch / `applicationDidBecomeActive`) --
             // see `AppDelegate.startHerdrIntegrationIfNeeded()`'s own
             // doc comment.
             .onAppear {
@@ -291,9 +291,9 @@ enum AgentRowFocusTarget {
     ///   2. Otherwise, a `.hooks`/`.titleHeuristic` row's own `surfaceID`
     ///      IS a real `SurfaceRegistry` id (that's where those sources
     ///      get it from) and is always resolvable.
-    ///   3. Otherwise — an `.external` row with no `focusSurfaceID` (true
-    ///     of every herdr row as of this stage, which never resolves one
-    ///     — see `HerdrAgentMirror.swift`'s header) — there is nothing
+    ///   3. Otherwise -- an `.external` row with no `focusSurfaceID` (true
+    ///     of every herdr row, which never resolves one
+    ///     -- see `HerdrAgentMirror.swift`'s header) -- there is nothing
     ///     valid to focus.
     static func resolve(source: AgentSource, surfaceID: UUID, focusSurfaceID: UUID?) -> UUID? {
         if let focusSurfaceID { return focusSurfaceID }
@@ -343,16 +343,16 @@ private struct AgentRowView: View {
         AgentRowDisplay.subtitle(kind: entry.kind, source: entry.source)
     }
 
-    /// C2 fix: the surface this row's click should focus, per
-    /// `AgentRowFocusTarget.resolve`'s doc comment — `nil` for a row
-    /// with no resolvable target (every herdr row as of this stage).
+    /// The surface this row's click should focus, per
+    /// `AgentRowFocusTarget.resolve`'s doc comment -- `nil` for a row
+    /// with no resolvable target (every herdr row).
     private var focusTarget: UUID? {
         AgentRowFocusTarget.resolve(source: entry.source, surfaceID: entry.surfaceID, focusSurfaceID: entry.focusSurfaceID)
     }
 
     var body: some View {
-        // C2 fix: presentation choice for a row with no resolvable focus
-        // target (`focusTarget == nil`) — rather than keeping the tap
+        // Presentation choice for a row with no resolvable focus
+        // target (`focusTarget == nil`) -- rather than keeping the tap
         // gesture wired to `entry.surfaceID` (a synthetic herdr id no
         // `SurfaceRegistry` knows, making the click a silent no-op today),
         // the row is rendered as plain, non-interactive content: no
@@ -361,7 +361,7 @@ private struct AgentRowView: View {
         // interactive branch below, so it stays permanently `false` here
         // and the background fill in `rowContent` never appears). This
         // was chosen as the least surprising option over, say, a visibly
-        // "disabled" treatment (dimmed/greyed row) — the row still needs
+        // "disabled" treatment (dimmed/greyed row) -- the row still needs
         // to convey real, current agent state at a glance; only the
         // click AFFORDANCE (hover feedback inviting a tap) is removed,
         // matching how every other purely-informational element in this

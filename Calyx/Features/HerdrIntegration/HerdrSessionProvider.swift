@@ -10,7 +10,7 @@
 // protocol, never reimplemented). herdr does expose a JSON
 // session-list subcommand (`herdr session list --json`, verified
 // against real herdr 0.8.0) that could enrich rows with pane/agent
-// counts; Stage 1 deliberately chooses not to shell out to it on every
+// counts; this provider deliberately chooses not to shell out to it on every
 // poll tick, deriving names and liveness from the filesystem plus a
 // connect() probe instead (see `HerdrCLISessionProvider`'s own doc
 // comment).
@@ -28,7 +28,7 @@ protocol HerdrSessionProviderProtocol: Sendable {
 /// just a different kind of stable string). `name` is optional because
 /// the `HERDR_SOCKET_PATH` env-override candidate carries none of its
 /// own (see `HerdrSessionDiscovery`'s own doc comment); `paneCount`/
-/// `agentCount` are always `nil` in Stage 1 -- herdr's own JSON
+/// `agentCount` are always `nil` -- herdr's own JSON
 /// session-list subcommand could supply them, but Calyx doesn't shell
 /// out to it per poll tick (see `HerdrCLISessionProvider`'s own doc
 /// comment below) -- so a degraded row (bare socket path, no pane/agent
@@ -42,12 +42,12 @@ struct HerdrSessionInfo: Identifiable, Equatable, Sendable {
 
 /// Production `HerdrSessionProviderProtocol`.
 ///
-/// Stage 1: bare discovery + liveness only -- `discovery.discover()`'s
+/// Bare discovery + liveness only -- `discovery.discover()`'s
 /// candidates, kept only when `discovery.isAlive(socketPath:)`, mapped
 /// 1:1 onto `HerdrSessionInfo` (`id`/`name` straight from the
 /// candidate; `paneCount`/`agentCount` always `nil` -- herdr's own JSON
 /// session-list subcommand (`herdr session list --json`, verified
-/// against real herdr 0.8.0) could supply them, but this stage
+/// against real herdr 0.8.0) could supply them, but this type
 /// deliberately doesn't shell out to it per poll tick, sticking to
 /// filesystem discovery plus a `connect()` probe instead; pane/agent
 /// counts could come from that subcommand later). Neither `discover()`
@@ -86,7 +86,7 @@ struct HerdrSessionInfo: Identifiable, Equatable, Sendable {
 /// dispatching to the background queue.
 ///
 /// `discovery` is a fixed `private let`, not an injectable init
-/// parameter: no Stage 1 test exercises this type directly (its
+/// parameter: no test exercises this type directly (its
 /// correctness is a manual-smoke-test item, run against a real
 /// `brew install`ed herdr, not a unit fixture), so adding a DI seam
 /// here would be speculative surface no test needs.

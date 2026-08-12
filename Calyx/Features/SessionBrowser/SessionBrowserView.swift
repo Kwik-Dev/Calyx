@@ -204,7 +204,7 @@ private struct RemoteHostRowView: View {
 /// shown directly with no cwd/pane-count summary -- herdr does expose a
 /// JSON session-list subcommand (`herdr session list --json`, verified
 /// against real herdr 0.8.0) that could supply `paneCount`/`agentCount`,
-/// but Stage 1 deliberately doesn't shell out to it on every poll tick,
+/// but this view deliberately doesn't shell out to it on every poll tick,
 /// deriving names and liveness from the filesystem plus a `connect()`
 /// probe instead (see `HerdrSessionProvider.swift`'s own doc comment);
 /// pane/agent counts stay unpopulated and could come from that

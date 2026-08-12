@@ -2,7 +2,7 @@
 //  HerdrStableIDTests.swift
 //  CalyxTests
 //
-//  Tests (herdr Stage 2): HerdrStableID.make, the deterministic
+//  Tests (herdr ): HerdrStableID.make, the deterministic
 //  UUID derivation that keeps an Agents-sidebar row for a herdr pane
 //  identified consistently across app restarts and reconnects. See
 //  HerdrStableID.swift's own header for the frozen algorithm.

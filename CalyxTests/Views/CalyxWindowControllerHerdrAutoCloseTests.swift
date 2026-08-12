@@ -2,7 +2,7 @@
 //  CalyxWindowControllerHerdrAutoCloseTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase (herdr Stage 1): a surface registered in
+//  TDD Red Phase (herdr ): a surface registered in
 //  HerdrHostedSurfaces reports GHOSTTY_ACTION_SHOW_CHILD_EXITED
 //  (`processChildExited`, wired from `handleShowChildExitedNotification`)
 //  -- Calyx must automatically close that pane instead of leaving

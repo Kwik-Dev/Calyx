@@ -162,8 +162,14 @@ struct TabSnapshot: Codable, Equatable {
     /// `TabGroupSnapshot`, whose custom inits exist only because their
     /// added fields default to non-nil values).
     let sessionRefs: [UUID: SessionRef]?
+    /// Herdr pane-bridge references keyed by leaf surface UUID,
+    /// mirroring `sessionRefs` exactly: `nil` for a snapshot that
+    /// predates this field, or a tab with no herdr-bridged leaves. Same nil-when-empty write
+    /// and absent-or-null-decodes-to-nil read shape, so no custom
+    /// Codable is needed here either.
+    let herdrPaneRefs: [UUID: HerdrPaneRef]?
 
-    init(id: UUID = UUID(), title: String = "Terminal", titleOverride: String? = nil, pwd: String? = nil, splitTree: SplitTree = SplitTree(), browserURL: URL? = nil, sessionRefs: [UUID: SessionRef]? = nil) {
+    init(id: UUID = UUID(), title: String = "Terminal", titleOverride: String? = nil, pwd: String? = nil, splitTree: SplitTree = SplitTree(), browserURL: URL? = nil, sessionRefs: [UUID: SessionRef]? = nil, herdrPaneRefs: [UUID: HerdrPaneRef]? = nil) {
         self.id = id
         self.title = title
         self.titleOverride = titleOverride
@@ -171,22 +177,27 @@ struct TabSnapshot: Codable, Equatable {
         self.splitTree = splitTree
         self.browserURL = browserURL
         self.sessionRefs = sessionRefs
+        self.herdrPaneRefs = herdrPaneRefs
     }
 }
 
-extension Dictionary where Key == UUID, Value == SessionRef {
-    /// Re-keys leaf-UUID-keyed `SessionRef`s the same way
+extension Dictionary where Key == UUID {
+    /// Re-keys a leaf-UUID-keyed dictionary the same way
     /// `SplitTree.remapLeafIDs(_:)` re-keys leaves: a key present in
     /// `mapping` moves to its mapped value; a key absent from `mapping`
-    /// is left exactly as it was. Used directly on the runtime
-    /// `Tab.sessionRefs` dictionary by both `AppDelegate
-    /// .restoreTabSurfaces` (full-restore success) and
-    /// `CalyxWindowController.performReconnect` (surface swap) — there
+    /// is left exactly as it was. Generic over `Value` (originally
+    /// `SessionRef`-only, reused verbatim for
+    /// `[UUID: HerdrPaneRef]` -- `tab.herdrPaneRefs.remappingKeys(mapping)`
+    /// alongside `tab.sessionRefs.remappingKeys(mapping)` -- rather than
+    /// duplicating this loop for a second value type). Used directly on
+    /// the runtime `Tab.sessionRefs`/`Tab.herdrPaneRefs` dictionaries by
+    /// both `AppDelegate.restoreTabSurfaces` (full-restore success) and
+    /// `CalyxWindowController.performReconnect` (surface swap) -- there
     /// is no `TabSnapshot`-level equivalent; restore/reconnect always
     /// operate on the live `Tab`, never reconstruct a whole
     /// `TabSnapshot` mid-flight.
-    func remappingKeys(_ mapping: [UUID: UUID]) -> [UUID: SessionRef] {
-        var result: [UUID: SessionRef] = [:]
+    func remappingKeys(_ mapping: [UUID: UUID]) -> [UUID: Value] {
+        var result: [UUID: Value] = [:]
         for (leafID, ref) in self {
             result[mapping[leafID] ?? leafID] = ref
         }
@@ -220,7 +231,7 @@ extension WindowSession {
 extension TabGroup {
     /// - Parameter browserURLOverride: Consulted per-tab (by tab id) for
     ///   a live URL that wins over a `.browser` tab's configured one.
-    ///   Round 12 (r12-fix-spec.md, R12-C): lets
+    ///   Lets
     ///   `CalyxWindowController.windowSnapshot()` delegate its
     ///   TabGroupSnapshot/TabSnapshot construction to this tested chain
     ///   while still injecting its live `browserControllers` state;
@@ -244,13 +255,14 @@ extension Tab {
     ///   `TabGroup.snapshot(browserURLOverride:)`'s doc comment.
     func snapshot(browserURLOverride: URL? = nil) -> TabSnapshot? {
         let refs = sessionRefs.isEmpty ? nil : sessionRefs
+        let herdrRefs = herdrPaneRefs.isEmpty ? nil : herdrPaneRefs
         switch content {
         case .diff:
             return nil  // Diff tabs are not persisted
         case .terminal:
-            return TabSnapshot(id: id, title: title, titleOverride: titleOverride, pwd: pwd, splitTree: splitTree, browserURL: nil, sessionRefs: refs)
+            return TabSnapshot(id: id, title: title, titleOverride: titleOverride, pwd: pwd, splitTree: splitTree, browserURL: nil, sessionRefs: refs, herdrPaneRefs: herdrRefs)
         case .browser(let url):
-            return TabSnapshot(id: id, title: title, titleOverride: titleOverride, pwd: pwd, splitTree: splitTree, browserURL: browserURLOverride ?? url, sessionRefs: refs)
+            return TabSnapshot(id: id, title: title, titleOverride: titleOverride, pwd: pwd, splitTree: splitTree, browserURL: browserURLOverride ?? url, sessionRefs: refs, herdrPaneRefs: herdrRefs)
         }
     }
 
@@ -269,6 +281,10 @@ extension Tab {
             content: content,
             sessionRefs: snapshot.sessionRefs ?? [:]
         )
+        // Parallel side-channel, restored independently of sessionRefs --
+        // never routed through the Tab designated init (see Tab.swift's
+        // own herdrPaneRefs doc comment).
+        self.herdrPaneRefs = snapshot.herdrPaneRefs ?? [:]
     }
 }
 

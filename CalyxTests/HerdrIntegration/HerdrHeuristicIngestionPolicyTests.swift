@@ -2,7 +2,7 @@
 //  HerdrHeuristicIngestionPolicyTests.swift
 //  CalyxTests
 //
-//  Tests (herdr Stage 2, TRACK B): HerdrHeuristicIngestionPolicy
+//  Tests (herdr TRACK B): HerdrHeuristicIngestionPolicy
 //  .shouldIngest, the pure decision that stops Calyx's own title-change
 //  / screen-classification heuristics from creating a second, duplicate
 //  Agents-sidebar row for a pane whose "real" agent state already
@@ -28,7 +28,7 @@ final class HerdrHeuristicIngestionPolicyTests: XCTestCase {
 
     func test_shouldIngest_herdrHostedSurface_decidesFalse() {
         XCTAssertFalse(
-            HerdrHeuristicIngestionPolicy.shouldIngest(isHerdrHosted: true),
+            HerdrHeuristicIngestionPolicy.shouldIngest(isHerdrHosted: true, isBridgeSurface: false),
             "A herdr-hosted surface must skip Calyx's own heuristic ingestion -- an external row " +
             "already covers it, and ingesting too would produce a duplicate Agents-sidebar row"
         )
@@ -38,7 +38,7 @@ final class HerdrHeuristicIngestionPolicyTests: XCTestCase {
 
     func test_shouldIngest_nonHostedSurface_decidesTrue() {
         XCTAssertTrue(
-            HerdrHeuristicIngestionPolicy.shouldIngest(isHerdrHosted: false),
+            HerdrHeuristicIngestionPolicy.shouldIngest(isHerdrHosted: false, isBridgeSurface: false),
             "A non-hosted surface must proceed with heuristic ingestion, unaffected by this policy"
         )
     }

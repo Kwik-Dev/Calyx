@@ -2,12 +2,11 @@
 // Calyx
 //
 // Records which ghostty surface IDs are hosting a herdr attach/TUI
-// process (Stage 1's `AppDelegate.openHerdrAttachTab`) or, from Stage 3
-// onward, a herdr pane bridge -- so downstream consumers can skip them.
-// Stage 2's title-heuristic/screen-poll agent ingestion must not cast a
+// process (`AppDelegate.openHerdrAttachTab`) or a herdr pane bridge
+// (`HerdrPaneRegistry`) -- so downstream consumers can skip them. The
+// title-heuristic/screen-poll agent ingestion must not cast a
 // duplicate `.titleHeuristic` Agents-sidebar row for a pane whose "real"
-// state already arrives over herdr's own event stream (Stage 1 plan
-// risk #12/`HerdrPaneRegistry`'s own future role).
+// state already arrives over herdr's own event stream.
 //
 // Pruned via `.calyxSurfaceDestroyed` (`AgentRegistry.swift`'s
 // notification, posted by `SurfaceRegistry.destroySurface`) -- mirrors
@@ -46,8 +45,8 @@ final class HerdrHostedSurfaces: NSObject {
         )
     }
 
-    /// Records `surfaceID` as herdr-hosted (Stage 1: an attach/TUI
-    /// surface `AppDelegate.openHerdrAttachTab` just created; Stage 3:
+    /// Records `surfaceID` as herdr-hosted (an attach/TUI
+    /// surface `AppDelegate.openHerdrAttachTab` just created, or
     /// a pane bridge). Idempotent -- a `Set` insert of an
     /// already-present ID is a no-op.
     func register(_ surfaceID: UUID) {

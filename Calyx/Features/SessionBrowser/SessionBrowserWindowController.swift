@@ -9,6 +9,9 @@
 
 import AppKit
 import SwiftUI
+import os
+
+private let logger = Logger(subsystem: "com.calyx.terminal", category: "SessionBrowserWindowController")
 
 @MainActor
 final class SessionBrowserWindowController: NSWindowController {
@@ -42,7 +45,7 @@ final class SessionBrowserWindowController: NSWindowController {
             self?.attach(row)
         }
 
-        // P5 (remote sessions): mirrors the onAttachRequested wiring
+        // Remote sessions: mirrors the onAttachRequested wiring
         // immediately above -- reaches a window controller the same
         // way attach(_:) does (via AppDelegate), for a chosen remote
         // host's SessionSpawnContext instead of an existing session
@@ -51,7 +54,7 @@ final class SessionBrowserWindowController: NSWindowController {
             self?.attachRemote(context)
         }
 
-        // Stage 1 herdr attach: mirrors onAttachRequested's wiring
+        // Herdr attach: mirrors onAttachRequested's wiring
         // immediately above, for a herdr row instead of a calyx-session
         // one.
         model.onHerdrAttachRequested = { [weak self] row in
@@ -76,26 +79,87 @@ final class SessionBrowserWindowController: NSWindowController {
         (NSApp.delegate as? AppDelegate)?.spawnRemoteSessionTab(host: context.host)
     }
 
-    /// Synthesizes `row`'s attach command (`/usr/bin/env
-    /// HERDR_SOCKET_PATH=<socketPath> <herdrBin>`, token-escaped by
-    /// `HerdrAttachCommandSynthesizer`) and opens it as a new tab via
-    /// `AppDelegate.openHerdrAttachTab(command:title:)`. Passes
-    /// `row.info.id` -- the socket path that was actually probed alive
-    /// for this row -- as `socketPath`, pinning the exact socket the
-    /// user clicked rather than a name herdr would have to re-resolve;
-    /// `row.attachTabTitle` (derived from `row.info.name`) is used only
-    /// for the tab title. Re-resolves the
-    /// herdr binary here rather than caching one from whatever produced
-    /// `row` (`HerdrSessionInfo` carries no binary path of its own --
-    /// only session identity), silently doing nothing if it's since
-    /// gone missing (e.g. uninstalled between the last Session Browser
-    /// poll and this click): matches Stage 1's broader no-dialog
-    /// philosophy for herdr absence -- a herdr that dies mid-session
-    /// simply drops its section on the next poll, no error UI.
+    /// A herdr row click now opens that session NATIVELY --
+    /// one Calyx tab per live workspace on `row`'s own socket, iTerm2
+    /// tmux -CC semantics -- instead of the old single TUI-attach tab
+    /// (that old behavior moved to the Command Palette's
+    /// `herdr.attachTUI` action, `CalyxWindowController.setupCommandRegistry()`,
+    /// which still calls `AppDelegate.openHerdrAttachTab(command:title:)`
+    /// directly, unchanged).
+    ///
+    /// Takes a one-shot `session.snapshot` on its OWN fresh transport
+    /// (mirrors `HerdrIntegrationCoordinator.attemptConnect`'s identical
+    /// one-shot snapshot step) to learn `row`'s CURRENT live workspaces,
+    /// then `openWorkspace`s each via `AppDelegate.herdrTabCoordinator`.
+    /// Workspace ids are derived from `snapshot.panes[].workspaceID` --
+    /// the strongly-typed, schema-required field -- NOT from
+    /// `snapshot.workspaces`, which decodes as `[AnyCodable]` with its
+    /// element shape deliberately out of scope (`HerdrSessionSnapshot`'s
+    /// own doc comment, `HerdrEvent.swift`), so it carries no
+    /// schema-derived id to read.
+    ///
+    /// Re-opens the FOCUS workspace last so it ends focused rather than
+    /// whichever opened most recently -- `openWorkspace`'s own FIRST
+    /// check, `focusExistingTab`, short-circuits that re-open into a
+    /// pure focus with no wire round trip (`HerdrTabCoordinator.swift`'s
+    /// own header, "OPEN SEQUENCE"). The FOCUS workspace
+    /// is `snapshot.focusedWorkspaceID` (herdr's own notion of which
+    /// workspace was actually focused/in-use) when present AND actually
+    /// named in `workspaceIDs`, falling back to the sorted-first id
+    /// otherwise (absent snapshot field, or a workspace id it names that
+    /// this row's own pane list doesn't contain).
+    ///
+    /// A failed snapshot (herdr since died, or `AppDelegate.herdrTabCoordinator`
+    /// is `nil` because herdr itself was never resolvable) silently does
+    /// nothing -- matches this integration's broader no-dialog philosophy for
+    /// herdr absence/death (`AppDelegate.openHerdrAttachTab`'s own doc
+    /// comment): a herdr that dies mid-session simply drops its section
+    /// on the Session Browser's next poll, no error UI. A per-workspace
+    /// `openWorkspace` failure is logged (this file's own
+    /// `logger`, mirroring `AppDelegate.openHerdrAttachTab`'s own
+    /// `logger.error` on its analogous failure) rather than silently
+    /// dropped.
     private func attachHerdr(_ row: HerdrSessionRow) {
-        guard let herdrBin = HerdrBinaryResolver().resolve() else { return }
-        let command = HerdrAttachCommandSynthesizer.attachCommand(herdrBin: herdrBin, socketPath: row.info.id)
-        (NSApp.delegate as? AppDelegate)?.openHerdrAttachTab(command: command, title: row.attachTabTitle)
+        guard let coordinator = (NSApp.delegate as? AppDelegate)?.herdrTabCoordinator else { return }
+        let socketPath = row.info.id
+
+        Task {
+            let transport = await LiveHerdrTransportFactory().makeTransport()
+            let request = HerdrOneShotRequest(transport: transport)
+            let snapshotResult: HerdrSnapshotRPCResult
+            do {
+                snapshotResult = try await request.send(method: "session.snapshot", socketPath: socketPath)
+            } catch {
+                return
+            }
+            let snapshot = snapshotResult.snapshot
+
+            let workspaceIDs = Set(snapshot.panes.map(\.workspaceID)).sorted()
+            guard let firstWorkspaceID = workspaceIDs.first else { return }
+            let focusWorkspaceID: String
+            if let focusedWorkspaceID = snapshot.focusedWorkspaceID, workspaceIDs.contains(focusedWorkspaceID) {
+                focusWorkspaceID = focusedWorkspaceID
+            } else {
+                focusWorkspaceID = firstWorkspaceID
+            }
+
+            for workspaceID in workspaceIDs {
+                let opened = await coordinator.openWorkspace(workspaceID: workspaceID, socketPath: socketPath)
+                if !opened {
+                    logger.error(
+                        "Failed to open herdr workspace \(workspaceID, privacy: .public) on socket \(socketPath, privacy: .public)"
+                    )
+                }
+            }
+            if workspaceIDs.count > 1 {
+                let refocused = await coordinator.openWorkspace(workspaceID: focusWorkspaceID, socketPath: socketPath)
+                if !refocused {
+                    logger.error(
+                        "Failed to focus herdr workspace \(focusWorkspaceID, privacy: .public) on socket \(socketPath, privacy: .public)"
+                    )
+                }
+            }
+        }
     }
 
     func showBrowser() {

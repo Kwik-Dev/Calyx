@@ -48,7 +48,12 @@
 //    validated against what send() generated -- deliberate contract (see
 //    HerdrConnection.swift's own header), not an oversight
 //  - HerdrOneShotRequest.send: works for "session.snapshot" too (not
-//    just "ping"), decoding a HerdrSessionSnapshot, proving genericity
+//    just "ping"), decoding a HerdrSnapshotRPCResult, proving genericity
+//  - HerdrOneShotRequest.send: session.snapshot's panes[] decode from a
+//    required-fields-only PaneInfo record through this exact path --
+//    requesting HerdrSessionSnapshot directly (rather than the wrapper,
+//    HerdrSnapshotRPCResult) never decodes its own fields, one level
+//    deeper under "snapshot"
 //  - HerdrOneShotRequest.send: server responds with herdr's error shape
 //    -> throws HerdrConnectionError.rpc, carrying herdr's own code/message
 //  - HerdrOneShotRequest.send: transport EOFs / fails before answering ->
@@ -148,17 +153,46 @@ final class HerdrConnectionTests: XCTestCase {
         await transport.simulateLine(snapshotResponseLine(id: "1"))
 
         let request = HerdrOneShotRequest(transport: transport)
-        let result: HerdrSessionSnapshot = try await request.send(
+        let result: HerdrSnapshotRPCResult = try await request.send(
             method: "session.snapshot", socketPath: "/tmp/herdr-oneshot-snapshot/herdr.sock"
         )
 
-        XCTAssertEqual(result.agents.count, 1)
-        XCTAssertEqual(result.agents.first?.paneID, "w9:p1")
-        XCTAssertEqual(result.agents.first?.agentStatus, .blocked)
-        XCTAssertEqual(result.focusedWorkspaceID, "w9")
+        XCTAssertEqual(result.snapshot.agents.count, 1)
+        XCTAssertEqual(result.snapshot.agents.first?.paneID, "w9:p1")
+        XCTAssertEqual(result.snapshot.agents.first?.agentStatus, .blocked)
+        XCTAssertEqual(result.snapshot.focusedWorkspaceID, "w9")
 
         let sent = await transport.sentMessages()
         XCTAssertEqual(sent.compactMap { requestMethod(inLine: $0) }, ["session.snapshot"])
+    }
+
+    // MARK: - Regression: session.snapshot's panes[] through the exact production path
+
+    /// Pins the defect measured against a live herdr 0.8.0 server:
+    /// requesting `HerdrSessionSnapshot` directly, instead of its own
+    /// wrapper `HerdrSnapshotRPCResult`, never decodes -- its fields sit
+    /// one level deeper, under "snapshot". Drives a required-fields-only
+    /// `session.snapshot` line through `HerdrOneShotRequest.send`,
+    /// asserting `panes` decode; `snapshotResponseLine` above (its own
+    /// `panes` is `[]`) never exercised this.
+    func test_send_withSessionSnapshotMethod_decodesPanesFromRequiredFieldsOnlyPaneFixture() async throws {
+        let transport = InMemoryHerdrTransport()
+        await transport.simulateLine(snapshotResponseLineWithOneMinimalPane(id: "1"))
+
+        let request = HerdrOneShotRequest(transport: transport)
+        let result: HerdrSnapshotRPCResult = try await request.send(
+            method: "session.snapshot", socketPath: "/tmp/herdr-oneshot-snapshot-panes/herdr.sock"
+        )
+
+        XCTAssertEqual(result.snapshot.panes.count, 1)
+        let pane = try XCTUnwrap(result.snapshot.panes.first)
+        XCTAssertEqual(pane.terminalID, "term_abc123")
+        XCTAssertEqual(pane.agentStatus, .unknown)
+        XCTAssertEqual(pane.workspaceID, "w1")
+        XCTAssertEqual(pane.tabID, "w1:t1")
+        XCTAssertEqual(pane.paneID, "w1:p1")
+        XCTAssertTrue(pane.focused)
+        XCTAssertEqual(pane.revision, 1)
     }
 
     // MARK: - HerdrOneShotRequest: RPC error response
@@ -511,6 +545,17 @@ final class HerdrConnectionTests: XCTestCase {
     private func snapshotResponseLine(id: String) -> String {
         #"""
         {"id":"\#(id)","result":{"type":"session_snapshot","snapshot":{"version":"0.8.0","protocol":19,"focused_workspace_id":"w9","focused_tab_id":"w9:t1","focused_pane_id":"w9:p1","workspaces":[],"tabs":[],"panes":[],"layouts":[],"agents":[{"terminal_id":"term_658b1a46d5aba9","agent":"claude","agent_status":"blocked","workspace_id":"w9","tab_id":"w9:t1","pane_id":"w9:p1","focused":false,"state_change_seq":5,"cwd":"/Users/eguchiyuuichi","foreground_cwd":"/Users/eguchiyuuichi","revision":0}]}}}
+        """#
+    }
+
+    /// Only the schema's REQUIRED fields for `HerdrSessionSnapshot`
+    /// (version, protocol, workspaces, tabs, panes, layouts, agents) and
+    /// `HerdrPaneRecord` (terminal_id, agent_status, workspace_id, tab_id,
+    /// pane_id, focused, revision) -- mirrors HerdrSyncSnapshotFetchTests'
+    /// own identical fixture.
+    private func snapshotResponseLineWithOneMinimalPane(id: String) -> String {
+        #"""
+        {"id":"\#(id)","result":{"type":"session_snapshot","snapshot":{"version":"0.8.0","protocol":19,"workspaces":[],"tabs":[],"panes":[{"terminal_id":"term_abc123","agent_status":"unknown","workspace_id":"w1","tab_id":"w1:t1","pane_id":"w1:p1","focused":true,"revision":1}],"layouts":[],"agents":[]}}}
         """#
     }
 
