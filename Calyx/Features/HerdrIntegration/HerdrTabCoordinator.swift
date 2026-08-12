@@ -141,10 +141,14 @@
 // WORKSPACE KILLED (Session Browser-initiated): `handleWorkspaceKilled
 // (workspaceID:socketPath:)` closes every pane `remainingPaneIDs` still
 // tracks for that workspace, each through the same `closeTrackedPane
-// (paneID:socketPath:)` helper `handlePaneClosed` itself calls -- a
-// workspace killed from the Session Browser has no herdr server left to
-// send a `pane.closed` event for it in the first place, so this is the
-// only way its Calyx tab closes and its bookkeeping gets pruned.
+// (paneID:socketPath:)` helper `handlePaneClosed` itself calls -- run
+// BEFORE `workspace.close` reaches herdr (`SessionBrowserModel
+// .killHerdrWorkspace(_:)`), so each pane's own `herdr terminal attach`
+// process exits through its normal path instead of racing herdr's
+// connection teardown. Never waits on a `pane.closed` event either way:
+// the Stage 2 event stream is not necessarily subscribed at kill time,
+// so this is the only reliable way the Calyx tab closes and its
+// bookkeeping gets pruned.
 //
 // `sleep` mirrors HerdrIntegrationCoordinator's own injection seam
 // (stored, never invoked here): no method here currently races
@@ -585,8 +589,10 @@ final class HerdrTabCoordinator {
     /// Closes every Calyx leaf currently registered for `workspaceID` on
     /// `socketPath` -- the Session Browser's Kill action for a herdr
     /// workspace row (`SessionBrowserModel.killHerdrWorkspace(_:)`) calls
-    /// this once the workspace is already closed server-side, rather
-    /// than relying on a `pane.closed` event to reach `handlePaneClosed`
+    /// this BEFORE sending herdr `workspace.close`, so each pane's own
+    /// `herdr terminal attach` process exits through its normal path
+    /// instead of racing herdr's connection teardown, rather than
+    /// relying on a `pane.closed` event to reach `handlePaneClosed`
     /// through the Stage 2 event stream, which is not necessarily
     /// subscribed at kill time. Closes each tracked pane through the
     /// exact same `closeTrackedPane(paneID:socketPath:)` helper
@@ -595,10 +601,11 @@ final class HerdrTabCoordinator {
     /// closed, and `activeTabIDs`/`lastAppliedLayouts`/`remainingPaneIDs`
     /// pruned, identically to what closing every one of its panes one by
     /// one via `handlePaneClosed` already leaves. NEVER sends herdr a
-    /// request of its own -- doubly true here, since the workspace is
-    /// already gone server-side by the time this runs. A no-op for a
-    /// `workspaceID` with no pane currently tracked on `socketPath`
-    /// (never opened in this window, or already fully closed).
+    /// request of its own: that is `workspace.close`'s own job, sent
+    /// separately by `killHerdrWorkspace(_:)` right after this returns.
+    /// A no-op for a `workspaceID` with no pane currently tracked on
+    /// `socketPath` (never opened in this window, or already fully
+    /// closed).
     func handleWorkspaceKilled(workspaceID: String, socketPath: String) {
         let key = WorkspaceKey(workspaceID: workspaceID, socketPath: socketPath)
         // A value-type snapshot, not a live view: closeTrackedPane below

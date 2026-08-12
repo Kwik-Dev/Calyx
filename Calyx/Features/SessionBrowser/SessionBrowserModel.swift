@@ -316,13 +316,16 @@ final class SessionBrowserModel {
     var onHerdrWorkspaceAttachRequested: ((HerdrWorkspaceRow) -> Void)?
 
     /// Invoked by `killHerdrWorkspace(_:)` with the workspace row whose
-    /// "Kill" button was pressed, once `herdrProvider.closeWorkspace(
-    /// workspaceID:socketPath:)` has already completed -- mirrors
+    /// "Kill" button was pressed, BEFORE `herdrProvider.closeWorkspace(
+    /// workspaceID:socketPath:)` is sent -- mirrors
     /// `onHerdrWorkspaceAttachRequested`'s injectable-closure pattern
-    /// exactly. The herdr-side workspace is already gone by the time this
-    /// fires, so the closure's own job is closing the Calyx tab that was
-    /// bridging it, rather than waiting on a herdr `pane.closed` event
-    /// that has nothing left to send it.
+    /// exactly. The closure's job is closing the Calyx tab that bridges
+    /// the workspace, which ends its `herdr terminal attach` process
+    /// through that process's own normal exit path: sending
+    /// `workspace.close` first would tear down the connection that
+    /// process is still attached to, which aborts inside its own
+    /// terminal-restore path instead of exiting cleanly. There is no
+    /// herdr `pane.closed` event to wait on either way.
     var onHerdrWorkspaceKilled: ((HerdrWorkspaceRow) -> Void)?
 
     init(
@@ -510,18 +513,20 @@ final class SessionBrowserModel {
         await refresh()
     }
 
-    /// Closes `row`'s herdr workspace via the injected `herdrProvider`'s
-    /// own `closeWorkspace(workspaceID:socketPath:)`, then invokes
-    /// `onHerdrWorkspaceKilled` with `row` so the Calyx tab bridging that
-    /// workspace closes too -- the herdr server is already gone by then,
-    /// so nothing downstream may depend on its own `pane.closed` event
-    /// still arriving -- then refreshes. Mirrors `kill(_:)` exactly: no
-    /// confirmation dialog, and the refresh runs unconditionally, whether
-    /// or not the close itself succeeded (see that method's own doc
-    /// comment for why).
+    /// Invokes `onHerdrWorkspaceKilled` with `row` first, closing the
+    /// Calyx tab bridging that workspace, then closes `row`'s herdr
+    /// workspace via the injected `herdrProvider`'s own `closeWorkspace(
+    /// workspaceID:socketPath:)`, then refreshes. Closing the Calyx tab
+    /// first ends its `herdr terminal attach` process through that
+    /// process's own normal exit path; sending `workspace.close` first
+    /// would tear down the connection that process is still attached to,
+    /// which aborts inside its own terminal-restore path instead.
+    /// Mirrors `kill(_:)` exactly: no confirmation dialog, and the
+    /// refresh runs unconditionally, whether or not the close itself
+    /// succeeded (see that method's own doc comment for why).
     func killHerdrWorkspace(_ row: HerdrWorkspaceRow) async {
-        await herdrProvider.closeWorkspace(workspaceID: row.info.workspaceID, socketPath: row.socketPath)
         onHerdrWorkspaceKilled?(row)
+        await herdrProvider.closeWorkspace(workspaceID: row.info.workspaceID, socketPath: row.socketPath)
         await refresh()
     }
 

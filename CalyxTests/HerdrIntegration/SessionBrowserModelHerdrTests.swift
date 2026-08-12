@@ -41,11 +41,11 @@
 //  - attachHerdrWorkspace(_:) invokes `onHerdrWorkspaceAttachRequested`
 //    with the workspace row (a single already-known workspace's own
 //    "Attach" button)
-//  - killHerdrWorkspace(_:) sends `workspace.close` for exactly the
-//    given workspace via the injected `herdrProvider`, invokes
-//    `onHerdrWorkspaceKilled` exactly once with that row (AFTER the
-//    close request completes, BEFORE the refresh), then triggers a
-//    refresh
+//  - killHerdrWorkspace(_:) invokes `onHerdrWorkspaceKilled` exactly
+//    once with that row FIRST, closing the Calyx panes before herdr's
+//    own workspace.close is sent, then sends `workspace.close` for
+//    exactly the given workspace via the injected `herdrProvider`, then
+//    triggers a refresh
 //  - CRITICAL negative invariant (undetected herdr = zero work):
 //    refresh() must NEVER call `herdrProvider.listSessions()` while the
 //    herdr binary itself is unresolvable -- asserted via the fake
@@ -113,6 +113,12 @@ private final class FakeHerdrSessionProvider: HerdrSessionProviderProtocol, @unc
     var sessionsToReturn: [HerdrSessionInfo] = []
     private(set) var listSessionsCallCount = 0
     private(set) var closeWorkspaceCalls: [(workspaceID: String, socketPath: String)] = []
+    /// `listSessionsCallCount` AT the moment each `closeWorkspace` call
+    /// arrives -- lets `test_killHerdrWorkspace_sendsCloseForExactlyThatWorkspace_thenRefreshes`
+    /// pin close-before-refresh directly, the same way it pins
+    /// closure-before-close via `closeWorkspaceCalls.count` read inside
+    /// `onHerdrWorkspaceKilled`.
+    private(set) var listSessionsCallCountAtCloseCall: [Int] = []
 
     func listSessions() async -> [HerdrSessionInfo] {
         listSessionsCallCount += 1
@@ -120,6 +126,7 @@ private final class FakeHerdrSessionProvider: HerdrSessionProviderProtocol, @unc
     }
 
     func closeWorkspace(workspaceID: String, socketPath: String) async {
+        listSessionsCallCountAtCloseCall.append(listSessionsCallCount)
         closeWorkspaceCalls.append((workspaceID: workspaceID, socketPath: socketPath))
     }
 }
@@ -303,9 +310,10 @@ final class SessionBrowserModelHerdrTests: XCTestCase {
         )
 
         // Captured AT closure-invocation time (not after killHerdrWorkspace
-        // returns) so the assertions below can pin the ordering the spec
-        // requires -- workspace.close already sent, refresh() not yet
-        // run -- not merely that all three eventually happened.
+        // returns) so the assertions below can pin the full ordering the
+        // spec requires -- panes closed first, workspace.close not yet
+        // sent, refresh() not yet run -- not merely that all three
+        // eventually happened.
         var killedRows: [HerdrWorkspaceRow] = []
         var closeCallCountWhenInvoked: [Int] = []
         var listSessionsCallCountWhenInvoked: [Int] = []
@@ -327,12 +335,16 @@ final class SessionBrowserModelHerdrTests: XCTestCase {
             "killHerdrWorkspace(_:) must invoke onHerdrWorkspaceKilled exactly once, with the row it was given"
         )
         XCTAssertEqual(
-            closeCallCountWhenInvoked, [1],
-            "onHerdrWorkspaceKilled must fire AFTER workspace.close has already been sent, not before"
+            closeCallCountWhenInvoked, [0],
+            "onHerdrWorkspaceKilled must fire BEFORE workspace.close is sent, not after"
         )
         XCTAssertEqual(
             listSessionsCallCountWhenInvoked, [0],
             "onHerdrWorkspaceKilled must fire BEFORE refresh() runs, not after"
+        )
+        XCTAssertEqual(
+            provider.listSessionsCallCountAtCloseCall, [0],
+            "workspace.close must be sent BEFORE refresh() runs, not after"
         )
         XCTAssertEqual(
             provider.listSessionsCallCount, 1,

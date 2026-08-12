@@ -91,8 +91,9 @@ final class SessionBrowserWindowController: NSWindowController {
 
         // Herdr workspace row "Kill": mirrors onHerdrWorkspaceAttachRequested's
         // wiring immediately above -- closes the Calyx tab bridging the
-        // killed workspace, since the herdr server that would otherwise
-        // send a pane.closed event for it is already gone.
+        // workspace BEFORE herdr's own workspace.close is sent, so the
+        // attach process inside it exits through its normal path instead
+        // of racing herdr's connection teardown.
         model.onHerdrWorkspaceKilled = { [weak self] row in
             self?.closeHerdrWorkspaceTabs(row)
         }
@@ -165,15 +166,17 @@ final class SessionBrowserWindowController: NSWindowController {
     }
 
     /// A herdr workspace row's "Kill" button, invoked by
-    /// `SessionBrowserModel.killHerdrWorkspace(_:)` right after
-    /// `herdrProvider.closeWorkspace(workspaceID:socketPath:)` completes
+    /// `SessionBrowserModel.killHerdrWorkspace(_:)` BEFORE
+    /// `herdrProvider.closeWorkspace(workspaceID:socketPath:)` is sent
     /// -- closes the Calyx tab bridging `row`'s workspace through
     /// `HerdrTabCoordinator.handleWorkspaceKilled(workspaceID:socketPath:)`,
     /// the coordinator's own entry point for closing a herdr-bridged
-    /// pane's Calyx side without sending herdr a request. A
-    /// `herdrTabCoordinator` that is `nil` (herdr itself was never
-    /// resolvable) does nothing, same as `createHerdrWorkspace(_:)`/
-    /// `attachHerdrWorkspace(_:)` above.
+    /// pane's Calyx side without sending herdr a request, so the
+    /// terminal-attach process inside it exits through its normal path
+    /// before herdr's own connection tears down. A `herdrTabCoordinator`
+    /// that is `nil` (herdr itself was never resolvable) does nothing,
+    /// same as `createHerdrWorkspace(_:)`/`attachHerdrWorkspace(_:)`
+    /// above.
     private func closeHerdrWorkspaceTabs(_ row: HerdrWorkspaceRow) {
         (NSApp.delegate as? AppDelegate)?.herdrTabCoordinator?.handleWorkspaceKilled(
             workspaceID: row.info.workspaceID, socketPath: row.socketPath

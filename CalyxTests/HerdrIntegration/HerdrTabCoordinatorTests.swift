@@ -1233,8 +1233,9 @@ final class HerdrTabCoordinatorTests: XCTestCase {
     /// pruned exactly like `handlePaneClosed` already leaves it (observed
     /// via `handleLayoutUpdated`'s own documented contract, mirroring
     /// test 11's technique above), and -- the CRITICAL constraint --
-    /// zero bytes ever sent to herdr for this call, since the workspace
-    /// is already gone server-side by the time it runs.
+    /// zero bytes ever sent to herdr for this call: sending herdr its own
+    /// `workspace.close` is `SessionBrowserModel.killHerdrWorkspace(_:)`'s
+    /// job, never this coordinator's.
     func test_handleWorkspaceKilled_closesEveryRegisteredLeaf_prunesRegistryAndBookkeeping_sendsNoHerdrRequest() async {
         let factory = SpyHerdrTransportFactory()
         let firstSurfaceID = UUID()
@@ -1279,7 +1280,8 @@ final class HerdrTabCoordinatorTests: XCTestCase {
         XCTAssertEqual(
             sentLinesAfter, baselineSentLines,
             "the herdr server must NEVER be sent any request when its own workspace is killed from the " +
-            "Session Browser -- the workspace is already gone server-side by the time this runs"
+            "Session Browser -- sending workspace.close is SessionBrowserModel.killHerdrWorkspace(_:)'s " +
+            "job, never this coordinator's"
         )
     }
 
