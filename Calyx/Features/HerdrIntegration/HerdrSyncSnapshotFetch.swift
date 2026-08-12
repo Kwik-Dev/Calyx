@@ -39,16 +39,10 @@
 // HerdrEmptyParams -- see HerdrConnection.swift -- so the wire ENVELOPE
 // shape (the request line's own {"id":..,"method":..,"params":{}}
 // shape; the response's own "result"/"error" probe) is defined in
-// exactly one place, never duplicated. Only the socket connect/write/
-// read loop below is new, hand-rolled Darwin BSD socket code: the
-// CONNECT phase mirrors
-// HerdrSessionDiscovery.isAlive's own established idiom verbatim
-// (non-blocking connect, poll()-bounded, including its own
-// sockaddr_un-construction shape -- duplicated here rather than shared,
-// mirroring the SAME duplication already standing between
-// HerdrSessionDiscovery.isAlive and BSDHerdrTransport.connect); the
-// WRITE/READ phase is new, since isAlive never sends or reads anything
-// -- it only confirms accept().
+// exactly one place, never duplicated. The connect phase is
+// HerdrUnixSocket.connect (HerdrUnixSocket.swift); only the write/read
+// loop below is new, hand-rolled Darwin BSD socket code, since isAlive
+// never sends or reads anything -- it only confirms accept().
 //
 // TIMEOUTS: `connectTimeoutMilliseconds` (50ms) is IDENTICAL to
 // HerdrSessionDiscovery.isAlive's own `probeTimeoutMilliseconds`, and
@@ -75,11 +69,10 @@
 // outcome HerdrRestoreCommandPolicy.decide already treats as
 // .plainShellAndPrune -- not a new user-visible failure mode.
 //
-// SO_NOSIGPIPE (mirrors BSDHerdrTransport.connect's own identical
-// setsockopt call, HerdrTransport.swift): load-bearing, not decorative
-// -- a write(2) to a peer that has already closed its end raises
-// SIGPIPE on Darwin absent this option, which (uncaught) terminates the
-// WHOLE host process, not just this one fetch.
+// SO_NOSIGPIPE (set by HerdrUnixSocket.connect): load-bearing, not
+// decorative -- a write(2) to a peer that has already closed its end
+// raises SIGPIPE on Darwin absent this option, which (uncaught)
+// terminates the WHOLE host process, not just this one fetch.
 
 import Darwin
 import Foundation
@@ -110,49 +103,10 @@ enum HerdrSyncSnapshotFetch {
     /// already treats "could not resolve a terminal id for this ref"
     /// identically regardless of why.
     static func fetch(socketPath: String) -> HerdrSessionSnapshot? {
-        let pathBytes = Array(socketPath.utf8)
-
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else { return nil }
-        defer { close(fd) }
-
-        // See this file's header "SO_NOSIGPIPE".
-        var noSigPipe: Int32 = 1
-        guard setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size)) == 0 else {
+        guard let fd = HerdrUnixSocket.connect(socketPath: socketPath, timeoutMilliseconds: connectTimeoutMilliseconds) else {
             return nil
         }
-
-        var addr = sockaddr_un()
-        let sunPathCapacity = MemoryLayout.size(ofValue: addr.sun_path)
-        guard pathBytes.count < sunPathCapacity else { return nil }
-        addr.sun_family = sa_family_t(AF_UNIX)
-        addr.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
-        withUnsafeMutableBytes(of: &addr.sun_path) { rawBuffer in
-            let buffer = rawBuffer.bindMemory(to: UInt8.self)
-            for (index, byte) in pathBytes.enumerated() {
-                buffer[index] = byte
-            }
-            buffer[pathBytes.count] = 0
-        }
-
-        let originalFlags = fcntl(fd, F_GETFL, 0)
-        guard originalFlags >= 0, fcntl(fd, F_SETFL, originalFlags | O_NONBLOCK) >= 0 else { return nil }
-
-        let connectResult = withUnsafePointer(to: &addr) { addrPtr -> Int32 in
-            addrPtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
-                Darwin.connect(fd, sockaddrPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
-            }
-        }
-        if connectResult != 0 {
-            guard errno == EINPROGRESS else { return nil }
-            var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
-            guard poll(&pfd, 1, connectTimeoutMilliseconds) > 0, pfd.revents & Int16(POLLOUT) != 0 else { return nil }
-            var socketError: Int32 = 0
-            var socketErrorLength = socklen_t(MemoryLayout<Int32>.size)
-            guard getsockopt(fd, SOL_SOCKET, SO_ERROR, &socketError, &socketErrorLength) == 0, socketError == 0 else {
-                return nil
-            }
-        }
+        defer { close(fd) }
 
         // Single hard monotonic deadline for the write+read phase below
         // -- see this file's header "TIMEOUTS".

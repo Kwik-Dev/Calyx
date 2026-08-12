@@ -151,10 +151,11 @@ struct HerdrSessionDiscovery: HerdrSessionDiscoveryProtocol {
         return deduped
     }
 
-    /// Bounded safety-net timeout (milliseconds) for the `poll()` below.
-    /// A local AF_UNIX `SOCK_STREAM` `connect()` resolves synchronously
-    /// in practice -- either immediate success or an immediate failure
-    /// errno (`ECONNREFUSED`/`ENOENT`/`ENOTSOCK`), verified empirically
+    /// Bounded safety-net timeout (milliseconds) for
+    /// `HerdrUnixSocket.connect`'s own `poll()`. A local AF_UNIX
+    /// `SOCK_STREAM` `connect()` resolves synchronously in practice --
+    /// either immediate success or an immediate failure errno
+    /// (`ECONNREFUSED`/`ENOENT`/`ENOTSOCK`), verified empirically
     /// against real bound/listening, bound-only, regular-file, and
     /// missing-path fixtures -- so `EINPROGRESS` is not expected to ever
     /// actually happen here. This bound exists purely so a genuinely
@@ -178,60 +179,10 @@ struct HerdrSessionDiscovery: HerdrSessionDiscoveryProtocol {
         // instead.
         guard !Task.isCancelled else { return false }
 
-        let pathBytes = Array(socketPath.utf8)
-
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else { return false }
-        defer { close(fd) }
-
-        var addr = sockaddr_un()
-        let sunPathCapacity = MemoryLayout.size(ofValue: addr.sun_path)
-        guard pathBytes.count < sunPathCapacity else {
-            // Cannot fit into sockaddr_un.sun_path (104 bytes on Darwin,
-            // including the NUL terminator) -- never a live candidate,
-            // and never worth crashing the process over; see this
-            // file's header comment.
+        guard let fd = HerdrUnixSocket.connect(socketPath: socketPath, timeoutMilliseconds: Self.probeTimeoutMilliseconds) else {
             return false
         }
-        addr.sun_family = sa_family_t(AF_UNIX)
-        addr.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
-        withUnsafeMutableBytes(of: &addr.sun_path) { rawBuffer in
-            let buffer = rawBuffer.bindMemory(to: UInt8.self)
-            for (index, byte) in pathBytes.enumerated() {
-                buffer[index] = byte
-            }
-            buffer[pathBytes.count] = 0
-        }
-
-        let flags = fcntl(fd, F_GETFL, 0)
-        guard flags >= 0, fcntl(fd, F_SETFL, flags | O_NONBLOCK) >= 0 else { return false }
-
-        let connectResult = withUnsafePointer(to: &addr) { addrPtr -> Int32 in
-            addrPtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
-                Darwin.connect(fd, sockaddrPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
-            }
-        }
-        if connectResult == 0 {
-            return true
-        }
-        let connectErrno = errno
-        guard connectErrno == EINPROGRESS else {
-            // ECONNREFUSED (stale socket file, nothing listening),
-            // ENOENT (no socket file at all), ENOTSOCK (a regular file
-            // left behind at the path), or any other immediate failure.
-            return false
-        }
-
-        var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
-        guard poll(&pfd, 1, Self.probeTimeoutMilliseconds) > 0, pfd.revents & Int16(POLLOUT) != 0 else {
-            return false
-        }
-
-        var socketError: Int32 = 0
-        var socketErrorLength = socklen_t(MemoryLayout<Int32>.size)
-        guard getsockopt(fd, SOL_SOCKET, SO_ERROR, &socketError, &socketErrorLength) == 0 else {
-            return false
-        }
-        return socketError == 0
+        close(fd)
+        return true
     }
 }

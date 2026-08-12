@@ -2929,8 +2929,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let newID = created.surfaceID
         tab.splitTree = SplitTree(leafID: newID)
         // The whole original tree failed to restore, so none of the
-        // old leaf UUIDs survive into this brand-new single-leaf tree —
-        // drop every now-orphaned SessionRef rather than let it linger
+        // old leaf UUIDs survive into this brand-new single-leaf tree.
+        // Drop every now-orphaned SessionRef rather than let it linger
         // (and get written back out by the next snapshot) pointing at a
         // leaf that no longer exists.
         tab.pruneSessionRefs()

@@ -40,8 +40,7 @@
 // which bind and listen on a local Unix-domain socket the test itself
 // owns and controls both ends of -- the same fixture approach
 // `HerdrSessionDiscovery.isAlive(socketPath:)`'s own tests
-// (HerdrSessionDiscoveryTests.swift) already established, and the
-// direct precedent for the `sockaddr_un` construction below. There is
+// (HerdrSessionDiscoveryTests.swift) already established. There is
 // no "no real sockets in unit tests" rule anywhere in this codebase --
 // a real, locally-bound-and-listening socket the test itself owns is
 // exactly how socket-facing code IS tested here, for both this type and
@@ -254,14 +253,9 @@ enum HerdrTransportError: Error, Sendable, Equatable {
     /// connected `BSDHerdrTransport` -- see `HerdrTransport.connect(socketPath:)`'s
     /// own doc comment.
     case alreadyConnected
-    /// `socketPath`'s UTF-8 byte length does not fit inside
-    /// `sockaddr_un.sun_path` (104 bytes on Darwin, including the NUL
-    /// terminator).
-    case socketPathTooLong
-    /// `socket(2)` / `connect(2)` / a post-connect `setsockopt(2)` or
-    /// `fcntl(2)` call failed. Carries a human-readable `strerror(3)`
-    /// message, not the raw `errno` -- see `HerdrTransportFailure`'s own
-    /// doc comment for why this file never carries a raw `any Error`.
+    /// `HerdrUnixSocket.connect` returned `nil` for any reason. Carries
+    /// a fixed message, not `strerror(3)` -- the failing errno does not
+    /// cross `HerdrUnixSocket.connect`'s own boundary.
     case connectFailed(String)
     /// A `write(2)`/`send(2)` syscall failed for a reason other than
     /// the transport already being closed -- also used (B2 fix) when a
@@ -391,62 +385,8 @@ final class BSDHerdrTransport: HerdrTransport, @unchecked Sendable {
                     break
                 }
 
-                let pathBytes = Array(socketPath.utf8)
-                var addr = sockaddr_un()
-                let sunPathCapacity = MemoryLayout.size(ofValue: addr.sun_path)
-                guard pathBytes.count < sunPathCapacity else {
-                    completion.resume(throwing: HerdrTransportError.socketPathTooLong)
-                    return
-                }
-
-                let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-                guard fd >= 0 else {
-                    completion.resume(throwing: HerdrTransportError.connectFailed(Self.errnoMessage(errno)))
-                    return
-                }
-
-                addr.sun_family = sa_family_t(AF_UNIX)
-                addr.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
-                withUnsafeMutableBytes(of: &addr.sun_path) { rawBuffer in
-                    let buffer = rawBuffer.bindMemory(to: UInt8.self)
-                    for (index, byte) in pathBytes.enumerated() {
-                        buffer[index] = byte
-                    }
-                    buffer[pathBytes.count] = 0
-                }
-
-                let connectResult = withUnsafePointer(to: &addr) { addrPtr -> Int32 in
-                    addrPtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
-                        Darwin.connect(fd, sockaddrPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
-                    }
-                }
-                guard connectResult == 0 else {
-                    let message = Self.errnoMessage(errno)
-                    Darwin.close(fd)
-                    completion.resume(throwing: HerdrTransportError.connectFailed(message))
-                    return
-                }
-
-                // Prevent a write to a peer that has vanished from
-                // raising SIGPIPE and taking the whole host process down
-                // with it -- Darwin has no per-call MSG_NOSIGNAL, so this
-                // socket option is the equivalent.
-                var noSigPipe: Int32 = 1
-                guard setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size)) == 0 else {
-                    let message = Self.errnoMessage(errno)
-                    Darwin.close(fd)
-                    completion.resume(throwing: HerdrTransportError.connectFailed(message))
-                    return
-                }
-
-                // Non-blocking from here on so the read source below and
-                // `send`'s write loop never park a thread on a stalled
-                // peer.
-                let flags = fcntl(fd, F_GETFL, 0)
-                guard flags >= 0, fcntl(fd, F_SETFL, flags | O_NONBLOCK) >= 0 else {
-                    let message = Self.errnoMessage(errno)
-                    Darwin.close(fd)
-                    completion.resume(throwing: HerdrTransportError.connectFailed(message))
+                guard let fd = HerdrUnixSocket.connect(socketPath: socketPath, timeoutMilliseconds: Self.connectTimeoutMilliseconds) else {
+                    completion.resume(throwing: HerdrTransportError.connectFailed("connect failed"))
                     return
                 }
 
@@ -728,6 +668,10 @@ final class BSDHerdrTransport: HerdrTransport, @unchecked Sendable {
             return
         }
     }
+
+    /// Bound for `HerdrUnixSocket.connect`'s poll(2) wait -- same value
+    /// and reasoning as `HerdrSessionDiscovery.probeTimeoutMilliseconds`.
+    private static let connectTimeoutMilliseconds: Int32 = 50
 
     /// Per-iteration `poll(2)` timeout for `waitForWritability(fd:)` --
     /// deliberately finite (never `-1`/infinite), so `closeRequested` is
