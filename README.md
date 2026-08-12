@@ -23,6 +23,7 @@ https://github.com/user-attachments/assets/a04e1161-e296-4791-9b7c-3ef84d990089
 - **Persistent Sessions** -- opt-in daemon-backed sessions (`calyx-session`) that survive quit and crash; the toggle applies only to panes opened after it is enabled; reattach from the Session Browser (`Cmd+Shift+B`); a recovery bar offers the preserved session when auto-restore is skipped or fails; opt-in on-disk history
 - **Remote Sessions** -- persistent sessions on SSH hosts picked from `~/.ssh/config`; one-time daemon deploy via `calyx-session remote-install <host>`
 - **Agent Resume** -- reattached sessions can offer to resume the agent CLI conversation that was running (Settings -> Agents)
+- **herdr integration** -- browse, open, and manage herdr (a separate terminal multiplexer) workspaces as native split-pane tabs from the Session Browser; herdr-hosted agents also show in the Agents Sidebar
 - **Desktop Notifications** -- OSC 9/99/777 support with rate limiting
 - **Browser Integration** -- WKWebView tabs alongside terminal tabs (http/https only, non-persistent storage, popup blocking)
 - **Scrollback Search** -- `Cmd+F` to search terminal scrollback with match highlighting, `Cmd+G`/`Cmd+Shift+G` to navigate matches
