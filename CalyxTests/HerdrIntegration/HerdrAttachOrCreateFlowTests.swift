@@ -2,8 +2,8 @@
 //  HerdrAttachOrCreateFlowTests.swift
 //  CalyxTests
 //
-//  HerdrAttachOrCreateFlow.createAndOpen(socketPath:homeDirectoryPath:
-//  transportFactory:logger:openWorkspace:): the herdr server row's own
+//  HerdrAttachOrCreateFlow.createAndOpen(socketPath:transportFactory:
+//  logger:openWorkspace:): the herdr server row's own
 //  "New" button (SessionBrowserWindowController.createHerdrWorkspace(_:))
 //  -- unconditionally sends workspace.create, then opens the workspace that
 //  creates. No snapshot fetch, and no create-versus-attach decision:
@@ -18,9 +18,8 @@
 //  codebase's per-file fake-duplication convention.
 //
 //  Coverage:
-//  - createAndOpen sends workspace.create (params carrying EXACTLY two
-//    keys, cwd (the injected home directory) and focus (true), decoded
-//    from a required-fields-only "workspace_created" response --
+//  - createAndOpen sends workspace.create (params EXACTLY {"focus":true},
+//    decoded from a required-fields-only "workspace_created" response --
 //    pinning that decode) as its first and ONLY request -- no
 //    session.snapshot fetch beforehand -- then opens the created
 //    workspace's own id through openWorkspace, and no other id
@@ -70,7 +69,6 @@ private final class OpenWorkspaceSpy {
 final class HerdrAttachOrCreateFlowTests: XCTestCase {
 
     private let socketPath = "/fixture/config/herdr/herdr.sock"
-    private let homeDirectoryPath = "/fixture/Users/fixture-user"
     private let logger = Logger(subsystem: "com.calyx.terminal.tests", category: "HerdrAttachOrCreateFlowTests")
 
     // MARK: - createAndOpen sends workspace.create with no snapshot fetch, then opens exactly the created id
@@ -81,8 +79,7 @@ final class HerdrAttachOrCreateFlowTests: XCTestCase {
 
         let task = Task {
             await HerdrAttachOrCreateFlow.createAndOpen(
-                socketPath: socketPath, homeDirectoryPath: homeDirectoryPath, transportFactory: factory,
-                logger: logger,
+                socketPath: socketPath, transportFactory: factory, logger: logger,
                 openWorkspace: { workspaceID, socketPath in await spy.open(workspaceID, socketPath) }
             )
         }
@@ -103,9 +100,9 @@ final class HerdrAttachOrCreateFlowTests: XCTestCase {
         )
         let createParams = jsonObject(inLine: createSent[0])?["params"] as? [String: Any] ?? [:]
         XCTAssertEqual(
-            createParams as NSDictionary, ["cwd": homeDirectoryPath, "focus": true] as NSDictionary,
-            "workspace.create's params must carry EXACTLY {\"cwd\":\"\(homeDirectoryPath)\",\"focus\":true} -- " +
-            "cwd is the injected home directory (herdr has no directory-independent default), no env/label"
+            createParams as NSDictionary, ["focus": true] as NSDictionary,
+            "workspace.create's params must carry EXACTLY {\"focus\":true} -- WorkspaceCreateParams' own " +
+            "schema shape, no cwd/env/label"
         )
         await createTransport.simulateLine(workspaceCreatedResponseLine(id: createID, workspaceID: "w-new"))
 

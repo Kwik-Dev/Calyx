@@ -37,23 +37,13 @@ enum HerdrAttachOrCreateFlow {
     /// `openWorkspace` -- the server row's own "New" button always
     /// performs exactly this, regardless of how many workspaces already
     /// exist on that socket. `workspace.create`'s params carry exactly
-    /// two keys, `cwd` and `focus` -- WorkspaceCreateParams' own schema
-    /// shape (`herdr api schema --json`): `cwd`/`env`/`focus`/`label`
-    /// all optional. `cwd` is sent explicitly as the user's home
-    /// directory: herdr has no directory-independent default, so an
-    /// omitted `cwd` creates the workspace in whichever workspace herdr
-    /// currently has focused, not the user's home. `env`/`label` are
-    /// never sent.
-    ///
-    /// `homeDirectoryPath` defaults to
-    /// `FileManager.default.homeDirectoryForCurrentUser.path` (not the
-    /// overridable `HOME` environment variable, and not
-    /// `NSHomeDirectory()`) and is injectable only so
-    /// `HerdrAttachOrCreateFlowTests.swift` can assert an exact value
-    /// without depending on the machine it runs on.
+    /// one key, `focus` -- WorkspaceCreateParams' own schema shape
+    /// (`herdr api schema --json`): `cwd`/`env`/`focus`/`label` all
+    /// optional. No cwd is sent, so herdr chooses (it uses the focused
+    /// workspace's directory, falling back to the home directory when no
+    /// workspace exists). `env`/`label` are never sent.
     static func createAndOpen(
         socketPath: String,
-        homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
         transportFactory: any HerdrTransportFactory,
         logger: Logger,
         openWorkspace: (String, String) async -> Bool
@@ -63,9 +53,7 @@ enum HerdrAttachOrCreateFlow {
             let transport = await transportFactory.makeTransport()
             let request = HerdrOneShotRequest(transport: transport)
             let result: HerdrWorkspaceCreateRPCResult = try await request.send(
-                method: "workspace.create",
-                params: HerdrWorkspaceCreateParams(cwd: homeDirectoryPath),
-                socketPath: socketPath
+                method: "workspace.create", params: HerdrWorkspaceCreateParams(), socketPath: socketPath
             )
             workspaceID = result.workspace.workspaceID
         } catch {
@@ -86,12 +74,9 @@ enum HerdrAttachOrCreateFlow {
 
 /// `workspace.create`'s own request `params` -- WorkspaceCreateParams'
 /// schema shape (`herdr api schema --json`): `cwd`/`env`/`focus`/`label`
-/// all optional. This file only ever sends `cwd` and `focus`, so
-/// encoding this type produces exactly those two keys on the wire
-/// (JSONEncoder chooses key order; it is not pinned here), nothing
-/// else.
+/// all optional. This file only ever sends `focus`, so encoding this
+/// type produces exactly `{"focus":true}` on the wire, nothing else.
 private struct HerdrWorkspaceCreateParams: Encodable {
-    let cwd: String
     let focus = true
 }
 
