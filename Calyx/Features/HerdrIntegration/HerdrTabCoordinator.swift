@@ -25,6 +25,11 @@
 // killed outright by HerdrTabCoordinatorTests.swift's own
 // test_openWorkspace_activeTabIDFromWorkspaceGet_notDerivedFromWorkspaceIDString_usedExactlyForLayoutExport,
 // which uses a deliberately non-"<workspaceID>:t1"-shaped active_tab_id).
+// That same workspace.get response also carries the workspace's own
+// "label" (WorkspaceInfo's own OTHER required, non-nullable field),
+// which HerdrTabTitlePolicy.title turns into the plan's own title below,
+// falling back to the bare workspace id only when the label is blank
+// after trimming whitespace.
 // Next, a one-shot session.snapshot (params "{}" -- HerdrConnection.swift's
 // own header, fact 1) builds a paneID -> terminalID map from its own
 // "panes[]" (each PaneInfo's own required "pane_id"/"terminal_id") --
@@ -180,7 +185,7 @@ protocol HerdrNativeTabAttacher {
     @MainActor func closeLeaf(_ id: UUID)
 }
 
-// MARK: - Wire params/result (file-private -- HerdrConnection.swift stays method-agnostic)
+// MARK: - Wire params/result (HerdrConnection.swift stays method-agnostic)
 
 /// `workspace.get`'s own request `params` -- WorkspaceTarget's own schema
 /// shape (`herdr api schema --json`), exactly one property. See this
@@ -201,19 +206,25 @@ private struct HerdrWorkspaceGetRPCResult: Sendable, Decodable {
     let workspace: HerdrWorkspaceInfo
 }
 
-/// Minimal `WorkspaceInfo` -- only the field this file actually reads
-/// ("active_tab_id"), per this project's own "define the minimal
-/// Decodable you need: only the fields you read" rule. A keyed decoding
-/// container only ever reads the keys it asks for, so this tolerates
-/// every OTHER schema-required field ("workspace_id", "number", "label",
-/// "focused", "pane_count", "tab_count", "agent_status") without
-/// modeling them. "active_tab_id" IS itself required by the schema, so
-/// it decodes as a non-optional `String`, never `String?`.
-private struct HerdrWorkspaceInfo: Sendable, Decodable {
+/// Minimal `WorkspaceInfo` -- only the fields this file actually reads
+/// ("active_tab_id", "label"), per this project's own "define the
+/// minimal Decodable you need: only the fields you read" rule. A keyed
+/// decoding container only ever reads the keys it asks for, so this
+/// tolerates every OTHER schema-required field ("workspace_id",
+/// "number", "focused", "pane_count", "tab_count", "agent_status")
+/// without modeling them. Both "active_tab_id" and "label" are
+/// themselves required by the schema, and neither is nullable (`herdr
+/// api schema --json`'s own success_response.$defs.WorkspaceInfo), so
+/// both decode as non-optional `String`, never `String?`. Not `private`
+/// like this section's other wire types: decode-tested directly (see
+/// HerdrTabCoordinatorTests.swift).
+struct HerdrWorkspaceInfo: Sendable, Decodable {
     let activeTabID: String
+    let label: String
 
     private enum CodingKeys: String, CodingKey {
         case activeTabID = "active_tab_id"
+        case label
     }
 }
 
@@ -357,12 +368,13 @@ final class HerdrTabCoordinator {
         opensInFlight.insert(key)
         defer { opensInFlight.remove(key) }
 
-        let activeTabID: String
+        let workspaceInfo: HerdrWorkspaceInfo
         do {
-            activeTabID = try await fetchActiveTabID(workspaceID: workspaceID, socketPath: socketPath)
+            workspaceInfo = try await fetchWorkspaceInfo(workspaceID: workspaceID, socketPath: socketPath)
         } catch {
             return false
         }
+        let activeTabID = workspaceInfo.activeTabID
 
         // See this file's header "OPEN SEQUENCE" -- resolved BEFORE
         // layout.export, since Phase 1 below needs every pane's own
@@ -448,7 +460,10 @@ final class HerdrTabCoordinator {
             paneRefs[entry.surfaceID] = ref
         }
 
-        let plan = HerdrNativeTabPlan(root: mappedRoot, focusedLeafID: focusedLeafID, paneRefs: paneRefs, title: workspaceID)
+        let plan = HerdrNativeTabPlan(
+            root: mappedRoot, focusedLeafID: focusedLeafID, paneRefs: paneRefs,
+            title: HerdrTabTitlePolicy.title(label: workspaceInfo.label, workspaceID: workspaceID)
+        )
         guard attacher.attachTab(plan: plan) else {
             // See this file's header "ATTACHTAB FAILURE".
             for entry in created.reversed() {
@@ -597,16 +612,18 @@ final class HerdrTabCoordinator {
     // MARK: - Wire
 
     /// One-shot `workspace.get`, scoped to `workspaceID` -- resolves its
-    /// CURRENT active_tab_id, read from the response, never derived --
-    /// see this file's header "OPEN SEQUENCE".
-    private func fetchActiveTabID(workspaceID: String, socketPath: String) async throws -> String {
+    /// CURRENT WorkspaceInfo: active_tab_id (read from the response,
+    /// never derived -- see this file's header "OPEN SEQUENCE") and
+    /// label (see openWorkspace's own call site for how it feeds
+    /// HerdrTabTitlePolicy.title).
+    private func fetchWorkspaceInfo(workspaceID: String, socketPath: String) async throws -> HerdrWorkspaceInfo {
         let transport = await transportFactory.makeTransport()
         let request = HerdrOneShotRequest(transport: transport)
         let params = HerdrWorkspaceGetParams(workspaceID: workspaceID)
         let response: HerdrWorkspaceGetRPCResult = try await request.send(
             method: "workspace.get", params: params, socketPath: socketPath
         )
-        return response.workspace.activeTabID
+        return response.workspace
     }
 
     /// One-shot `session.snapshot` (argument-less -- HerdrConnection.swift's

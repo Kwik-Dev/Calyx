@@ -83,6 +83,12 @@
 //  - .calyxSurfaceDestroyed (a Calyx-side close): prunes the registry via
 //    HerdrPaneRegistry's own existing observation mechanism, never calls
 //    closeLeaf again, and sends no herdr request either
+//  - HerdrWorkspaceInfo decode: a minimal, required-fields-only payload
+//    decodes both active_tab_id and label; the title-selection decision
+//    itself (label present vs. absent/null/blank) is covered directly by
+//    HerdrTabTitlePolicyTests, not here -- this file only pins that
+//    workspace.get's own response feeds the coordinator a real label
+//    (test_openWorkspace_singlePane_..., plan.title, "demo" fixture)
 //
 
 import XCTest
@@ -474,7 +480,11 @@ final class HerdrTabCoordinatorTests: XCTestCase {
         XCTAssertEqual(plan.root, .leaf(id: fakeSurfaceID), "a single-pane layout's plan root must be a leaf naming the REAL created surface id")
         XCTAssertEqual(plan.focusedLeafID, fakeSurfaceID)
         XCTAssertEqual(plan.paneRefs, [fakeSurfaceID: HerdrPaneRef(socketPath: socketPath, paneID: "wF:p1")])
-        XCTAssertEqual(plan.title, "wF")
+        XCTAssertEqual(
+            plan.title, "demo",
+            "the plan's title must be workspace.get's own \"label\" (this fixture's \"demo\"), not the bare " +
+            "workspace id -- HerdrTabTitlePolicy.title prefers a present, non-blank label"
+        )
 
         let callCount = await factory.callCount
         XCTAssertEqual(
@@ -1178,6 +1188,27 @@ final class HerdrTabCoordinatorTests: XCTestCase {
             "a pruned workspace's handleLayoutUpdated must touch the transport factory zero additional times " +
             "-- no wasted layout.export round trip for a Calyx tab that no longer exists"
         )
+    }
+
+    // MARK: - 12. Workspace record decode: label required and non-nullable
+
+    /// Pins `HerdrWorkspaceInfo`'s own decode against a payload carrying
+    /// EXACTLY WorkspaceInfo's own schema `required` fields (`herdr api
+    /// schema --json`'s own success_response.$defs.WorkspaceInfo:
+    /// "workspace_id", "number", "label", "focused", "pane_count",
+    /// "tab_count", "active_tab_id", "agent_status") -- "worktree"/
+    /// "tokens" are optional and deliberately omitted. "label" decodes as
+    /// a non-optional `String`: the schema marks it both required and
+    /// non-nullable (`{"type":"string"}`, no `null` alternative), unlike
+    /// "worktree" (`anyOf` with `{"type":"null"}`).
+    func test_workspaceInfoDecode_minimalRequiredFieldsOnlyPayload_decodesActiveTabIDAndLabel() throws {
+        let json = "{\"workspace_id\":\"wJ\",\"number\":1,\"label\":\"Calyx\",\"focused\":true," +
+        "\"pane_count\":1,\"tab_count\":1,\"active_tab_id\":\"wJ:t1\",\"agent_status\":\"idle\"}"
+
+        let decoded = try JSONDecoder().decode(HerdrWorkspaceInfo.self, from: Data(json.utf8))
+
+        XCTAssertEqual(decoded.activeTabID, "wJ:t1")
+        XCTAssertEqual(decoded.label, "Calyx")
     }
 
     // MARK: - Fixture builders (mirrors HerdrLayoutImporterTests' own shapes)
