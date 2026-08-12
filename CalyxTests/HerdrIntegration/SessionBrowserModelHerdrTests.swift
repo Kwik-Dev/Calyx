@@ -42,7 +42,9 @@
 //    with the workspace row (a single already-known workspace's own
 //    "Attach" button)
 //  - killHerdrWorkspace(_:) sends `workspace.close` for exactly the
-//    given workspace via the injected `herdrProvider`, then triggers a
+//    given workspace via the injected `herdrProvider`, invokes
+//    `onHerdrWorkspaceKilled` exactly once with that row (AFTER the
+//    close request completes, BEFORE the refresh), then triggers a
 //    refresh
 //  - CRITICAL negative invariant (undetected herdr = zero work):
 //    refresh() must NEVER call `herdrProvider.listSessions()` while the
@@ -165,13 +167,15 @@ final class SessionBrowserModelHerdrTests: XCTestCase {
     private func makeModel(
         daemonClient: FakeDaemonClient = FakeDaemonClient(),
         herdrProvider: HerdrSessionProviderProtocol,
-        herdrAvailability: @escaping () async -> Bool
+        herdrAvailability: @escaping () async -> Bool,
+        herdrWorkspaceIsAttachedHere: @escaping (String, String) -> Bool = { _, _ in false }
     ) -> SessionBrowserModel {
         SessionBrowserModel(
             daemonClient: daemonClient,
             surfaceMap: SessionSurfaceMap(),
             herdrProvider: herdrProvider,
-            herdrAvailability: herdrAvailability
+            herdrAvailability: herdrAvailability,
+            herdrWorkspaceIsAttachedHere: herdrWorkspaceIsAttachedHere
         )
     }
 
@@ -298,6 +302,19 @@ final class SessionBrowserModelHerdrTests: XCTestCase {
             info: HerdrWorkspaceInfo(workspaceID: "w1", activeTabID: "w1:t1", label: "work", paneCount: 1)
         )
 
+        // Captured AT closure-invocation time (not after killHerdrWorkspace
+        // returns) so the assertions below can pin the ordering the spec
+        // requires -- workspace.close already sent, refresh() not yet
+        // run -- not merely that all three eventually happened.
+        var killedRows: [HerdrWorkspaceRow] = []
+        var closeCallCountWhenInvoked: [Int] = []
+        var listSessionsCallCountWhenInvoked: [Int] = []
+        model.onHerdrWorkspaceKilled = { killedRow in
+            killedRows.append(killedRow)
+            closeCallCountWhenInvoked.append(provider.closeWorkspaceCalls.count)
+            listSessionsCallCountWhenInvoked.append(provider.listSessionsCallCount)
+        }
+
         await model.killHerdrWorkspace(row)
 
         XCTAssertEqual(
@@ -305,6 +322,18 @@ final class SessionBrowserModelHerdrTests: XCTestCase {
             "killHerdrWorkspace(_:) must send workspace.close for exactly the given workspace id, no other"
         )
         XCTAssertEqual(provider.closeWorkspaceCalls.map { $0.socketPath }, ["test-herdr-socket-1"])
+        XCTAssertEqual(
+            killedRows.map(\.id), [row.id],
+            "killHerdrWorkspace(_:) must invoke onHerdrWorkspaceKilled exactly once, with the row it was given"
+        )
+        XCTAssertEqual(
+            closeCallCountWhenInvoked, [1],
+            "onHerdrWorkspaceKilled must fire AFTER workspace.close has already been sent, not before"
+        )
+        XCTAssertEqual(
+            listSessionsCallCountWhenInvoked, [0],
+            "onHerdrWorkspaceKilled must fire BEFORE refresh() runs, not after"
+        )
         XCTAssertEqual(
             provider.listSessionsCallCount, 1,
             "killHerdrWorkspace(_:) must trigger a refresh() afterward -- observed here as listSessions() " +
@@ -587,6 +616,86 @@ final class SessionBrowserModelHerdrTests: XCTestCase {
         )
 
         XCTAssertEqual(row.paneCountText, "2 pane(s)")
+    }
+
+    // MARK: - HerdrWorkspaceRow.attachButtonLabel / SessionBrowserModel.isHerdrWorkspaceAttachedHere
+    //
+    // Mirrors SessionBrowserRowAttachButtonLabelTests' own coverage of
+    // SessionBrowserRow.attachButtonLabel, for the herdr workspace row's
+    // own "Attach"/"Show" button: "Show" once HerdrTabCoordinator already
+    // has this workspace open in this window, unchanged "Attach"
+    // otherwise -- pressing "Attach" on an already-open workspace still
+    // calls the same open path (SessionBrowserWindowController
+    // .attachHerdrWorkspace(_:)), which focuses the existing tab rather
+    // than opening a second one.
+
+    private func makeHerdrWorkspaceRow() -> HerdrWorkspaceRow {
+        HerdrWorkspaceRow(
+            socketPath: "test-herdr-socket-1",
+            info: HerdrWorkspaceInfo(workspaceID: "w1", activeTabID: "w1:t1", label: "work", paneCount: 1)
+        )
+    }
+
+    func test_attachButtonLabel_whenIsHerdrWorkspaceAttachedHereAnswersTrue_isShow() {
+        let model = makeModel(
+            herdrProvider: FakeHerdrSessionProvider(), herdrAvailability: { false },
+            herdrWorkspaceIsAttachedHere: { _, _ in true }
+        )
+        let row = makeHerdrWorkspaceRow()
+
+        XCTAssertEqual(
+            row.attachButtonLabel(isAttachedHere: model.isHerdrWorkspaceAttachedHere(row)), "Show",
+            "an already-open workspace's button must read a focus verb (\"Show\"), not \"Attach\""
+        )
+    }
+
+    /// Sanity/regression companion, mirroring
+    /// `SessionBrowserRowAttachButtonLabelTests`' own precedent: passes
+    /// already, but catches a future regression that over-broadens the
+    /// label (e.g. always "Show").
+    func test_attachButtonLabel_whenIsHerdrWorkspaceAttachedHereAnswersFalse_isAttach() {
+        let model = makeModel(
+            herdrProvider: FakeHerdrSessionProvider(), herdrAvailability: { false },
+            herdrWorkspaceIsAttachedHere: { _, _ in false }
+        )
+        let row = makeHerdrWorkspaceRow()
+
+        XCTAssertEqual(
+            row.attachButtonLabel(isAttachedHere: model.isHerdrWorkspaceAttachedHere(row)), "Attach",
+            "a not-yet-open workspace's button must keep reading \"Attach\""
+        )
+    }
+
+    /// Pins the DEFAULT (no `herdrWorkspaceIsAttachedHere` argument
+    /// supplied at all): must answer exactly like an unopened workspace,
+    /// so every construction with no herdr tab coordinator to ask
+    /// behaves exactly like today.
+    func test_isHerdrWorkspaceAttachedHere_defaultAnswersFalse() {
+        let model = SessionBrowserModel(
+            daemonClient: FakeDaemonClient(), surfaceMap: SessionSurfaceMap(),
+            herdrProvider: FakeHerdrSessionProvider(), herdrAvailability: { false }
+        )
+
+        XCTAssertFalse(model.isHerdrWorkspaceAttachedHere(makeHerdrWorkspaceRow()))
+    }
+
+    /// Kills swapped-argument/wrong-field bugs the two boolean tests
+    /// above cannot see: the injected closure must receive EXACTLY the
+    /// row's own workspace id and socket path, in that order.
+    func test_isHerdrWorkspaceAttachedHere_passesWorkspaceIDAndSocketPath_inOrder() {
+        var received: (workspaceID: String, socketPath: String)?
+        let model = makeModel(
+            herdrProvider: FakeHerdrSessionProvider(), herdrAvailability: { false },
+            herdrWorkspaceIsAttachedHere: { workspaceID, socketPath in
+                received = (workspaceID: workspaceID, socketPath: socketPath)
+                return false
+            }
+        )
+
+        _ = model.isHerdrWorkspaceAttachedHere(makeHerdrWorkspaceRow())
+
+        XCTAssertEqual(received?.workspaceID, "w1")
+        XCTAssertEqual(received?.socketPath, "test-herdr-socket-1")
     }
 
     // MARK: - HerdrSessionRow.attachTabTitle (the Command Palette's "Attach herdr TUI" tab title)

@@ -83,6 +83,13 @@
 //  - .calyxSurfaceDestroyed (a Calyx-side close): prunes the registry via
 //    HerdrPaneRegistry's own existing observation mechanism, never calls
 //    closeLeaf again, and sends no herdr request either
+//  - handleWorkspaceKilled (the Session Browser's Kill action, called
+//    after herdr already closed the workspace server-side): closes
+//    every leaf still registered for that workspace through the same
+//    close path handlePaneClosed uses, prunes the identical bookkeeping
+//    once the last one closes, and sends no herdr request either
+//  - handleWorkspaceKilled: a workspace with nothing registered (never
+//    opened in this window, or already fully closed) is a no-op
 //  - HerdrWorkspaceInfo decode: a minimal, required-fields-only payload
 //    decodes both active_tab_id and label; the title-selection decision
 //    itself (label present vs. absent/null/blank) is covered directly by
@@ -1213,6 +1220,134 @@ final class HerdrTabCoordinatorTests: XCTestCase {
         XCTAssertEqual(decoded.activeTabID, "wJ:t1")
         XCTAssertEqual(decoded.label, "Calyx")
         XCTAssertEqual(decoded.paneCount, 1)
+    }
+
+    // MARK: - 13. Workspace killed from the Session Browser closes every registered leaf
+
+    /// Pins `handleWorkspaceKilled(workspaceID:socketPath:)`: opens a
+    /// baseline two-pane workspace (the same fixture the layout-refresh
+    /// tests above share), kills it, and checks every angle this file's
+    /// own task brief calls out -- both leaves closed through the
+    /// attacher, the registry pruned in both directions for both panes,
+    /// the coordinator's own `activeTabIDs`/`lastAppliedLayouts` bookkeeping
+    /// pruned exactly like `handlePaneClosed` already leaves it (observed
+    /// via `handleLayoutUpdated`'s own documented contract, mirroring
+    /// test 11's technique above), and -- the CRITICAL constraint --
+    /// zero bytes ever sent to herdr for this call, since the workspace
+    /// is already gone server-side by the time it runs.
+    func test_handleWorkspaceKilled_closesEveryRegisteredLeaf_prunesRegistryAndBookkeeping_sendsNoHerdrRequest() async {
+        let factory = SpyHerdrTransportFactory()
+        let firstSurfaceID = UUID()
+        let secondSurfaceID = UUID()
+        let surfaceFactory = FakeHerdrNativeSurfaceFactory(results: [firstSurfaceID, secondSurfaceID])
+        let attacher = FakeHerdrNativeTabAttacher()
+        let coordinator = makeCoordinator(factory: factory, surfaceFactory: surfaceFactory, attacher: attacher)
+
+        guard await openBaselineSplitWorkspace(factory: factory, coordinator: coordinator) else {
+            XCTFail("Precondition: openBaselineSplitWorkspace must succeed")
+            return
+        }
+        let baselineSentLines = await factory.allSentLines()
+
+        coordinator.handleWorkspaceKilled(workspaceID: "wF", socketPath: socketPath)
+
+        // remainingPaneIDs is a Set, so closeLeafCalls' own order across
+        // the two panes is not guaranteed -- compare as a Set, and pin
+        // the count separately, so a duplicate close (which a Set
+        // equality check alone would hide) still fails this assertion.
+        XCTAssertEqual(
+            Set(attacher.closeLeafCalls), Set([firstSurfaceID, secondSurfaceID]),
+            "every leaf still registered for the killed workspace must be closed through the attacher"
+        )
+        XCTAssertEqual(attacher.closeLeafCalls.count, 2, "each registered leaf must be closed exactly once")
+
+        XCTAssertFalse(registry.isBridgeSurface(firstSurfaceID), "the forward surfaceID -> ref mapping must be pruned for every closed leaf")
+        XCTAssertFalse(registry.isBridgeSurface(secondSurfaceID))
+        XCTAssertNil(registry.surfaceID(forPaneID: "wF:p1", socketPath: socketPath), "the reverse mapping must ALSO be pruned for every closed leaf")
+        XCTAssertNil(registry.surfaceID(forPaneID: "wF:p2", socketPath: socketPath))
+
+        let refreshed = await coordinator.handleLayoutUpdated(workspaceID: "wF", socketPath: socketPath)
+        XCTAssertFalse(
+            refreshed, "the killed workspace must have no stored active_tab_id left -- handleWorkspaceKilled's " +
+            "own pruning must have removed it, exactly like handlePaneClosed already does once a workspace's " +
+            "last pane closes"
+        )
+
+        let callCount = await factory.callCount
+        XCTAssertEqual(callCount, 3, "killing a workspace must never open a new transport")
+        let sentLinesAfter = await factory.allSentLines()
+        XCTAssertEqual(
+            sentLinesAfter, baselineSentLines,
+            "the herdr server must NEVER be sent any request when its own workspace is killed from the " +
+            "Session Browser -- the workspace is already gone server-side by the time this runs"
+        )
+    }
+
+    // MARK: - 14. Workspace killed with nothing registered is a no-op
+
+    func test_handleWorkspaceKilled_noPanesRegisteredForWorkspace_isNoOp() async {
+        let factory = SpyHerdrTransportFactory()
+        let surfaceFactory = FakeHerdrNativeSurfaceFactory(results: [])
+        let attacher = FakeHerdrNativeTabAttacher()
+        let coordinator = makeCoordinator(factory: factory, surfaceFactory: surfaceFactory, attacher: attacher)
+
+        coordinator.handleWorkspaceKilled(workspaceID: "wNeverOpened", socketPath: socketPath)
+
+        XCTAssertEqual(attacher.closeLeafCalls, [], "nothing registered for this workspace means nothing to close")
+        let callCount = await factory.callCount
+        XCTAssertEqual(callCount, 0, "a workspace with no pane tracked on this socket must touch the transport factory zero times")
+    }
+
+    // MARK: - 15. hasOpenTab query
+
+    /// Pins `hasOpenTab(workspaceID:socketPath:)`'s full lifecycle: false
+    /// before the workspace is ever opened, true once `openWorkspace`
+    /// succeeds, STILL true after only one of its two panes closes (the
+    /// tab itself is still open -- only the workspace's LAST tracked pane
+    /// closing tears it down, mirroring `pruneIfLastPaneClosed`'s own
+    /// rule), and false again once `handleWorkspaceKilled` closes what
+    /// remains. Never touches the transport factory at any point.
+    func test_hasOpenTab_falseBeforeOpen_trueOnceOpen_stillTrueWithOnePaneLeft_falseOnceTabGone() async {
+        let factory = SpyHerdrTransportFactory()
+        let firstSurfaceID = UUID()
+        let secondSurfaceID = UUID()
+        let surfaceFactory = FakeHerdrNativeSurfaceFactory(results: [firstSurfaceID, secondSurfaceID])
+        let attacher = FakeHerdrNativeTabAttacher()
+        let coordinator = makeCoordinator(factory: factory, surfaceFactory: surfaceFactory, attacher: attacher)
+
+        XCTAssertFalse(
+            coordinator.hasOpenTab(workspaceID: "wF", socketPath: socketPath),
+            "a workspace never opened in this window must report no open tab"
+        )
+
+        guard await openBaselineSplitWorkspace(factory: factory, coordinator: coordinator) else {
+            XCTFail("Precondition: openBaselineSplitWorkspace must succeed")
+            return
+        }
+        let callCountAfterOpen = await factory.callCount
+
+        XCTAssertTrue(
+            coordinator.hasOpenTab(workspaceID: "wF", socketPath: socketPath),
+            "an opened workspace must report an open tab"
+        )
+
+        await coordinator.handlePaneClosed(paneID: "wF:p1", socketPath: socketPath)
+        XCTAssertTrue(
+            coordinator.hasOpenTab(workspaceID: "wF", socketPath: socketPath),
+            "the workspace's tab is still open while its OTHER pane remains registered"
+        )
+
+        coordinator.handleWorkspaceKilled(workspaceID: "wF", socketPath: socketPath)
+        XCTAssertFalse(
+            coordinator.hasOpenTab(workspaceID: "wF", socketPath: socketPath),
+            "once the workspace's last remaining pane is closed, it must report no open tab again"
+        )
+
+        let finalCallCount = await factory.callCount
+        XCTAssertEqual(
+            finalCallCount, callCountAfterOpen,
+            "hasOpenTab must never touch the transport factory -- read-only, sends herdr nothing"
+        )
     }
 
     // MARK: - Fixture builders (mirrors HerdrLayoutImporterTests' own shapes)

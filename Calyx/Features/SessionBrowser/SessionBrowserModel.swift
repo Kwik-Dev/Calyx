@@ -156,6 +156,20 @@ struct HerdrWorkspaceRow: Identifiable, Equatable, Sendable {
     /// "N pane(s)" -- this row's own pane count only, same `"pane(s)"`
     /// vocabulary as the server row's own status line.
     var paneCountText: String { "\(info.paneCount) pane(s)" }
+
+    /// Mirrors `SessionBrowserRow.attachButtonLabel`'s exact ternary and
+    /// wording: "Show" once this workspace already has an open tab in
+    /// this window, unchanged "Attach" otherwise. Pressing "Attach" on an
+    /// already-open workspace still calls the same open path
+    /// (`HerdrTabCoordinator.openWorkspace`'s own double-open guard
+    /// focuses the existing tab instead of opening a second), so the
+    /// label must read a focus verb instead. `isAttachedHere` is not
+    /// this row's own stored state -- see
+    /// `SessionBrowserModel.isHerdrWorkspaceAttachedHere(_:)` for where
+    /// it comes from.
+    func attachButtonLabel(isAttachedHere: Bool) -> String {
+        isAttachedHere ? "Show" : "Attach"
+    }
 }
 
 /// Pure decision behind `HerdrSessionRow.statusLineText` -- extracted so
@@ -245,6 +259,19 @@ final class SessionBrowserModel {
     /// even called (see `refresh()`'s own negative-invariant test).
     private let herdrAvailability: () async -> Bool
 
+    /// Reports whether a herdr workspace (workspace id, socket path)
+    /// currently has an open tab in this window -- the herdr counterpart
+    /// of `isAttachedHere` on a calyx-session row (`SessionBrowserRow`,
+    /// set in `refresh()` above from `surfaceMap`): backs
+    /// `HerdrWorkspaceRow.attachButtonLabel(isAttachedHere:)`'s own input
+    /// via `isHerdrWorkspaceAttachedHere(_:)` below. Injected the same
+    /// way every other side-effectful dependency here is: a closure,
+    /// default `{ _, _ in false }` so existing tests, and any
+    /// construction with no herdr tab coordinator to ask, answer exactly
+    /// like today. `SessionBrowserWindowController` wires it to
+    /// `HerdrTabCoordinator.hasOpenTab(workspaceID:socketPath:)`.
+    private let herdrWorkspaceIsAttachedHere: (String, String) -> Bool
+
     /// Remote host candidates for the "New Remote Session…" picker,
     /// populated by `refreshRemoteHostCandidates()` from the injected
     /// `hostCandidateProvider`, in its own declaration order.
@@ -288,18 +315,30 @@ final class SessionBrowserModel {
     /// pattern exactly, for a single already-known workspace id.
     var onHerdrWorkspaceAttachRequested: ((HerdrWorkspaceRow) -> Void)?
 
+    /// Invoked by `killHerdrWorkspace(_:)` with the workspace row whose
+    /// "Kill" button was pressed, once `herdrProvider.closeWorkspace(
+    /// workspaceID:socketPath:)` has already completed -- mirrors
+    /// `onHerdrWorkspaceAttachRequested`'s injectable-closure pattern
+    /// exactly. The herdr-side workspace is already gone by the time this
+    /// fires, so the closure's own job is closing the Calyx tab that was
+    /// bridging it, rather than waiting on a herdr `pane.closed` event
+    /// that has nothing left to send it.
+    var onHerdrWorkspaceKilled: ((HerdrWorkspaceRow) -> Void)?
+
     init(
         daemonClient: SessionDaemonClientProtocol = SessionDaemonClient.shared,
         surfaceMap: SessionSurfaceMap = .shared,
         hostCandidateProvider: SSHHostCandidateProvider = SSHHostCandidateProvider(),
         herdrProvider: HerdrSessionProviderProtocol = HerdrCLISessionProvider(),
-        herdrAvailability: @escaping () async -> Bool = SessionBrowserModel.defaultHerdrAvailability()
+        herdrAvailability: @escaping () async -> Bool = SessionBrowserModel.defaultHerdrAvailability(),
+        herdrWorkspaceIsAttachedHere: @escaping (String, String) -> Bool = { _, _ in false }
     ) {
         self.daemonClient = daemonClient
         self.surfaceMap = surfaceMap
         self.hostCandidateProvider = hostCandidateProvider
         self.herdrProvider = herdrProvider
         self.herdrAvailability = herdrAvailability
+        self.herdrWorkspaceIsAttachedHere = herdrWorkspaceIsAttachedHere
     }
 
     /// Builds the production `herdrAvailability` default: binary
@@ -458,6 +497,13 @@ final class SessionBrowserModel {
         onHerdrWorkspaceAttachRequested?(row)
     }
 
+    /// Whether `row`'s workspace currently has an open tab in this
+    /// window -- see `herdrWorkspaceIsAttachedHere`'s own doc comment
+    /// for where the answer comes from.
+    func isHerdrWorkspaceAttachedHere(_ row: HerdrWorkspaceRow) -> Bool {
+        herdrWorkspaceIsAttachedHere(row.info.workspaceID, row.socketPath)
+    }
+
     /// Kills `row`'s session via the daemon, then refreshes.
     func kill(_ row: SessionBrowserRow) async {
         await daemonClient.kill(id: row.info.id)
@@ -465,16 +511,17 @@ final class SessionBrowserModel {
     }
 
     /// Closes `row`'s herdr workspace via the injected `herdrProvider`'s
-    /// own `closeWorkspace(workspaceID:socketPath:)`, then refreshes --
-    /// mirrors `kill(_:)` exactly: no confirmation dialog, and the
-    /// refresh runs unconditionally, whether or not the close itself
-    /// succeeded (see that method's own doc comment for why). Runs
-    /// directly here, not through an injected closure like
-    /// `attachHerdrWorkspace(_:)`/`createHerdrWorkspace(_:)`: closing a
-    /// workspace is pure wire I/O, with no AppKit/window involvement, so
-    /// it needs no `SessionBrowserWindowController` hop.
+    /// own `closeWorkspace(workspaceID:socketPath:)`, then invokes
+    /// `onHerdrWorkspaceKilled` with `row` so the Calyx tab bridging that
+    /// workspace closes too -- the herdr server is already gone by then,
+    /// so nothing downstream may depend on its own `pane.closed` event
+    /// still arriving -- then refreshes. Mirrors `kill(_:)` exactly: no
+    /// confirmation dialog, and the refresh runs unconditionally, whether
+    /// or not the close itself succeeded (see that method's own doc
+    /// comment for why).
     func killHerdrWorkspace(_ row: HerdrWorkspaceRow) async {
         await herdrProvider.closeWorkspace(workspaceID: row.info.workspaceID, socketPath: row.socketPath)
+        onHerdrWorkspaceKilled?(row)
         await refresh()
     }
 

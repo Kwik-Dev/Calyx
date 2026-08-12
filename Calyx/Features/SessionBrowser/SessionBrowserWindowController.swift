@@ -9,8 +9,9 @@
 // workspace-create wire flow, `HerdrAttachOrCreateFlow`
 // (HerdrAttachOrCreateFlow.swift), or, for opening an already-known
 // workspace, `HerdrTabCoordinatorTests.swift` (this file's own
-// `attachHerdrWorkspace(_:)` is a direct, untested-here call into that
-// coordinator), not this AppKit shell.
+// `attachHerdrWorkspace(_:)`/`closeHerdrWorkspaceTabs(_:)` are each a
+// direct, untested-here call into that coordinator), not this AppKit
+// shell.
 
 import AppKit
 import SwiftUI
@@ -23,7 +24,7 @@ final class SessionBrowserWindowController: NSWindowController {
 
     static let shared = SessionBrowserWindowController()
 
-    let model = SessionBrowserModel()
+    let model: SessionBrowserModel
 
     private init() {
         let window = NSWindow(
@@ -35,6 +36,21 @@ final class SessionBrowserWindowController: NSWindowController {
         window.title = "Sessions"
         window.center()
         window.isReleasedWhenClosed = false
+
+        // Wires the herdr workspace row's own "Attach"/"Show" query to
+        // HerdrTabCoordinator.hasOpenTab(workspaceID:socketPath:) --
+        // evaluated fresh on every call, so this always reads whichever
+        // coordinator AppDelegate currently holds, never a value baked
+        // in at construction time. `nil` (herdr itself was never
+        // resolvable) answers false, same as the model's own default.
+        self.model = SessionBrowserModel(
+            herdrWorkspaceIsAttachedHere: { workspaceID, socketPath in
+                (NSApp.delegate as? AppDelegate)?.herdrTabCoordinator?.hasOpenTab(
+                    workspaceID: workspaceID, socketPath: socketPath
+                ) ?? false
+            }
+        )
+
         super.init(window: window)
 
         window.contentView = NSHostingView(rootView: SessionBrowserView(model: model))
@@ -71,6 +87,14 @@ final class SessionBrowserWindowController: NSWindowController {
         // workspace instead of a calyx-session row.
         model.onHerdrWorkspaceAttachRequested = { [weak self] row in
             self?.attachHerdrWorkspace(row)
+        }
+
+        // Herdr workspace row "Kill": mirrors onHerdrWorkspaceAttachRequested's
+        // wiring immediately above -- closes the Calyx tab bridging the
+        // killed workspace, since the herdr server that would otherwise
+        // send a pane.closed event for it is already gone.
+        model.onHerdrWorkspaceKilled = { [weak self] row in
+            self?.closeHerdrWorkspaceTabs(row)
         }
     }
 
@@ -138,6 +162,22 @@ final class SessionBrowserWindowController: NSWindowController {
         Task {
             await coordinator.openWorkspace(workspaceID: row.info.workspaceID, socketPath: row.socketPath)
         }
+    }
+
+    /// A herdr workspace row's "Kill" button, invoked by
+    /// `SessionBrowserModel.killHerdrWorkspace(_:)` right after
+    /// `herdrProvider.closeWorkspace(workspaceID:socketPath:)` completes
+    /// -- closes the Calyx tab bridging `row`'s workspace through
+    /// `HerdrTabCoordinator.handleWorkspaceKilled(workspaceID:socketPath:)`,
+    /// the coordinator's own entry point for closing a herdr-bridged
+    /// pane's Calyx side without sending herdr a request. A
+    /// `herdrTabCoordinator` that is `nil` (herdr itself was never
+    /// resolvable) does nothing, same as `createHerdrWorkspace(_:)`/
+    /// `attachHerdrWorkspace(_:)` above.
+    private func closeHerdrWorkspaceTabs(_ row: HerdrWorkspaceRow) {
+        (NSApp.delegate as? AppDelegate)?.herdrTabCoordinator?.handleWorkspaceKilled(
+            workspaceID: row.info.workspaceID, socketPath: row.socketPath
+        )
     }
 
     func showBrowser() {
