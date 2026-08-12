@@ -2,12 +2,12 @@
 //  HerdrTabCoordinatorObserverConformanceTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for HerdrTabCoordinator's new HerdrStructureEventObserver
-//  conformance (app-layer wiring): wires
-//  HerdrIntegrationCoordinator's existing pane.closed/layout.updated
-//  events (HerdrIntegrationCoordinator.swift's own
-//  HerdrStructureEventObserver protocol) into HerdrTabCoordinator's
-//  already-existing handleLayoutUpdated/handlePaneClosed methods.
+//  Tests for HerdrTabCoordinator's HerdrStructureEventObserver
+//  conformance (app-layer wiring): wires HerdrIntegrationCoordinator's
+//  pane.closed/layout.updated/workspace.closed events
+//  (HerdrIntegrationCoordinator.swift's own HerdrStructureEventObserver
+//  protocol) into HerdrTabCoordinator's own handleLayoutUpdated/
+//  handlePaneClosed/handleWorkspaceKilled methods.
 //
 //  Mirrors HerdrTabCoordinatorTests' own driving style exactly -- this
 //  file re-declares its own private copies of the same spy/fake types
@@ -15,13 +15,17 @@
 //  file-scoped private redeclaration here, not a shared type -- private
 //  at file scope is not visible across files").
 //
-//  herdrLayoutUpdated/herdrPaneClosed are synchronous per the protocol
-//  (HerdrIntegrationCoordinator.swift), while handleLayoutUpdated/
-//  handlePaneClosed are async -- the conformance is expected to fan out
-//  via an internally-spawned Task, so every test below polls (bounded
-//  yield loop, mirroring HerdrTabCoordinatorTests' own "yield-based
-//  settling") for the resulting wire activity / attacher calls rather
-//  than awaiting a returned value directly.
+//  Every HerdrStructureEventObserver method is synchronous per the
+//  protocol (HerdrIntegrationCoordinator.swift). herdrLayoutUpdated/
+//  herdrPaneClosed delegate to the ASYNC handleLayoutUpdated/
+//  handlePaneClosed, so those two fan out via an internally-spawned
+//  Task, and their own tests below poll (bounded yield loop, mirroring
+//  HerdrTabCoordinatorTests' own "yield-based settling") for the
+//  resulting wire activity / attacher calls rather than awaiting a
+//  returned value directly. herdrWorkspaceClosed instead delegates to
+//  the already-SYNCHRONOUS handleWorkspaceKilled directly, with no Task
+//  -- its own tests below assert immediately after calling it, no
+//  polling needed.
 //
 //  Coverage:
 //  - herdrLayoutUpdated(socketPath:) triggers handleLayoutUpdated for
@@ -35,6 +39,11 @@
 //    untouched (zero requests for it).
 //  - herdrPaneClosed(paneID:socketPath:) delegates to handlePaneClosed:
 //    the attacher's closeLeaf hook fires for the mapped surface.
+//  - herdrWorkspaceClosed(workspaceID:socketPath:) delegates to
+//    handleWorkspaceKilled: every leaf still registered for the
+//    workspace is closed through the attacher, the registry is pruned,
+//    and herdr is sent no request; a no-op (zero transport activity, no
+//    attacher calls) for a workspaceID with nothing registered.
 //  - HerdrTabCoordinator actually CONFORMS to HerdrStructureEventObserver
 //    (not merely "happens to have matching method names") -- proven in
 //    every test below by assigning a coordinator instance to an `any
@@ -294,6 +303,59 @@ final class HerdrTabCoordinatorObserverConformanceTests: XCTestCase {
             "herdrPaneClosed must delegate to handlePaneClosed, which asks the attacher to close exactly the " +
             "tracked leaf for the closed pane"
         )
+    }
+
+    // MARK: - 4. herdrWorkspaceClosed delegates to handleWorkspaceKilled
+
+    /// Synchronous, no Task (this file's own header) -- asserted
+    /// immediately after calling `herdrWorkspaceClosed`, no polling.
+    func test_herdrWorkspaceClosed_delegatesToHandleWorkspaceKilled_closesEveryRegisteredLeaf_sendsNoHerdrRequest() async {
+        let factory = SpyHerdrTransportFactory()
+        let fakeSurfaceID = UUID()
+        let surfaceFactory = FakeHerdrNativeSurfaceFactory(results: [fakeSurfaceID])
+        let attacher = FakeHerdrNativeTabAttacher()
+        let coordinator = makeCoordinator(factory: factory, surfaceFactory: surfaceFactory, attacher: attacher)
+
+        async let openTask: Bool = coordinator.openWorkspace(workspaceID: "wF", socketPath: socketPath)
+        await driveOpenSequence(
+            factory: factory, baseIndex: 0, workspaceID: "wF", activeTabID: "wF:t1",
+            terminalIDByPaneID: ["wF:p1": terminalIDWFP1],
+            responseRootJSON: paneNodeJSON(paneID: "wF:p1"), focusedPaneID: "wF:p1"
+        )
+        guard await openTask else { XCTFail("Precondition: opening wF must succeed"); return }
+        let callCountAfterOpen = await factory.callCount
+
+        let observer: any HerdrStructureEventObserver = coordinator
+        observer.herdrWorkspaceClosed(workspaceID: "wF", socketPath: socketPath)
+
+        XCTAssertEqual(
+            attacher.closeLeafCalls, [fakeSurfaceID],
+            "herdrWorkspaceClosed must delegate to handleWorkspaceKilled, which closes every leaf still " +
+            "registered for the workspace through the attacher"
+        )
+        XCTAssertFalse(registry.isBridgeSurface(fakeSurfaceID), "the registry must be pruned for the closed leaf")
+
+        let callCountAfter = await factory.callCount
+        XCTAssertEqual(
+            callCountAfter, callCountAfterOpen,
+            "herdrWorkspaceClosed must send herdr no request of its own -- herdr already closed this workspace"
+        )
+    }
+
+    // MARK: - 5. herdrWorkspaceClosed is a no-op for an unknown workspace
+
+    func test_herdrWorkspaceClosed_unknownWorkspace_isNoOp() async {
+        let factory = SpyHerdrTransportFactory()
+        let surfaceFactory = FakeHerdrNativeSurfaceFactory(results: [])
+        let attacher = FakeHerdrNativeTabAttacher()
+        let coordinator = makeCoordinator(factory: factory, surfaceFactory: surfaceFactory, attacher: attacher)
+
+        let observer: any HerdrStructureEventObserver = coordinator
+        observer.herdrWorkspaceClosed(workspaceID: "wNeverOpened", socketPath: socketPath)
+
+        XCTAssertEqual(attacher.closeLeafCalls, [], "nothing registered for this workspace means nothing to close")
+        let callCount = await factory.callCount
+        XCTAssertEqual(callCount, 0, "a workspace with no pane tracked on this socket must touch the transport factory zero times")
     }
 
     // MARK: - Fixture builders (mirrors HerdrTabCoordinatorTests' own shapes)

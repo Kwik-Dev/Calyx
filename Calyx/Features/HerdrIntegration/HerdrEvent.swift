@@ -116,15 +116,19 @@
 //                              "display_agent":null,"title":null,
 //                              "state_labels":{...}}}
 //     These two shapes, PLUS "pane_closed"/"pane_exited" (see the B1
-//     rule below), are the only ones modeled as strongly-typed
-//     `HerdrEvent` cases -- they are the only ones whose payload fields
-//     were fully measured (pane_created/pane.agent_status_changed), or
-//     whose payload this file deliberately reads in a shape-tolerant,
-//     defensive way even though the schema now fully specifies it
-//     (pane_closed/pane_exited, B1). Every OTHER named event type this
+//     rule below) and "workspace_closed" (see below), are the only ones
+//     modeled as strongly-typed `HerdrEvent` cases -- they are the only
+//     ones whose payload fields were fully measured (pane_created/
+//     pane.agent_status_changed), whose payload this file deliberately
+//     reads in a shape-tolerant, defensive way even though the schema
+//     now fully specifies it (pane_closed/pane_exited, B1), or whose
+//     shape the schema settles outright with no such history to hedge
+//     against (workspace_closed). Every OTHER named event type this
 //     server can push (pane_updated, pane_focused, pane_moved,
-//     pane_agent_detected, layout_updated, tab.*, workspace.*,
-//     worktree.*, pane.scroll_changed, pane.output_matched) decodes to
+//     pane_agent_detected, layout_updated, tab.*, the REST of
+//     workspace.* -- workspace_created/updated/metadata_updated/
+//     renamed/moved/reordered/focused --, worktree.*,
+//     pane.scroll_changed, pane.output_matched) decodes to
 //     `.unknown(eventType:)` for now -- deliberately DEFERRED, not
 //     forgotten: extrapolating a REQUIRED payload shape from a
 //     same-family sibling (e.g. assuming pane_updated carries a full
@@ -161,6 +165,24 @@
 //     useful failure mode for these two event types -- now purely a
 //     defensive posture, since the schema rules out a conforming server
 //     ever actually triggering it.
+//
+//   - "workspace_closed" decodes to `.workspaceClosed(workspaceID:)`,
+//     carrying just the closed workspace's raw id `String`. The schema
+//     (`event.$defs.EventData`'s "workspace_closed" variant) requires
+//     "type" and "workspace_id" directly on "data"; "workspace" (the
+//     nested full WorkspaceInfo) is optional AND nullable there but not
+//     modeled here -- nothing reads it (this file's own "define the
+//     minimal Decodable you need" rule -- see `HerdrWorkspaceInfo`'s own
+//     doc comment in HerdrTabCoordinator.swift). Measured live against a
+//     real herdr 0.8.0 server (`herdr workspace close <id>`, subscribed
+//     to "workspace.closed"): "workspace_id" IS present directly on
+//     "data", e.g. {"data":{"type":"workspace_closed",
+//     "workspace":{...},"workspace_id":"w5"},"event":"workspace_closed"}
+//     -- confirming the schema. Missing "workspace_id" THROWS, unlike
+//     B1's tolerant "pane_closed"/"pane_exited" fallback above: this
+//     file's own DEFAULT decode-error contract (this file's own opening
+//     paragraph), since there is no nested-vs-flat legacy shape here to
+//     hedge against the way B1 has.
 //
 //   - `HerdrPaneID` parses a pane id like "w9:p1" into its workspace
 //     and local parts. Kept as a SEPARATE, independently-fallible
@@ -652,6 +674,13 @@ enum HerdrEvent: Sendable, Equatable {
     /// envelope handling to `.paneClosed` above, just the other event
     /// name.
     case paneExited(paneID: String)
+    /// "workspace_closed" -- herdr closed a WHOLE workspace server-side
+    /// (its own TUI, the CLI, or another client) and does NOT also push
+    /// "pane_closed" for that workspace's own panes (measured against a
+    /// real herdr 0.8.0 server). Carries just the closed workspace's raw
+    /// id `String` -- see this file's header for the exact schema shape
+    /// and why "workspace" itself is not modeled.
+    case workspaceClosed(workspaceID: String)
     /// Every other named event type herdr can push -- see this file's
     /// header for the full list and why they are deliberately deferred
     /// rather than guessed at. Also the tolerant landing spot for any
@@ -682,6 +711,12 @@ extension HerdrEvent: Decodable {
         case paneID = "pane_id"
     }
 
+    /// The "data" object shape for "workspace_closed" -- see this file's
+    /// header. Only "workspace_id" is read; "type"/"workspace" are not.
+    private enum WorkspaceClosedDataCodingKeys: String, CodingKey {
+        case workspaceID = "workspace_id"
+    }
+
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: EnvelopeCodingKeys.self)
         // The top-level "event" key is present on BOTH envelope shapes
@@ -710,6 +745,13 @@ extension HerdrEvent: Decodable {
             } else {
                 self = .unknown(eventType: eventType)
             }
+        case "workspace_closed":
+            // Schema-required on "data" (this file's header) -- missing
+            // "workspace_id" throws, the file's own default decode-error
+            // contract.
+            let dataContainer = try container.nestedContainer(keyedBy: WorkspaceClosedDataCodingKeys.self, forKey: .data)
+            let workspaceID = try dataContainer.decode(String.self, forKey: .workspaceID)
+            self = .workspaceClosed(workspaceID: workspaceID)
         default:
             // Every other named-but-unmeasured event type, plus any
             // string not recognised at all -- see this file's header.

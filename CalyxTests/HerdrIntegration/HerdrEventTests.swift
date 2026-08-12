@@ -30,6 +30,14 @@
 //    the exact precedence -- and falls back to .unknown(eventType:),
 //    preserving the original type string, for a "data" object present
 //    but with no pane id in either location, rather than throwing
+//  - HerdrEvent decodes "workspace_closed" into
+//    .workspaceClosed(workspaceID:) from a schema-minimal payload
+//    (only "type"/"workspace_id" on "data"), from the full shape
+//    measured live against a real herdr 0.8.0 server (a nested
+//    "workspace" object present but ignored -- not modeled), and with
+//    "workspace" as explicit JSON null; and THROWS (unlike B1's
+//    tolerant fallback above) when the schema-required "workspace_id"
+//    is missing
 //  - HerdrEvent tolerates an unrecognised event TYPE string, decoding
 //    to .unknown(eventType:) with the ORIGINAL string preserved,
 //    rather than throwing
@@ -203,6 +211,62 @@ final class HerdrEventTests: XCTestCase {
         let event = try JSONDecoder().decode(HerdrEvent.self, from: json)
 
         XCTAssertEqual(event, .unknown(eventType: "pane_closed"))
+    }
+
+    // MARK: - HerdrEvent: workspaceClosed
+
+    /// Schema-minimal payload: only "type" and "workspace_id" on "data"
+    /// (`event.$defs.EventData`'s "workspace_closed" variant's own
+    /// `required` list, `herdr api schema --json`) -- the nested
+    /// "workspace" object is optional and not modeled at all
+    /// (HerdrEvent.swift's own header), so it is deliberately absent
+    /// here.
+    func test_decode_workspaceClosed_minimalRequiredFieldsOnlyPayload_decodesWorkspaceID() throws {
+        let json = Data(#"""
+        {"event":"workspace_closed","data":{"type":"workspace_closed","workspace_id":"w9"}}
+        """#.utf8)
+
+        let event = try JSONDecoder().decode(HerdrEvent.self, from: json)
+
+        XCTAssertEqual(event, .workspaceClosed(workspaceID: "w9"))
+    }
+
+    /// The full shape measured live against a real herdr 0.8.0 server
+    /// (`herdr workspace close <id>`, subscribed to "workspace.closed")
+    /// -- corroborates the minimal-payload test above: the nested
+    /// "workspace" object is present but still ignored.
+    func test_decode_workspaceClosed_fullMeasuredShape_decodesWorkspaceID() throws {
+        let json = Data(#"""
+        {"data":{"type":"workspace_closed","workspace":{"active_tab_id":"w5:t1","agent_status":"unknown","focused":true,"label":"spike","number":1,"pane_count":1,"tab_count":1,"workspace_id":"w5"},"workspace_id":"w5"},"event":"workspace_closed"}
+        """#.utf8)
+
+        let event = try JSONDecoder().decode(HerdrEvent.self, from: json)
+
+        XCTAssertEqual(event, .workspaceClosed(workspaceID: "w5"))
+    }
+
+    /// "workspace" as explicit JSON `null` (the schema's own
+    /// "anyOf":[WorkspaceInfo,null]) must decode identically to it being
+    /// absent entirely -- it is not modeled either way.
+    func test_decode_workspaceClosed_explicitNullWorkspace_stillDecodesWorkspaceID() throws {
+        let json = Data(#"""
+        {"event":"workspace_closed","data":{"type":"workspace_closed","workspace":null,"workspace_id":"w9"}}
+        """#.utf8)
+
+        let event = try JSONDecoder().decode(HerdrEvent.self, from: json)
+
+        XCTAssertEqual(event, .workspaceClosed(workspaceID: "w9"))
+    }
+
+    /// Unlike B1's tolerant "pane_closed"/"pane_exited" fallback above, a
+    /// "workspace_closed" envelope missing the schema-REQUIRED
+    /// "workspace_id" THROWS -- this file's own default decode-error
+    /// contract (see this file's own header), deliberately not extended
+    /// to this event the way B1 was.
+    func test_decode_workspaceClosed_missingWorkspaceID_throwsDecodingError() {
+        let json = Data(#"{"event":"workspace_closed","data":{"type":"workspace_closed"}}"#.utf8)
+
+        XCTAssertThrowsError(try JSONDecoder().decode(HerdrEvent.self, from: json))
     }
 
     // MARK: - HerdrEvent: unknown event type tolerated

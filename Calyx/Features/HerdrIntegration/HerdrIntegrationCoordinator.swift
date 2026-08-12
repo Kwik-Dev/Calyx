@@ -58,10 +58,10 @@
 //      every `attemptConnect`.
 //   4. `HerdrTransportFactory.makeTransport()` + `HerdrEventStream
 //      .subscribe(_:socketPath:)`, on its OWN, SEPARATE transport,
-//      carrying the five structure events herdr documents as type-only
+//      carrying the six structure events herdr documents as type-only
 //      ("pane.created", "pane.closed", "pane.exited",
-//      "pane.agent_detected", "layout.updated") PLUS one
-//      `.agentStatusChanged(paneID:)` per pane step 3 just revealed --
+//      "pane.agent_detected", "layout.updated", "workspace.closed")
+//      PLUS one `.agentStatusChanged(paneID:)` per pane step 3 just revealed --
 //      per pane step 3 revealed ONLY, never per a `recognizedPaneIDs`-
 //      only (replay-only) pane id -- see REPLAY BURST RECONCILIATION
 //      below, "WHY THE SUBSCRIBE LIST STAYS `knownPaneIDs`-ONLY": MEASURED
@@ -290,7 +290,17 @@
 // notifies `herdrLayoutUpdated(socketPath:)` ONLY in steady state --
 // never while still accumulating a fresh subscribe's own replay burst,
 // for the identical storm-avoidance reason REPLAY BURST RECONCILIATION
-// above already applies to `pane.created`.
+// above already applies to `pane.created`. A `workspace_closed` event
+// notifies `herdrWorkspaceClosed(workspaceID:socketPath:)`
+// UNCONDITIONALLY -- accumulating or steady state alike, unlike
+// `layout.updated`'s own gate above -- and touches NEITHER
+// `knownPaneIDs`/`recognizedPaneIDs` NOR `triggerRebuild`: closing a
+// whole workspace never removes a SINGLE already-known pane id from this
+// coordinator's own bookkeeping the way an individual `pane.closed`
+// does, and a `workspaceID` this instance never opened a tab for is a
+// no-op downstream (`HerdrTabCoordinator.handleWorkspaceKilled`'s own
+// contract), sending herdr nothing either way -- there is no storm risk
+// here to guard against with a REPLAY BURST RECONCILIATION-style dedup.
 //
 // EXPLICIT TRANSPORT TEARDOWN: unlike the type this coordinator used to
 // depend on (`HerdrSocketSession`, whose `BSDHerdrTransport` cleans
@@ -371,6 +381,13 @@ protocol HerdrStructureEventObserver: AnyObject {
     func herdrLayoutUpdated(socketPath: String)
     /// A `pane.closed` event was pushed for `paneID` on `socketPath`.
     func herdrPaneClosed(paneID: String, socketPath: String)
+    /// A `workspace.closed` event was pushed for `workspaceID` on
+    /// `socketPath` -- herdr closed the WHOLE workspace server-side
+    /// (its own TUI, the CLI, or another client), which does NOT also
+    /// push `pane.closed` for that workspace's own panes (measured
+    /// against a real herdr 0.8.0 server). Notified unconditionally,
+    /// at ANY time -- see this file's header "STRUCTURE EVENT OBSERVER".
+    func herdrWorkspaceClosed(workspaceID: String, socketPath: String)
 }
 
 // MARK: - HerdrIntegrationCoordinator
@@ -378,10 +395,10 @@ protocol HerdrStructureEventObserver: AnyObject {
 @MainActor
 final class HerdrIntegrationCoordinator {
 
-    /// The five herdr structure events subscribed type-only on every
+    /// The six herdr structure events subscribed type-only on every
     /// (re)subscribe -- see this file's header, CONNECT SEQUENCE step 4.
     static let structureEventSubscriptionTypes = [
-        "pane.created", "pane.closed", "pane.exited", "pane.agent_detected", "layout.updated",
+        "pane.created", "pane.closed", "pane.exited", "pane.agent_detected", "layout.updated", "workspace.closed",
     ]
 
     /// Default bounded backoff schedule for DISCONNECT HANDLING's
@@ -613,7 +630,7 @@ final class HerdrIntegrationCoordinator {
     /// Runs the CONNECT SEQUENCE described in this file's header: a
     /// one-shot `session.snapshot`, applied to the mirror and used to
     /// (re)populate `knownPaneIDs`, THEN a fresh `events.subscribe`
-    /// connection carrying the five structure events plus one
+    /// connection carrying the six structure events plus one
     /// `.agentStatusChanged(paneID:)` per pane the snapshot just
     /// revealed. Each of the two steps is independently bounded by
     /// `runWithDeadline(transport:operation:)` (A2). Returns `true` once
@@ -844,6 +861,10 @@ final class HerdrIntegrationCoordinator {
                     // pane that is still there would be wrong. The
                     // pre-existing unconditional rebuild is unaffected.
                     if await triggerRebuild(socketPath: socketPath) { return }
+                case .workspaceClosed(let workspaceID):
+                    // Unconditional, no rebuild -- see this file's header
+                    // "STRUCTURE EVENT OBSERVER".
+                    structureEventObserver?.herdrWorkspaceClosed(workspaceID: workspaceID, socketPath: socketPath)
                 case .unknown(eventType: "layout_updated") where !isAccumulatingReplayBurst:
                     // Steady state only -- a layout_updated event
                     // replayed WHILE still accumulating a fresh

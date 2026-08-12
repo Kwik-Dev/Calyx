@@ -44,13 +44,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// Native-tab coordinator -- see `HerdrTabCoordinator.swift`'s
     /// own header. `nil` when herdr itself isn't resolvable, OR before
     /// `startHerdrIntegrationIfNeeded()`'s own async resolution below has
-    /// completed -- every call site here guards on that `nil` identically
-    /// to how herdr's absence already means zero behavior change
-    /// everywhere else in this integration (`openHerdrAttachTab`'s own
-    /// doc comment). A herdr installed AFTER launch is not picked up
-    /// until the next one (this property is set at most once per launch,
-    /// mirroring every other "resolved once" property in this codebase)
-    /// -- an accepted limitation, not a bug: there is no live re-poll here.
+    /// completed -- every call site here guards on that `nil`. Everywhere
+    /// else in this integration that means zero behavior change while
+    /// herdr stays unresolved (`openHerdrAttachTab`'s own doc comment),
+    /// except `adoptRestoredHerdrTabIfNeeded(_:)`: a tab restored before
+    /// this resolves queues its adoption into `pendingHerdrTabAdoptions`
+    /// instead of dropping it, flushed the moment this property is
+    /// actually assigned (`flushPendingHerdrTabAdoptions()`, called
+    /// immediately after, in `startHerdrIntegrationIfNeeded()`). A herdr
+    /// installed AFTER launch is not picked up until the next one (this
+    /// property is set at most once per launch, mirroring every other
+    /// "resolved once" property in this codebase) -- an accepted
+    /// limitation, not a bug: there is no live re-poll here.
     ///
     /// Populated asynchronously, off `@MainActor`, by
     /// `startHerdrIntegrationIfNeeded()` below: a `lazy var` here would run
@@ -66,6 +71,39 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// `openHerdrAttachTab`, which does not need this property at all)
     /// all only ever READ it.
     private(set) var herdrTabCoordinator: HerdrTabCoordinator?
+
+    private typealias PendingHerdrTabAdoption = (
+        workspaceID: String, socketPath: String, tabID: UUID, paneRefs: [UUID: HerdrPaneRef]
+    )
+
+    /// Restored-tab adoptions queued by `adoptRestoredHerdrTabIfNeeded(_:)`
+    /// while `herdrTabCoordinator` above was still nil -- `restoreSession()`
+    /// runs synchronously during launch, before
+    /// `startHerdrIntegrationIfNeeded()`'s own async herdr-binary
+    /// resolution can possibly have assigned that property yet, so a
+    /// restored herdr tab must not simply be dropped here. Appended to
+    /// ONLY from that one call site; flushed in order, and cleared, by
+    /// `flushPendingHerdrTabAdoptions()` the instant a coordinator is
+    /// actually constructed. Every entry is plain value data (no surface,
+    /// no `Tab`, no live object), so herdr never resolving at all this
+    /// launch leaves this holding a few small value tuples, with no other
+    /// effect, for the rest of the process's life.
+    private var pendingHerdrTabAdoptions: [PendingHerdrTabAdoption] = []
+
+    #if DEBUG
+    /// Test seam: sets `herdrTabCoordinator` directly and flushes
+    /// `pendingHerdrTabAdoptions`, mirroring
+    /// `startHerdrIntegrationIfNeeded()`'s own assign-then-flush sequence
+    /// exactly. `startHerdrIntegrationIfNeeded()` itself is unreachable
+    /// from a test (`LaunchEnvironmentPolicy.isUnitTestHost()`'s own
+    /// gate), and `herdrTabCoordinator`'s setter is private besides, so
+    /// this is the only way to drive the flush deterministically, without
+    /// a real herdr binary. DO NOT use from production code.
+    func _setHerdrTabCoordinatorForTesting(_ coordinator: HerdrTabCoordinator?) {
+        herdrTabCoordinator = coordinator
+        flushPendingHerdrTabAdoptions()
+    }
+    #endif
 
     /// Builds the real `HerdrTabCoordinator` once `herdrBinPath` is
     /// already resolved -- extracted out of `herdrTabCoordinator`'s own
@@ -432,6 +470,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 // two concurrent calls can never both construct one.
                 if herdrTabCoordinator == nil {
                     herdrTabCoordinator = makeHerdrTabCoordinator(herdrBinPath: herdrBinPath)
+                    // Adopts any restore-time queued entry now that a
+                    // coordinator finally exists -- see
+                    // flushPendingHerdrTabAdoptions()'s own doc comment.
+                    flushPendingHerdrTabAdoptions()
                 }
             }
             // Wires HerdrTabCoordinator (`nil` when herdr itself isn't
@@ -460,6 +502,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.global().async {
                 continuation.resume(returning: resolver.resolve())
             }
+        }
+    }
+
+    /// Adopts every entry `adoptRestoredHerdrTabIfNeeded(_:)` queued into
+    /// `pendingHerdrTabAdoptions` while `herdrTabCoordinator` was still
+    /// nil, in the order they were queued, then empties the queue.
+    /// Called immediately after `herdrTabCoordinator` is assigned, above
+    /// in `startHerdrIntegrationIfNeeded()` and in
+    /// `_setHerdrTabCoordinatorForTesting` -- a coordinator that never
+    /// gets constructed this launch simply leaves the queue as-is, with
+    /// no other effect (no timer, no request, nothing beyond the value
+    /// data `pendingHerdrTabAdoptions` already held). `adoptRestoredTab`
+    /// itself is idempotent (its own doc comment), so a workspace already
+    /// opened for real by the time this runs is unaffected by a queued
+    /// entry for the same (workspaceID, socketPath).
+    private func flushPendingHerdrTabAdoptions() {
+        guard let coordinator = herdrTabCoordinator else { return }
+        let queued = pendingHerdrTabAdoptions
+        pendingHerdrTabAdoptions.removeAll()
+        for entry in queued {
+            coordinator.adoptRestoredTab(
+                workspaceID: entry.workspaceID, socketPath: entry.socketPath, tabID: entry.tabID, paneRefs: entry.paneRefs
+            )
         }
     }
 
@@ -2893,6 +2958,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // match this tab again, and the next snapshot would persist an
             // orphaned key.
             tab.herdrPaneRefs = tab.herdrPaneRefs.remappingKeys(mapping)
+            adoptRestoredHerdrTabIfNeeded(tab)
             return true
         }
 
@@ -2916,6 +2982,59 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             tab.registry.destroySurface(newID)
         }
         return false
+    }
+
+    /// Registers `tab`'s bridged herdr leaves, if any survived restore,
+    /// with `herdrTabCoordinator`'s own per-workspace bookkeeping (see
+    /// `HerdrTabCoordinator.adoptRestoredTab`'s own doc comment for what
+    /// it stores and why), so a workspace killed or a pane closed after a
+    /// RESTORE closes this tab exactly like one opened via
+    /// `HerdrTabCoordinator.openWorkspace` in this session. Called only
+    /// from `restoreTabSurfaces`'s own full-success branch, after
+    /// `tab.herdrPaneRefs` has already been re-keyed to the new surface
+    /// ids -- an entry survives there ONLY through
+    /// `HerdrRestoreCommandPolicy.decide`'s `.bridgeCommand` outcome
+    /// (`.plainShellAndPrune` removes it, `.plainShell` never adds one),
+    /// so an empty `tab.herdrPaneRefs` here means every ref degraded to a
+    /// plain shell, or the tab never had one -- no call, no herdr work,
+    /// either way.
+    ///
+    /// The workspace id is derived from any one surviving ref's own
+    /// paneID (`HerdrPaneID(parsing:)`, HerdrEvent.swift): every leaf in
+    /// one tab bridges the SAME herdr workspace
+    /// (`HerdrTabCoordinator.openWorkspace` only ever builds one tab's
+    /// panes from one workspace's own layout.export), so any single
+    /// entry's own workspace id speaks for the whole tab. `isValidPaneID`
+    /// already gated this paneID before it could survive into
+    /// `tab.herdrPaneRefs` (`HerdrRestoreCommandPolicy.decide`'s own
+    /// guard), so `HerdrPaneID(parsing:)`'s more lenient parse is safe
+    /// here -- extraction, not validation.
+    ///
+    /// When `herdrTabCoordinator` already exists, this adopts directly.
+    /// Otherwise (still nil at restore time -- `startHerdrIntegrationIfNeeded()`'s
+    /// own async herdr-binary resolution has not necessarily landed yet
+    /// by the time `restoreSession()` runs), the entry is queued into
+    /// `pendingHerdrTabAdoptions` instead of being dropped, and adopted
+    /// once `flushPendingHerdrTabAdoptions()` runs -- see that
+    /// property's and that method's own doc comments.
+    private func adoptRestoredHerdrTabIfNeeded(_ tab: Tab) {
+        guard let anyRef = tab.herdrPaneRefs.values.first,
+              let workspaceID = HerdrPaneID(parsing: anyRef.paneID)?.workspaceID
+        else {
+            return
+        }
+        if let coordinator = herdrTabCoordinator {
+            coordinator.adoptRestoredTab(
+                workspaceID: workspaceID, socketPath: anyRef.socketPath, tabID: tab.id, paneRefs: tab.herdrPaneRefs
+            )
+        } else {
+            pendingHerdrTabAdoptions.append(
+                (workspaceID: workspaceID, socketPath: anyRef.socketPath, tabID: tab.id, paneRefs: tab.herdrPaneRefs)
+            )
+        }
+        #if DEBUG
+        _restoreTabSurfacesHerdrAdoptionObserverForTesting?(workspaceID, anyRef.socketPath, tab.id, tab.herdrPaneRefs)
+        #endif
     }
 
     private func fallbackCreateSurface(
@@ -3109,6 +3228,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// leaves production behavior unchanged. DO NOT use from production
     /// code.
     var _createSurfaceWithPwdCommandObserverForTesting: ((UUID?, String?) -> Void)?
+
+    /// Test seam: when non-nil, called with `(workspaceID, socketPath,
+    /// tabID, paneRefs)` from `adoptRestoredHerdrTabIfNeeded` whenever a
+    /// restored tab has at least one surviving (bridged) `herdrPaneRefs`
+    /// entry -- fires with the EXACT arguments that reach
+    /// `HerdrTabCoordinator.adoptRestoredTab(...)`, whether delivered
+    /// directly (`herdrTabCoordinator` already set, e.g. via
+    /// `_setHerdrTabCoordinatorForTesting`) or queued into
+    /// `pendingHerdrTabAdoptions` for a later `flushPendingHerdrTabAdoptions()`
+    /// to deliver (`herdrTabCoordinator` still nil -- always the case in
+    /// the unit-test host unless a test sets one, since
+    /// `startHerdrIntegrationIfNeeded`'s own gate never runs there), so a
+    /// test can observe the adoption's computed shape either way. `nil`
+    /// (the default) leaves production behavior unchanged: the real
+    /// adoption, direct or queued, still always happens regardless of
+    /// this hook. DO NOT use from production code.
+    var _restoreTabSurfacesHerdrAdoptionObserverForTesting: ((String, String, UUID, [UUID: HerdrPaneRef]) -> Void)?
     #endif
 
     /// Thin wrapper around the one actually-unsafe-to-test call

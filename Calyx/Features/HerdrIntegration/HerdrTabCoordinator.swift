@@ -150,6 +150,39 @@
 // so this is the only reliable way the Calyx tab closes and its
 // bookkeeping gets pruned.
 //
+// WORKSPACE CLOSED (herdr-initiated): the SAME `handleWorkspaceKilled`
+// above is also this file's own `HerdrStructureEventObserver
+// .herdrWorkspaceClosed(workspaceID:socketPath:)` conformance (below) --
+// herdr itself already closed the whole workspace server-side (its own
+// TUI, the CLI, or another client) by the time this fires, and does NOT
+// push `pane.closed` for that workspace's own panes either (the measured
+// wire fact this event exists for), so this is the only path that tears
+// down the Calyx tab and prunes bookkeeping for that close.
+// `herdrWorkspaceClosed` calls `handleWorkspaceKilled` directly, with no
+// `Task` wrapper: unlike `herdrPaneClosed`/`herdrLayoutUpdated` (both
+// async underneath), `handleWorkspaceKilled` is itself synchronous.
+//
+// RESTORE ADOPTION (adoptRestoredTab): AppDelegate.restoreTabSurfaces'
+// own counterpart to openWorkspace for a tab that came back from a
+// snapshot restore instead of this session's own openWorkspace call --
+// its surfaces and HerdrPaneRegistry entries already exist by the time
+// this runs (createSurfaceWithPwd's own .bridgeCommand case did both),
+// so this only populates activeTabIDs/remainingPaneIDs, the SAME two
+// maps openWorkspace's own tail populates, sending herdr nothing and
+// creating no surface. activeTabIDs[key] stores the Calyx tab's OWN id
+// (tabID.uuidString) rather than herdr's real active_tab_id: restore has
+// no workspace.get response to read one from, and issuing one here would
+// make the restore path asynchronous, which it must not become. A
+// subsequent handleLayoutUpdated for this workspace therefore sends
+// layout.export a tab_id herdr does not recognize and fails harmlessly
+// (caught, returns false, before ever touching lastAppliedLayouts) until
+// a fresh openWorkspace for the same workspace resolves and stores the
+// real value. lastAppliedLayouts itself is left untouched here for the
+// identical reason -- restore carries no ratio tree to seed one with,
+// and every reader already treats a missing entry as "nothing applied
+// yet". Idempotent: a workspace already tracked, by either this method
+// or openWorkspace, is untouched by a second call.
+//
 // `sleep` mirrors HerdrIntegrationCoordinator's own injection seam
 // (stored, never invoked here): no method here currently races
 // a wait against a duration, and this coordinator's own interface carries no
@@ -509,6 +542,27 @@ final class HerdrTabCoordinator {
         return true
     }
 
+    // MARK: - Restore Adoption
+
+    /// Adopts a tab `AppDelegate.restoreTabSurfaces` already built for a
+    /// herdr-bridged leaf that survived a snapshot restore -- see this
+    /// file's header "RESTORE ADOPTION" for what it stores, why, and the
+    /// documented handleLayoutUpdated consequence of not having herdr's
+    /// own active_tab_id. `paneRefs` mirrors `Tab.herdrPaneRefs`'s own
+    /// shape (surfaceID -> HerdrPaneRef); only its `.paneID` values are
+    /// read here, the same as `openWorkspace`'s own `remainingPaneIDs`
+    /// population.
+    ///
+    /// Idempotent: a `(workspaceID, socketPath)` already tracked --
+    /// adopted before, or already opened via `openWorkspace` -- is left
+    /// untouched.
+    func adoptRestoredTab(workspaceID: String, socketPath: String, tabID: UUID, paneRefs: [UUID: HerdrPaneRef]) {
+        let key = WorkspaceKey(workspaceID: workspaceID, socketPath: socketPath)
+        guard activeTabIDs[key] == nil else { return }
+        activeTabIDs[key] = tabID.uuidString
+        remainingPaneIDs[key] = Set(paneRefs.values.map(\.paneID))
+    }
+
     // MARK: - Refresh
 
     /// Re-exports `workspaceID`'s current layout and reconciles it
@@ -584,28 +638,37 @@ final class HerdrTabCoordinator {
         closeTrackedPane(paneID: paneID, socketPath: socketPath)
     }
 
-    // MARK: - Workspace killed (Session Browser-initiated)
+    // MARK: - Workspace killed / closed
 
     /// Closes every Calyx leaf currently registered for `workspaceID` on
-    /// `socketPath` -- the Session Browser's Kill action for a herdr
-    /// workspace row (`SessionBrowserModel.killHerdrWorkspace(_:)`) calls
-    /// this BEFORE sending herdr `workspace.close`, so each pane's own
-    /// `herdr terminal attach` process exits through its normal path
-    /// instead of racing herdr's connection teardown, rather than
-    /// relying on a `pane.closed` event to reach `handlePaneClosed`
-    /// through the Stage 2 event stream, which is not necessarily
-    /// subscribed at kill time. Closes each tracked pane through the
+    /// `socketPath` -- called from TWO places (this file's header
+    /// "WORKSPACE KILLED"/"WORKSPACE CLOSED"): the Session Browser's Kill
+    /// action for a herdr workspace row (`SessionBrowserModel
+    /// .killHerdrWorkspace(_:)`), BEFORE it sends herdr `workspace.close`,
+    /// so each pane's own `herdr terminal attach` process exits through
+    /// its normal path instead of racing herdr's connection teardown; and
+    /// this file's own `herdrWorkspaceClosed(workspaceID:socketPath:)`
+    /// conformance, AFTER herdr has already closed the workspace
+    /// server-side on its own initiative. Neither caller relies on a
+    /// `pane.closed` event reaching `handlePaneClosed` --
+    /// `HerdrIntegrationCoordinator`'s own event-stream connection is not
+    /// necessarily subscribed at Session Browser kill time, and herdr's
+    /// own workspace close does not push `pane.closed` for that
+    /// workspace's panes at all (measured against a real herdr 0.8.0
+    /// server). Closes each tracked pane through the
     /// exact same `closeTrackedPane(paneID:socketPath:)` helper
     /// `handlePaneClosed` itself calls, so a herdr-bridged pane's Calyx
     /// side keeps exactly one close path: the workspace's tab ends up
     /// closed, and `activeTabIDs`/`lastAppliedLayouts`/`remainingPaneIDs`
     /// pruned, identically to what closing every one of its panes one by
     /// one via `handlePaneClosed` already leaves. NEVER sends herdr a
-    /// request of its own: that is `workspace.close`'s own job, sent
-    /// separately by `killHerdrWorkspace(_:)` right after this returns.
-    /// A no-op for a `workspaceID` with no pane currently tracked on
-    /// `socketPath` (never opened in this window, or already fully
-    /// closed).
+    /// request of its own either way: for the Session Browser caller,
+    /// `workspace.close` is sent separately, by `killHerdrWorkspace(_:)`
+    /// right after this returns; for the herdr-initiated caller, herdr
+    /// has already closed the workspace, so there is nothing left to
+    /// send it at all. A no-op for a `workspaceID` with no pane currently
+    /// tracked on `socketPath` (never opened in this window, or already
+    /// fully closed).
     func handleWorkspaceKilled(workspaceID: String, socketPath: String) {
         let key = WorkspaceKey(workspaceID: workspaceID, socketPath: socketPath)
         // A value-type snapshot, not a live view: closeTrackedPane below
@@ -625,8 +688,8 @@ final class HerdrTabCoordinator {
     /// coordinator's own per-workspace bookkeeping once the workspace's
     /// last pane is gone (`pruneIfLastPaneClosed`). Called by
     /// `handlePaneClosed` (one pane, herdr-initiated) and
-    /// `handleWorkspaceKilled` (every tracked pane, Session
-    /// Browser-initiated) -- the only two paths through which this
+    /// `handleWorkspaceKilled` (every tracked pane, Session Browser OR
+    /// herdr-initiated) -- the only two paths through which this
     /// COORDINATOR ITSELF closes a herdr-bridged leaf (a Calyx-initiated
     /// close, e.g. Cmd+W, arrives via `handleCalyxSurfaceClosed` instead,
     /// with nothing left for this method to close -- see that method's
@@ -665,7 +728,7 @@ final class HerdrTabCoordinator {
     }
 
     /// Shared by `closeTrackedPane` (herdr-initiated via `handlePaneClosed`,
-    /// or Session Browser-initiated via `handleWorkspaceKilled`) and
+    /// or Session Browser/herdr-initiated via `handleWorkspaceKilled`) and
     /// `handleCalyxSurfaceClosed` (Calyx-initiated) above -- removes
     /// `paneID` from its own workspace's `remainingPaneIDs` entry, and,
     /// once that reaches empty (this was the workspace's LAST tracked
@@ -820,13 +883,17 @@ final class HerdrTabCoordinator {
 
 // MARK: - HerdrStructureEventObserver
 
-/// Wires HerdrIntegrationCoordinator's existing pane.closed/layout.updated
-/// events (HerdrIntegrationCoordinator.swift's own HerdrStructureEventObserver
+/// Wires HerdrIntegrationCoordinator's existing pane.closed/pane.exited/
+/// layout.updated/workspace.closed events
+/// (HerdrIntegrationCoordinator.swift's own HerdrStructureEventObserver
 /// protocol) into this type's already-existing handleLayoutUpdated/
-/// handlePaneClosed methods. Both protocol methods are synchronous per
-/// HerdrStructureEventObserver's own signature, while handleLayoutUpdated/
-/// handlePaneClosed are async, so each conformer method here fans out via
-/// an internally-spawned Task rather than awaiting anything itself.
+/// handlePaneClosed/handleWorkspaceKilled methods. Every protocol method
+/// is synchronous per HerdrStructureEventObserver's own signature;
+/// handleLayoutUpdated/handlePaneClosed are async, so herdrLayoutUpdated/
+/// herdrPaneClosed below each fan out via an internally-spawned Task
+/// rather than awaiting anything themselves. handleWorkspaceKilled is
+/// itself synchronous, so herdrWorkspaceClosed below calls it directly,
+/// with no Task.
 extension HerdrTabCoordinator: HerdrStructureEventObserver {
 
     /// Triggers handleLayoutUpdated for EVERY workspace currently opened
@@ -854,5 +921,16 @@ extension HerdrTabCoordinator: HerdrStructureEventObserver {
         Task { [weak self] in
             await self?.handlePaneClosed(paneID: paneID, socketPath: socketPath)
         }
+    }
+
+    /// Delegates to handleWorkspaceKilled directly -- see this
+    /// extension's own header for why no Task is needed here, unlike
+    /// herdrPaneClosed/herdrLayoutUpdated above. This is the SAME shared
+    /// close path `handleWorkspaceKilled`'s Session Browser caller uses
+    /// (this type's own header "WORKSPACE CLOSED (herdr-initiated)");
+    /// sends herdr no request of its own, and is a no-op for a
+    /// `workspaceID` with no pane currently tracked on `socketPath`.
+    func herdrWorkspaceClosed(workspaceID: String, socketPath: String) {
+        handleWorkspaceKilled(workspaceID: workspaceID, socketPath: socketPath)
     }
 }

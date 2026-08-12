@@ -94,6 +94,18 @@
 //     ever reporting a known agent status) -- `AgentRegistry
 //     .removeExternalEntry` on a missing id is itself already a no-op.
 //
+//   - `workspaceClosed(workspaceID:)` is a pure no-op here: this file
+//     only ever removes a row by PANE id (`paneClosed`/`paneExited`
+//     above), and herdr does NOT push `pane.closed` for a closed
+//     workspace's own panes (the measured wire fact `workspaceClosed`
+//     itself exists for) -- so any external row this file owns for that
+//     workspace's panes is left in place until the next `applySnapshot`
+//     naturally prunes it (this file's header, the paragraph on
+//     `applySnapshot`'s own removal pass, below). `HerdrIntegrationCoordinator`
+//     forwards this event to `HerdrTabCoordinator` only (its own
+//     `HerdrStructureEventObserver.herdrWorkspaceClosed`), never to this
+//     file.
+//
 //   - `unknown(eventType:)` (every herdr event type this codebase
 //     doesn't decode strongly, PLUS any genuinely unrecognized type --
 //     see HerdrEvent.swift's own header) is a pure no-op here.
@@ -190,8 +202,9 @@ final class HerdrAgentMirror {
 
     /// Applies one pushed `HerdrEvent`: `paneAgentStatusChanged` updates
     /// (or creates) that pane's row; `paneClosed`/`paneExited` remove
-    /// that pane's row immediately; `paneCreated` and `unknown` are
-    /// no-ops -- see this file's header for the exact rules.
+    /// that pane's row immediately; `paneCreated`, `workspaceClosed`, and
+    /// `unknown` are no-ops -- see this file's header for the exact
+    /// rules.
     func apply(event: HerdrEvent, socketPath: String) {
         switch event {
         case .paneCreated:
@@ -201,6 +214,9 @@ final class HerdrAgentMirror {
             applyStatusChanged(changed, socketPath: socketPath)
         case .paneClosed(let paneID), .paneExited(let paneID):
             removeRow(paneID: paneID, socketPath: socketPath)
+        case .workspaceClosed:
+            // Pure no-op for this file -- see this file's header.
+            break
         case .unknown:
             break
         }

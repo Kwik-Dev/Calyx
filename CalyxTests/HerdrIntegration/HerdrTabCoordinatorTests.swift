@@ -96,6 +96,13 @@
 //    HerdrTabTitlePolicyTests, not here -- this file only pins that
 //    workspace.get's own response feeds the coordinator a real label
 //    (test_openWorkspace_singlePane_..., plan.title, "demo" fixture)
+//  - adoptRestoredTab: populates the identical activeTabIDs/
+//    remainingPaneIDs bookkeeping openWorkspace's own tail populates, so
+//    handleWorkspaceKilled/handlePaneClosed close an ADOPTED leaf exactly
+//    like an OPENED one, hasOpenTab answers true, and the call sends
+//    herdr nothing; a second call for the same (workspaceID, socketPath)
+//    is a complete no-op, proven by an extra pane the second call alone
+//    carries never being tracked
 //
 
 import XCTest
@@ -1349,6 +1356,173 @@ final class HerdrTabCoordinatorTests: XCTestCase {
         XCTAssertEqual(
             finalCallCount, callCountAfterOpen,
             "hasOpenTab must never touch the transport factory -- read-only, sends herdr nothing"
+        )
+    }
+
+    // MARK: - 16. adoptRestoredTab: handleWorkspaceKilled closes every adopted leaf
+
+    /// Pins `adoptRestoredTab(workspaceID:socketPath:tabID:paneRefs:)`,
+    /// AppDelegate.restoreTabSurfaces' own counterpart to `openWorkspace`
+    /// for a tab that came back from a snapshot restore. Registers the
+    /// fake surfaces in `registry` FIRST -- exactly what
+    /// `AppDelegate.createSurfaceWithPwd`'s own `.bridgeCommand` case
+    /// already did in production before adoption ever runs;
+    /// `adoptRestoredTab` itself touches the registry not at all.
+    /// `handleWorkspaceKilled` must then close both adopted leaves
+    /// through the attacher, prune the registry in both directions, and
+    /// the whole sequence -- adopt included -- must send herdr no
+    /// request at any point.
+    func test_adoptRestoredTab_thenHandleWorkspaceKilled_closesEveryAdoptedLeaf_prunesRegistryAndBookkeeping_sendsNoHerdrRequest() async {
+        let factory = SpyHerdrTransportFactory()
+        let surfaceFactory = FakeHerdrNativeSurfaceFactory(results: [])
+        let attacher = FakeHerdrNativeTabAttacher()
+        let coordinator = makeCoordinator(factory: factory, surfaceFactory: surfaceFactory, attacher: attacher)
+
+        let firstSurfaceID = UUID()
+        let secondSurfaceID = UUID()
+        registry.register(surfaceID: firstSurfaceID, ref: HerdrPaneRef(socketPath: socketPath, paneID: "wR:p1"))
+        registry.register(surfaceID: secondSurfaceID, ref: HerdrPaneRef(socketPath: socketPath, paneID: "wR:p2"))
+
+        coordinator.adoptRestoredTab(
+            workspaceID: "wR", socketPath: socketPath, tabID: UUID(),
+            paneRefs: [
+                firstSurfaceID: HerdrPaneRef(socketPath: socketPath, paneID: "wR:p1"),
+                secondSurfaceID: HerdrPaneRef(socketPath: socketPath, paneID: "wR:p2"),
+            ]
+        )
+        XCTAssertEqual(surfaceFactory.createCommands, [], "adopting a restored tab must never create a surface")
+        XCTAssertEqual(attacher.attachedPlans.count, 0, "adopting a restored tab must never call attachTab")
+        let callCountAfterAdopt = await factory.callCount
+        XCTAssertEqual(callCountAfterAdopt, 0, "adopting a restored tab must never touch the transport factory")
+
+        coordinator.handleWorkspaceKilled(workspaceID: "wR", socketPath: socketPath)
+
+        XCTAssertEqual(
+            Set(attacher.closeLeafCalls), Set([firstSurfaceID, secondSurfaceID]),
+            "every adopted leaf must be closed through the attacher"
+        )
+        XCTAssertEqual(attacher.closeLeafCalls.count, 2, "each adopted leaf must be closed exactly once")
+
+        XCTAssertFalse(registry.isBridgeSurface(firstSurfaceID), "the forward surfaceID -> ref mapping must be pruned")
+        XCTAssertFalse(registry.isBridgeSurface(secondSurfaceID))
+        XCTAssertNil(registry.surfaceID(forPaneID: "wR:p1", socketPath: socketPath), "the reverse mapping must ALSO be pruned")
+        XCTAssertNil(registry.surfaceID(forPaneID: "wR:p2", socketPath: socketPath))
+
+        XCTAssertFalse(
+            coordinator.hasOpenTab(workspaceID: "wR", socketPath: socketPath),
+            "the workspace's bookkeeping must be pruned once every adopted leaf has closed"
+        )
+
+        let finalCallCount = await factory.callCount
+        XCTAssertEqual(finalCallCount, 0, "killing an adopted workspace must never send herdr a request")
+    }
+
+    // MARK: - 17. adoptRestoredTab: handlePaneClosed closes a single adopted leaf
+
+    func test_adoptRestoredTab_thenHandlePaneClosed_closesOnlyThatLeaf_leavesOtherAdoptedPaneOpen_sendsNoHerdrRequest() async {
+        let factory = SpyHerdrTransportFactory()
+        let surfaceFactory = FakeHerdrNativeSurfaceFactory(results: [])
+        let attacher = FakeHerdrNativeTabAttacher()
+        let coordinator = makeCoordinator(factory: factory, surfaceFactory: surfaceFactory, attacher: attacher)
+
+        let firstSurfaceID = UUID()
+        let secondSurfaceID = UUID()
+        registry.register(surfaceID: firstSurfaceID, ref: HerdrPaneRef(socketPath: socketPath, paneID: "wR:p1"))
+        registry.register(surfaceID: secondSurfaceID, ref: HerdrPaneRef(socketPath: socketPath, paneID: "wR:p2"))
+
+        coordinator.adoptRestoredTab(
+            workspaceID: "wR", socketPath: socketPath, tabID: UUID(),
+            paneRefs: [
+                firstSurfaceID: HerdrPaneRef(socketPath: socketPath, paneID: "wR:p1"),
+                secondSurfaceID: HerdrPaneRef(socketPath: socketPath, paneID: "wR:p2"),
+            ]
+        )
+
+        await coordinator.handlePaneClosed(paneID: "wR:p1", socketPath: socketPath)
+
+        XCTAssertEqual(attacher.closeLeafCalls, [firstSurfaceID], "only the closed pane's own leaf may be closed")
+        XCTAssertFalse(registry.isBridgeSurface(firstSurfaceID))
+        XCTAssertTrue(registry.isBridgeSurface(secondSurfaceID), "the OTHER adopted pane must remain registered")
+
+        XCTAssertTrue(
+            coordinator.hasOpenTab(workspaceID: "wR", socketPath: socketPath),
+            "the workspace's tab is still open while its other adopted pane remains"
+        )
+
+        let callCount = await factory.callCount
+        XCTAssertEqual(callCount, 0, "closing one adopted pane must never send herdr a request")
+    }
+
+    // MARK: - 18. adoptRestoredTab: hasOpenTab
+
+    func test_hasOpenTab_falseBeforeAdopt_trueAfterAdoptRestoredTab() {
+        let factory = SpyHerdrTransportFactory()
+        let surfaceFactory = FakeHerdrNativeSurfaceFactory(results: [])
+        let attacher = FakeHerdrNativeTabAttacher()
+        let coordinator = makeCoordinator(factory: factory, surfaceFactory: surfaceFactory, attacher: attacher)
+
+        XCTAssertFalse(
+            coordinator.hasOpenTab(workspaceID: "wR", socketPath: socketPath),
+            "a workspace never adopted or opened in this window must report no open tab"
+        )
+
+        let surfaceID = UUID()
+        registry.register(surfaceID: surfaceID, ref: HerdrPaneRef(socketPath: socketPath, paneID: "wR:p1"))
+        coordinator.adoptRestoredTab(
+            workspaceID: "wR", socketPath: socketPath, tabID: UUID(),
+            paneRefs: [surfaceID: HerdrPaneRef(socketPath: socketPath, paneID: "wR:p1")]
+        )
+
+        XCTAssertTrue(
+            coordinator.hasOpenTab(workspaceID: "wR", socketPath: socketPath),
+            "an adopted workspace must report an open tab, exactly like one opened via openWorkspace"
+        )
+    }
+
+    // MARK: - 19. adoptRestoredTab: idempotent
+
+    /// Discriminating idempotency test: the SECOND call carries a
+    /// DIFFERENT tabID and an EXTRA pane, "wR:p2" -- if it were not a
+    /// true no-op, `remainingPaneIDs` would grow to include that second
+    /// pane, and `handleWorkspaceKilled` would try to close it too. BOTH
+    /// panes' surfaces are registered up front, including the second
+    /// call's own "wR:p2" -- registering only the first would let a
+    /// wrongly-not-ignored second call hide behind `closeTrackedPane`'s
+    /// own silent no-registry-entry no-op for an untracked pane, making
+    /// `closeLeafCalls == [firstSurfaceID]` pass either way. With both
+    /// registered, a real close would be attempted for "wR:p2" too, so
+    /// `closeLeafCalls == [firstSurfaceID]` is only possible if the
+    /// second call mutated nothing at all.
+    func test_adoptRestoredTab_calledTwiceForSameWorkspace_secondCallIsNoOp() {
+        let factory = SpyHerdrTransportFactory()
+        let surfaceFactory = FakeHerdrNativeSurfaceFactory(results: [])
+        let attacher = FakeHerdrNativeTabAttacher()
+        let coordinator = makeCoordinator(factory: factory, surfaceFactory: surfaceFactory, attacher: attacher)
+
+        let firstSurfaceID = UUID()
+        let secondSurfaceID = UUID()
+        registry.register(surfaceID: firstSurfaceID, ref: HerdrPaneRef(socketPath: socketPath, paneID: "wR:p1"))
+        registry.register(surfaceID: secondSurfaceID, ref: HerdrPaneRef(socketPath: socketPath, paneID: "wR:p2"))
+
+        coordinator.adoptRestoredTab(
+            workspaceID: "wR", socketPath: socketPath, tabID: UUID(),
+            paneRefs: [firstSurfaceID: HerdrPaneRef(socketPath: socketPath, paneID: "wR:p1")]
+        )
+
+        coordinator.adoptRestoredTab(
+            workspaceID: "wR", socketPath: socketPath, tabID: UUID(),
+            paneRefs: [
+                firstSurfaceID: HerdrPaneRef(socketPath: socketPath, paneID: "wR:p1"),
+                secondSurfaceID: HerdrPaneRef(socketPath: socketPath, paneID: "wR:p2"),
+            ]
+        )
+
+        coordinator.handleWorkspaceKilled(workspaceID: "wR", socketPath: socketPath)
+
+        XCTAssertEqual(
+            attacher.closeLeafCalls, [firstSurfaceID],
+            "a second adoptRestoredTab call for the SAME workspace must be a complete no-op -- the extra pane " +
+            "it carried (with a real, registered surface) must never be tracked or closed"
         )
     }
 

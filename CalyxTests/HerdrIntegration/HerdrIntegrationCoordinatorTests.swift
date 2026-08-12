@@ -40,7 +40,7 @@
 //    BEFORE a separate events.subscribe transport is ever opened; the
 //    fetched snapshot is applied to the mirror; the subscribe's own
 //    per-pane list is exactly what that snapshot revealed, alongside the
-//    five structure events
+//    six structure events (including "workspace.closed")
 //  - start() while already connected is a no-op (repeated "app became active")
 //  - a paneCreated event for a genuinely NEW pane rebuilds the connection
 //    (a fresh snapshot + a fresh subscribe transport), and the rebuilt
@@ -303,7 +303,7 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
         }
         XCTAssertEqual(
             Set(subscriptionTypes(inLine: subscribeSent[0])), Set(HerdrIntegrationCoordinator.structureEventSubscriptionTypes),
-            "the subscribe must include exactly the five type-only structure events"
+            "the subscribe must include exactly the six type-only structure events"
         )
         XCTAssertEqual(
             agentStatusChangedPaneIDs(inLine: subscribeSent[0]), ["w1:p1"],
@@ -316,6 +316,38 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
         let finalCallCount = await factory.callCount
         XCTAssertEqual(finalCallCount, 2, "one connect attempt must open exactly 2 transports: snapshot, then subscribe")
         XCTAssertNotNil(registry.externalEntries[expectedID], "the fetched snapshot must be applied to the injected mirror")
+    }
+
+    /// Subscription: the "workspace.closed" entry must be included
+    /// alongside the other five structure events on every (re)subscribe
+    /// -- see HerdrIntegrationCoordinator.swift's own header
+    /// "STRUCTURE EVENT OBSERVER" and `structureEventSubscriptionTypes`'s
+    /// own doc comment. The broader set-equality assertion above already
+    /// covers this incidentally; this test pins it explicitly and by name.
+    func test_start_subscribePayload_includesWorkspaceClosedEntry() async {
+        let factory = SpyHerdrTransportFactory()
+        let coordinator = makeDetectableCoordinator(factory: factory)
+
+        async let startTask: Void = coordinator.start()
+        guard await driveConnectAttempt(factory: factory, baseIndex: 0, paneIDs: []) != nil else {
+            XCTFail("expected the coordinator to settle on an initial connection")
+            return
+        }
+        await startTask
+
+        guard let subscribeTransport = await factory.transport(at: 1) else {
+            XCTFail("expected the subscribe transport (index 1) to have been created")
+            return
+        }
+        let subscribeSent = await subscribeTransport.sentMessages()
+        guard subscribeSent.count == 1 else {
+            XCTFail("expected exactly one request line, got \(subscribeSent)")
+            return
+        }
+        XCTAssertTrue(
+            subscriptionTypes(inLine: subscribeSent[0]).contains("workspace.closed"),
+            "the subscribe payload must include the \"workspace.closed\" entry alongside the other structure events"
+        )
     }
 
     /// `panes[]` and `agents[]` are two SEPARATE schema arrays feeding two
@@ -1225,6 +1257,7 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
     private final class RecordingStructureEventObserverSpy: HerdrStructureEventObserver {
         private(set) var layoutUpdatedCalls: [String] = []
         private(set) var paneClosedCalls: [(paneID: String, socketPath: String)] = []
+        private(set) var workspaceClosedCalls: [(workspaceID: String, socketPath: String)] = []
 
         func herdrLayoutUpdated(socketPath: String) {
             layoutUpdatedCalls.append(socketPath)
@@ -1232,6 +1265,10 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
 
         func herdrPaneClosed(paneID: String, socketPath: String) {
             paneClosedCalls.append((paneID: paneID, socketPath: socketPath))
+        }
+
+        func herdrWorkspaceClosed(workspaceID: String, socketPath: String) {
+            workspaceClosedCalls.append((workspaceID: workspaceID, socketPath: socketPath))
         }
     }
 
@@ -1265,6 +1302,11 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
         }
 
         func herdrPaneClosed(paneID: String, socketPath: String) {
+            // Unused by this spy's own test -- present only to satisfy
+            // the protocol.
+        }
+
+        func herdrWorkspaceClosed(workspaceID: String, socketPath: String) {
             // Unused by this spy's own test -- present only to satisfy
             // the protocol.
         }
@@ -1362,6 +1404,48 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
             "a pane_closed event for a KNOWN pane must invoke herdrPaneClosed(paneID:socketPath:) exactly once"
         )
         XCTAssertEqual(observer.paneClosedCalls.map { $0.socketPath }, [socketPath])
+    }
+
+    /// A `workspace_closed` event must invoke
+    /// `herdrWorkspaceClosed(workspaceID:socketPath:)` on the observer
+    /// exactly once, and -- unlike `pane_closed` above -- must NEVER
+    /// rebuild the connection: freezes HerdrIntegrationCoordinator.swift's
+    /// own header "STRUCTURE EVENT OBSERVER" contract (`workspace_closed`
+    /// touches neither `knownPaneIDs`/`recognizedPaneIDs` nor
+    /// `triggerRebuild`) as a regression pin, not just an implicit
+    /// property of the implementation.
+    func test_workspaceClosedEvent_invokesObserver_neverRebuildsConnection() async {
+        let factory = SpyHerdrTransportFactory()
+        let coordinator = makeDetectableCoordinator(factory: factory)
+        let observer = RecordingStructureEventObserverSpy()
+        coordinator.setStructureEventObserver(observer)
+
+        async let startTask: Void = coordinator.start()
+        guard let settledTransport = await driveConnectAttempt(factory: factory, baseIndex: 0, paneIDs: ["w1:p1"]) else {
+            XCTFail("expected the coordinator to settle on a connection with \"w1:p1\" known")
+            return
+        }
+        await startTask
+        let settledCallCount = await factory.callCount
+        XCTAssertEqual(settledCallCount, 2, "Precondition")
+
+        await settledTransport.simulateLine(workspaceClosedEventLine(workspaceID: "w1"))
+        await waitUntil { observer.workspaceClosedCalls.count >= 1 }
+
+        // Bounded settle, then a STRICT recount -- proves no rebuild ever
+        // fires, not merely "hasn't yet".
+        for _ in 0..<200 { await Task.yield() }
+        let callCountAfter = await factory.callCount
+        XCTAssertEqual(
+            callCountAfter, settledCallCount,
+            "a workspace_closed event must NEVER rebuild the connection (no new transports) -- unlike pane_closed"
+        )
+
+        XCTAssertEqual(
+            observer.workspaceClosedCalls.map { $0.workspaceID }, ["w1"],
+            "a workspace_closed event must invoke herdrWorkspaceClosed(workspaceID:socketPath:) exactly once"
+        )
+        XCTAssertEqual(observer.workspaceClosedCalls.map { $0.socketPath }, [socketPath])
     }
 
     /// Cheap regression pin: with NO observer ever registered, existing
@@ -1582,6 +1666,14 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
         #"{"event":"pane_exited","data":{"pane_id":"\#(paneID)"}}"#
     }
 
+    /// Schema-minimal "workspace_closed" shape (HerdrEventTests' own
+    /// decode tests already pin the richer measured shape exhaustively)
+    /// -- only that it decodes to `.workspaceClosed(workspaceID:)` is
+    /// load-bearing here.
+    private func workspaceClosedEventLine(workspaceID: String) -> String {
+        #"{"event":"workspace_closed","data":{"type":"workspace_closed","workspace_id":"\#(workspaceID)"}}"#
+    }
+
     private func statusChangedEventLine(paneID: String, status: String, workspaceID: String = "w1") -> String {
         #"{"event":"pane.agent_status_changed","data":{"pane_id":"\#(paneID)","workspace_id":"\#(workspaceID)","agent_status":"\#(status)","agent":"claude","display_agent":null,"title":null,"state_labels":{}}}"#
     }
@@ -1611,7 +1703,7 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
     /// alongside their type. Wire shape is a single flat array mixing
     /// both kinds (see HerdrConnectionTests
     /// .test_subscribe_sendsExactlyOneEventsSubscribeLine_withFullSubscriptionList),
-    /// so callers wanting just the five structure-event types must filter
+    /// so callers wanting just the six structure-event types must filter
     /// out the per-pane ones first.
     private func subscriptionTypes(inLine line: String) -> [String] {
         subscriptionEntries(inLine: line).filter { $0["pane_id"] == nil }.compactMap { $0["type"] as? String }
