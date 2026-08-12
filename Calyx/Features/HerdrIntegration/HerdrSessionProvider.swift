@@ -1,24 +1,35 @@
 // HerdrSessionProvider.swift
 // Calyx
 //
-// Abstraction over listing herdr sessions, so `SessionBrowserModel` can
-// be tested with a fake instead of touching real PATH/socket state --
-// mirrors `SessionDaemonClientProtocol`'s own injectable-dependency
-// shape. The production conformer below, `HerdrCLISessionProvider`,
-// composes `HerdrSessionDiscovery`'s socket enumeration + non-blocking
-// connect probe (that type's own file, called here through its frozen
-// protocol, never reimplemented) for identity and liveness, then one
-// `session.snapshot` request per alive socket (`HerdrConnection.swift`'s
-// one-shot request path) for workspace/pane/agent counts -- the same
-// request `SessionBrowserWindowController.attachHerdr(_:)` already sends
-// to learn a row's live workspaces. herdr also exposes a JSON
+// Abstraction over listing herdr sessions and closing a herdr workspace,
+// so `SessionBrowserModel` can be tested with a fake instead of touching
+// real PATH/socket state -- mirrors `SessionDaemonClientProtocol`'s own
+// injectable-dependency shape. The production conformer below,
+// `HerdrCLISessionProvider`, composes `HerdrSessionDiscovery`'s socket
+// enumeration + non-blocking connect probe (that type's own file, called
+// here through its frozen protocol, never reimplemented) for identity
+// and liveness, then one `session.snapshot` request per alive socket
+// (`HerdrConnection.swift`'s one-shot request path) for workspace/pane/
+// agent counts AND the per-workspace rows those counts are derived from
+// (`HerdrSessionInfo.workspaces`). herdr also exposes a JSON
 // session-list subcommand (`herdr session list --json`, verified against
 // real herdr 0.8.0); this provider still never shells out to it.
+// `closeWorkspace(workspaceID:socketPath:)` sends `workspace.close` for
+// the session browser's Kill action on a single workspace row.
 
 import Foundation
 
 protocol HerdrSessionProviderProtocol: Sendable {
     func listSessions() async -> [HerdrSessionInfo]
+
+    /// Closes one herdr workspace via `workspace.close` -- the session
+    /// browser's Kill action for a herdr workspace row
+    /// (`SessionBrowserModel.killHerdrWorkspace(_:)`). Mirrors
+    /// `SessionDaemonClientProtocol.kill(id:)`'s own fire-and-forget
+    /// shape: nothing to return, any failure swallowed -- see
+    /// `HerdrCLISessionProvider.closeWorkspace(workspaceID:socketPath:)`'s
+    /// own doc comment for why.
+    func closeWorkspace(workspaceID: String, socketPath: String) async
 }
 
 /// One herdr session as `SessionBrowserModel` needs it. `id` is the
@@ -29,28 +40,41 @@ protocol HerdrSessionProviderProtocol: Sendable {
 /// the `HERDR_SOCKET_PATH` env-override candidate carries none of its
 /// own (see `HerdrSessionDiscovery`'s own doc comment).
 ///
-/// `workspaceCount`/`paneCount`/`agentCount` come from one
-/// `session.snapshot` request per socket
-/// (`HerdrCLISessionProvider.fetchCounts(socketPath:)`) and are always
-/// populated together, or left `nil` together when that request fails or
-/// never answers -- a socket `discovery.isAlive(socketPath:)` already
-/// confirmed alive still produces a row in that case, just with unknown
-/// counts: a degraded row is always a valid `HerdrSessionInfo`, never an
-/// error.
+/// `workspaceCount`/`paneCount`/`agentCount`/`workspaces` all come from
+/// one `session.snapshot` request per socket
+/// (`HerdrCLISessionProvider.fetchCounts(socketPath:)`) -- `agentCount`
+/// aside, `workspaceCount`/`paneCount` are themselves DERIVED from
+/// `workspaces` (its own count, and the sum of each entry's own
+/// `paneCount`), so the aggregate and the list can never disagree. All
+/// four are left at their empty/`nil` default together when that request
+/// fails or never answers -- a socket `discovery.isAlive(socketPath:)`
+/// already confirmed alive still produces a row in that case, just with
+/// unknown counts and no workspace rows: a degraded row is always a
+/// valid `HerdrSessionInfo`, never an error.
 struct HerdrSessionInfo: Identifiable, Equatable, Sendable {
     let id: String
     let name: String?
     let workspaceCount: Int?
     let paneCount: Int?
     let agentCount: Int?
+    /// Per-workspace rows for the session browser's herdr section
+    /// (`HerdrSessionRow.workspaces`, SessionBrowserModel.swift), in the
+    /// order `session.snapshot` reports them -- never sorted or
+    /// filtered. `[]` both when the snapshot fails (mirroring the `nil`
+    /// counts above) and when it legitimately reports zero workspaces --
+    /// either way the session browser renders zero workspace rows under
+    /// this session's own server row.
+    let workspaces: [HerdrWorkspaceInfo]
 }
 
-/// One socket's workspace/pane/agent counts, derived from a single
-/// `session.snapshot` -- see `HerdrCLISessionProvider.fetchCounts(socketPath:)`.
+/// One socket's workspace/pane/agent counts and per-workspace rows,
+/// derived from a single `session.snapshot` -- see
+/// `HerdrCLISessionProvider.fetchCounts(socketPath:)`.
 private struct HerdrSessionCounts: Equatable {
     let workspaceCount: Int
     let paneCount: Int
     let agentCount: Int
+    let workspaces: [HerdrWorkspaceInfo]
 }
 
 /// Production `HerdrSessionProviderProtocol`.
@@ -88,7 +112,7 @@ private struct HerdrSessionCounts: Equatable {
 /// `BSDHerdrTransport` are already non-blocking Swift Concurrency
 /// (`BSDHerdrTransport`'s own doc comment). Sequential, not concurrent:
 /// simpler, and fine at these candidate counts -- even three stalled
-/// sockets, each eating `fetchCounts(socketPath:)`'s own `snapshotTimeout`
+/// sockets, each eating `fetchCounts(socketPath:)`'s own `oneShotRequestTimeout`
 /// bound in full, still land under the 5s `daemonQueryBoundTimeoutSeconds`
 /// that `SessionBrowserModel.boundedHerdrListSessions()` races this whole
 /// call against. A candidate whose snapshot fails or times out still
@@ -131,17 +155,57 @@ final class HerdrCLISessionProvider: HerdrSessionProviderProtocol, Sendable {
                     name: candidate.name,
                     workspaceCount: counts?.workspaceCount,
                     paneCount: counts?.paneCount,
-                    agentCount: counts?.agentCount
+                    agentCount: counts?.agentCount,
+                    workspaces: counts?.workspaces ?? []
                 )
             )
         }
         return sessions
     }
 
-    /// One socket's counts, or `nil` on any failure -- an RPC error or a
-    /// transport EOF/failure, both via the `do`/`catch` below (the same
-    /// shape `SessionBrowserWindowController.attachHerdr(_:)` uses for
-    /// this identical request), or `snapshotTimeout` expiry.
+    /// Sends `workspace.close` for `workspaceID` on `socketPath` -- see
+    /// `HerdrSessionProviderProtocol.closeWorkspace(workspaceID:
+    /// socketPath:)`'s own doc comment. Params are exactly
+    /// `WorkspaceTarget`'s own schema shape (`herdr api schema --json`),
+    /// shared with `workspace.get` via `HerdrWorkspaceTargetParams`
+    /// (HerdrTabCoordinator.swift): `{"workspace_id":...}`. Bounded by the
+    /// same `oneShotRequestTimeout`/`watchdog` pattern as
+    /// `fetchCounts(socketPath:)` below, for the identical reason:
+    /// `HerdrOneShotRequest.send` has no timeout of its own, and a server
+    /// that accepts the connection and never answers must not hang this
+    /// call, and therefore the caller's own unconditional refresh,
+    /// forever. Any failure -- an RPC error, a transport EOF/failure, or
+    /// `oneShotRequestTimeout` expiry -- is swallowed: there is no result
+    /// to report, mirroring `SessionDaemonClient.kill(id:)`'s own
+    /// `try?`-and-discard contract for the calyx-session Kill button.
+    /// `SessionBrowserModel.killHerdrWorkspace(_:)` refreshes
+    /// unconditionally right after calling this, succeeded or not.
+    func closeWorkspace(workspaceID: String, socketPath: String) async {
+        let transport = await transportFactory.makeTransport()
+        let watchdog = Task {
+            try? await Task.sleep(for: Self.oneShotRequestTimeout)
+            guard !Task.isCancelled else { return }
+            await transport.close()
+        }
+        defer { watchdog.cancel() }
+
+        do {
+            let request = HerdrOneShotRequest(transport: transport)
+            let params = HerdrWorkspaceTargetParams(workspaceID: workspaceID)
+            let _: HerdrWorkspaceCloseRPCResult = try await request.send(
+                method: "workspace.close", params: params, socketPath: socketPath
+            )
+        } catch {
+            // See this method's own doc comment: best-effort, the caller
+            // refreshes regardless.
+        }
+    }
+
+    /// One socket's counts and per-workspace rows, or `nil` on any
+    /// failure -- an RPC error or a transport EOF/failure, both via the
+    /// `do`/`catch` below (the same shape `closeWorkspace(workspaceID:
+    /// socketPath:)` above uses for its own one-shot request), or
+    /// `oneShotRequestTimeout` expiry.
     ///
     /// `HerdrOneShotRequest.send` itself has no timeout (see
     /// HerdrConnection.swift): a server that accepts the connection and
@@ -155,10 +219,16 @@ final class HerdrCLISessionProvider: HerdrSessionProviderProtocol, Sendable {
     /// `watchdog` firing after `send` already finished (the common case
     /// -- cancelled by `defer` below before that can happen) is
     /// harmless.
+    ///
+    /// `workspaceCount`/`paneCount` are derived FROM `workspaces` (its
+    /// own count, and the sum of each entry's own `paneCount`), never
+    /// from `snapshot.panes` independently -- see `HerdrSessionInfo`'s
+    /// own doc comment for why that keeps the aggregate and the list
+    /// structurally consistent.
     private func fetchCounts(socketPath: String) async -> HerdrSessionCounts? {
         let transport = await transportFactory.makeTransport()
         let watchdog = Task {
-            try? await Task.sleep(for: Self.snapshotTimeout)
+            try? await Task.sleep(for: Self.oneShotRequestTimeout)
             guard !Task.isCancelled else { return }
             await transport.close()
         }
@@ -172,20 +242,32 @@ final class HerdrCLISessionProvider: HerdrSessionProviderProtocol, Sendable {
             return nil
         }
 
-        let panes = snapshotResult.snapshot.panes
+        let workspaces = snapshotResult.snapshot.workspaces
         return HerdrSessionCounts(
-            workspaceCount: Set(panes.map(\.workspaceID)).count,
-            paneCount: panes.count,
-            agentCount: snapshotResult.snapshot.agents.count
+            workspaceCount: workspaces.count,
+            paneCount: workspaces.map(\.paneCount).reduce(0, +),
+            agentCount: snapshotResult.snapshot.agents.count,
+            workspaces: workspaces
         )
     }
 
-    /// Per-socket bound for `fetchCounts(socketPath:)` -- see that
-    /// method's own doc comment. 1s: a local Unix-socket
-    /// `session.snapshot` measures well under 100ms against a healthy
-    /// server (comparable to `HerdrIntegrationCoordinator`'s own measured
-    /// replay-burst timing), so this only ever matters against a
-    /// genuinely stalled server, and stays well inside the sequential
-    /// sweep's own budget described above.
-    private static let snapshotTimeout: Duration = .seconds(1)
+    /// Per-socket bound for `fetchCounts(socketPath:)` and
+    /// `closeWorkspace(workspaceID:socketPath:)` above -- see either
+    /// method's own doc comment. 1s: a local Unix-socket request measures
+    /// well under 100ms against a healthy server (comparable to
+    /// `HerdrIntegrationCoordinator`'s own measured replay-burst timing),
+    /// so this only ever matters against a genuinely stalled server, and
+    /// stays well inside `fetchCounts`'s own sequential sweep budget
+    /// described above.
+    private static let oneShotRequestTimeout: Duration = .seconds(1)
 }
+
+/// `workspace.close`'s own result -- decoded only far enough to confirm
+/// "result" is present and is a JSON object (a synthesized `init(from:)`
+/// for a zero-property struct still opens a KEYED container, which fails
+/// to decode a non-object value), mirroring `HerdrConnection.swift`'s own
+/// `HerdrSubscribeAckResult`. The schema has no method-to-result-variant
+/// mapping to pin a specific "type" discriminator against, and
+/// `closeWorkspace(workspaceID:socketPath:)` never reads this value --
+/// only that the request did not throw.
+private struct HerdrWorkspaceCloseRPCResult: Decodable {}

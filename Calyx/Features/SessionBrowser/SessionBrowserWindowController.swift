@@ -2,12 +2,15 @@
 // Calyx
 //
 // Independent window (same shape as `SettingsWindowController`) that
-// shows the session browser — every calyx-session the daemon knows
+// shows the session browser (every calyx-session the daemon knows
 // about, across all Calyx windows and launches, not just this
-// process's currently-live panes. No dedicated test file: the logic
-// worth testing lives in `SessionBrowserModel` or, for the herdr-attach
-// wire flow, `HerdrAttachOrCreateFlow` (HerdrAttachOrCreateFlow.swift),
-// not this AppKit shell.
+// process's currently-live panes). No dedicated test file: the logic
+// worth testing lives in `SessionBrowserModel`, or, for the herdr
+// workspace-create wire flow, `HerdrAttachOrCreateFlow`
+// (HerdrAttachOrCreateFlow.swift), or, for opening an already-known
+// workspace, `HerdrTabCoordinatorTests.swift` (this file's own
+// `attachHerdrWorkspace(_:)` is a direct, untested-here call into that
+// coordinator), not this AppKit shell.
 
 import AppKit
 import SwiftUI
@@ -56,11 +59,18 @@ final class SessionBrowserWindowController: NSWindowController {
             self?.attachRemote(context)
         }
 
-        // Herdr attach: mirrors onAttachRequested's wiring
-        // immediately above, for a herdr row instead of a calyx-session
-        // one.
-        model.onHerdrAttachRequested = { [weak self] row in
-            self?.attachHerdr(row)
+        // Herdr server row "New": mirrors onAttachRequested's wiring
+        // immediately above, for a herdr server row instead of a
+        // calyx-session one.
+        model.onHerdrCreateRequested = { [weak self] row in
+            self?.createHerdrWorkspace(row)
+        }
+
+        // Herdr workspace row "Attach": mirrors onAttachRequested's
+        // wiring immediately above, for a single already-known herdr
+        // workspace instead of a calyx-session row.
+        model.onHerdrWorkspaceAttachRequested = { [weak self] row in
+            self?.attachHerdrWorkspace(row)
         }
     }
 
@@ -81,33 +91,30 @@ final class SessionBrowserWindowController: NSWindowController {
         (NSApp.delegate as? AppDelegate)?.spawnRemoteSessionTab(host: context.host)
     }
 
-    /// A herdr row click now opens that session NATIVELY --
-    /// one Calyx tab per live workspace on `row`'s own socket, iTerm2
-    /// tmux -CC semantics, or, when the socket currently has none,
-    /// creates one and opens it -- instead of the old single TUI-attach
-    /// tab (that old behavior moved to the Command Palette's
-    /// `herdr.attachTUI` action, `CalyxWindowController.setupCommandRegistry()`,
-    /// which still calls `AppDelegate.openHerdrAttachTab(command:title:)`
-    /// directly, unchanged).
+    /// A herdr server row's "New" button always creates a new workspace
+    /// and opens it NATIVELY as a Calyx tab, iTerm2 tmux -CC semantics --
+    /// instead of the old single TUI-attach tab (that old behavior moved
+    /// to the Command Palette's `herdr.attachTUI` action,
+    /// `CalyxWindowController.setupCommandRegistry()`, which still calls
+    /// `AppDelegate.openHerdrAttachTab(command:title:)` directly,
+    /// unchanged), and instead of the old "open every existing workspace
+    /// at once" behavior (moved to `attachHerdrWorkspace(_:)` below,
+    /// one workspace row at a time).
     ///
-    /// Delegates the wire sequence and the create-versus-attach decision
-    /// to `HerdrAttachOrCreateFlow.run` (HerdrAttachOrCreateFlow.swift),
-    /// from a FRESH `session.snapshot` fetched at click time -- never
-    /// `row`'s own cached counts, which only drive the Attach/New button
-    /// title (`HerdrAttachGate.decide`, SessionBrowserModel.swift), so a
-    /// stale row can never send the wrong request. `openWorkspace` wraps
-    /// `AppDelegate.herdrTabCoordinator`'s own entry point; this file's
-    /// `logger` is passed straight through, so every failure path (a
-    /// per-workspace open, a `workspace.create`, or opening the
-    /// workspace it created) still logs exactly as it always has. A
-    /// `herdrTabCoordinator` that is `nil` (herdr itself was never
-    /// resolvable) does nothing, same as today.
-    private func attachHerdr(_ row: HerdrSessionRow) {
+    /// Delegates the wire sequence to `HerdrAttachOrCreateFlow
+    /// .createAndOpen` (HerdrAttachOrCreateFlow.swift). `openWorkspace`
+    /// wraps `AppDelegate.herdrTabCoordinator`'s own entry point; this
+    /// file's `logger` is passed straight through, so every failure path
+    /// (a `workspace.create`, or opening the workspace it created) still
+    /// logs exactly as it always has. A `herdrTabCoordinator` that is
+    /// `nil` (herdr itself was never resolvable) does nothing, same as
+    /// today.
+    private func createHerdrWorkspace(_ row: HerdrSessionRow) {
         guard let coordinator = (NSApp.delegate as? AppDelegate)?.herdrTabCoordinator else { return }
         let socketPath = row.info.id
 
         Task {
-            await HerdrAttachOrCreateFlow.run(
+            await HerdrAttachOrCreateFlow.createAndOpen(
                 socketPath: socketPath,
                 transportFactory: LiveHerdrTransportFactory(),
                 logger: logger,
@@ -115,6 +122,21 @@ final class SessionBrowserWindowController: NSWindowController {
                     await coordinator.openWorkspace(workspaceID: workspaceID, socketPath: socketPath)
                 }
             )
+        }
+    }
+
+    /// A herdr workspace row's "Attach" button opens THAT workspace
+    /// NATIVELY as a Calyx tab, through the exact same
+    /// `AppDelegate.herdrTabCoordinator.openWorkspace(workspaceID:
+    /// socketPath:)` entry point `createHerdrWorkspace(_:)` above already
+    /// uses for a newly created one -- there is exactly one place that
+    /// opens a workspace as a native Calyx tab. A `herdrTabCoordinator`
+    /// that is `nil` (herdr itself was never resolvable) does nothing,
+    /// same as today.
+    private func attachHerdrWorkspace(_ row: HerdrWorkspaceRow) {
+        guard let coordinator = (NSApp.delegate as? AppDelegate)?.herdrTabCoordinator else { return }
+        Task {
+            await coordinator.openWorkspace(workspaceID: row.info.workspaceID, socketPath: row.socketPath)
         }
     }
 

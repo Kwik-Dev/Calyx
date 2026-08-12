@@ -60,10 +60,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// for the resolve-then-construct sequence.
     ///
     /// Read-only outside this file (`private(set)`):
-    /// `SessionBrowserWindowController.attachHerdr(_:)` and
-    /// `CalyxWindowController`'s `herdr.attachTUI` palette command
-    /// (indirectly, via `openHerdrAttachTab`, which does not need this
-    /// property at all) both only ever READ it.
+    /// `SessionBrowserWindowController.createHerdrWorkspace(_:)`/
+    /// `.attachHerdrWorkspace(_:)` and `CalyxWindowController`'s
+    /// `herdr.attachTUI` palette command (indirectly, via
+    /// `openHerdrAttachTab`, which does not need this property at all)
+    /// all only ever READ it.
     private(set) var herdrTabCoordinator: HerdrTabCoordinator?
 
     /// Builds the real `HerdrTabCoordinator` once `herdrBinPath` is

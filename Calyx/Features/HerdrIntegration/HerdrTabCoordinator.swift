@@ -187,10 +187,14 @@ protocol HerdrNativeTabAttacher {
 
 // MARK: - Wire params/result (HerdrConnection.swift stays method-agnostic)
 
-/// `workspace.get`'s own request `params` -- WorkspaceTarget's own schema
-/// shape (`herdr api schema --json`), exactly one property. See this
-/// file's header "OPEN SEQUENCE".
-private struct HerdrWorkspaceGetParams: Encodable {
+/// `WorkspaceTarget`'s own schema shape (`herdr api schema --json`),
+/// exactly one property -- the request `params` for both `workspace.get`
+/// (see this file's header "OPEN SEQUENCE") and `workspace.close`
+/// (`HerdrSessionProvider.swift`'s own `closeWorkspace(workspaceID:
+/// socketPath:)`, the session browser's Kill action for a herdr
+/// workspace row). Not `private`: shared across both files rather than
+/// declaring a second, identical struct.
+struct HerdrWorkspaceTargetParams: Encodable {
     let workspaceID: String
 
     private enum CodingKeys: String, CodingKey {
@@ -206,25 +210,34 @@ private struct HerdrWorkspaceGetRPCResult: Sendable, Decodable {
     let workspace: HerdrWorkspaceInfo
 }
 
-/// Minimal `WorkspaceInfo` -- only the fields this file actually reads
-/// ("active_tab_id", "label"), per this project's own "define the
-/// minimal Decodable you need: only the fields you read" rule. A keyed
-/// decoding container only ever reads the keys it asks for, so this
-/// tolerates every OTHER schema-required field ("workspace_id",
-/// "number", "focused", "pane_count", "tab_count", "agent_status")
-/// without modeling them. Both "active_tab_id" and "label" are
-/// themselves required by the schema, and neither is nullable (`herdr
-/// api schema --json`'s own success_response.$defs.WorkspaceInfo), so
-/// both decode as non-optional `String`, never `String?`. Not `private`
-/// like this section's other wire types: decode-tested directly (see
-/// HerdrTabCoordinatorTests.swift).
-struct HerdrWorkspaceInfo: Sendable, Decodable {
+/// `WorkspaceInfo` -- the fields this file and `HerdrSessionProvider.swift`
+/// actually read ("workspace_id", "active_tab_id", "label", "pane_count"),
+/// per this project's own "define the minimal Decodable you need: only
+/// the fields you read" rule. A keyed decoding container only ever reads
+/// the keys it asks for, so this tolerates every OTHER schema-required
+/// field ("number", "focused", "tab_count", "agent_status") without
+/// modeling them. All four modeled fields are themselves required by the
+/// schema, and none is nullable (`herdr api schema --json`'s own
+/// success_response.$defs.WorkspaceInfo), so all decode as non-optional,
+/// never `String?`/`Int?`. Not `private` like this section's other wire
+/// types: decode-tested directly (see HerdrTabCoordinatorTests.swift),
+/// and reused as-is for `HerdrSessionInfo.workspaces`
+/// (`HerdrSessionProvider.swift`) -- the SAME `WorkspaceInfo` schema
+/// shape appears in both `workspace.get`'s result and
+/// `session.snapshot`'s own `workspaces[]` array
+/// (`HerdrSessionSnapshot.workspaces`, HerdrEvent.swift), so this stays
+/// one Swift type for one wire shape rather than two.
+struct HerdrWorkspaceInfo: Sendable, Equatable, Decodable {
+    let workspaceID: String
     let activeTabID: String
     let label: String
+    let paneCount: Int
 
     private enum CodingKeys: String, CodingKey {
+        case workspaceID = "workspace_id"
         case activeTabID = "active_tab_id"
         case label
+        case paneCount = "pane_count"
     }
 }
 
@@ -619,7 +632,7 @@ final class HerdrTabCoordinator {
     private func fetchWorkspaceInfo(workspaceID: String, socketPath: String) async throws -> HerdrWorkspaceInfo {
         let transport = await transportFactory.makeTransport()
         let request = HerdrOneShotRequest(transport: transport)
-        let params = HerdrWorkspaceGetParams(workspaceID: workspaceID)
+        let params = HerdrWorkspaceTargetParams(workspaceID: workspaceID)
         let response: HerdrWorkspaceGetRPCResult = try await request.send(
             method: "workspace.get", params: params, socketPath: socketPath
         )

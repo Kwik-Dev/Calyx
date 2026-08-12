@@ -747,10 +747,11 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         ) { [weak self] in
             self?.closeFocusedSessionSurface(killSessions: true)
         })
-        // A herdr session row click opens that session
-        // NATIVELY (SessionBrowserWindowController.attachHerdr(_:), one
-        // Calyx tab per live workspace); this command keeps a
-        // TUI-attach tab available from the palette. `isAvailable`
+        // A herdr row click opens that workspace NATIVELY
+        // (SessionBrowserWindowController.createHerdrWorkspace(_:)/
+        // .attachHerdrWorkspace(_:), one Calyx tab per opened workspace);
+        // this command keeps a TUI-attach tab available from the
+        // palette. `isAvailable`
         // reuses `SessionBrowserModel.showHerdrSection` (the only
         // synchronous, already-cached "herdr detected with a live
         // socket" signal in this codebase -- it reflects the Session

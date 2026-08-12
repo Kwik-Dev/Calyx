@@ -95,14 +95,16 @@
 //     schema states `"type":"string"`/`"format":"uint32"` respectively)
 //     -- the old AnyCodable typing existed only because neither field's
 //     TYPE had been observed on the wire yet; the schema settles it.
-//     `workspaces`/`tabs`/`layouts` stay `[AnyCodable]` -- their element
-//     shapes (`WorkspaceInfo`/`TabInfo`/`PaneLayoutSnapshot`) are real
-//     schema `$defs` but are NOT among the six shapes this pass commits
-//     to modeling, so only THIS type's own required/optional shape (the
-//     part this file's callers actually observe -- none of them read
-//     `.workspaces`/`.tabs`/`.layouts` today, only `.panes`/`.agents`) is
-//     fixed here; fully typing those three is future work, not silently
-//     assumed.
+//     `tabs`/`layouts` stay `[AnyCodable]` -- their element shapes
+//     (`TabInfo`/`PaneLayoutSnapshot`) are real schema `$defs` but are
+//     NOT among the shapes this file models, and nothing reads
+//     `.tabs`/`.layouts`; fully typing those two is future work, not
+//     silently assumed. `workspaces` IS strongly typed, as
+//     `[HerdrWorkspaceInfo]` (HerdrTabCoordinator.swift) -- the same
+//     `WorkspaceInfo` schema `$def` `workspace.get`'s own result already
+//     decodes into, reused here rather than a second type for the same
+//     wire shape; `HerdrSessionProvider.swift` reads it for the session
+//     browser's per-workspace rows.
 //
 //   - The event envelope is inconsistent about naming and this file
 //     must accept BOTH:
@@ -580,16 +582,17 @@ struct HerdrPaneAgentStatusChangedEvent: Sendable, Equatable, Decodable {
 /// `session.snapshot` response missing any of them is a genuinely
 /// exceptional response worth surfacing as a decode error, not silently
 /// degrading (see this file's header for what the previous version of
-/// this type got wrong here). `panes`/`agents` are strongly typed
-/// (`HerdrPaneRecord`/`HerdrAgentRecord`); `workspaces`/`tabs`/`layouts`
-/// stay `[AnyCodable]` -- see this file's header for why their element
-/// shapes are out of scope for this pass. Only `focusedWorkspaceID`/
-/// `focusedTabID`/`focusedPaneID` are optional, and nullable.
+/// this type got wrong here). `panes`/`agents`/`workspaces` are strongly
+/// typed (`HerdrPaneRecord`/`HerdrAgentRecord`/`HerdrWorkspaceInfo`);
+/// `tabs`/`layouts` stay `[AnyCodable]` -- see this file's header for why
+/// their element shapes are out of scope for this pass. Only
+/// `focusedWorkspaceID`/`focusedTabID`/`focusedPaneID` are optional, and
+/// nullable.
 struct HerdrSessionSnapshot: Sendable, Equatable {
     // Required.
     let version: String
     let protocolVersion: Int
-    let workspaces: [AnyCodable]
+    let workspaces: [HerdrWorkspaceInfo]
     let tabs: [AnyCodable]
     let panes: [HerdrPaneRecord]
     let layouts: [AnyCodable]
@@ -619,7 +622,7 @@ extension HerdrSessionSnapshot: Decodable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.version = try container.decode(String.self, forKey: .version)
         self.protocolVersion = try container.decode(Int.self, forKey: .protocolVersion)
-        self.workspaces = try container.decode([AnyCodable].self, forKey: .workspaces)
+        self.workspaces = try container.decode([HerdrWorkspaceInfo].self, forKey: .workspaces)
         self.tabs = try container.decode([AnyCodable].self, forKey: .tabs)
         self.panes = try container.decode([HerdrPaneRecord].self, forKey: .panes)
         self.layouts = try container.decode([AnyCodable].self, forKey: .layouts)

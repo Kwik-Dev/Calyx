@@ -1200,15 +1200,19 @@ final class HerdrTabCoordinatorTests: XCTestCase {
     /// "tokens" are optional and deliberately omitted. "label" decodes as
     /// a non-optional `String`: the schema marks it both required and
     /// non-nullable (`{"type":"string"}`, no `null` alternative), unlike
-    /// "worktree" (`anyOf` with `{"type":"null"}`).
-    func test_workspaceInfoDecode_minimalRequiredFieldsOnlyPayload_decodesActiveTabIDAndLabel() throws {
+    /// "worktree" (`anyOf` with `{"type":"null"}`). "workspace_id" and
+    /// "pane_count" are the two fields `HerdrSessionProvider.swift` reads
+    /// from this SAME type for the session browser's per-workspace rows.
+    func test_workspaceInfoDecode_minimalRequiredFieldsOnlyPayload_decodesEveryModeledField() throws {
         let json = "{\"workspace_id\":\"wJ\",\"number\":1,\"label\":\"Calyx\",\"focused\":true," +
         "\"pane_count\":1,\"tab_count\":1,\"active_tab_id\":\"wJ:t1\",\"agent_status\":\"idle\"}"
 
         let decoded = try JSONDecoder().decode(HerdrWorkspaceInfo.self, from: Data(json.utf8))
 
+        XCTAssertEqual(decoded.workspaceID, "wJ")
         XCTAssertEqual(decoded.activeTabID, "wJ:t1")
         XCTAssertEqual(decoded.label, "Calyx")
+        XCTAssertEqual(decoded.paneCount, 1)
     }
 
     // MARK: - Fixture builders (mirrors HerdrLayoutImporterTests' own shapes)

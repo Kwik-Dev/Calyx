@@ -19,7 +19,7 @@ struct SessionBrowserView: View {
     /// each row view (`SessionBrowserRowView`, `HerdrSessionRowView`,
     /// `RemoteHostRowView`) already ends its own body with an identical
     /// `.padding(.horizontal, 14)`, so this constant is the only remaining
-    /// variable standing between "all three row types share one left edge"
+    /// variable standing between "these row types share one left edge"
     /// and "they don't." Section headers are intentionally NOT built from
     /// this constant -- they use their own fixed 14pt.
     private static let rowListHorizontalInset: CGFloat = 8
@@ -103,7 +103,12 @@ struct SessionBrowserView: View {
     /// same header/row/divider layout, hidden entirely (via
     /// `model.showHerdrSection` in `body` above) whenever herdr isn't
     /// detected or has zero live sessions -- an undetected herdr must
-    /// render pixel-identical to today.
+    /// render pixel-identical to today. Each server row
+    /// (`HerdrSessionRowView`) is immediately followed by its own
+    /// indented workspace rows (`row.workspaces`, `HerdrWorkspaceRowView`),
+    /// in the order `session.snapshot` reported them -- a server with no
+    /// workspaces (an empty snapshot, or one that failed) contributes
+    /// just its own row, no orphaned workspace rows underneath.
     private var herdrSection: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("herdr Sessions")
@@ -113,6 +118,9 @@ struct SessionBrowserView: View {
                 .padding(.top, 8)
             ForEach(model.herdrRows) { row in
                 HerdrSessionRowView(row: row, model: model)
+                ForEach(row.workspaces) { workspaceRow in
+                    HerdrWorkspaceRowView(row: workspaceRow, model: model)
+                }
             }
             .padding(.horizontal, Self.rowListHorizontalInset)
             Divider()
@@ -190,9 +198,10 @@ private struct RemoteHostRowView: View {
     }
 }
 
-/// One row per `SessionBrowserModel.herdrRows` entry -- no kill/orphan
-/// affordances (herdr identity never enters `SessionSurfaceMap`, so
-/// this model has no concept of either for a herdr row). Same dot +
+/// One row per `SessionBrowserModel.herdrRows` entry -- the herdr
+/// SERVER row (one per live socket); its own workspaces render as
+/// separate, indented `HerdrWorkspaceRowView` rows immediately below it
+/// (`herdrSection` above), not as part of this view. Same dot +
 /// leading-VStack + trailing-action shape as `SessionBrowserRowView`
 /// one section up: a fixed-green 8pt `Circle` is the outer `HStack`'s
 /// first child, vertically centred against all three text lines below
@@ -211,9 +220,10 @@ private struct RemoteHostRowView: View {
 /// `connect()` probe (see `HerdrAttachGate`'s own doc comment), so there
 /// is no "not running" or "orphaned" state for it to represent, unlike
 /// `SessionBrowserRowView.dotColor`. The trailing button's title is
-/// `row.attachButtonLabel` ("New" or "Attach", same `HerdrAttachGate
-/// .decide`) and it is never disabled -- pressing it always leads
-/// somewhere (`SessionBrowserWindowController.attachHerdr(_:)`).
+/// always `HerdrSessionRow.createButtonLabel` ("New"), never disabled --
+/// pressing it always creates a new workspace and opens it
+/// (`SessionBrowserWindowController.createHerdrWorkspace(_:)`),
+/// regardless of how many workspaces this session already reports.
 private struct HerdrSessionRowView: View {
     let row: HerdrSessionRow
     let model: SessionBrowserModel
@@ -241,14 +251,66 @@ private struct HerdrSessionRowView: View {
 
             Spacer()
 
-            Button(row.attachButtonLabel) { model.attachHerdr(row) }
+            Button(HerdrSessionRow.createButtonLabel) { model.createHerdrWorkspace(row) }
                 .buttonStyle(.bordered)
-                .accessibilityIdentifier(AccessibilityID.SessionBrowser.herdrAttachButton(row.id))
+                .accessibilityIdentifier(AccessibilityID.SessionBrowser.herdrCreateButton(row.id))
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AccessibilityID.SessionBrowser.herdrRow(row.id))
+    }
+}
+
+/// One row per `HerdrSessionRow.workspaces` entry -- a single workspace
+/// nested under its own server row (`herdrSection` above), indented past
+/// the server row's own left edge so the hierarchy reads visually. Same
+/// dot + leading-VStack + trailing-actions shape as the server row one
+/// type up, just two lines instead of three: line 1 is `row.displayLabel`
+/// (bold -- the workspace's own label, falling back to its bare id when
+/// blank, `HerdrTabTitlePolicy`'s own rule); line 2 is `row.paneCountText`
+/// ("N pane(s)"). The dot is a fixed green for the identical reason the
+/// server row's own is (`HerdrSessionRowView`'s own doc comment). Both
+/// trailing buttons are never disabled: "Attach" opens this workspace
+/// natively (`SessionBrowserModel.attachHerdrWorkspace(_:)`,
+/// `SessionBrowserWindowController.attachHerdrWorkspace(_:)`); "Kill"
+/// sends `workspace.close` for it, then refreshes
+/// (`SessionBrowserModel.killHerdrWorkspace(_:)`), with no confirmation
+/// dialog -- mirrors `SessionBrowserRowView`'s own calyx-session Kill
+/// button exactly.
+private struct HerdrWorkspaceRowView: View {
+    let row: HerdrWorkspaceRow
+    let model: SessionBrowserModel
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(Color.green)
+                .frame(width: 8, height: 8)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(row.displayLabel)
+                    .font(.system(size: 12.5, weight: .semibold, design: .rounded))
+                    .lineLimit(1)
+
+                Text(row.paneCountText)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            }
+
+            Spacer()
+
+            Button("Attach") { model.attachHerdrWorkspace(row) }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier(AccessibilityID.SessionBrowser.herdrWorkspaceAttachButton(row.id))
+            Button("Kill") { Task { await model.killHerdrWorkspace(row) } }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier(AccessibilityID.SessionBrowser.herdrWorkspaceKillButton(row.id))
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(AccessibilityID.SessionBrowser.herdrWorkspaceRow(row.id))
     }
 }
 

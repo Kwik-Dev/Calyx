@@ -79,9 +79,13 @@ struct HerdrSessionRow: Identifiable, Equatable, Sendable {
     /// `SessionBrowserRow.attachButtonLabel`'s own precedent.
     var displayName: String { info.name ?? info.id }
 
-    /// Tab title for `SessionBrowserWindowController.attachHerdr(_:)`'s
-    /// new tab (`AppDelegate.openHerdrAttachTab(command:title:)`):
-    /// `"herdr: <name>"` when discovery found a name -- including
+    /// Tab title for the Command Palette's "Attach herdr TUI" action
+    /// (`CalyxWindowController.setupCommandRegistry()`'s own
+    /// `herdr.attachTUI` command, `AppDelegate.openHerdrAttachTab(command:
+    /// title:)`) -- the one remaining caller of this property, since the
+    /// session browser's own herdr rows open native tabs instead (never
+    /// through `openHerdrAttachTab`). `"herdr: <name>"` when discovery
+    /// found a name -- including
     /// herdr's own `"default"` term for the unnamed default session, so
     /// attaching it opens a tab titled "herdr: default" -- and plain
     /// `"herdr"` only when discovery found no name at all (`info.name
@@ -97,32 +101,70 @@ struct HerdrSessionRow: Identifiable, Equatable, Sendable {
     }
 
     /// Row status text (`HerdrSessionRowView`'s short line-3 status
-    /// line) and the trailing button's own title -- both delegate to the
-    /// pure `HerdrAttachGate.decide(workspaceCount:paneCount:)` below, so
-    /// the decision is testable independent of the view.
+    /// line) -- delegates to the pure
+    /// `HerdrAttachGate.decide(workspaceCount:paneCount:)` below, so the
+    /// decision is testable independent of the view.
     var statusLineText: String {
-        HerdrAttachGate.decide(workspaceCount: info.workspaceCount, paneCount: info.paneCount).statusText
+        HerdrAttachGate.decide(workspaceCount: info.workspaceCount, paneCount: info.paneCount)
     }
 
-    /// See `statusLineText`'s own doc comment; mirrors
-    /// `SessionBrowserRow.attachButtonLabel`'s naming for the sibling
-    /// row type. The button is never disabled: `"New"` once
-    /// `info.workspaceCount` is known AND zero, `"Attach"` otherwise.
-    /// Either way, pressing it always leads somewhere --
-    /// `SessionBrowserWindowController.attachHerdr(_:)` decides
-    /// create-versus-attach from a FRESH snapshot at click time
-    /// (`HerdrAttachOrCreateFlow.run`, HerdrAttachOrCreateFlow.swift),
-    /// not from these cached counts, so even a stale `"Attach"` title
-    /// still opens or creates something rather than doing nothing.
-    var attachButtonLabel: String {
-        HerdrAttachGate.decide(workspaceCount: info.workspaceCount, paneCount: info.paneCount).buttonTitle
+    /// The server row's own trailing button title -- always `"New"`,
+    /// unconditionally, regardless of `info.workspaceCount`. Pressing it
+    /// always creates a new workspace and opens it
+    /// (`HerdrAttachOrCreateFlow.createAndOpen`,
+    /// `SessionBrowserWindowController.createHerdrWorkspace(_:)`); it
+    /// never opens or attaches an existing one -- that is each
+    /// `HerdrWorkspaceRow`'s own "Attach" button's job
+    /// (`attachHerdrWorkspace(_:)` below), a fixed, unconditional label
+    /// with no gate of its own to extract.
+    static let createButtonLabel = "New"
+
+    /// One row per workspace this session currently reports, in the
+    /// order `session.snapshot` returned them
+    /// (`HerdrSessionInfo.workspaces`'s own doc comment) --
+    /// `HerdrWorkspaceRowView` nests these under this row in the session
+    /// browser.
+    var workspaces: [HerdrWorkspaceRow] {
+        info.workspaces.map { HerdrWorkspaceRow(socketPath: info.id, info: $0) }
     }
 }
 
-/// Pure decision behind `HerdrSessionRow.statusLineText`/
-/// `.attachButtonLabel` -- extracted so both are directly testable
-/// without mounting `HerdrSessionRowView`, mirroring
-/// `AgentSidebarGate.decide`'s own extraction shape (`AgentStatusView.swift`).
+/// One workspace nested under its own server row (`HerdrSessionRow
+/// .workspaces` above) -- wraps `HerdrWorkspaceInfo`
+/// (`HerdrTabCoordinator.swift`) the same way `HerdrSessionRow` wraps
+/// `HerdrSessionInfo`. `socketPath` identifies which server this
+/// workspace belongs to: both Attach and Kill need it alongside the
+/// workspace's own id, since a workspace id alone is only unique WITHIN
+/// one server.
+struct HerdrWorkspaceRow: Identifiable, Equatable, Sendable {
+    let socketPath: String
+    let info: HerdrWorkspaceInfo
+
+    /// Combines `socketPath` with the workspace id: two different herdr
+    /// servers can each report a workspace called e.g. "w1", so the
+    /// socket path alone -- not the workspace id alone -- is what makes
+    /// this globally unique across every server row's own nested list.
+    var id: String { "\(socketPath)#\(info.workspaceID)" }
+
+    /// Row title -- `HerdrTabTitlePolicy`'s own label-or-id fallback
+    /// rule, the same policy `HerdrTabCoordinator.openWorkspace` already
+    /// applies to a newly opened tab's own title.
+    var displayLabel: String {
+        HerdrTabTitlePolicy.title(label: info.label, workspaceID: info.workspaceID)
+    }
+
+    /// "N pane(s)" -- this row's own pane count only, same `"pane(s)"`
+    /// vocabulary as the server row's own status line.
+    var paneCountText: String { "\(info.paneCount) pane(s)" }
+}
+
+/// Pure decision behind `HerdrSessionRow.statusLineText` -- extracted so
+/// it is directly testable without mounting `HerdrSessionRowView`,
+/// mirroring `AgentSidebarGate.decide`'s own extraction shape
+/// (`AgentStatusView.swift`). The server row's own button no longer
+/// varies with this decision -- it is a fixed `"New"`
+/// (`HerdrSessionRow.createButtonLabel`) -- so this returns only the
+/// status text.
 ///
 /// `workspaceCount`/`paneCount` mirror `HerdrSessionInfo`'s own fields:
 /// `HerdrCLISessionProvider` always populates both together (from the
@@ -131,32 +173,18 @@ struct HerdrSessionRow: Identifiable, Equatable, Sendable {
 ///   - either is `nil` ("unknown"): the socket's own liveness is still
 ///     proven (every `HerdrSessionRow` already passed a live `connect()`
 ///     probe), but its contents are not, so the status line stays the
-///     unchanged "Running" and the button reads "Attach" -- there is no
-///     proof there is nothing to attach.
+///     unchanged "Running".
 ///   - both known, `workspaceCount == 0`: nothing on this socket to
-///     attach to yet, so the button reads "New" -- pressing it creates a
-///     workspace instead of opening nothing.
+///     attach to yet.
 ///   - both known, `workspaceCount > 0`: states the workspace/pane
 ///     counts, in the same "label · fact · fact" style
 ///     `SessionBrowserRowView.detailLine` uses for calyx-session rows
-///     (same " · " separator); the button reads "Attach".
+///     (same " · " separator).
 enum HerdrAttachGate {
-    struct Decision: Equatable {
-        let statusText: String
-        let buttonTitle: String
-    }
-
-    static func decide(workspaceCount: Int?, paneCount: Int?) -> Decision {
-        guard let workspaceCount, let paneCount else {
-            return Decision(statusText: "Running", buttonTitle: "Attach")
-        }
-        guard workspaceCount > 0 else {
-            return Decision(statusText: "Running · nothing to attach", buttonTitle: "New")
-        }
-        return Decision(
-            statusText: "Running · \(workspaceCount) workspace(s) · \(paneCount) pane(s)",
-            buttonTitle: "Attach"
-        )
+    static func decide(workspaceCount: Int?, paneCount: Int?) -> String {
+        guard let workspaceCount, let paneCount else { return "Running" }
+        guard workspaceCount > 0 else { return "Running · nothing to attach" }
+        return "Running · \(workspaceCount) workspace(s) · \(paneCount) pane(s)"
     }
 }
 
@@ -178,10 +206,12 @@ final class SessionBrowserModel {
     private let daemonClient: SessionDaemonClientProtocol
     private let surfaceMap: SessionSurfaceMap
     private let hostCandidateProvider: SSHHostCandidateProvider
-    /// Herdr session lister -- see `HerdrSessionProvider.swift`. Defaults
-    /// to the production `HerdrCLISessionProvider`: discovery + liveness
-    /// probe, then one `session.snapshot` per alive socket for
-    /// workspace/pane/agent counts.
+    /// Herdr session lister and workspace closer -- see
+    /// `HerdrSessionProvider.swift`. Defaults to the production
+    /// `HerdrCLISessionProvider`: discovery + liveness probe, then one
+    /// `session.snapshot` per alive socket for the per-workspace list and
+    /// its derived counts, plus `closeWorkspace(workspaceID:socketPath:)`
+    /// for a workspace row's "Kill" button.
     private let herdrProvider: HerdrSessionProviderProtocol
     /// Reports whether the herdr integration should currently be
     /// treated as available: a CHEAP binary-resolution check only, no
@@ -245,9 +275,18 @@ final class SessionBrowserModel {
     /// called with the right row instead of driving real AppKit.
     var onAttachRequested: ((SessionBrowserRow) -> Void)?
 
-    /// Invoked by `attachHerdr(_:)` with the herdr row to attach to --
-    /// mirrors `onAttachRequested`'s injectable-closure pattern exactly.
-    var onHerdrAttachRequested: ((HerdrSessionRow) -> Void)?
+    /// Invoked by `createHerdrWorkspace(_:)` with the server row whose
+    /// "New" button was pressed -- mirrors `onAttachRequested`'s
+    /// injectable-closure pattern exactly. Always means "create a new
+    /// workspace and open it" (`HerdrAttachOrCreateFlow.createAndOpen`);
+    /// never "attach to an existing one" -- that is
+    /// `onHerdrWorkspaceAttachRequested` below.
+    var onHerdrCreateRequested: ((HerdrSessionRow) -> Void)?
+
+    /// Invoked by `attachHerdrWorkspace(_:)` with the workspace row to
+    /// attach to -- mirrors `onAttachRequested`'s injectable-closure
+    /// pattern exactly, for a single already-known workspace id.
+    var onHerdrWorkspaceAttachRequested: ((HerdrWorkspaceRow) -> Void)?
 
     init(
         daemonClient: SessionDaemonClientProtocol = SessionDaemonClient.shared,
@@ -354,8 +393,8 @@ final class SessionBrowserModel {
     /// `listAllBounded()` exists above: a provider call now genuinely
     /// performs a `session.snapshot` network round trip per alive
     /// socket (`HerdrCLISessionProvider.fetchCounts(socketPath:)`, worst
-    /// case a handful of sequential `snapshotTimeout` expiries against a
-    /// stalled server), so this bound is load-bearing, not
+    /// case a handful of sequential `oneShotRequestTimeout` expiries
+    /// against a stalled server), so this bound is load-bearing, not
     /// future-proofing: it must never freeze this shared poll loop.
     func refresh() async {
         guard !isRefreshing else { return }
@@ -404,16 +443,38 @@ final class SessionBrowserModel {
         onAttachRequested?(row)
     }
 
-    /// Requests attaching to `row`'s herdr session. Mirrors `attach(_:)`
-    /// exactly -- herdr identity flows through the same
-    /// injected-closure seam, just its own closure/row type.
-    func attachHerdr(_ row: HerdrSessionRow) {
-        onHerdrAttachRequested?(row)
+    /// Requests creating a new workspace on `row`'s herdr server (the
+    /// server row's own "New" button). Mirrors `attach(_:)` exactly --
+    /// herdr identity flows through the same injected-closure seam, just
+    /// its own closure/row type.
+    func createHerdrWorkspace(_ row: HerdrSessionRow) {
+        onHerdrCreateRequested?(row)
+    }
+
+    /// Requests attaching to `row`'s already-existing herdr workspace.
+    /// Mirrors `attach(_:)` exactly -- herdr identity flows through the
+    /// same injected-closure seam, just its own closure/row type.
+    func attachHerdrWorkspace(_ row: HerdrWorkspaceRow) {
+        onHerdrWorkspaceAttachRequested?(row)
     }
 
     /// Kills `row`'s session via the daemon, then refreshes.
     func kill(_ row: SessionBrowserRow) async {
         await daemonClient.kill(id: row.info.id)
+        await refresh()
+    }
+
+    /// Closes `row`'s herdr workspace via the injected `herdrProvider`'s
+    /// own `closeWorkspace(workspaceID:socketPath:)`, then refreshes --
+    /// mirrors `kill(_:)` exactly: no confirmation dialog, and the
+    /// refresh runs unconditionally, whether or not the close itself
+    /// succeeded (see that method's own doc comment for why). Runs
+    /// directly here, not through an injected closure like
+    /// `attachHerdrWorkspace(_:)`/`createHerdrWorkspace(_:)`: closing a
+    /// workspace is pure wire I/O, with no AppKit/window involvement, so
+    /// it needs no `SessionBrowserWindowController` hop.
+    func killHerdrWorkspace(_ row: HerdrWorkspaceRow) async {
+        await herdrProvider.closeWorkspace(workspaceID: row.info.workspaceID, socketPath: row.socketPath)
         await refresh()
     }
 

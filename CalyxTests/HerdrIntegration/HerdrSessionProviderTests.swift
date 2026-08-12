@@ -2,23 +2,33 @@
 //  HerdrSessionProviderTests.swift
 //  CalyxTests
 //
-//  HerdrCLISessionProvider.listSessions()'s snapshot-driven counts:
-//  phase 2 (HerdrSessionProvider.swift's own doc comment) fetches one
-//  session.snapshot per socket phase 1's discovery+liveness sweep kept,
-//  and derives HerdrSessionInfo's workspaceCount/paneCount/agentCount
-//  from it. Every dependency is a fake/spy -- no real socket or herdr
-//  binary is ever touched, mirroring
-//  HerdrIntegrationCoordinatorTests.swift's own SpyHerdrTransportFactory
-//  + InMemoryHerdrTransport style, and its own per-file fake-duplication
-//  convention.
+//  HerdrCLISessionProvider.listSessions()'s snapshot-driven counts and
+//  per-workspace list: phase 2 (HerdrSessionProvider.swift's own doc
+//  comment) fetches one session.snapshot per socket phase 1's
+//  discovery+liveness sweep kept, and derives HerdrSessionInfo's
+//  workspaces (id, label, pane count, straight from the snapshot's own
+//  workspaces[] array) plus workspaceCount/paneCount/agentCount from it
+//  -- workspaceCount/paneCount are themselves derived FROM workspaces,
+//  never counted independently, so the two can never disagree. Also
+//  covers closeWorkspace(workspaceID:socketPath:) -- the session
+//  browser's Kill action for a herdr workspace row. Every dependency is
+//  a fake/spy -- no real socket or herdr binary is ever touched,
+//  mirroring HerdrIntegrationCoordinatorTests.swift's own
+//  SpyHerdrTransportFactory + InMemoryHerdrTransport style, and its own
+//  per-file fake-duplication convention.
 //
 //  Coverage:
-//  - a snapshot with multiple panes across multiple workspaces maps onto
-//    HerdrSessionInfo's workspaceCount (distinct workspace_id count),
-//    paneCount, and agentCount
+//  - a snapshot naming multiple workspaces (in the SAME, UNSORTED order
+//    the snapshot itself carries them) maps each onto a HerdrWorkspaceInfo
+//    (id, label, pane count) in HerdrSessionInfo.workspaces, and
+//    workspaceCount/paneCount stay consistent with that list
 //  - a snapshot that fails (transport EOF before answering) leaves all
-//    three counts nil, and the row still appears -- a live socket whose
-//    snapshot failed is still a live herdr
+//    three counts nil AND workspaces empty, and the row still appears --
+//    a live socket whose snapshot failed is still a live herdr
+//  - closeWorkspace(workspaceID:socketPath:) sends workspace.close with
+//    params EXACTLY {"workspace_id":...} -- WorkspaceTarget's own schema
+//    shape, shared with workspace.get (HerdrWorkspaceTargetParams,
+//    HerdrTabCoordinator.swift)
 //
 
 import XCTest
@@ -58,15 +68,26 @@ private actor SpyHerdrTransportFactory: HerdrTransportFactory {
     }
 }
 
+// File-scope, not an instance property: test_closeWorkspace below passes
+// this into Task { ... }'s own initializer closure, and referencing an
+// INSTANCE property there implicitly captures self -- which Swift 6's
+// region-based isolation checker flags as a 'sending' closure data race
+// risk, since XCTestCase itself is not proven Sendable. A file-scope
+// constant carries no such capture (mirrors HerdrTabCoordinatorTests.swift's
+// own identical pattern for its async let initializer expressions).
+private let socketPath = "/fixture/config/herdr/herdr.sock"
+
 // MARK: - HerdrSessionProviderTests
 
 final class HerdrSessionProviderTests: XCTestCase {
 
-    private let socketPath = "/fixture/config/herdr/herdr.sock"
+    // MARK: - listSessions() maps a snapshot's workspaces[] onto HerdrSessionInfo's workspaces and counts
 
-    // MARK: - listSessions() maps a snapshot's panes/workspaces/agents onto HerdrSessionInfo's counts
-
-    func test_listSessions_snapshotWithMultipleWorkspacesAndPanes_populatesRowCounts() async {
+    /// The fixture below deliberately lists `w2` BEFORE `w1` -- the
+    /// snapshot's own, unsorted order -- so this test also pins that
+    /// `HerdrSessionInfo.workspaces` preserves it verbatim rather than
+    /// sorting by id.
+    func test_listSessions_snapshotWithMultipleWorkspaces_populatesPerWorkspaceListAndConsistentCounts() async {
         let discovery = FakeHerdrSessionDiscovery(
             candidates: [HerdrSessionCandidate(name: "default", socketPath: socketPath)],
             aliveSocketPaths: [socketPath]
@@ -90,14 +111,30 @@ final class HerdrSessionProviderTests: XCTestCase {
         guard let session = sessions.first else { return }
         XCTAssertEqual(session.id, socketPath)
         XCTAssertEqual(session.name, "default")
-        XCTAssertEqual(session.workspaceCount, 2, "3 panes across w1/w2 must count as 2 distinct workspaces")
+
+        XCTAssertEqual(
+            session.workspaces.map(\.workspaceID), ["w2", "w1"],
+            "must preserve the snapshot's own order, never sort by id"
+        )
+        XCTAssertEqual(session.workspaces.map(\.label), ["personal", "work"])
+        XCTAssertEqual(session.workspaces.map(\.paneCount), [1, 2])
+
+        XCTAssertEqual(
+            session.workspaceCount, session.workspaces.count,
+            "workspaceCount must stay consistent with workspaces -- derived from it, not counted independently"
+        )
+        XCTAssertEqual(
+            session.paneCount, session.workspaces.map(\.paneCount).reduce(0, +),
+            "paneCount must stay consistent with workspaces -- the sum of each entry's own paneCount"
+        )
+        XCTAssertEqual(session.workspaceCount, 2)
         XCTAssertEqual(session.paneCount, 3)
         XCTAssertEqual(session.agentCount, 2)
     }
 
-    // MARK: - listSessions() leaves counts nil, without dropping the row, when a snapshot fails
+    // MARK: - listSessions() leaves counts nil and workspaces empty, without dropping the row, when a snapshot fails
 
-    func test_listSessions_snapshotFails_leavesCountsNil_stillYieldsTheRow() async {
+    func test_listSessions_snapshotFails_leavesCountsNilAndWorkspacesEmpty_stillYieldsTheRow() async {
         let discovery = FakeHerdrSessionDiscovery(
             candidates: [HerdrSessionCandidate(name: "default", socketPath: socketPath)],
             aliveSocketPaths: [socketPath]
@@ -125,20 +162,80 @@ final class HerdrSessionProviderTests: XCTestCase {
         XCTAssertNil(session.workspaceCount)
         XCTAssertNil(session.paneCount)
         XCTAssertNil(session.agentCount)
+        XCTAssertEqual(session.workspaces, [], "a failed snapshot must yield no workspace rows")
+    }
+
+    // MARK: - closeWorkspace(workspaceID:socketPath:) sends workspace.close with exactly the given id
+
+    func test_closeWorkspace_sendsWorkspaceCloseWithExactlyTheGivenWorkspaceID() async {
+        let discovery = FakeHerdrSessionDiscovery(candidates: [], aliveSocketPaths: [])
+        let factory = SpyHerdrTransportFactory()
+        let provider = HerdrCLISessionProvider(discovery: discovery, transportFactory: factory)
+
+        let task = Task { await provider.closeWorkspace(workspaceID: "w1", socketPath: socketPath) }
+        guard let transport = await awaitTransport(factory, at: 0) else {
+            XCTFail("expected closeWorkspace to request a transport")
+            return
+        }
+        let sent = await awaitSentMessages(transport, atLeast: 1)
+        guard sent.count == 1, let requestID = requestID(inLine: sent[0]) else {
+            XCTFail("expected exactly one request line; got \(sent)")
+            return
+        }
+        XCTAssertEqual(requestMethod(inLine: sent[0]), "workspace.close")
+        let params = jsonObject(inLine: sent[0])?["params"] as? [String: Any] ?? [:]
+        XCTAssertEqual(
+            params as NSDictionary, ["workspace_id": "w1"] as NSDictionary,
+            "workspace.close's params must carry EXACTLY {\"workspace_id\":...} -- WorkspaceTarget's own " +
+            "schema shape, shared with workspace.get"
+        )
+
+        await transport.simulateLine(okResponseLine(id: requestID))
+        await task.value
+
+        let callCount = await factory.callCount
+        XCTAssertEqual(callCount, 1, "closeWorkspace must request exactly one transport")
     }
 
     // MARK: - Fixtures
 
-    /// `session.snapshot` result with 3 panes across 2 distinct
-    /// workspaces (`w1`: two panes, `w2`: one) and 2 agents --
-    /// required-fields-only PaneInfo/AgentInfo records (see
-    /// HerdrEvent.swift's own header), matching
+    /// `session.snapshot` result naming 2 workspaces (`w2` first, then
+    /// `w1` -- deliberately NOT sorted by id) and 2 agents --
+    /// required-fields-only WorkspaceInfo/AgentInfo records (see
+    /// HerdrEvent.swift's own header, HerdrTabCoordinator.swift's own
+    /// `HerdrWorkspaceInfo` doc comment), matching
     /// `HerdrConnectionTests.snapshotResponseLineWithOneMinimalPane`'s
-    /// own minimal-fixture style.
+    /// own minimal-fixture style. `panes` mirrors the two workspaces'
+    /// own `pane_count` (1 for w2, 2 for w1) for fixture realism, though
+    /// `HerdrCLISessionProvider` no longer counts through it.
     private func snapshotResponseLineWithTwoWorkspaces(id: String) -> String {
         #"""
-        {"id":"\#(id)","result":{"type":"session_snapshot","snapshot":{"version":"0.8.0","protocol":19,"workspaces":[],"tabs":[],"panes":[{"terminal_id":"term-1","agent_status":"unknown","workspace_id":"w1","tab_id":"w1:t1","pane_id":"w1:p1","focused":true,"revision":1},{"terminal_id":"term-2","agent_status":"unknown","workspace_id":"w1","tab_id":"w1:t1","pane_id":"w1:p2","focused":false,"revision":1},{"terminal_id":"term-3","agent_status":"working","workspace_id":"w2","tab_id":"w2:t1","pane_id":"w2:p1","focused":false,"revision":1}],"layouts":[],"agents":[{"terminal_id":"term-1","agent_status":"unknown","workspace_id":"w1","tab_id":"w1:t1","pane_id":"w1:p1","focused":true,"revision":1},{"terminal_id":"term-3","agent_status":"working","workspace_id":"w2","tab_id":"w2:t1","pane_id":"w2:p1","focused":false,"revision":1}]}}}
+        {"id":"\#(id)","result":{"type":"session_snapshot","snapshot":{"version":"0.8.0","protocol":19,"workspaces":[{"workspace_id":"w2","number":2,"label":"personal","focused":false,"pane_count":1,"tab_count":1,"active_tab_id":"w2:t1","agent_status":"idle"},{"workspace_id":"w1","number":1,"label":"work","focused":true,"pane_count":2,"tab_count":1,"active_tab_id":"w1:t1","agent_status":"idle"}],"tabs":[],"panes":[{"terminal_id":"term-1","agent_status":"unknown","workspace_id":"w1","tab_id":"w1:t1","pane_id":"w1:p1","focused":true,"revision":1},{"terminal_id":"term-2","agent_status":"unknown","workspace_id":"w1","tab_id":"w1:t1","pane_id":"w1:p2","focused":false,"revision":1},{"terminal_id":"term-3","agent_status":"working","workspace_id":"w2","tab_id":"w2:t1","pane_id":"w2:p1","focused":false,"revision":1}],"layouts":[],"agents":[{"terminal_id":"term-1","agent_status":"unknown","workspace_id":"w1","tab_id":"w1:t1","pane_id":"w1:p1","focused":true,"revision":1},{"terminal_id":"term-3","agent_status":"working","workspace_id":"w2","tab_id":"w2:t1","pane_id":"w2:p1","focused":false,"revision":1}]}}}
         """#
+    }
+
+    /// A generic, empty-object success result -- `workspace.close`'s own
+    /// response shape has no method-to-result mapping in the schema to
+    /// pin a specific discriminator against, and
+    /// `HerdrCLISessionProvider.closeWorkspace(workspaceID:socketPath:)`
+    /// never reads this value, only that the request did not throw.
+    private func okResponseLine(id: String) -> String {
+        "{\"id\":\"\(id)\",\"result\":{}}"
+    }
+
+    // MARK: - Wire-line parsing helpers (mirrors HerdrAttachOrCreateFlowTests.swift's own)
+
+    private func jsonObject(inLine line: String) -> [String: Any]? {
+        guard let data = line.data(using: .utf8) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    private func requestMethod(inLine line: String) -> String? {
+        jsonObject(inLine: line)?["method"] as? String
+    }
+
+    private func requestID(inLine line: String) -> String? {
+        jsonObject(inLine: line)?["id"] as? String
     }
 
     // MARK: - Bounded async polling (mirrors HerdrConnectionTests.swift's own helpers)

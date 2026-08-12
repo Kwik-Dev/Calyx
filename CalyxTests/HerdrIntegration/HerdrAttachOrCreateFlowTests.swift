@@ -2,30 +2,28 @@
 //  HerdrAttachOrCreateFlowTests.swift
 //  CalyxTests
 //
-//  HerdrAttachOrCreateFlow.run(socketPath:transportFactory:logger:
-//  openWorkspace:): SessionBrowserWindowController.attachHerdr(_:)'s own
-//  create-versus-attach decision, driven by a LIVE session.snapshot
-//  fetched at call time -- never a row's own cached counts (those only
-//  drive the Attach/New button title, SessionBrowserModelHerdrTests
-//  .swift's own HerdrAttachGate coverage). `openWorkspace` is a plain
-//  spy closure here, standing in for `HerdrTabCoordinator
-//  .openWorkspace(workspaceID:socketPath:)` -- production wiring calls
-//  that method directly, unchanged; this file never constructs a full
-//  coordinator. Every transport is a fake -- mirrors
-//  HerdrTabCoordinatorTests.swift's own SpyHerdrTransportFactory +
-//  InMemoryHerdrTransport style, and this codebase's per-file
-//  fake-duplication convention.
+//  HerdrAttachOrCreateFlow.createAndOpen(socketPath:homeDirectoryPath:
+//  transportFactory:logger:openWorkspace:): the herdr server row's own
+//  "New" button (SessionBrowserWindowController.createHerdrWorkspace(_:))
+//  -- unconditionally sends workspace.create, then opens the workspace that
+//  creates. No snapshot fetch, and no create-versus-attach decision:
+//  attaching an EXISTING workspace is a workspace row's own "Attach"
+//  button's job, calling HerdrTabCoordinator.openWorkspace(workspaceID:
+//  socketPath:) directly (SessionBrowserWindowController
+//  .attachHerdrWorkspace(_:)), never through this file. `openWorkspace`
+//  is a plain spy closure here, standing in for that same coordinator
+//  entry point; this file never constructs a full coordinator. Every
+//  transport is a fake -- mirrors HerdrTabCoordinatorTests.swift's own
+//  SpyHerdrTransportFactory + InMemoryHerdrTransport style, and this
+//  codebase's per-file fake-duplication convention.
 //
 //  Coverage:
-//  - a snapshot naming zero workspaces sends workspace.create (params
-//    EXACTLY {"focus":true}, decoded from a required-fields-only
-//    "workspace_created" response -- pinning that decode), then opens
-//    the created workspace's own id through openWorkspace, and no other
-//    id
-//  - a snapshot naming at least one workspace never sends workspace
-//    .create at all (only one transport is ever requested), opens every
-//    workspace id in sorted order, then re-opens the focused one last so
-//    it ends focused -- the unchanged existing-workspace attach path
+//  - createAndOpen sends workspace.create (params carrying EXACTLY two
+//    keys, cwd (the injected home directory) and focus (true), decoded
+//    from a required-fields-only "workspace_created" response --
+//    pinning that decode) as its first and ONLY request -- no
+//    session.snapshot fetch beforehand -- then opens the created
+//    workspace's own id through openWorkspace, and no other id
 //
 
 import XCTest
@@ -55,7 +53,7 @@ private actor SpyHerdrTransportFactory: HerdrTransportFactory {
 
 /// Records every `openWorkspace` call, in order -- standing in for
 /// `HerdrTabCoordinator.openWorkspace(workspaceID:socketPath:)`.
-/// `@MainActor` since `HerdrAttachOrCreateFlow.run` itself is.
+/// `@MainActor` since `HerdrAttachOrCreateFlow.createAndOpen` itself is.
 @MainActor
 private final class OpenWorkspaceSpy {
     private(set) var calls: [(workspaceID: String, socketPath: String)] = []
@@ -72,43 +70,42 @@ private final class OpenWorkspaceSpy {
 final class HerdrAttachOrCreateFlowTests: XCTestCase {
 
     private let socketPath = "/fixture/config/herdr/herdr.sock"
+    private let homeDirectoryPath = "/fixture/Users/fixture-user"
     private let logger = Logger(subsystem: "com.calyx.terminal.tests", category: "HerdrAttachOrCreateFlowTests")
 
-    // MARK: - Zero workspaces: sends workspace.create, then opens exactly the created id
+    // MARK: - createAndOpen sends workspace.create with no snapshot fetch, then opens exactly the created id
 
-    func test_run_emptySnapshot_sendsWorkspaceCreate_thenOpensTheCreatedWorkspaceID() async {
+    func test_createAndOpen_sendsWorkspaceCreateWithNoSnapshotFetch_thenOpensTheCreatedWorkspaceID() async {
         let factory = SpyHerdrTransportFactory()
         let spy = OpenWorkspaceSpy()
 
         let task = Task {
-            await HerdrAttachOrCreateFlow.run(
-                socketPath: socketPath, transportFactory: factory, logger: logger,
+            await HerdrAttachOrCreateFlow.createAndOpen(
+                socketPath: socketPath, homeDirectoryPath: homeDirectoryPath, transportFactory: factory,
+                logger: logger,
                 openWorkspace: { workspaceID, socketPath in await spy.open(workspaceID, socketPath) }
             )
         }
 
-        guard let snapshotTransport = await awaitTransport(factory, at: 0) else {
-            XCTFail("expected transport #0 to have been created for the session.snapshot request")
-            return
-        }
-        _ = await awaitSentMessages(snapshotTransport, atLeast: 1)
-        await snapshotTransport.simulateLine(emptySnapshotResponseLine(id: "1"))
-
-        guard let createTransport = await awaitTransport(factory, at: 1) else {
-            XCTFail("expected transport #1 to have been created for the workspace.create request")
+        guard let createTransport = await awaitTransport(factory, at: 0) else {
+            XCTFail("expected transport #0 to have been created for the workspace.create request")
             return
         }
         let createSent = await awaitSentMessages(createTransport, atLeast: 1)
         guard createSent.count == 1, let createID = requestID(inLine: createSent[0]) else {
-            XCTFail("expected transport #1's only request to be workspace.create; got \(createSent)")
+            XCTFail("expected transport #0's only request to be workspace.create; got \(createSent)")
             return
         }
-        XCTAssertEqual(requestMethod(inLine: createSent[0]), "workspace.create")
+        XCTAssertEqual(
+            requestMethod(inLine: createSent[0]), "workspace.create",
+            "createAndOpen's first request must be workspace.create -- there is no session.snapshot fetch " +
+            "before it"
+        )
         let createParams = jsonObject(inLine: createSent[0])?["params"] as? [String: Any] ?? [:]
         XCTAssertEqual(
-            createParams as NSDictionary, ["focus": true] as NSDictionary,
-            "workspace.create's params must carry EXACTLY {\"focus\":true} -- WorkspaceCreateParams' own " +
-            "schema shape, no cwd/env/label"
+            createParams as NSDictionary, ["cwd": homeDirectoryPath, "focus": true] as NSDictionary,
+            "workspace.create's params must carry EXACTLY {\"cwd\":\"\(homeDirectoryPath)\",\"focus\":true} -- " +
+            "cwd is the injected home directory (herdr has no directory-independent default), no env/label"
         )
         await createTransport.simulateLine(workspaceCreatedResponseLine(id: createID, workspaceID: "w-new"))
 
@@ -116,65 +113,14 @@ final class HerdrAttachOrCreateFlowTests: XCTestCase {
 
         XCTAssertEqual(
             spy.calls.map { $0.workspaceID }, ["w-new"],
-            "an empty snapshot must open exactly the workspace workspace.create returned, nothing else"
+            "must open exactly the workspace workspace.create returned, nothing else"
         )
         XCTAssertEqual(spy.calls.map { $0.socketPath }, [socketPath])
         let totalTransports = await factory.callCount
-        XCTAssertEqual(totalTransports, 2, "exactly session.snapshot then workspace.create, no more")
-    }
-
-    // MARK: - Non-empty snapshot: never sends workspace.create, opens each id then refocuses
-
-    func test_run_nonEmptySnapshot_neverSendsWorkspaceCreate_opensEachIDThenRefocuses() async {
-        let factory = SpyHerdrTransportFactory()
-        let spy = OpenWorkspaceSpy()
-
-        let task = Task {
-            await HerdrAttachOrCreateFlow.run(
-                socketPath: socketPath, transportFactory: factory, logger: logger,
-                openWorkspace: { workspaceID, socketPath in await spy.open(workspaceID, socketPath) }
-            )
-        }
-
-        guard let snapshotTransport = await awaitTransport(factory, at: 0) else {
-            XCTFail("expected transport #0 to have been created for the session.snapshot request")
-            return
-        }
-        _ = await awaitSentMessages(snapshotTransport, atLeast: 1)
-        await snapshotTransport.simulateLine(twoWorkspaceSnapshotResponseLine(id: "1", focusedWorkspaceID: "w2"))
-
-        await task.value
-
-        XCTAssertEqual(
-            spy.calls.map { $0.workspaceID }, ["w1", "w2", "w2"],
-            "must open every workspace id in sorted order, then re-open the focused one last so it ends " +
-            "focused -- unchanged existing-workspace attach behavior"
-        )
-        XCTAssertEqual(spy.calls.map { $0.socketPath }, [socketPath, socketPath, socketPath])
-        let totalTransports = await factory.callCount
-        XCTAssertEqual(totalTransports, 1, "a non-empty snapshot must never send workspace.create")
+        XCTAssertEqual(totalTransports, 1, "exactly one transport, for workspace.create -- no snapshot fetch")
     }
 
     // MARK: - Fixtures
-
-    /// Required-fields-only `session.snapshot` result naming zero
-    /// workspaces (`panes: []`) -- HerdrSessionSnapshot's own schema
-    /// `required`: version, protocol, workspaces, tabs, panes, layouts,
-    /// agents.
-    private func emptySnapshotResponseLine(id: String) -> String {
-        #"""
-        {"id":"\#(id)","result":{"type":"session_snapshot","snapshot":{"version":"0.8.0","protocol":19,"workspaces":[],"tabs":[],"panes":[],"layouts":[],"agents":[]}}}
-        """#
-    }
-
-    /// Two workspaces (w1, w2), one pane each, `focused_workspace_id`
-    /// set to `focusedWorkspaceID` -- required-fields-only PaneInfo
-    /// records, mirroring `HerdrSessionProviderTests`' own fixture style.
-    private func twoWorkspaceSnapshotResponseLine(id: String, focusedWorkspaceID: String) -> String {
-        #"""
-        {"id":"\#(id)","result":{"type":"session_snapshot","snapshot":{"version":"0.8.0","protocol":19,"workspaces":[],"tabs":[],"panes":[{"terminal_id":"term-1","agent_status":"unknown","workspace_id":"w1","tab_id":"w1:t1","pane_id":"w1:p1","focused":false,"revision":1},{"terminal_id":"term-2","agent_status":"unknown","workspace_id":"w2","tab_id":"w2:t1","pane_id":"w2:p1","focused":true,"revision":1}],"layouts":[],"agents":[],"focused_workspace_id":"\#(focusedWorkspaceID)"}}}
-        """#
-    }
 
     /// `workspace.create`'s own required-fields-only response --
     /// WorkspaceInfo (8 required), TabInfo (7 required), PaneInfo (7
