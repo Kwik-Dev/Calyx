@@ -145,6 +145,12 @@ final class HermesConfigManagerTests: XCTestCase {
                       "Should contain url scalar with port 41830")
         XCTAssertTrue(content.contains("Authorization: \"Bearer abc123\""),
                       "Should contain Authorization scalar with token")
+        XCTAssertTrue(content.contains("X-Calyx-Surface-ID: \"${CALYX_SURFACE_ID}\""),
+                      "Hermes must forward the ordinary Calyx surface identity")
+        XCTAssertTrue(content.contains("X-Calyx-Session-ID: \"${CALYX_SESSION_ID}\""),
+                      "Hermes must forward the stable persistent-session identity when present")
+        XCTAssertTrue(content.contains("X-Calyx-Agent-Kind: \"hermes\""),
+                      "Hermes MCP initialize must identify the agent kind")
     }
 
     // MARK: - enableIPC: Append to file without mcp_servers
@@ -285,6 +291,9 @@ final class HermesConfigManagerTests: XCTestCase {
             url: "http://127.0.0.1:55555/mcp"
             headers:
               Authorization: "Bearer second"
+              X-Calyx-Surface-ID: "${CALYX_SURFACE_ID}"
+              X-Calyx-Session-ID: "${CALYX_SESSION_ID}"
+              X-Calyx-Agent-Kind: "hermes"
           # END CALYX IPC
         toolsets:
           - web

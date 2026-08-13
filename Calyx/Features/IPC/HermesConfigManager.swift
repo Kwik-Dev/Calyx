@@ -107,6 +107,9 @@ struct HermesConfigManager: Sendable {
         let authorization = "Bearer \(token)"
         let urlScalar = try yamlDoubleQuotedScalar(url)
         let authScalar = try yamlDoubleQuotedScalar(authorization)
+        let surfaceIDScalar = try yamlDoubleQuotedScalar("${CALYX_SURFACE_ID}")
+        let sessionIDScalar = try yamlDoubleQuotedScalar("${CALYX_SESSION_ID}")
+        let agentKindScalar = try yamlDoubleQuotedScalar(AgentEntry.hermesKind)
 
         // Detect inline mcp_servers AFTER stripping managed regions so a
         // managed-block-internal `mcp_servers: {}` does not trigger.
@@ -120,10 +123,20 @@ struct HermesConfigManager: Sendable {
                 into: cleaned,
                 mcpServersLineRange: mcpServersRange,
                 urlScalar: urlScalar,
-                authScalar: authScalar
+                authScalar: authScalar,
+                surfaceIDScalar: surfaceIDScalar,
+                sessionIDScalar: sessionIDScalar,
+                agentKindScalar: agentKindScalar
             )
         } else {
-            result = appendCaseA(to: cleaned, urlScalar: urlScalar, authScalar: authScalar)
+            result = appendCaseA(
+                to: cleaned,
+                urlScalar: urlScalar,
+                authScalar: authScalar,
+                surfaceIDScalar: surfaceIDScalar,
+                sessionIDScalar: sessionIDScalar,
+                agentKindScalar: agentKindScalar
+            )
         }
 
         guard let data = result.data(using: .utf8) else {
@@ -189,7 +202,14 @@ struct HermesConfigManager: Sendable {
 
     // MARK: - Private: Insertion (Case A — append at EOF)
 
-    private static func appendCaseA(to existing: String, urlScalar: String, authScalar: String) -> String {
+    private static func appendCaseA(
+        to existing: String,
+        urlScalar: String,
+        authScalar: String,
+        surfaceIDScalar: String,
+        sessionIDScalar: String,
+        agentKindScalar: String
+    ) -> String {
         let block = """
         \(beginLine)
         mcp_servers:
@@ -197,6 +217,9 @@ struct HermesConfigManager: Sendable {
             url: \(urlScalar)
             headers:
               Authorization: \(authScalar)
+              X-Calyx-Surface-ID: \(surfaceIDScalar)
+              X-Calyx-Session-ID: \(sessionIDScalar)
+              X-Calyx-Agent-Kind: \(agentKindScalar)
         \(endLine)
         """
 
@@ -215,7 +238,10 @@ struct HermesConfigManager: Sendable {
         into content: String,
         mcpServersLineRange: Range<String.Index>,
         urlScalar: String,
-        authScalar: String
+        authScalar: String,
+        surfaceIDScalar: String,
+        sessionIDScalar: String,
+        agentKindScalar: String
     ) throws -> String {
         let lines = content.components(separatedBy: "\n")
         let prefix = String(content[..<mcpServersLineRange.lowerBound])
@@ -250,6 +276,9 @@ struct HermesConfigManager: Sendable {
             "\(nestedIndent)url: \(urlScalar)",
             "\(nestedIndent)headers:",
             "\(deepIndent)Authorization: \(authScalar)",
+            "\(deepIndent)X-Calyx-Surface-ID: \(surfaceIDScalar)",
+            "\(deepIndent)X-Calyx-Session-ID: \(sessionIDScalar)",
+            "\(deepIndent)X-Calyx-Agent-Kind: \(agentKindScalar)",
             "\(childIndent)\(endLine)",
         ]
 

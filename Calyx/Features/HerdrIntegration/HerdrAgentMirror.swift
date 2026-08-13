@@ -24,16 +24,12 @@
 //
 //   - herdr `HerdrAgentStatus` -> Calyx `AgentState`: idle -> .idle,
 //     working -> .working, blocked -> .blocked, done -> .done.
-//     `.unknown` and `.unrecognized(_)` are NOT rendered as a state --
-//     decided and documented HERE:
-//     a record/event whose status is unknown/unrecognized never CREATES
-//     a row (herdr's own "unknown" is the documented default for a
-//     plain shell pane with no agent, per HerdrEvent.swift's header),
-//     and if a row already exists for that pane, this file leaves it
-//     COMPLETELY untouched (state, cwd, kind, everything) rather than
-//     downgrading it -- an agent that transiently reports "unknown"
-//     (e.g. mid-restart) must not visibly flicker or lose its last
-//     known state in the sidebar.
+//     A record/event whose status is unknown/unrecognized never CREATES
+//     a row. For an existing row, `agent == nil` paired with `.idle` or
+//     `.unknown` means herdr no longer detects that CLI while the shell
+//     pane remains, so the row becomes `.done`. An unknown status that
+//     still carries an agent identity remains non-actionable and leaves
+//     the row untouched.
 //
 //   - herdr `agent` kind string -> Calyx `AgentEntry.kind`: "claude" ->
 //     `AgentEntry.claudeCodeKind` ("claude-code") -- the one measured
@@ -54,7 +50,8 @@
 //     incoming (possibly nil/defaulted) value -- a nil `cwd` must never
 //     blank out an already-known working directory, and a nil `agent`
 //     must never silently relabel an already-known codex/opencode row as
-//     Claude Code. This only applies to updates: a brand-new row (no
+//     Claude Code. It may still mark that preserved-kind row `.done` per
+//     the absent-agent rule above. This only applies to updates: a brand-new row (no
 //     previous value to fall back to) still gets `cwd: nil` / the
 //     `mapKind(nil)` default exactly as documented above and below.
 //
@@ -117,9 +114,8 @@
 //     this instance previously created for `socketPath` that is no
 //     longer present in the new snapshot's `agents[]` (by pane id, ANY
 //     status -- an unknown-status record for an already-known pane
-//     still counts as "present", so the "keep last known state" rule
-//     above actually holds: that pane's row survives an idle/working ->
-//     unknown transition instead of being pruned as "gone"). Ownership
+//     still counts as "present", so its row is updated or preserved by
+//     the rules above rather than being pruned as "gone"). Ownership
 //     is tracked PER socketPath so two independently-managed
 //     connections (a future multi-session possibility) never prune each
 //     other's rows.
@@ -157,14 +153,26 @@ final class HerdrAgentMirror {
             let id = HerdrStableID.make(socketPath: socketPath, paneID: record.paneID)
             // A record for an already-known pane counts as "present"
             // for the removal pass below EVEN with an unknown/
-            // unrecognized status -- see this file's header ("keeps
-            // last known state" rather than pruning it as gone).
+            // unrecognized status -- it is updated or preserved by the
+            // rules above rather than pruned as gone.
             presentIDs.insert(id)
 
+            let existing = registry.externalEntries[id]
+            if record.agent == nil,
+               let existing,
+               Self.isAbsentAgentTerminalStatus(record.agentStatus) {
+                var updated = existing
+                updated.state = .done
+                updated.cwd = record.cwd ?? existing.cwd
+                updated.lastEventAt = Date()
+                registry.upsertExternalEntry(updated)
+                owned.insert(id)
+                continue
+            }
+
             guard let state = Self.mapState(record.agentStatus) else {
-                // Unknown/unrecognized status: never create a row for a
-                // new pane, and never touch an existing one -- see this
-                // file's header.
+                // Unknown/unrecognized status with no terminal transition:
+                // never create a row and leave an existing row untouched.
                 continue
             }
 
@@ -172,7 +180,6 @@ final class HerdrAgentMirror {
             // out or relabel an already-known row -- fall back to its
             // previous value rather than the degraded creation-time
             // default. See this file's header.
-            let existing = registry.externalEntries[id]
             let cwd = record.cwd ?? existing?.cwd
             let kind: String
             if let agent = record.agent {
@@ -267,14 +274,26 @@ final class HerdrAgentMirror {
     /// nil and applies `mapKind`'s own nil-agent default, per this file's
     /// header.
     private func applyStatusChanged(_ changed: HerdrPaneAgentStatusChangedEvent, socketPath: String) {
-        guard let state = Self.mapState(changed.agentStatus) else {
-            // Unknown/unrecognized status: never creates a row; leaves
-            // an existing one completely untouched -- see this file's
-            // header.
+        let id = HerdrStableID.make(socketPath: socketPath, paneID: changed.paneID)
+
+        if changed.agent == nil,
+           let existing = registry.externalEntries[id],
+           Self.isAbsentAgentTerminalStatus(changed.agentStatus) {
+            var updated = existing
+            updated.state = .done
+            updated.lastEventAt = Date()
+            registry.upsertExternalEntry(updated)
+            var owned = ownedIDsBySocketPath[socketPath] ?? []
+            owned.insert(id)
+            ownedIDsBySocketPath[socketPath] = owned
             return
         }
 
-        let id = HerdrStableID.make(socketPath: socketPath, paneID: changed.paneID)
+        guard let state = Self.mapState(changed.agentStatus) else {
+            // Unknown/unrecognized status with no terminal transition:
+            // never creates a row and leaves an existing row untouched.
+            return
+        }
 
         if let existing = registry.externalEntries[id] {
             var updated = existing
@@ -305,7 +324,7 @@ final class HerdrAgentMirror {
 
     /// herdr `HerdrAgentStatus` -> Calyx `AgentState`, per this file's
     /// header. `nil` for `.unknown`/`.unrecognized` -- the caller's own
-    /// "never creates, never downgrades" handling for those.
+    /// absent-agent terminal handling before falling back to no-op.
     private static func mapState(_ status: HerdrAgentStatus) -> AgentState? {
         switch status {
         case .idle: return .idle
@@ -313,6 +332,18 @@ final class HerdrAgentMirror {
         case .blocked: return .blocked
         case .done: return .done
         case .unknown, .unrecognized: return nil
+        }
+    }
+
+    /// herdr keeps the shell pane after an agent CLI exits and reports the
+    /// transition as `agent: nil` with an idle/unknown status. That is a
+    /// completed agent run, not an idle live agent.
+    private static func isAbsentAgentTerminalStatus(_ status: HerdrAgentStatus) -> Bool {
+        switch status {
+        case .idle, .unknown:
+            return true
+        case .working, .blocked, .done, .unrecognized:
+            return false
         }
     }
 

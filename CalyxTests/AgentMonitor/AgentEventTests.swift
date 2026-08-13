@@ -228,6 +228,10 @@ final class AgentEventTests: XCTestCase {
         XCTAssertEqual(AgentEntry.displayName(forKind: "opencode"), "OpenCode")
     }
 
+    func test_displayName_hermesKind_returnsHermesAgent() {
+        XCTAssertEqual(AgentEntry.displayName(forKind: "hermes"), "Hermes Agent")
+    }
+
     // MARK: - ipcSelfPeerID extraction (Round 3: unread message badges)
     //
     // A PreToolUse for one of Calyx's own mcp__calyx-ipc__* tools carries

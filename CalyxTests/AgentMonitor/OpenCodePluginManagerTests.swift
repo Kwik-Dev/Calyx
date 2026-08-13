@@ -104,13 +104,19 @@ final class OpenCodePluginManagerTests: XCTestCase {
 
     // MARK: - scriptBody invariants
 
-    func test_scriptBody_guardsOnMissingSurfaceIDAndReturnsEmptyHooks() {
+    func test_scriptBody_guardsOnMissingPaneIdentityAndPrefersStableSessionID() {
         let body = OpenCodePluginManager.scriptBody
 
         XCTAssertTrue(body.contains("CALYX_SURFACE_ID"),
-                     "Plugin must gate on process.env.CALYX_SURFACE_ID")
+                     "Plugin must support an ordinary pane's CALYX_SURFACE_ID")
+        XCTAssertTrue(body.contains("CALYX_SESSION_ID"),
+                     "Plugin must support a persistent pane's stable CALYX_SESSION_ID")
+        XCTAssertTrue(
+            body.contains("process.env.CALYX_SESSION_ID || process.env.CALYX_SURFACE_ID"),
+            "Plugin must prefer CALYX_SESSION_ID over the reconnect-sensitive surface UUID"
+        )
         XCTAssertTrue(body.contains("return {}"),
-                     "When CALYX_SURFACE_ID is unset, the plugin must register no hooks (return {})")
+                     "When both pane identity variables are unset, the plugin must register no hooks")
     }
 
     func test_scriptBody_referencesAgentEndpointFile() {

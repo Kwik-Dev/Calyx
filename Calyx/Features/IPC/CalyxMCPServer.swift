@@ -321,23 +321,27 @@ final class CalyxMCPServer {
         return UUID(uuidString: trimmed)
     }
 
-    /// Two-stage resolution of `X-Calyx-Surface-ID`, shared by both
+    /// Resolves the request's Calyx pane identity, shared by both
     /// `/mcp` (`routeMCP`) and `/agent-event` (`routeAgentEvent`): first
-    /// as a raw surface UUID (`parseSurfaceID`, the pre-existing and
-    /// still-primary contract on both routes), then — only when that
-    /// parse fails — as a calyx-session ID looked up in
-    /// `sessionSurfaceMap`. A persistent-session pane's hook sends its
-    /// stable calyx-session ID in this same header instead of a surface
-    /// UUID whenever `CALYX_SESSION_ID` is set (see
+    /// a stable `X-Calyx-Session-ID` looked up in `sessionSurfaceMap`, then
+    /// the legacy overloaded `X-Calyx-Surface-ID` contract: raw surface UUID
+    /// first, calyx-session ID fallback. Separate headers let clients whose
+    /// config interpolation has no fallback syntax send both environment
+    /// variables; an absent or unresolved session header simply falls through
+    /// to the ordinary surface header. A persistent-session pane's hook still
+    /// sends its stable calyx-session ID in `X-Calyx-Surface-ID` (see
     /// `AgentHookScript.scriptBody`'s
-    /// `${CALYX_SESSION_ID:-$CALYX_SURFACE_ID}` fallback), and an MCP
-    /// client running inside such a pane (e.g. Claude Code's own MCP
-    /// connection, which reads the same precedence) sends the same
-    /// value — since a surface UUID does not survive reconnect, only
-    /// the calyx-session ID does. `nil` if neither resolves; what a
+    /// `${CALYX_SESSION_ID:-$CALYX_SURFACE_ID}` fallback), so that older
+    /// path remains supported. `nil` if neither header resolves; what a
     /// `nil` result *means* still differs per route (see each route's
     /// own comment).
     private func resolveSurfaceID(from headers: [String: String]) -> UUID? {
+        if let sessionID = header(named: "X-Calyx-Session-ID", in: headers)?
+            .trimmingCharacters(in: .whitespaces),
+           !sessionID.isEmpty,
+           let surfaceID = sessionSurfaceMap.surfaceID(for: sessionID) {
+            return surfaceID
+        }
         if let surfaceID = parseSurfaceID(from: headers) {
             return surfaceID
         }

@@ -187,7 +187,10 @@ struct OpenCodeConfigManager: Sendable {
             "type": "remote",
             "url": "http://127.0.0.1:\(port)/mcp",
             "headers": [
-                "Authorization": "Bearer \(token)"
+                "Authorization": "Bearer \(token)",
+                "X-Calyx-Surface-ID": "{env:CALYX_SURFACE_ID}",
+                "X-Calyx-Session-ID": "{env:CALYX_SESSION_ID}",
+                "X-Calyx-Agent-Kind": AgentEntry.openCodeKind,
             ]
         ]
 

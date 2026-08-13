@@ -121,10 +121,18 @@ final class CalyxMCPServerSessionRoutingTests: XCTestCase {
 
     // MARK: - routeMCP session-ID fallback (fix round, item 7)
 
-    private func mcpRequest(token: String?, surfaceIDHeader: String?, body: Data) -> HTTPRequest {
+    private func mcpRequest(
+        token: String?,
+        surfaceIDHeader: String?,
+        sessionIDHeader: String? = nil,
+        agentKind: String? = nil,
+        body: Data
+    ) -> HTTPRequest {
         var headers: [String: String] = [:]
         if let token { headers["Authorization"] = "Bearer \(token)" }
         if let surfaceIDHeader { headers["X-Calyx-Surface-ID"] = surfaceIDHeader }
+        if let sessionIDHeader { headers["X-Calyx-Session-ID"] = sessionIDHeader }
+        if let agentKind { headers["X-Calyx-Agent-Kind"] = agentKind }
         return HTTPRequest(method: "POST", path: "/mcp", headers: headers, body: body)
     }
 
@@ -163,5 +171,39 @@ final class CalyxMCPServerSessionRoutingTests: XCTestCase {
             "so initialize auto-registers and binds a peer for the resolved surface — today routeMCP only " +
             "calls parseSurfaceID directly, which fails on a non-UUID session ID, so no peer is registered at all"
         )
+    }
+
+    func test_routeMCP_separateSessionHeaderTakesPriorityAndRegistersAgentOnCurrentSurface() async {
+        let calyxSessionID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        let staleSurfaceID = UUID()
+        let currentSurfaceID = UUID()
+        server.sessionSurfaceMap.register(sessionID: calyxSessionID, surfaceID: currentSurfaceID)
+
+        let response = await server.route(request: mcpRequest(
+            token: testToken,
+            surfaceIDHeader: staleSurfaceID.uuidString,
+            sessionIDHeader: calyxSessionID,
+            agentKind: AgentEntry.hermesKind,
+            body: initializeRequestBody(id: 2)
+        ))
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertNil(server.agentRegistry.entries[staleSurfaceID])
+        XCTAssertEqual(server.agentRegistry.entries[currentSurfaceID]?.kind, AgentEntry.hermesKind)
+    }
+
+    func test_routeMCP_unresolvedSeparateSessionHeaderFallsBackToSurfaceHeader() async {
+        let surfaceID = UUID()
+
+        let response = await server.route(request: mcpRequest(
+            token: testToken,
+            surfaceIDHeader: surfaceID.uuidString,
+            sessionIDHeader: "${CALYX_SESSION_ID}",
+            agentKind: AgentEntry.hermesKind,
+            body: initializeRequestBody(id: 3)
+        ))
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(server.agentRegistry.entries[surfaceID]?.kind, AgentEntry.hermesKind)
     }
 }

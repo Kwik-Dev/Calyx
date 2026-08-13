@@ -49,9 +49,12 @@ enum OpenCodePluginManager: Sendable {
 
     export default async ({ directory }) => {
       // Not launched from a Calyx pane (e.g. a plain terminal running
-      // `opencode`) — register no hooks at all, mirroring
-      // calyx-agent-hook's CALYX_SURFACE_ID guard.
-      if (!process.env.CALYX_SURFACE_ID) {
+      // `opencode`) — register no hooks at all. A persistent pane's
+      // CALYX_SESSION_ID remains stable when its Ghostty surface changes,
+      // so prefer it over the launch-time surface UUID.
+      const calyxPaneID =
+        process.env.CALYX_SESSION_ID || process.env.CALYX_SURFACE_ID;
+      if (!calyxPaneID) {
         return {};
       }
 
@@ -141,7 +144,7 @@ enum OpenCodePluginManager: Sendable {
               method: "POST",
               headers: {
                 "Authorization": `Bearer ${endpoint.token}`,
-                "X-Calyx-Surface-ID": process.env.CALYX_SURFACE_ID,
+                "X-Calyx-Surface-ID": calyxPaneID,
                 "X-Calyx-Agent-Kind": "opencode",
                 "Content-Type": "application/json",
               },

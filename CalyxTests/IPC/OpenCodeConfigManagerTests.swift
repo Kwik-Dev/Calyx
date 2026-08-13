@@ -112,6 +112,9 @@ final class OpenCodeConfigManagerTests: XCTestCase {
 
         let headers = calyxIPC?["headers"] as? [String: String]
         XCTAssertEqual(headers?["Authorization"], "Bearer abc123")
+        XCTAssertEqual(headers?["X-Calyx-Surface-ID"], "{env:CALYX_SURFACE_ID}")
+        XCTAssertEqual(headers?["X-Calyx-Session-ID"], "{env:CALYX_SESSION_ID}")
+        XCTAssertEqual(headers?["X-Calyx-Agent-Kind"], "opencode")
     }
 
     func test_enableIPC_createsAgentsMDFromScratch() throws {
@@ -216,7 +219,7 @@ final class OpenCodeConfigManagerTests: XCTestCase {
         let headers = calyxIPC?["headers"] as? [String: String]
         XCTAssertEqual(headers?["Authorization"], "Bearer new-token",
                        "Authorization should be updated to new token")
-        XCTAssertEqual(headers?.count, 1,
+        XCTAssertEqual(headers?.count, 4,
                        "Headers dict should not retain stale merged keys")
     }
 

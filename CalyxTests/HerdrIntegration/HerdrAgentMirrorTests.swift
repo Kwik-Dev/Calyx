@@ -249,6 +249,27 @@ final class HerdrAgentMirrorTests: XCTestCase {
         )
     }
 
+    func test_apply_paneAgentStatusChanged_idleWithNoAgent_marksExistingRowDone() {
+        let registry = AgentRegistry()
+        let mirror = HerdrAgentMirror(registry: registry)
+        let id = HerdrStableID.make(socketPath: socketPath, paneID: "w1:p1")
+        mirror.applySnapshot(
+            snapshot(agents: [agentRecord(paneID: "w1:p1", agent: "claude", status: .idle)]),
+            socketPath: socketPath
+        )
+
+        mirror.apply(
+            event: statusChangedEvent(paneID: "w1:p1", status: .idle, agent: nil),
+            socketPath: socketPath
+        )
+
+        XCTAssertEqual(
+            registry.externalEntries[id]?.state, .done,
+            "herdr reports agent=nil when the CLI exits but the shell pane remains; that transition must be blue/done"
+        )
+        XCTAssertEqual(registry.externalEntries[id]?.kind, AgentEntry.claudeCodeKind)
+    }
+
     func test_apply_paneAgentStatusChanged_updateBranch_neverTouchesCwd() {
         let registry = AgentRegistry()
         let mirror = HerdrAgentMirror(registry: registry)
@@ -284,25 +305,22 @@ final class HerdrAgentMirrorTests: XCTestCase {
         )
     }
 
-    func test_applySnapshot_unknownStatus_forAlreadyKnownPane_keepsLastKnownState_ratherThanDowngrading() {
+    func test_applySnapshot_unknownStatusWithNoAgent_forAlreadyKnownPane_marksItDone() {
         let registry = AgentRegistry()
         let mirror = HerdrAgentMirror(registry: registry)
         let id = HerdrStableID.make(socketPath: socketPath, paneID: "w1:p1")
         mirror.applySnapshot(snapshot(agents: [agentRecord(paneID: "w1:p1", status: .working)]), socketPath: socketPath)
         XCTAssertEqual(registry.externalEntries[id]?.state, .working, "Precondition")
 
-        // The same pane later reports "unknown" (e.g. the agent process
-        // exited but herdr hasn't reported pane.closed) -- the row must
-        // survive, still showing its LAST KNOWN state, never downgraded
-        // and never removed.
+        // The shell pane remains, but herdr no longer detects an agent.
         mirror.applySnapshot(
             snapshot(agents: [agentRecord(paneID: "w1:p1", agent: nil, status: .unknown)]),
             socketPath: socketPath
         )
 
         XCTAssertEqual(
-            registry.externalEntries[id]?.state, .working,
-            "an unknown-status snapshot for an already-known pane must keep the row's last known state"
+            registry.externalEntries[id]?.state, .done,
+            "an already-known agent becoming agent=nil must be shown as completed, not left green or working"
         )
     }
 

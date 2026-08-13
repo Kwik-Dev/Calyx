@@ -62,6 +62,7 @@ extension AgentEntry {
         case Self.claudeCodeKind: return "Claude Code"
         case Self.codexKind: return "Codex"
         case Self.openCodeKind: return "OpenCode"
+        case Self.hermesKind: return "Hermes Agent"
         default: return kind
         }
     }
@@ -80,6 +81,7 @@ extension AgentEntry {
     /// that value lives in a JS string embedded in a Swift string constant,
     /// so it can't reference this constant directly.
     static let openCodeKind = "opencode"
+    static let hermesKind = "hermes"
 }
 
 // MARK: - AgentEvent
