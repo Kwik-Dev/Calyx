@@ -283,7 +283,13 @@ final class CalyxMCPServer {
         // running inside a persistent-session pane keeps its surface
         // binding across a reconnect too.
         let surfaceID = resolveSurfaceID(from: request.headers)
-        let (statusCode, responseBody) = await handleJSONRPC(data: body, authToken: authToken, surfaceID: surfaceID)
+        let kind = explicitAgentKind(from: request.headers)
+        let (statusCode, responseBody) = await handleJSONRPC(
+            data: body,
+            authToken: authToken,
+            surfaceID: surfaceID,
+            agentKind: kind
+        )
         return HTTPParser.response(statusCode: statusCode, body: responseBody)
     }
 
@@ -351,11 +357,19 @@ final class CalyxMCPServer {
     /// `routeApprovalRequest` so the same header is resolved identically
     /// on both routes.
     private func agentKind(from headers: [String: String]) -> String {
-        if let trimmed = header(named: "X-Calyx-Agent-Kind", in: headers)?
-            .trimmingCharacters(in: .whitespaces), !trimmed.isEmpty {
-            return trimmed
+        explicitAgentKind(from: headers) ?? AgentEntry.claudeCodeKind
+    }
+
+    /// Returns an explicitly supplied, non-empty agent kind. Unlike
+    /// `agentKind(from:)`, this deliberately has no Claude Code default:
+    /// `/mcp` is also used by generic clients, and a surface header alone
+    /// must not manufacture an Agents row for one of them.
+    private func explicitAgentKind(from headers: [String: String]) -> String? {
+        guard let trimmed = header(named: "X-Calyx-Agent-Kind", in: headers)?
+            .trimmingCharacters(in: .whitespaces), !trimmed.isEmpty else {
+            return nil
         }
-        return AgentEntry.claudeCodeKind
+        return trimmed
     }
 
     private func routeAgentEvent(request: HTTPRequest) async -> HTTPResponse {
@@ -1513,7 +1527,12 @@ final class CalyxMCPServer {
     ///   pre-Round-4 hook-derived binding in `AgentRegistry.handleHookEvent`
     ///   still runs independently, as a fallback that needs no
     ///   `X-Calyx-Surface-ID` header at all).
-    func handleJSONRPC(data: Data, authToken: String?, surfaceID: UUID? = nil) async -> (statusCode: Int, body: Data?) {
+    func handleJSONRPC(
+        data: Data,
+        authToken: String?,
+        surfaceID: UUID? = nil,
+        agentKind: String? = nil
+    ) async -> (statusCode: Int, body: Data?) {
 
         // 1. Authentication
         guard let authToken, authToken == token else {
@@ -1577,10 +1596,16 @@ final class CalyxMCPServer {
                    let alivePeer = await store.peerStatus(id: boundPeerID) {
                     peerID = alivePeer.id
                 } else {
-                    let clientName = extractClientName(from: request.params) ?? "claude-code"
-                    let peer = await store.registerPeer(name: clientName, role: "claude-code")
+                    let clientName = extractClientName(from: request.params) ?? agentKind ?? AgentEntry.claudeCodeKind
+                    let peer = await store.registerPeer(
+                        name: clientName,
+                        role: agentKind ?? AgentEntry.claudeCodeKind
+                    )
                     peerID = peer.id
                     agentRegistry.bindSurface(surfaceID, toPeer: peer.id)
+                }
+                if let agentKind {
+                    agentRegistry.handleMCPConnection(surfaceID: surfaceID, kind: agentKind)
                 }
             }
             let resp = MCPRouter.buildInitializeResponse(id: requestId, peerID: peerID)

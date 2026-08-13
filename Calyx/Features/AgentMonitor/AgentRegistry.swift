@@ -231,6 +231,57 @@ final class AgentRegistry {
         !externalEntries.isEmpty
     }
 
+    // MARK: - MCP Connection Presence
+
+    /// Records explicit agent-presence evidence from a surface-bound MCP
+    /// `initialize` request. Codex uses this path because its hook runner
+    /// sanitizes Calyx's surface environment variables before launching a
+    /// command hook, while its MCP client can forward the same variable via
+    /// `env_http_headers`.
+    ///
+    /// A same-kind `.hooks` entry remains authoritative. A later real hook
+    /// event promotes an `.mcpConnection` entry through `handleHookEvent`'s
+    /// existing non-hooks replacement path. Repeated initialize requests for
+    /// the same kind only refresh presence and preserve the current screen-
+    /// classified state.
+    func handleMCPConnection(surfaceID: UUID, kind: String, now: Date = Date()) {
+        heuristicMissStreaks.removeValue(forKey: surfaceID)
+
+        if var existing = entries[surfaceID] {
+            if existing.source == .hooks, existing.kind == kind {
+                return
+            }
+            if existing.source == .mcpConnection, existing.kind == kind {
+                existing.lastEventAt = now
+                entries[surfaceID] = existing
+                return
+            }
+
+            let initialState = existing.source == .titleHeuristic ? existing.state : .idle
+            entries[surfaceID] = AgentEntry(
+                surfaceID: surfaceID,
+                sessionID: nil,
+                source: .mcpConnection,
+                state: initialState,
+                cwd: existing.cwd,
+                kind: kind,
+                lastEventAt: now,
+                unreadCount: existing.unreadCount
+            )
+            return
+        }
+
+        entries[surfaceID] = AgentEntry(
+            surfaceID: surfaceID,
+            sessionID: nil,
+            source: .mcpConnection,
+            state: .idle,
+            cwd: nil,
+            kind: kind,
+            lastEventAt: now
+        )
+    }
+
     // MARK: - Hook Events
 
     /// Applies a decoded hook event to the registry. See the state
@@ -560,8 +611,12 @@ final class AgentRegistry {
 
     /// Applies a `ScreenStateClassifier` result polled from a pane's
     /// on-screen text. `.hooks`-sourced entries are left untouched (hooks
-    /// self-report is authoritative). An existing `.titleHeuristic` entry
-    /// is updated as an *authoritative* signal (`applyHeuristicState`) —
+    /// self-report is authoritative). An `.mcpConnection` entry uses the
+    /// screen result for state while retaining the row on `nil`: the MCP
+    /// initialize is independent evidence that the pane hosts an agent, so
+    /// an unrecognized idle screen must not retire it. An existing
+    /// `.titleHeuristic` entry is updated as an *authoritative* signal
+    /// (`applyHeuristicState`) —
     /// `.blocked` / `.working` reflected as-is (and resetting the
     /// heuristic miss streak, since this is a "positive" signal), `nil`
     /// falling back to `.idle` and counting as a miss: reaching
@@ -583,6 +638,15 @@ final class AgentRegistry {
                 kind: AgentEntry.claudeCodeKind,
                 lastEventAt: Date()
             )
+            return
+        }
+        if existing.source == .mcpConnection {
+            let newState = state ?? .idle
+            guard existing.state != newState else { return }
+            var updated = existing
+            updated.state = newState
+            updated.lastEventAt = Date()
+            entries[surfaceID] = updated
             return
         }
         guard existing.source == .titleHeuristic else { return }
@@ -720,8 +784,9 @@ final class AgentRegistry {
 
     // MARK: - Staleness Sweep
 
-    /// Downgrades `.working` `.hooks`-sourced entries whose `lastEventAt`
-    /// is older than `staleWorkingThreshold` to `.idle`. Guards against a
+    /// Downgrades `.working` `.hooks`/`.mcpConnection` entries whose
+    /// `lastEventAt` is older than `staleWorkingThreshold` to `.idle`.
+    /// Guards against a
     /// Claude Code process that exits non-gracefully (crash, `kill -9`,
     /// terminal force-close) and so never sends the `Stop` hook — without
     /// this sweep such a row stays frozen at `.working` forever.
@@ -729,7 +794,8 @@ final class AgentRegistry {
     /// unanswered for a long time is a legitimate wait, not staleness.
     func sweepStaleEntries(now: Date = Date()) {
         for (surfaceID, entry) in entries {
-            guard entry.source == .hooks, entry.state == .working else { continue }
+            guard entry.source == .hooks || entry.source == .mcpConnection else { continue }
+            guard entry.state == .working else { continue }
             guard now.timeIntervalSince(entry.lastEventAt) > Self.staleWorkingThreshold else { continue }
             var updated = entry
             updated.state = .idle

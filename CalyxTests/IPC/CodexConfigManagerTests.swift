@@ -53,6 +53,14 @@ final class CodexConfigManagerTests: XCTestCase {
         XCTAssertTrue(content.contains("[mcp_servers.calyx-ipc]"))
         XCTAssertTrue(content.contains("http://127.0.0.1:41830/mcp"))
         XCTAssertTrue(content.contains("Bearer abc123"))
+        XCTAssertTrue(
+            content.contains("\"X-Calyx-Agent-Kind\" = \"codex\""),
+            "Codex's MCP connection must identify itself so initialize can create the Agents row"
+        )
+        XCTAssertTrue(
+            content.contains("env_http_headers = { \"X-Calyx-Surface-ID\" = \"CALYX_SURFACE_ID\" }"),
+            "Codex must read the surface ID from its own environment; hook child processes sanitize it"
+        )
     }
 
     func test_enableIPC_addsToExistingFile() throws {

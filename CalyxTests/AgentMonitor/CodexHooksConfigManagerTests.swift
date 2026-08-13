@@ -18,6 +18,9 @@
 //    [mcp_servers.other] section, and the user's own [[hooks.SessionStart]]
 //    block verbatim; the managed block is appended at the end
 //  - Re-installing is idempotent (exactly one BEGIN marker)
+//  - Codex-owned [hooks.state] trust/disable records and any other foreign
+//    TOML tables injected inside the comment-delimited Calyx block survive
+//    remove -> reinstall
 //  - removeHooks removes only the managed block, restoring user content;
 //    no-ops when the file doesn't exist; doesn't rewrite the file when
 //    there is no managed block to remove
@@ -71,7 +74,7 @@ final class CodexHooksConfigManagerTests: XCTestCase {
     // MARK: - Helpers
 
     private func writeConfig(_ content: String) {
-        FileManager.default.createFile(atPath: configPath, contents: Data(content.utf8))
+        try! Data(content.utf8).write(to: URL(fileURLWithPath: configPath))
     }
 
     private func readConfig() -> String {
@@ -181,6 +184,8 @@ final class CodexHooksConfigManagerTests: XCTestCase {
 
     func test_installHooks_reinstall_isIdempotent() throws {
         try CodexHooksConfigManager.installHooks(scriptPath: scriptPath, approvalScriptPath: approvalScriptPath, configPath: configPath)
+        let beforeModificationDate = try FileManager.default.attributesOfItem(atPath: configPath)[.modificationDate] as? Date
+        Thread.sleep(forTimeInterval: 0.2)
         try CodexHooksConfigManager.installHooks(scriptPath: scriptPath, approvalScriptPath: approvalScriptPath, configPath: configPath)
 
         let content = readConfig()
@@ -191,6 +196,134 @@ final class CodexHooksConfigManagerTests: XCTestCase {
                        "Reinstalling must not duplicate per-event monitor command entries")
         XCTAssertEqual(occurrences(of: expectedApprovalCommandLine, in: content), 1,
                        "Reinstalling must not duplicate the PreToolUse approval command entry")
+        let afterModificationDate = try FileManager.default.attributesOfItem(atPath: configPath)[.modificationDate] as? Date
+        XCTAssertEqual(beforeModificationDate, afterModificationDate,
+                       "An unchanged reinstall must not rewrite Codex's shared config file")
+    }
+
+    func test_removeThenInstall_preservesCodexHookTrustStateInjectedInsideManagedBlock() throws {
+        try CodexHooksConfigManager.installHooks(
+            scriptPath: scriptPath,
+            approvalScriptPath: approvalScriptPath,
+            configPath: configPath
+        )
+
+        // Codex persists both trust and per-hook disablement in config.toml.
+        // Its config writer can place that table between Calyx's hook entries,
+        // which means comment markers alone do not prove every enclosed line
+        // belongs to Calyx.
+        let trustedHash = "sha256:" + String(repeating: "a", count: 64)
+        let stateKey = "\(configPath!):session_start:0:0"
+        let codexState = """
+        [hooks.state]
+
+        [hooks.state."\(stateKey)"]
+        trusted_hash = "\(trustedHash)"
+        disabled = true
+        """
+        let installed = readConfig()
+        let withCodexState = installed.replacingOccurrences(
+            of: Self.endLine,
+            with: codexState + "\n" + Self.endLine
+        )
+        XCTAssertNotEqual(installed, withCodexState, "Precondition: trust state must be injected inside the markers")
+        writeConfig(withCodexState)
+
+        try CodexHooksConfigManager.removeHooks(configPath: configPath)
+
+        let disabled = readConfig()
+        XCTAssertFalse(disabled.contains(Self.beginLine))
+        XCTAssertFalse(disabled.contains(expectedCommandLine))
+        XCTAssertTrue(disabled.contains("[hooks.state]"),
+                      "Disabling Calyx IPC must not delete Codex-owned hook state")
+        XCTAssertTrue(disabled.contains("[hooks.state.\"\(stateKey)\"]"))
+        XCTAssertTrue(disabled.contains("trusted_hash = \"\(trustedHash)\""),
+                      "A previously reviewed hook must remain trusted across disable")
+        XCTAssertTrue(disabled.contains("disabled = true"),
+                      "A user's per-hook disabled choice must remain intact too")
+
+        try CodexHooksConfigManager.installHooks(
+            scriptPath: scriptPath,
+            approvalScriptPath: approvalScriptPath,
+            configPath: configPath
+        )
+
+        let reinstalled = readConfig()
+        XCTAssertEqual(occurrences(of: "trusted_hash = \"\(trustedHash)\"", in: reinstalled), 1)
+        XCTAssertEqual(occurrences(of: "disabled = true", in: reinstalled), 1)
+        XCTAssertEqual(occurrences(of: Self.beginLine, in: reinstalled), 1)
+        XCTAssertEqual(occurrences(of: expectedCommandLine, in: reinstalled), Self.expectedEvents.count)
+
+        let stateRange = reinstalled.range(of: "[hooks.state]")
+        let beginRange = reinstalled.range(of: Self.beginLine)
+        XCTAssertNotNil(stateRange)
+        XCTAssertNotNil(beginRange)
+        if let stateRange, let beginRange {
+            XCTAssertLessThan(stateRange.lowerBound, beginRange.lowerBound,
+                              "Preserved Codex state must be moved outside Calyx's deletable block")
+        }
+    }
+
+    func test_removeThenInstall_preservesForeignTOMLTableInjectedInsideManagedBlock() throws {
+        try CodexHooksConfigManager.installHooks(
+            scriptPath: scriptPath,
+            approvalScriptPath: approvalScriptPath,
+            configPath: configPath
+        )
+
+        // Codex's config writer is free to append another top-level table
+        // while the final active table happens to be inside Calyx's comment
+        // markers. Comments have no ownership semantics in TOML, so Calyx
+        // must retain every table it cannot positively identify as its own.
+        let foreignTable = """
+        [shell_environment_policy.set]
+        USER_OWNED_SETTING = "preserve-me"
+        """
+        let approvalEntry = """
+        [[hooks.PreToolUse]]
+        [[hooks.PreToolUse.hooks]]
+        type = "command"
+        \(expectedApprovalCommandLine)
+        timeout = 600
+        """
+        let installed = readConfig()
+        let withForeignTable = installed.replacingOccurrences(
+            of: approvalEntry,
+            with: foreignTable + "\n" + approvalEntry
+        )
+        XCTAssertNotEqual(installed, withForeignTable,
+                          "Precondition: foreign table must be injected inside the markers")
+        writeConfig(withForeignTable)
+
+        try CodexHooksConfigManager.removeHooks(configPath: configPath)
+
+        let disabled = readConfig()
+        XCTAssertFalse(disabled.contains(Self.beginLine))
+        XCTAssertFalse(disabled.contains(expectedCommandLine))
+        XCTAssertTrue(disabled.contains("[shell_environment_policy.set]"),
+                      "Disabling Calyx IPC must not delete an unrelated TOML table")
+        XCTAssertTrue(disabled.contains("USER_OWNED_SETTING = \"preserve-me\""),
+                      "The complete foreign table body must remain verbatim")
+
+        try CodexHooksConfigManager.installHooks(
+            scriptPath: scriptPath,
+            approvalScriptPath: approvalScriptPath,
+            configPath: configPath
+        )
+
+        let reinstalled = readConfig()
+        XCTAssertEqual(occurrences(of: "[shell_environment_policy.set]", in: reinstalled), 1)
+        XCTAssertEqual(occurrences(of: "USER_OWNED_SETTING = \"preserve-me\"", in: reinstalled), 1)
+        XCTAssertEqual(occurrences(of: Self.beginLine, in: reinstalled), 1)
+
+        let foreignRange = reinstalled.range(of: "[shell_environment_policy.set]")
+        let beginRange = reinstalled.range(of: Self.beginLine)
+        XCTAssertNotNil(foreignRange)
+        XCTAssertNotNil(beginRange)
+        if let foreignRange, let beginRange {
+            XCTAssertLessThan(foreignRange.lowerBound, beginRange.lowerBound,
+                              "Preserved foreign tables must move outside Calyx's deletable block")
+        }
     }
 
     // MARK: - removeHooks

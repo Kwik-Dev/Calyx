@@ -13,8 +13,11 @@
 // `HermesConfigManager`'s YAML block, the whole thing is wrapped in a
 // single BEGIN/END comment span that's always appended at EOF (TOML has no
 // "insert at top" primitive either — a leading array-of-tables would swallow
-// any of the user's own un-headered root keys that follow it) and replaced
-// wholesale on reinstall.
+// any of the user's own un-headered root keys that follow it). Codex may insert
+// its own tables between those comment markers (comments do not establish
+// ownership in TOML); replacement therefore extracts every table that cannot
+// be positively identified as one of Calyx's hook entries before removing the
+// Calyx-owned definitions.
 
 import Foundation
 
@@ -89,12 +92,16 @@ struct CodexHooksConfigManager: Sendable {
         // BEGIN, if present) so reinstalling never duplicates it.
         let (stripped, _) = removingManagedBlock(from: normalized)
 
-        var result = stripped
-        if !result.isEmpty {
-            if !result.hasSuffix("\n") { result += "\n" }
-            if !result.hasSuffix("\n\n") { result += "\n" }
-        }
-        result += managedBlock(scriptPath: scriptPath, approvalScriptPath: approvalScriptPath) + "\n"
+        let result = appendingSection(
+            managedBlock(scriptPath: scriptPath, approvalScriptPath: approvalScriptPath),
+            to: stripped
+        )
+
+        // This config is shared with Codex itself. Avoid an atomic replace
+        // when the desired bytes are already present: besides needless file
+        // churn, rewriting an externally-owned config widens the race window
+        // with Codex persisting hook trust or a user's /hooks changes.
+        guard result != normalized else { return }
 
         guard let data = result.data(using: .utf8) else {
             throw CodexHooksConfigError.writeFailed("UTF-8 encoding failed")
@@ -186,8 +193,10 @@ struct CodexHooksConfigManager: Sendable {
 
     /// Removes Calyx's managed block (BEGIN line through END line
     /// inclusive, plus one immediately-preceding blank line if present) from
-    /// `content`. Returns the resulting content and whether a block was
-    /// found and removed.
+    /// `content`. Any TOML table inside the comment span that is not positively
+    /// identified as one of Calyx's generated hook entries is moved outside it
+    /// rather than deleted. Returns the resulting content and whether a block
+    /// was found and removed.
     ///
     /// Self-heals an orphan BEGIN marker (no matching END — e.g. left by a
     /// crash mid-write, or a file hand-edited after a prior install)
@@ -219,12 +228,92 @@ struct CodexHooksConfigManager: Sendable {
             removeEnd = lastRecognized
         }
 
+        let preservedForeignTables = foreignTableLines(in: lines[beginIndex...removeEnd])
+
         var removeStart = beginIndex
         if removeStart > 0, lines[removeStart - 1].isEmpty {
             removeStart -= 1
         }
         lines.removeSubrange(removeStart...removeEnd)
-        return (lines.joined(separator: "\n"), true)
+        let stripped = lines.joined(separator: "\n")
+        guard !preservedForeignTables.isEmpty else { return (stripped, true) }
+        return (appendingSection(preservedForeignTables.joined(separator: "\n"), to: stripped), true)
+    }
+
+    /// Extracts complete foreign TOML table chunks from a complete managed
+    /// span. A chunk is Calyx-owned only when an exact `[[hooks.<Event>]]` /
+    /// `[[hooks.<Event>.hooks]]` pair is present and the child chunk's command
+    /// references one of Calyx's installed hook scripts. Everything else is
+    /// external state, even when Codex happened to serialize it between our
+    /// BEGIN/END comments, and is retained verbatim in its original order.
+    private static func foreignTableLines(in lines: ArraySlice<String>) -> [String] {
+        let blockLines = Array(lines)
+        let contentEnd = blockLines.firstIndex(of: endLine) ?? blockLines.endIndex
+        let headerIndices = blockLines[..<contentEnd].indices.filter {
+            isTOMLTableHeader(blockLines[$0].trimmingCharacters(in: .whitespaces))
+        }
+
+        struct TableChunk {
+            let header: String
+            let lines: [String]
+        }
+
+        let chunks: [TableChunk] = headerIndices.enumerated().map { offset, start in
+            let end = offset + 1 < headerIndices.count ? headerIndices[offset + 1] : contentEnd
+            return TableChunk(
+                header: blockLines[start].trimmingCharacters(in: .whitespaces),
+                lines: Array(blockLines[start..<end])
+            )
+        }
+
+        var ownedChunkIndices: Set<Int> = []
+        for index in chunks.indices.dropLast() {
+            guard let event = calyxHookEvent(fromParentHeader: chunks[index].header),
+                  chunks[index + 1].header == "[[hooks.\(event).hooks]]",
+                  chunkReferencesCalyxHookScript(chunks[index + 1].lines) else {
+                continue
+            }
+            ownedChunkIndices.insert(index)
+            ownedChunkIndices.insert(index + 1)
+        }
+
+        var result = chunks.enumerated().flatMap { index, chunk in
+            ownedChunkIndices.contains(index) ? [] : chunk.lines
+        }
+        while result.first?.isEmpty == true { result.removeFirst() }
+        while result.last?.isEmpty == true { result.removeLast() }
+        return result
+    }
+
+    private static func calyxHookEvent(fromParentHeader header: String) -> String? {
+        targetEvents.first { header == "[[hooks.\($0)]]" }
+    }
+
+    private static func chunkReferencesCalyxHookScript(_ lines: [String]) -> Bool {
+        lines.contains { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            return trimmed.hasPrefix("command")
+                && (trimmed.contains(AgentHookScript.fileName)
+                    || trimmed.contains(ApprovalHookScript.fileName))
+        }
+    }
+
+    private static func isTOMLTableHeader(_ line: String) -> Bool {
+        line.hasPrefix("[") && line.hasSuffix("]")
+    }
+
+    /// Appends a TOML section after exactly the same minimum separator used
+    /// for the managed block. Keeping this in one helper ensures extracted
+    /// Codex state and freshly generated Calyx hooks are always valid sibling
+    /// tables, never accidentally joined onto the preceding value line.
+    private static func appendingSection(_ section: String, to content: String) -> String {
+        var result = content
+        if !result.isEmpty {
+            if !result.hasSuffix("\n") { result += "\n" }
+            if !result.hasSuffix("\n\n") { result += "\n" }
+        }
+        result += section + "\n"
+        return result
     }
 
     /// Whether `line` looks like part of Calyx's own generated managed-block

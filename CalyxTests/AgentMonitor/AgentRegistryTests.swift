@@ -35,6 +35,73 @@ final class AgentRegistryTests: XCTestCase {
         AgentEvent(hookEventName: name, sessionID: sessionID, cwd: cwd, message: message)
     }
 
+    // MARK: - MCP connection presence
+
+    func test_mcpConnection_registersIdleCodexEntry() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.codexKind)
+
+        let entry = registry.entries[surfaceID]
+        XCTAssertEqual(entry?.source, .mcpConnection)
+        XCTAssertEqual(entry?.kind, AgentEntry.codexKind)
+        XCTAssertEqual(entry?.state, .idle)
+        XCTAssertNil(entry?.sessionID)
+    }
+
+    func test_mcpConnection_screenClassificationUpdatesStateWithoutRetiringPresence() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.codexKind)
+
+        registry.handleScreenClassification(surfaceID: surfaceID, state: .working)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .working)
+
+        for _ in 0..<6 {
+            registry.handleScreenClassification(surfaceID: surfaceID, state: nil)
+        }
+
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle)
+        XCTAssertEqual(
+            registry.entries[surfaceID]?.source,
+            .mcpConnection,
+            "An initialized MCP connection is stronger presence evidence than an unrecognized idle screen"
+        )
+    }
+
+    func test_hookEventPromotesMCPConnectionEntryToAuthoritativeHooksEntry() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.codexKind)
+
+        registry.handleHookEvent(
+            event("SessionStart", sessionID: "codex-session", cwd: "/Users/dev/repo"),
+            surfaceID: surfaceID,
+            kind: AgentEntry.codexKind
+        )
+
+        let entry = registry.entries[surfaceID]
+        XCTAssertEqual(entry?.source, .hooks)
+        XCTAssertEqual(entry?.sessionID, "codex-session")
+        XCTAssertEqual(entry?.cwd, "/Users/dev/repo")
+    }
+
+    func test_repeatedMCPConnectionDoesNotDowngradeSameAgentHooksEntry() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(
+            event("SessionStart", sessionID: "codex-session"),
+            surfaceID: surfaceID,
+            kind: AgentEntry.codexKind
+        )
+
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.codexKind)
+
+        XCTAssertEqual(registry.entries[surfaceID]?.source, .hooks)
+        XCTAssertEqual(registry.entries[surfaceID]?.sessionID, "codex-session")
+    }
+
     // MARK: - SessionStart
 
     func test_sessionStart_newSurface_registersIdleWithSessionAndCwd() {

@@ -51,7 +51,8 @@ struct CodexConfigManager: Sendable {
         let section = """
         [mcp_servers.calyx-ipc]
         url = "http://127.0.0.1:\(port)/mcp"
-        http_headers = { "Authorization" = "Bearer \(token)" }
+        http_headers = { "Authorization" = "Bearer \(token)", "X-Calyx-Agent-Kind" = "\(AgentEntry.codexKind)" }
+        env_http_headers = { "X-Calyx-Surface-ID" = "CALYX_SURFACE_ID" }
         """
 
         // Append with proper spacing

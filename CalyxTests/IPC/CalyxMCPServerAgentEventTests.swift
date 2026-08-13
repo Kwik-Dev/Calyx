@@ -446,10 +446,16 @@ final class CalyxMCPServerAgentEventTests: XCTestCase {
     /// Builds a `POST /mcp` request carrying the given bearer token and
     /// (optionally) an `X-Calyx-Surface-ID` header, mirroring
     /// `agentEventRequest`'s shape for `/agent-event`.
-    private func mcpRequest(token: String?, surfaceIDHeader: String?, body: Data) -> HTTPRequest {
+    private func mcpRequest(
+        token: String?,
+        surfaceIDHeader: String?,
+        body: Data,
+        kindHeader: String? = nil
+    ) -> HTTPRequest {
         var headers: [String: String] = [:]
         if let token { headers["Authorization"] = "Bearer \(token)" }
         if let surfaceIDHeader { headers["X-Calyx-Surface-ID"] = surfaceIDHeader }
+        if let kindHeader { headers["X-Calyx-Agent-Kind"] = kindHeader }
         return HTTPRequest(method: "POST", path: "/mcp", headers: headers, body: body)
     }
 
@@ -505,6 +511,44 @@ final class CalyxMCPServerAgentEventTests: XCTestCase {
             JSONSerialization.jsonObject(with: Data(try toolResultText(body).utf8)) as? [String: Any]
         )
         return try XCTUnwrap(json["peerId"] as? String)
+    }
+
+    // MARK: - MCP-backed Codex presence
+
+    func test_initializeWithExplicitCodexKind_createsMCPConnectionAgentEntry() async {
+        let registry = AgentRegistry()
+        server.agentRegistry = registry
+        let surfaceID = UUID()
+
+        let response = await server.route(request: mcpRequest(
+            token: testToken,
+            surfaceIDHeader: surfaceID.uuidString,
+            body: initializeRequestBody(id: 1),
+            kindHeader: AgentEntry.codexKind
+        ))
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(registry.entries[surfaceID]?.source, .mcpConnection)
+        XCTAssertEqual(registry.entries[surfaceID]?.kind, AgentEntry.codexKind)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle)
+    }
+
+    func test_initializeWithoutExplicitAgentKind_doesNotCreateAgentEntry() async {
+        let registry = AgentRegistry()
+        server.agentRegistry = registry
+        let surfaceID = UUID()
+
+        let response = await server.route(request: mcpRequest(
+            token: testToken,
+            surfaceIDHeader: surfaceID.uuidString,
+            body: initializeRequestBody(id: 1)
+        ))
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertNil(
+            registry.entries[surfaceID],
+            "A surface-bound generic MCP client must not be mistaken for an agent without an explicit kind header"
+        )
     }
 
     // MARK: - User-scenario reproduction

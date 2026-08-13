@@ -15,7 +15,7 @@ enum AgentState: Sendable, Equatable {
 // MARK: - AgentSource
 
 enum AgentSource: Sendable, Equatable {
-    case hooks, titleHeuristic
+    case hooks, mcpConnection, titleHeuristic
     /// A row sourced from an external agent runtime (herdr) rather than
     /// Calyx's own hooks/title-heuristic pipeline. Stored in
     /// `AgentRegistry.externalEntries`, a separate store from `entries`
@@ -47,8 +47,9 @@ struct AgentEntry: Identifiable, Sendable, Equatable {
     /// necessarily a Calyx `SurfaceRegistry` UUID, so this is a
     /// separate, optional pointer to a Calyx-hosted surface that
     /// represents the same agent (if one exists). `nil` for every
-    /// `.hooks`/`.titleHeuristic` entry, whose own `surfaceID` already
-    /// IS the surface to focus. Defaulted so every existing call site
+    /// Native (`.hooks`/`.mcpConnection`/`.titleHeuristic`) entries, whose
+    /// own `surfaceID` already IS the surface to focus. Defaulted so every
+    /// existing call site
     /// is unaffected.
     var focusSurfaceID: UUID? = nil
 }
