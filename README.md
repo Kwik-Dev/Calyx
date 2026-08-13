@@ -1,54 +1,91 @@
 # Calyx
 
-A macOS 26+ native terminal application built on [libghostty](https://github.com/ghostty-org/ghostty) with Liquid Glass UI.
+**Run more coding agents without babysitting more terminals.**
 
-**Documentation**: [help.getcalyx.app](https://help.getcalyx.app)
+Calyx is a native macOS terminal for running and supervising coding agents (Claude Code, Codex, OpenCode, and Hermes...) in parallel. It keeps every agent visible and controllable with one approval inbox, live status, persistent sessions, agent-readable command history, and inline diff review -- without replacing the terminal workflow you already use.
 
-**Contributing**: Bug reports and feature ideas are welcome as issues; external pull requests are not accepted. See [CONTRIBUTING.md](CONTRIBUTING.md)
+[Documentation](https://help.getcalyx.app) · [Latest release](https://github.com/yuuichieguchi/Calyx/releases/latest) · [MIT license](LICENSE)
 
-**Demo** (36s) -- three Claude Code agents in parallel, one approval banner, cross-pane command log:
+## Demo
+
+Three Claude Code agents run in parallel while Calyx keeps approvals and command output in one control surface (36s):
 
 https://github.com/user-attachments/assets/a04e1161-e296-4791-9b7c-3ef84d990089
 
-![Calyx Terminal](assets/screenshot.png)
+## Install
+
+### Homebrew
+
+```bash
+brew tap yuuichieguchi/calyx
+brew install --cask calyx
+```
+
+### Manual download
+
+1. Download `Calyx.zip` from the [latest release](https://github.com/yuuichieguchi/Calyx/releases/latest).
+2. Unzip it and move `Calyx.app` to `/Applications`.
+
+Calyx requires macOS 26 Tahoe or later. Direct downloads update through Sparkle; Homebrew installations update with `brew upgrade`.
+
+## Why Calyx
+
+### See which agent needs you
+
+The Agents Sidebar shows every connected agent as working, blocked, idle, or done. Unread badges and click-to-focus navigation replace the loop of checking terminal tabs one by one.
+
+### Approve tool calls from one inbox
+
+Claude Code and Codex permission prompts appear in a shared in-window approval queue. Inspect the exact request, allow or deny it, and move through pending requests without hunting for the pane that raised them. Enable the integration explicitly in Settings; nothing is automatically approved unless you separately opt in.
+
+### Review code without leaving the terminal
+
+Inspect working changes and commit history in the Git sidebar, add comments to individual diff lines, and submit the complete review directly to a Claude Code, Codex, OpenCode, or Hermes pane.
+
+### Give agents a terminal they can understand
+
+Calyx exposes panes, commands, captured output, browser tabs, language servers, and peer agents through MCP and its bundled CLI. Agents can coordinate work, wait for commands to finish, and inspect results instead of relying on sleep timers or copied output.
 
 ## Features
 
-- **libghostty terminal engine** -- Metal GPU-accelerated rendering via Ghostty v1.3.1 submodule
-- **Liquid Glass UI** -- native macOS 26 Tahoe design language with customizable theme color (8 presets + custom hex/color picker; Ghostty preset reads your Ghostty config's background color). Text color adapts automatically: Ghostty preset follows Ghostty's foreground config, other presets switch between white/black based on theme color luminance ([demo video](https://www.youtube.com/watch?v=cUYc7yzI_eM))
-- **Tab Groups** -- 10 color presets, collapsible/expandable sections with chevron toggle, double-click to rename groups or individual tabs, drag-to-reorder tabs in tab bar and sidebar
-- **Split Panes** -- horizontal and vertical splits with directional focus navigation
-- **Command Palette** -- search and execute all operations with `Cmd+Shift+P`
-- **Layout Restore** -- tabs, splits, and working directories auto-saved and restored on restart
-- **Persistent Sessions** -- opt-in daemon-backed sessions (`calyx-session`) that survive quit and crash; the toggle applies only to panes opened after it is enabled; reattach from the Session Browser (`Cmd+Shift+B`); a recovery bar offers the preserved session when auto-restore is skipped or fails; opt-in on-disk history
-- **Remote Sessions** -- persistent sessions on SSH hosts picked from `~/.ssh/config`; one-time daemon deploy via `calyx-session remote-install <host>`
-- **Agent Resume** -- reattached sessions can offer to resume the agent CLI conversation that was running (Settings -> Agents)
-- **herdr integration** -- browse, open, and manage herdr (a separate terminal multiplexer) workspaces as native split-pane tabs from the Session Browser; herdr-hosted agents also show in the Agents Sidebar
-- **Desktop Notifications** -- OSC 9/99/777 support with rate limiting
-- **Browser Integration** -- WKWebView tabs alongside terminal tabs (http/https only, non-persistent storage, popup blocking)
-- **Scrollback Search** -- `Cmd+F` to search terminal scrollback with match highlighting, `Cmd+G`/`Cmd+Shift+G` to navigate matches
-- **Drag and Drop** -- drag files, URLs, or text onto the terminal to insert content (file paths are shell-escaped)
-- **Smooth Scrolling** -- trackpad uses full smooth pixel scrolling via sub-row CALayer transform; notched mouse wheel adds a velocity-based animation for smoother transitions. Togglable in Settings
-- **Native Scrollbar** -- system overlay scrollbar for terminal scrollback
-- **Cursor Click-to-Move** -- click on a prompt line to reposition cursor (requires shell integration)
-- **Git Source Control** -- sidebar Changes view with working changes (staged/unstaged/untracked), commit graph with branch visualization, and inline diff viewer with review comments
-- **Diff Review Comments** -- click the gutter `+` button to add inline comments to diff lines, then Submit Review to send directly to a Claude Code, Codex, OpenCode, or Hermes terminal tab
-([demo video](https://www.youtube.com/watch?v=_O2Lr4oFf4c))
-- **AI Agent IPC** -- MCP server for communication between AI agent instances (Claude Code, Codex CLI, OpenCode, Hermes) across tabs and panes ([demo video](https://www.youtube.com/watch?v=Xty0ad9gGcM))
-- **Agents Sidebar** -- live status view for connected AI agents (Claude Code, Codex, OpenCode, Hermes) with per-agent state (blocked/working/idle/done), unread message badge, last-seen timestamp, and click-to-focus pane
-- **LSP Proxy MCP** -- exposes language server features such as hover, definition, references, rename, and diagnostics to AI agents over the same MCP server as AI Agent IPC. Missing servers can be auto-installed via Settings.
-- **Agent Cockpit** -- MCP tools that let agents drive Calyx: `pane_list`, `pane_split`, `tab_create` run immediately; `pane_run`, `pane_send_keys`, `palette_execute` require per-request approval via an in-window banner (opt-in auto-approve in Settings -> Agents)
-- **Approval Inbox** -- routes Claude Code / Codex tool-permission prompts into the same in-window approval banner across all panes: Allow / Deny per request, Always Allow scoped to one pane or all panes (session-only memory), safe fallback to the agent's own in-pane prompt on timeout; opt-in via Settings -> Agents
-- **Approval Queue Navigation** -- when multiple permission requests are pending, the banner shows prev/next chevrons and an "i / N" position label next to the action buttons; browse the queue and approve or deny any request out of order, and deciding one auto-advances to the nearest remaining request
-- **Command Log** -- records shell commands and their output (zsh/fish shell integration, auto-installed) and exposes `terminal_list_commands`, `terminal_read_output`, `terminal_await_command` MCP tools to agents; secrets (tokens, passwords, API keys) redacted before exposure; records stay in memory only
-- **Scriptable Browser** -- 25 CLI commands for browser automation (like cmux): snapshot, click, fill, eval, screenshot, wait, get-attribute, get-links, get-inputs, is-visible, hover, scroll. No enable step needed. `calyx` CLI bundled in the app
-- **Ghostty config compatibility** -- reads `~/.config/ghostty/config` (most keys hot-reload on save; see Settings for Calyx-managed keys)
-- **Ghostty keybind actions** -- bind Calyx operations to keys in your Ghostty config: `toggle_split_zoom`, `prompt_surface_title` (tab rename), `set_tab_title`, `copy_title_to_clipboard`, `move_tab`, `goto_window`, `close_all_windows`, `toggle_maximize`, `reset_window_size`, `toggle_command_palette`, `check_for_updates`
-- **Compose Overlay** -- floating text editor over the terminal for comfortable multiline input (`Cmd+Shift+E`), useful for writing long commands or AI prompts ([demo video](https://www.youtube.com/watch?v=qhwYnk8adF4))
-- **Quick Terminal** -- system-wide drop-down terminal toggled via global keybind
-- **Clipboard Confirmation** -- prompts before pasting potentially unsafe content (respects Ghostty's `clipboard-paste-protection` setting)
-- **Secure Keyboard Entry** -- prevents other apps from intercepting keystrokes (toggle via app menu)
-- **Auto-update** -- Sparkle-based updates for direct downloads (Homebrew installs use `brew upgrade`)
+### Agent supervision
+
+- **Agents Sidebar** -- live status for Claude Code, Codex, OpenCode, and Hermes, with unread badges, last-seen timestamps, and click-to-focus navigation
+- **Approval Inbox** -- one opt-in queue for Claude Code and Codex permission prompts across every pane, with Allow, Deny, per-pane or global session-scoped approval, and safe fallback to the agent's own prompt
+- **Approval Queue Navigation** -- inspect and decide pending requests in any order, with automatic navigation to the nearest remaining request
+- **Agent Cockpit** -- MCP tools for listing, creating, and splitting panes; commands and keystrokes remain approval-gated unless auto-approve is enabled
+- **Command Log** -- structured commands, working directories, exit status, and captured output exposed to agents through MCP; known secret patterns are redacted before exposure
+
+### Code review and agent coordination
+
+- **Git Source Control** -- working changes, staging state, commit graph, branch visualization, and inline diffs in the sidebar
+- **Diff Review Comments** -- comment on individual lines and submit a complete review directly to an agent pane ([demo video](https://www.youtube.com/watch?v=_O2Lr4oFf4c))
+- **AI Agent IPC** -- built-in MCP messaging lets agents discover and communicate with peers across tabs and panes ([demo video](https://www.youtube.com/watch?v=Xty0ad9gGcM))
+- **LSP Proxy MCP** -- hover, definition, references, rename, diagnostics, and other language-server features for agents; missing servers can be installed from Settings
+
+### Sessions and remote work
+
+- **Persistent Sessions** -- opt-in daemon-backed terminals survive app quit and crashes, with a Session Browser, recovery flow, and optional on-disk history
+- **Remote Sessions** -- deploy `calyx-session` once to an SSH host from `~/.ssh/config`, then browse and reattach to remote persistent sessions
+- **Agent Resume** -- offer to resume the agent CLI conversation associated with a reattached session
+- **Layout Restore** -- restore tabs, splits, and working directories on launch
+- **herdr Integration** -- browse and manage herdr workspaces as native split-pane tabs; herdr-hosted agents also appear in the Agents Sidebar
+
+### Terminal workspace
+
+- **libghostty Engine** -- Metal GPU-accelerated rendering powered by Ghostty v1.3.1
+- **Tab Groups and Split Panes** -- color-coded collapsible groups, tab renaming and reordering, horizontal and vertical splits, directional focus, and split zoom
+- **Command Palette** -- search and run operations with `Cmd+Shift+P`
+- **Ghostty Compatibility** -- read `~/.config/ghostty/config`, hot-reload most settings, and bind Calyx operations through Ghostty keybind actions
+- **Search and Navigation** -- highlighted scrollback search, native overlay scrollbar, smooth trackpad and mouse-wheel scrolling, and prompt-line cursor click-to-move
+- **Input Tools** -- shell-escaped drag and drop, multiline Compose Overlay, clipboard safety confirmation, and Secure Keyboard Entry
+- **Quick Terminal and Notifications** -- a system-wide drop-down terminal plus OSC 9/99/777 desktop notifications
+- **Liquid Glass Appearance** -- macOS 26-native glass UI, eight theme presets, custom colors, and adaptive text color ([demo video](https://www.youtube.com/watch?v=cUYc7yzI_eM))
+
+### Browser automation
+
+- **Browser Tabs** -- non-persistent WKWebView tabs alongside terminal tabs, limited to http and https with popups blocked
+- **Scriptable Browser** -- 25 bundled `calyx browser` commands for accessibility snapshots, clicking, filling, evaluation, screenshots, waits, and inspection
 
 ## Keyboard Shortcuts
 
@@ -172,23 +209,6 @@ The `calyx` CLI binary is bundled inside `Calyx.app/Contents/Resources/bin/`. To
 
 The browser server starts automatically with the app and listens on `localhost:41840`. Connection info is written to `~/.config/calyx/browser.json`.
 
-## Installation
-
-### Homebrew
-
-```bash
-brew tap yuuichieguchi/calyx
-brew install --cask calyx
-```
-
-### Manual
-
-1. Download `Calyx.zip` from the [latest release](https://github.com/yuuichieguchi/Calyx/releases/latest)
-2. Unzip the file
-3. Drag `Calyx.app` into `/Applications`
-
-Direct downloads include automatic update checking via Sparkle. Homebrew installs are updated via `brew upgrade`.
-
 ## Building from Source
 
 ### Prerequisites
@@ -227,6 +247,10 @@ Calyx uses AppKit for window, tab, and focus management with SwiftUI for view re
 - Action dispatch via `NotificationCenter`
 
 **Tech stack**: Swift 6.2, AppKit, SwiftUI, libghostty (Metal), XcodeGen
+
+## Contributing
+
+Bug reports and feature ideas are welcome as issues. External pull requests are not accepted. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Known Limitations
 
