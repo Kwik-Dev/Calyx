@@ -64,4 +64,33 @@ struct DiffTabLifecycleTests {
         let d = DiffSource.commit(hash: "abc", path: "foo.swift", workDir: "/repo")
         #expect(a != d)
     }
+
+    @Test func gitStaleRefreshMessageLifecycle() {
+        let session = WindowSession()
+        #expect(session.isGitRefreshing == false)
+        #expect(session.gitStaleRefreshMessage == nil)
+
+        session.gitChangesState = .loaded
+
+        // A quiet refresh failure while content is already loaded must keep
+        // that content on screen and only surface a warning message.
+        let failureMessage = "git status failed: exit 128"
+        let outcome = GitRefreshFailureOutcome.resolve(
+            current: session.gitChangesState,
+            isNotARepository: false,
+            message: failureMessage
+        )
+        #expect(outcome == .keepStale(message: failureMessage))
+
+        session.gitStaleRefreshMessage = failureMessage
+        #expect(session.gitChangesState == .loaded)
+        #expect(session.gitStaleRefreshMessage == failureMessage)
+
+        // The next successful refresh clears the warning without disturbing
+        // the loaded state.
+        session.gitChangesState = .loaded
+        session.gitStaleRefreshMessage = nil
+        #expect(session.gitChangesState == .loaded)
+        #expect(session.gitStaleRefreshMessage == nil)
+    }
 }

@@ -27,6 +27,8 @@ class WindowSession: Identifiable {
     var gitCommits: [GitCommit] = []
     var expandedCommitIDs: Set<String> = []
     var commitFiles: [String: [CommitFileEntry]] = [:]
+    var isGitRefreshing: Bool = false
+    var gitStaleRefreshMessage: String?
     var repoRoots: [String: String] = [:]
     var sidebarWidth: CGFloat = SidebarLayout.defaultWidth
 

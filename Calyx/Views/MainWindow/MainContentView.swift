@@ -34,6 +34,8 @@ struct MainContentView: View {
     var gitCommits: [GitCommit] = []
     var expandedCommitIDs: Set<String> = []
     var commitFiles: [String: [CommitFileEntry]] = [:]
+    var isGitRefreshing: Bool = false
+    var gitStaleRefreshMessage: String?
 
     var onTabSelected: ((UUID) -> Void)?
     var onGroupSelected: ((UUID) -> Void)?
@@ -139,6 +141,8 @@ struct MainContentView: View {
                         gitCommits: gitCommits,
                         expandedCommitIDs: expandedCommitIDs,
                         commitFiles: commitFiles,
+                        isGitRefreshing: isGitRefreshing,
+                        gitStaleRefreshMessage: gitStaleRefreshMessage,
                         onGroupSelected: onGroupSelected,
                         onTabSelected: onTabSelected,
                         onNewGroup: onNewGroup,
