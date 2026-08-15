@@ -11,14 +11,22 @@
 // `.removeExternalEntry`'s own "never touches entries" contract.
 //
 // `HerdrIntegrationCoordinator` (the herdr integration's lifecycle owner,
-// HerdrIntegrationCoordinator.swift) is this type's only intended
-// caller: it forwards every `session.snapshot()` result to
+// HerdrIntegrationCoordinator.swift) is this type's main caller: it
+// forwards every `session.snapshot()` result to
 // `applySnapshot(_:socketPath:)`, every pushed `HerdrEvent` to
 // `apply(event:socketPath:)`, and calls `connectionLost()` when its
 // subscribed connection ends. This type itself never touches a
 // transport/session/socket -- it is a pure state translator, which is
 // exactly why it is injected into the coordinator as a concrete
 // instance rather than needing its own transport-avoidance seam.
+//
+// The other entry point is `HerdrPaneBridgeObserver` conformance
+// (HerdrPaneRegistry.swift): once wired via
+// `paneRegistry.setBridgeObserver(mirror)`, `HerdrPaneRegistry` itself
+// calls `herdrPaneBridgeDidChange(ref:)` directly, independent of any
+// snapshot/event from the coordinator above -- see FOCUS SURFACE
+// RESOLUTION below for what that callback does and why both mechanisms
+// exist side by side.
 //
 // MAPPING RULES (frozen by this file's test suite):
 //
@@ -107,8 +115,33 @@
 //     doesn't decode strongly, PLUS any genuinely unrecognized type --
 //     see HerdrEvent.swift's own header) is a pure no-op here.
 //
-//   - `focusSurfaceID` stays `nil` on every entry this file produces --
-//     this type never resolves a herdr pane to a Calyx-hosted surface.
+//   - `focusSurfaceID` (FOCUS SURFACE RESOLUTION) is resolved fresh, at
+//     every one of this file's five row-write sites, from
+//     `paneRegistry.surfaceID(forPaneID:socketPath:)` for that row's own
+//     pane: `nil` when the pane registry has no bridge entry for it
+//     (true of every unbridged herdr pane), the registered surfaceID
+//     when it does. Re-resolved EVERY time a write site runs, not only
+//     on row creation, so a row written before its own pane was bridged
+//     self-heals to a non-nil `focusSurfaceID` the next time that site
+//     runs. Separately, `HerdrPaneBridgeObserver` conformance (this
+//     file's header above) pushes the identical resolution into an
+//     already-existing row the moment `HerdrPaneRegistry.register`/
+//     `.unregister` changes that row's own pane's bridge state, with no
+//     snapshot/event needed at all. The two mechanisms are deliberately
+//     redundant: `herdrPaneBridgeDidChange` below never CREATES a row --
+//     it only updates one that already exists (see its own doc comment)
+//     -- so a pane bridged before herdr has connected and before this
+//     file has ever written ANY row for it can only be picked up once
+//     that row is first written, which is exactly what upsert-time
+//     resolution does. The observer's own value is the complementary
+//     case, for a row that already exists: it gives that row an
+//     immediate `focusSurfaceID` refresh the moment the bridge changes,
+//     without waiting on the next herdr snapshot/event to write that row
+//     again. The observer callback only ever UPDATES a row that
+//     already exists (matched by `HerdrStableID.make(socketPath:
+//     paneID:)` from the changed `HerdrPaneRef`), only when
+//     `focusSurfaceID` actually changes -- it never creates a row, and
+//     never touches `lastEventAt` or `ownedIDsBySocketPath`.
 //
 //   - `applySnapshot(_:socketPath:)` also REMOVES any external entry
 //     this instance previously created for `socketPath` that is no
@@ -126,9 +159,10 @@
 import Foundation
 
 @MainActor
-final class HerdrAgentMirror {
+final class HerdrAgentMirror: HerdrPaneBridgeObserver {
 
     private let registry: AgentRegistry
+    private let paneRegistry: HerdrPaneRegistry
 
     /// External-entry ids this instance itself created/updated, keyed
     /// by the owning socketPath -- see this file's header for why
@@ -136,8 +170,9 @@ final class HerdrAgentMirror {
     /// pane id is still included.
     private var ownedIDsBySocketPath: [String: Set<UUID>] = [:]
 
-    init(registry: AgentRegistry = .shared) {
+    init(registry: AgentRegistry = .shared, paneRegistry: HerdrPaneRegistry = .shared) {
         self.registry = registry
+        self.paneRegistry = paneRegistry
     }
 
     /// Applies a full `session.snapshot()` result: upserts a row for
@@ -165,6 +200,7 @@ final class HerdrAgentMirror {
                 updated.state = .done
                 updated.cwd = record.cwd ?? existing.cwd
                 updated.lastEventAt = Date()
+                updated.focusSurfaceID = paneRegistry.surfaceID(forPaneID: record.paneID, socketPath: socketPath)
                 registry.upsertExternalEntry(updated)
                 owned.insert(id)
                 continue
@@ -195,7 +231,8 @@ final class HerdrAgentMirror {
                 state: state,
                 cwd: cwd,
                 kind: kind,
-                lastEventAt: Date()
+                lastEventAt: Date(),
+                focusSurfaceID: paneRegistry.surfaceID(forPaneID: record.paneID, socketPath: socketPath)
             ))
             owned.insert(id)
         }
@@ -242,6 +279,29 @@ final class HerdrAgentMirror {
         ownedIDsBySocketPath.removeAll()
     }
 
+    // MARK: - HerdrPaneBridgeObserver
+
+    /// `HerdrPaneBridgeObserver` conformance -- see this file's header
+    /// "FOCUS SURFACE RESOLUTION". Re-resolves `focusSurfaceID` for
+    /// `ref`'s own pane, matched by `HerdrStableID.make(socketPath:
+    /// paneID:)` directly against `registry.externalEntries` (the shared
+    /// external-entry store) -- deliberately does NOT consult
+    /// `ownedIDsBySocketPath` the way this file's other four row-write
+    /// sites do, since that bookkeeping is irrelevant to what this
+    /// callback is allowed to do: it only ever CORRECTS an existing
+    /// row's `focusSurfaceID` (and only when the resolved value actually
+    /// differs from the row's current one), never creates, removes, or
+    /// re-owns a row. Never touches `lastEventAt` either -- this is a
+    /// pure `focusSurfaceID` correction, not a state update.
+    func herdrPaneBridgeDidChange(ref: HerdrPaneRef) {
+        let id = HerdrStableID.make(socketPath: ref.socketPath, paneID: ref.paneID)
+        guard var existing = registry.externalEntries[id] else { return }
+        let resolved = paneRegistry.surfaceID(forPaneID: ref.paneID, socketPath: ref.socketPath)
+        guard existing.focusSurfaceID != resolved else { return }
+        existing.focusSurfaceID = resolved
+        registry.upsertExternalEntry(existing)
+    }
+
     // MARK: - paneClosed / paneExited
 
     /// `apply(event:socketPath:)`'s real work for `.paneClosed`/
@@ -282,6 +342,7 @@ final class HerdrAgentMirror {
             var updated = existing
             updated.state = .done
             updated.lastEventAt = Date()
+            updated.focusSurfaceID = paneRegistry.surfaceID(forPaneID: changed.paneID, socketPath: socketPath)
             registry.upsertExternalEntry(updated)
             var owned = ownedIDsBySocketPath[socketPath] ?? []
             owned.insert(id)
@@ -302,6 +363,7 @@ final class HerdrAgentMirror {
                 updated.kind = Self.mapKind(agent)
             }
             updated.lastEventAt = Date()
+            updated.focusSurfaceID = paneRegistry.surfaceID(forPaneID: changed.paneID, socketPath: socketPath)
             registry.upsertExternalEntry(updated)
         } else {
             registry.upsertExternalEntry(AgentEntry(
@@ -311,7 +373,8 @@ final class HerdrAgentMirror {
                 state: state,
                 cwd: nil,
                 kind: Self.mapKind(changed.agent),
-                lastEventAt: Date()
+                lastEventAt: Date(),
+                focusSurfaceID: paneRegistry.surfaceID(forPaneID: changed.paneID, socketPath: socketPath)
             ))
         }
 

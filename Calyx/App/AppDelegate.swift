@@ -15,18 +15,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var pendingURLs: [URL] = []
     private var quickTerminalController: QuickTerminalController?
 
-    /// Herdr integration lifecycle owner -- see `HerdrIntegrationCoordinator.swift`'s
-    /// own header. Eagerly constructed: `HerdrIntegrationCoordinator.init`
-    /// does no I/O of its own and starts no timer
+    /// Herdr-to-`AgentRegistry` state translator -- see
+    /// `HerdrAgentMirror.swift`'s own header. Hoisted to its own stored
+    /// property (rather than inlined into `herdrIntegrationCoordinator`'s
+    /// own init below) so `HerdrPaneRegistry.shared.setBridgeObserver`
+    /// (`applicationDidFinishLaunching`) can wire the IDENTICAL instance
+    /// `herdrIntegrationCoordinator` forwards every snapshot/event to as
+    /// its `HerdrPaneBridgeObserver` -- two independently-constructed
+    /// mirrors would each only ever see half of what herdr reports.
+    private let herdrAgentMirror = HerdrAgentMirror(registry: .shared)
+
+    /// Herdr integration lifecycle owner -- see
+    /// `HerdrIntegrationCoordinator.swift`'s own header. `lazy`: a
+    /// stored property initializer cannot reference another stored
+    /// property, and this one's own `mirror:` argument needs
+    /// `herdrAgentMirror` above. Safe to defer construction to first
+    /// access (unlike `herdrTabCoordinator` below -- see that
+    /// property's own doc comment for why a `lazy var` THERE would be
+    /// unsafe) because `HerdrIntegrationCoordinator.init` does no I/O of
+    /// its own and starts no timer
     /// (`HerdrIntegrationCoordinatorTests.test_neverCallingStart_doesNoWork_noBackgroundTimer`
-    /// pins that), so constructing this instance up front is
+    /// pins that), so this property being read for the first time is
     /// behaviorally inert until `startHerdrIntegrationIfNeeded()` below
     /// actually calls `start()`.
-    private let herdrIntegrationCoordinator = HerdrIntegrationCoordinator(
+    private lazy var herdrIntegrationCoordinator = HerdrIntegrationCoordinator(
         resolver: HerdrBinaryResolver(),
         discovery: HerdrSessionDiscovery(),
         transportFactory: LiveHerdrTransportFactory(),
-        mirror: HerdrAgentMirror(registry: .shared)
+        mirror: herdrAgentMirror
     )
 
     /// Shared across `herdrTabCoordinator`'s own lazy
@@ -777,6 +793,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // .calyxSurfaceDestroyed self-pruning (HerdrPaneRegistry.swift's
         // own header) must be armed before that can happen.
         HerdrPaneRegistry.shared.startObserving()
+        // Wired here, before restoreSession() below, so no
+        // HerdrPaneRegistry.shared.register call (including
+        // AppDelegate.createSurfaceWithPwd's own restore-time call) ever
+        // runs before herdrAgentMirror is listening: any row it later
+        // creates or already owns for that pane gets its focusSurfaceID
+        // pushed the moment a bridge changes, on top of the upsert-time
+        // resolution HerdrAgentMirror.swift's own header already
+        // documents (which is what actually self-heals a row created
+        // before this launch's herdr connection is even established).
+        HerdrPaneRegistry.shared.setBridgeObserver(herdrAgentMirror)
         startHerdrIntegrationIfNeeded()
 
         browserTabBroker.appDelegate = self

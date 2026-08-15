@@ -269,7 +269,7 @@ enum AgentSidebarGate {
     }
 }
 
-// MARK: - Row Focus Target (C2)
+// MARK: - Row Focus Target
 
 /// Pure resolution of the surface a row's click should focus, extracted
 /// from `AgentRowView.body` so it's directly testable without mounting
@@ -292,8 +292,9 @@ enum AgentRowFocusTarget {
     ///      IS a real `SurfaceRegistry` id (that's where those sources
     ///      get it from) and is always resolvable.
     ///   3. Otherwise -- an `.external` row with no `focusSurfaceID` (true
-    ///     of every herdr row, which never resolves one
-    ///     -- see `HerdrAgentMirror.swift`'s header) -- there is nothing
+    ///     of every UNBRIDGED herdr row: `HerdrAgentMirror` only
+    ///     resolves one for a pane the pane registry actually bridges --
+    ///     see `HerdrAgentMirror.swift`'s header) -- there is nothing
     ///     valid to focus.
     static func resolve(source: AgentSource, surfaceID: UUID, focusSurfaceID: UUID?) -> UUID? {
         if let focusSurfaceID { return focusSurfaceID }
@@ -345,7 +346,7 @@ private struct AgentRowView: View {
 
     /// The surface this row's click should focus, per
     /// `AgentRowFocusTarget.resolve`'s doc comment -- `nil` for a row
-    /// with no resolvable target (every herdr row).
+    /// with no resolvable target (an unbridged herdr row).
     private var focusTarget: UUID? {
         AgentRowFocusTarget.resolve(source: entry.source, surfaceID: entry.surfaceID, focusSurfaceID: entry.focusSurfaceID)
     }
@@ -353,20 +354,25 @@ private struct AgentRowView: View {
     var body: some View {
         // Presentation choice for a row with no resolvable focus
         // target (`focusTarget == nil`) -- rather than keeping the tap
-        // gesture wired to `entry.surfaceID` (a synthetic herdr id no
-        // `SurfaceRegistry` knows, making the click a silent no-op today),
-        // the row is rendered as plain, non-interactive content: no
-        // `.onTapGesture` and no hover highlight (`isHovering` is only
-        // ever flipped by the `.onAssumeInsideHover` attached in the
-        // interactive branch below, so it stays permanently `false` here
-        // and the background fill in `rowContent` never appears). This
-        // was chosen as the least surprising option over, say, a visibly
-        // "disabled" treatment (dimmed/greyed row) -- the row still needs
-        // to convey real, current agent state at a glance; only the
-        // click AFFORDANCE (hover feedback inviting a tap) is removed,
-        // matching how every other purely-informational element in this
-        // sidebar (e.g. `hooksIssuesBanner`) already has no hover/tap
-        // treatment at all.
+        // gesture wired to `entry.surfaceID` (for an UNBRIDGED herdr
+        // row, a synthetic id no `SurfaceRegistry` knows, so the click
+        // would be a silent no-op), the row is rendered as plain,
+        // non-interactive content: no `.onTapGesture` and no hover
+        // highlight. This branch has no hover writer of its own --
+        // `isHovering` is only ever flipped by the `.onAssumeInsideHover`
+        // attached in the interactive branch below -- so the
+        // `.onChange` below clears it back to `false` on the transition
+        // into this branch, keeping the background fill in `rowContent`
+        // from ever appearing here even for a row that WAS hovered right
+        // up to the moment it lost its focus target (e.g. its bridging
+        // Calyx pane closed while the pointer was still over the row).
+        // This was chosen as the least surprising option over, say, a
+        // visibly "disabled" treatment (dimmed/greyed row) -- the row
+        // still needs to convey real, current agent state at a glance;
+        // only the click AFFORDANCE (hover feedback inviting a tap) is
+        // removed, matching how every other purely-informational element
+        // in this sidebar (e.g. `hooksIssuesBanner`) already has no
+        // hover/tap treatment at all.
         Group {
             if let focusTarget {
                 rowContent
@@ -381,6 +387,17 @@ private struct AgentRowView: View {
             } else {
                 rowContent
             }
+        }
+        // `focusTarget` can flip non-nil -> nil at runtime (its bridging
+        // Calyx pane closing prunes `focusSurfaceID`), which tears down
+        // `.onAssumeInsideHover` above along with it -- AppKit sends no
+        // `mouseExited` to a tracking view already removed from the
+        // hierarchy, so nothing else would ever clear a hover left
+        // `true` at that instant. Mirrors `CloseButtonHoverHighlight`'s
+        // own `.onChange(of: isVisible)` guard for the identical
+        // tracking-view-removal case.
+        .onChange(of: focusTarget) { _, newValue in
+            if newValue == nil { isHovering = false }
         }
     }
 
