@@ -851,7 +851,10 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         contentView.addSubview(hosting)
         self.hostingView = hosting
 
-        // Title bar glass is now handled by SwiftUI overlay in MainContentView
+        // The AppKit side installs no titlebar material of its own: CalyxWindow already
+        // makes the window transparent (titlebarAppearsTransparent, isOpaque = false,
+        // .fullSizeContentView), and MainContentView's root glass sheet (a .background
+        // with .ignoresSafeArea()) supplies the fill under the titlebar strip.
     }
 
     /// `host` (remote sessions): threaded straight into
