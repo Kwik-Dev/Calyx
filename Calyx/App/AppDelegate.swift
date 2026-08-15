@@ -305,6 +305,74 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ShellIntegrationActivation.activateIfPossible(root: root)
     }
 
+    // MARK: - Agent Hooks
+
+    /// Re-syncs Calyx's own hook config entries with the current
+    /// contract, per tool, for whichever CLIs already have them
+    /// installed from a previous launch. `AgentHooksCoordinator
+    /// .resyncInstalled()` is idempotent -- `ClaudeHooksConfigManager`'s
+    /// `removingOwnCommandEntries` and `CodexHooksConfigManager`'s
+    /// managed-block replacement both strip stale Calyx-owned entries
+    /// before writing fresh ones -- so re-running it here on every
+    /// launch doubles as the migration path for a user who enabled IPC
+    /// under an older Calyx version and has not manually re-run "Enable
+    /// AI Agent IPC" since. Without this, a pre-migration install's
+    /// synchronous approval entry keeps firing under its old hook event,
+    /// which `CalyxMCPServer.routeApprovalRequest`'s own `hookEventName`
+    /// guard now treats as inert (see that method's own doc comment) --
+    /// silently leaving the approval banner non-functional until the
+    /// user happens to notice and re-enables IPC by hand. Resyncing is
+    /// scoped per tool (`resyncInstalled()`'s own doc comment) rather
+    /// than an all-or-nothing gate on whether ANY tool has Calyx hooks,
+    /// so enabling IPC for one CLI can never spread to a second CLI the
+    /// user installed afterward but never opted in for.
+    ///
+    /// Skipped entirely for a `--uitesting` launch: `CalyxUITestCase`
+    /// runs the app-under-test with that flag and no XCTest loaded, so
+    /// `LaunchEnvironmentPolicy.isUnitTestHost()`'s gate at the top of
+    /// `applicationDidFinishLaunching` never catches it, and it does not
+    /// redirect HOME -- without this second guard, every E2E run would
+    /// read-modify-write the developer's own real `~/.claude/settings.json`
+    /// / `~/.codex/config.toml` / OpenCode plugin file.
+    ///
+    /// The actual per-tool checks, config parsing, and any resulting
+    /// writes all run off `@MainActor` (`resyncAgentHooksOffMainThread()`
+    /// below), mirroring `startHerdrIntegrationIfNeeded()`'s identical
+    /// off-main hop for the same reason: this would otherwise be
+    /// synchronous I/O running before the first window ever draws.
+    ///
+    /// Any resulting failure is surfaced the same way
+    /// `CalyxWindowController.enableIPC` already does for a manual
+    /// install: a persistent `AgentRegistry.hooksIssues` sidebar banner
+    /// via `AgentHooksResult.issueMessages`, never a modal alert -- this
+    /// runs unattended at launch, with no window guaranteed to exist yet
+    /// to present one against.
+    private func resyncAgentHooksIfInstalled() {
+        guard !ProcessInfo.processInfo.arguments.contains("--uitesting") else { return }
+        Task {
+            let hooksResult = await resyncAgentHooksOffMainThread()
+            AgentRegistry.shared.setHooksIssues(hooksResult.issueMessages)
+        }
+    }
+
+    /// Runs `AgentHooksCoordinator.resyncInstalled()` off `@MainActor`,
+    /// on `DispatchQueue.global()` -- mirrors
+    /// `resolveHerdrBinPathOffMainThread()`'s identical hop for the same
+    /// reason: a plain `Task { }` created from this (`@MainActor`)
+    /// method inherits `@MainActor` isolation, so calling
+    /// `resyncInstalled()` directly from `resyncAgentHooksIfInstalled()`'s
+    /// own `Task { }` would still run its config-file reads and writes
+    /// on the main thread -- only deferring WHEN, never WHERE.
+    /// `AgentHooksCoordinator` and `AgentHooksResult` are both
+    /// `Sendable`, so both cross the hop safely.
+    private func resyncAgentHooksOffMainThread() async -> AgentHooksResult {
+        await withCheckedContinuation { (continuation: CheckedContinuation<AgentHooksResult, Never>) in
+            DispatchQueue.global().async {
+                continuation.resume(returning: AgentHooksCoordinator.resyncInstalled())
+            }
+        }
+    }
+
     // MARK: - Bell
 
     /// `.ghosttyRingBell` (`GHOSTTY_ACTION_RING_BELL`) receiver for a
@@ -778,6 +846,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // own header) must be armed before that can happen.
         HerdrPaneRegistry.shared.startObserving()
         startHerdrIntegrationIfNeeded()
+        resyncAgentHooksIfInstalled()
 
         browserTabBroker.appDelegate = self
         let browserHandler = BrowserToolHandler(broker: browserTabBroker)

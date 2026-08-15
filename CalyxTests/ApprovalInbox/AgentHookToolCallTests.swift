@@ -22,6 +22,9 @@
 //    character boundary; summary is capped at maxSummaryLength characters
 //  - unknown extra top-level fields are tolerated
 //  - malformed JSON is rejected
+//  - hookEventName decodes the top-level hook_event_name key: absent,
+//    explicit null, and a non-string value all decode to nil; a string
+//    value decodes to that exact string
 //
 
 import XCTest
@@ -234,5 +237,47 @@ final class AgentHookToolCallTests: XCTestCase {
 
         let data = Data("this is not { json".utf8)
         XCTAssertNil(AgentHookToolCall.decode(from: data))
+    }
+
+    // MARK: - hookEventName decoding
+
+    /// `routeApprovalRequest` only advances a payload into the approval
+    /// flow when `hookEventName == "PermissionRequest"` -- a minimal
+    /// payload with no top-level `hook_event_name` key at all (the
+    /// mandatory-fields-only shape) must decode to `nil`, never a
+    /// fabricated default.
+    func test_decode_hookEventNameAbsent_minimalPayload_isNil() throws {
+        let data = json(["tool_name": "Bash"])
+
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data))
+
+        XCTAssertNil(call.hookEventName, "hookEventName must be nil when hook_event_name is absent from the payload")
+    }
+
+    func test_decode_hookEventNamePresent_isDecodedVerbatim() throws {
+        let data = json(["tool_name": "Bash", "hook_event_name": "PermissionRequest"])
+
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data))
+
+        XCTAssertEqual(call.hookEventName, "PermissionRequest")
+    }
+
+    /// An explicit JSON `null` must decode the same as an absent key --
+    /// hookEventName is optional, so a nullable field must decode from
+    /// both shapes identically, never crash or coerce to an empty string.
+    func test_decode_hookEventNameExplicitNull_isNil() throws {
+        let data = json(["tool_name": "Bash", "hook_event_name": NSNull()])
+
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data))
+
+        XCTAssertNil(call.hookEventName, "an explicit JSON null for hook_event_name must decode the same as an absent key")
+    }
+
+    func test_decode_hookEventNameNonStringValue_isNil() throws {
+        let data = json(["tool_name": "Bash", "hook_event_name": 42])
+
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data))
+
+        XCTAssertNil(call.hookEventName, "a non-string hook_event_name value must decode to nil, not crash or coerce")
     }
 }

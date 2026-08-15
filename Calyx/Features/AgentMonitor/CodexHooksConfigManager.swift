@@ -60,10 +60,10 @@ struct CodexHooksConfigManager: Sendable {
 
     /// Replaces Calyx's managed block in `configPath` with a freshly built
     /// one for `scriptPath`'s 6 target events plus `approvalScriptPath`'s
-    /// extra synchronous `PreToolUse` pair, preserving everything else in
-    /// the file verbatim. Idempotent: re-running strips the prior managed
-    /// block (wherever it is) before appending the new one at EOF, rather
-    /// than duplicating it.
+    /// extra synchronous `PermissionRequest` pair, preserving everything
+    /// else in the file verbatim. Idempotent: re-running strips the prior
+    /// managed block (wherever it is) before appending the new one at
+    /// EOF, rather than duplicating it.
     static func installHooks(scriptPath: String, approvalScriptPath: String, configPath: String? = nil) throws {
         guard !scriptPath.contains("'"), !approvalScriptPath.contains("'") else {
             // TOML literal strings (`'...'`) have no escape mechanism, and
@@ -167,16 +167,20 @@ struct CodexHooksConfigManager: Sendable {
         """
     }
 
-    /// `PreToolUse`'s extra synchronous approval entry — a second
-    /// `[[hooks.PreToolUse]]` pair alongside the one `hookEntry` already
-    /// writes for it, POSTing through `calyx-approval-hook` instead of
-    /// `calyx-agent-hook`, with a timeout of
+    /// `PermissionRequest`'s extra synchronous approval entry -- a second
+    /// `[[hooks.PermissionRequest]]` pair alongside the one `hookEntry`
+    /// already writes for it, POSTing through `calyx-approval-hook`
+    /// instead of `calyx-agent-hook`, with a timeout of
     /// `ApprovalHookTiming.hookEntryTimeoutSeconds` (600) rather than the
-    /// monitor entries' fire-and-forget `5`.
+    /// monitor entries' fire-and-forget `5`. Nested under
+    /// `PermissionRequest` rather than `PreToolUse`: `PermissionRequest`
+    /// fires only once Codex has already decided it needs to show a
+    /// confirmation prompt, unlike `PreToolUse`, which fires for every
+    /// tool call regardless of whether it needs approval.
     private static func approvalHookEntry(approvalScriptPath: String) -> String {
         """
-        [[hooks.PreToolUse]]
-        [[hooks.PreToolUse.hooks]]
+        [[hooks.\(ApprovalHookEvent.name)]]
+        [[hooks.\(ApprovalHookEvent.name).hooks]]
         type = "command"
         command = '"\(approvalScriptPath)" \(AgentEntry.codexKind)'
         timeout = \(ApprovalHookTiming.hookEntryTimeoutSeconds)

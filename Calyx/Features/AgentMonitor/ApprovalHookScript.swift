@@ -5,10 +5,13 @@
 // `~/Library/Application Support/Calyx/bin/`, alongside
 // `calyx-agent-hook` (see AgentHookScript.swift). Unlike
 // calyx-agent-hook's fire-and-forget async POST to /agent-event, this
-// script is invoked *synchronously* by a PreToolUse hook entry and its
-// stdout becomes Claude Code's / Codex's actual permission decision --
-// so its fail-safe behavior (never printing "allow", always exiting 0)
-// is the single most safety-critical string invariant in this file.
+// script is invoked *synchronously* by a PermissionRequest hook entry --
+// fired only once the CLI has already decided it needs to show a
+// confirmation prompt -- and its stdout becomes Claude Code's / Codex's
+// actual permission decision. Its fail-safe behavior (never printing
+// "allow", always exiting 0, and staying completely silent on any
+// failure so the CLI's own confirmation prompt takes over) is the
+// single most safety-critical string invariant in this file.
 
 import Foundation
 
@@ -65,31 +68,31 @@ enum ApprovalHookScript {
     /// timeout kills the whole hook process at 600s -- can't silently
     /// drift out of sync with this script. `--fail` makes curl treat any
     /// non-2xx server response as a curl error too, so it's routed
-    /// through `fail_safe()` rather than printed to the CLI as if it
-    /// were a real permission decision.
+    /// through the same silent no-output path as any other curl
+    /// failure, rather than printed to the CLI as if it were a real
+    /// permission decision.
     ///
     /// The curl exit code is then switched on:
     /// - `0` (success): the server's response body is printed verbatim
     ///   via `printf '%s'` -- never `echo`, which can mangle a body
     ///   starting with `-` or containing backslash escape sequences.
-    /// - `7` (connection refused): silent, no output at all, and
-    ///   crucially does NOT call `fail_safe()`. After Calyx crashes,
-    ///   `agent-endpoint.json` is left behind pointing at a now-dead
-    ///   port, so every subsequent tool call would otherwise land in
-    ///   this branch -- calling `fail_safe()` there would force an
-    ///   interactive "ask" prompt onto every tool call for as long as
-    ///   Calyx stays down, including ones on the CLI's own allow-list.
-    ///   Producing no output instead leaves the hook inert: the CLI
-    ///   falls back to exactly the permission behavior it would have had
-    ///   with no Calyx hook installed at all, rather than a stale
-    ///   endpoint file silently degrading every tool call's UX.
+    /// - `7` (connection refused): silent, no output at all. After
+    ///   Calyx crashes, `agent-endpoint.json` is left behind pointing at
+    ///   a now-dead port, so every subsequent permission prompt would
+    ///   otherwise land in this branch -- producing no output leaves the
+    ///   hook inert, so the CLI's own confirmation prompt takes over
+    ///   exactly as it would with no Calyx hook installed at all, rather
+    ///   than a stale endpoint file silently degrading every tool call's
+    ///   UX.
     /// - anything else (timeout, DNS failure, a non-2xx response
-    ///   rejected by `--fail`, etc.): `fail_safe()`, which prints the
-    ///   exact `"ask"` `hookSpecificOutput` JSON literal when `kind` is
-    ///   `claude-code` (nothing for any other kind) -- a lost connection
-    ///   or unexpected failure must surface as an interactive approval
-    ///   prompt, never a silent bypass, and must never fabricate
-    ///   `"allow"`.
+    ///   rejected by `--fail`, etc.): also silent, no output at all.
+    ///   PermissionRequest, unlike the older PreToolUse contract, has no
+    ///   interactive-fallback body to fabricate here -- `"ask"` is not a
+    ///   valid `decision.behavior` under this hook. Producing no output
+    ///   IS the correct fail-safe: the CLI's own confirmation prompt
+    ///   takes over exactly as it would with no Calyx hook installed at
+    ///   all. This script must never print `"allow"` anywhere, on any
+    ///   path.
     ///
     /// Every exit path is `exit 0`: whatever curl did or didn't return,
     /// this script itself must never exit nonzero and break the user's
@@ -97,11 +100,13 @@ enum ApprovalHookScript {
     static let scriptBody: String = """
     #!/bin/sh
     #
-    # calyx-approval-hook — synchronously forwards a PreToolUse hook's
-    # stdin JSON to Calyx's local Agent Monitor IPC endpoint and prints
-    # its response verbatim; the response body IS the CLI's permission
-    # decision. Installed and removed by ClaudeHooksConfigManager /
-    # CodexHooksConfigManager.
+    # calyx-approval-hook -- synchronously forwards a PermissionRequest
+    # hook's stdin JSON to Calyx's local Agent Monitor IPC endpoint and
+    # prints its response verbatim; the response body IS the CLI's
+    # permission decision. No output at all (any curl failure, or Calyx
+    # unreachable) is the correct fail-safe: it lets the CLI's own
+    # confirmation prompt take over. Installed and removed by
+    # ClaudeHooksConfigManager / CodexHooksConfigManager.
 
     if [ -z "$CALYX_SURFACE_ID" ] && [ -z "$CALYX_SESSION_ID" ]; then
         exit 0
@@ -133,12 +138,6 @@ enum ApprovalHookScript {
         exit 0
     fi
 
-    fail_safe() {
-        if [ "$kind" = "claude-code" ]; then
-            printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"Calyx approval inbox unavailable"}}'
-        fi
-    }
-
     response=$(curl -s -m \(ApprovalHookTiming.curlTimeoutSeconds) \\
         --fail \\
         -X POST \\
@@ -153,7 +152,7 @@ enum ApprovalHookScript {
     case "$curl_exit" in
         0) printf '%s' "$response" ;;
         7) exit 0 ;;
-        *) fail_safe ;;
+        *) ;;
     esac
 
     exit 0

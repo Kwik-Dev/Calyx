@@ -1,10 +1,11 @@
 // AgentHookToolCall.swift
 // Calyx
 //
-// Decoded form of a CLI agent's PreToolUse hook stdin JSON payload
-// (`tool_name` / `tool_input`, snake_case) into the toolName/payload/
-// summary trio the approval inbox needs to render a banner for a
-// non-MCP agent hook call. Mirrors AgentEvent.decode's
+// Decoded form of a CLI agent's PermissionRequest hook stdin JSON
+// payload (`tool_name` / `tool_input`, snake_case -- the same shape the
+// older PreToolUse hook carried) into the toolName/payload/summary/
+// hookEventName quartet the approval inbox needs to render a banner for
+// a non-MCP agent hook call. Mirrors AgentEvent.decode's
 // JSONSerialization-based style -- see AgentEvent.swift.
 
 import Foundation
@@ -13,6 +14,16 @@ struct AgentHookToolCall: Sendable {
     let toolName: String
     let payload: String
     let summary: String
+
+    /// The payload's top-level `hook_event_name`, decoded verbatim.
+    /// `nil` when the key is absent, an explicit JSON `null`, or a
+    /// non-string value -- `routeApprovalRequest` only advances a
+    /// payload into the approval flow when this is exactly
+    /// `"PermissionRequest"`, so a stale pre-migration hook's own
+    /// `"PreToolUse"` POST (or any payload missing the key entirely)
+    /// must decode to something that guard can compare against, never a
+    /// fabricated default.
+    let hookEventName: String?
 
     /// `payload`'s cap, in UTF-8 bytes -- see `decode(from:)` for the
     /// character-boundary truncation contract.
@@ -28,11 +39,13 @@ struct AgentHookToolCall: Sendable {
     /// case).
     private static let filePathToolNames: Set<String> = ["Write", "Edit", "Read"]
 
-    /// Decodes a CLI agent's PreToolUse hook stdin JSON. `tool_name` is
-    /// mandatory (a non-empty string) -- a missing/empty/non-string
-    /// value rejects the whole payload. `tool_input` is optional; its
-    /// absence yields an empty `payload`/`summary`. Unknown top-level
-    /// fields are tolerated.
+    /// Decodes a CLI agent's PermissionRequest hook stdin JSON.
+    /// `tool_name` is mandatory (a non-empty string) -- a missing/empty/
+    /// non-string value rejects the whole payload. `tool_input` is
+    /// optional; its absence yields an empty `payload`/`summary`.
+    /// `hook_event_name` is optional; see `hookEventName`'s own doc
+    /// comment for its absent/null/non-string decode contract. Unknown
+    /// top-level fields are tolerated.
     ///
     /// `payload` is the compact JSON of `tool_input`, truncated to at
     /// most `maxPayloadBytes` UTF-8 bytes without ever splitting a
@@ -50,9 +63,10 @@ struct AgentHookToolCall: Sendable {
               let toolName = object["tool_name"] as? String, !toolName.isEmpty else {
             return nil
         }
+        let hookEventName = object["hook_event_name"] as? String
 
         guard let toolInput = object["tool_input"] as? [String: Any] else {
-            return AgentHookToolCall(toolName: toolName, payload: "", summary: "")
+            return AgentHookToolCall(toolName: toolName, payload: "", summary: "", hookEventName: hookEventName)
         }
 
         let compactJSON = (try? JSONSerialization.data(withJSONObject: toolInput))
@@ -62,7 +76,8 @@ struct AgentHookToolCall: Sendable {
         let derivedSummary = derivedSummary(toolName: toolName, toolInput: toolInput, compactJSON: compactJSON)
 
         return AgentHookToolCall(
-            toolName: toolName, payload: payload, summary: String(derivedSummary.prefix(maxSummaryLength))
+            toolName: toolName, payload: payload, summary: String(derivedSummary.prefix(maxSummaryLength)),
+            hookEventName: hookEventName
         )
     }
 

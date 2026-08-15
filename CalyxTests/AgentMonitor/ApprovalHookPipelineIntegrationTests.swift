@@ -16,8 +16,8 @@
 //  on a detached background Task, so the awaiting test method can
 //  concurrently poll the injected `ApprovalInboxStore` and call
 //  `decide(id:_:)` while the script is still blocked reading its
-//  response, exactly like a real PreToolUse hook invocation blocking on
-//  a real human's decision.
+//  response, exactly like a real PermissionRequest hook invocation
+//  blocking on a real human's decision.
 //
 //  Every individual layer already has passing coverage elsewhere in
 //  this test target: `ApprovalHookScriptTests` covers scriptBody's exact
@@ -33,7 +33,8 @@
 //  Coverage: allow/deny decisions print the exact permission JSON for
 //  both claude-code (default) and codex kinds; the agentHookApprovalEnabled
 //  toggle being off prints nothing and never submits; an unanswered
-//  request times out to "ask" (claude-code) / nothing (codex); a stale
+//  request times out to nothing for both claude-code and codex (neither
+//  has an "ask" analog under PermissionRequest); a stale
 //  agent-endpoint.json pointing at a closed port is silent (curl exit 7);
 //  and CALYX_SURFACE_ID/CALYX_SESSION_ID both unset never even attempts
 //  the POST. Every case asserts exit 0 -- the hook script must never
@@ -48,13 +49,19 @@ import XCTest
 import Darwin
 @testable import Calyx
 
-/// A PreToolUse hook stdin JSON (`Bash` / `tool_input.command: "ls"`),
-/// shared by every test below. File-scope (not a class property) so
-/// referencing it from inside an `async let` initializer never needs to
-/// send this file's `@MainActor`-isolated, non-Sendable `XCTestCase`
-/// instance itself just to read an otherwise-constant string.
+/// A PermissionRequest hook stdin JSON (`Bash` / `tool_input.command:
+/// "ls"`), shared by every test below. `hook_event_name` must be exactly
+/// `"PermissionRequest"` -- `routeApprovalRequest`'s own gate (see
+/// `CalyxMCPServer.swift`) short-circuits any other value (including a
+/// missing key) to an inert 200 with an empty body, submitting nothing,
+/// so a fixture missing this key would silently defeat every test below
+/// that expects a real pending request or a real decision body. File-scope
+/// (not a class property) so referencing it from inside an `async let`
+/// initializer never needs to send this file's `@MainActor`-isolated,
+/// non-Sendable `XCTestCase` instance itself just to read an otherwise-
+/// constant string.
 private let bashLsStdin = """
-{"tool_name":"Bash","tool_input":{"command":"ls"}}
+{"tool_name":"Bash","tool_input":{"command":"ls"},"hook_event_name":"PermissionRequest"}
 """
 
 @MainActor
@@ -200,17 +207,21 @@ final class ApprovalHookPipelineIntegrationTests: XCTestCase {
     }
 
     /// Re-parses `stdout` as JSON and extracts
-    /// `hookSpecificOutput.permissionDecision`, rather than
-    /// string-comparing the raw body -- the exact key ordering/spacing
-    /// JSONSerialization produces is an implementation detail this test
-    /// must not depend on.
-    private func permissionDecision(fromStdout stdout: String) throws -> String {
+    /// `hookSpecificOutput.decision.behavior` -- the PermissionRequest
+    /// hook-response shape (see `AgentHookPermissionResponse`), replacing
+    /// the older PreToolUse-era `hookSpecificOutput.permissionDecision`
+    /// this helper used to read -- rather than string-comparing the raw
+    /// body, the exact key ordering/spacing JSONSerialization produces is
+    /// an implementation detail this test must not depend on. Mirrors
+    /// `CalyxMCPServerApprovalRequestTests.permissionBehavior(fromResponseBody:)`.
+    private func permissionBehavior(fromStdout stdout: String) throws -> String {
         let object = try XCTUnwrap(
             try JSONSerialization.jsonObject(with: Data(stdout.utf8)) as? [String: Any],
             "stdout must be a JSON object, got: \(stdout)"
         )
         let hookSpecificOutput = try XCTUnwrap(object["hookSpecificOutput"] as? [String: Any])
-        return try XCTUnwrap(hookSpecificOutput["permissionDecision"] as? String)
+        let decision = try XCTUnwrap(hookSpecificOutput["decision"] as? [String: Any])
+        return try XCTUnwrap(decision["behavior"] as? String)
     }
 
     // MARK: - Allow / deny decisions
@@ -251,7 +262,7 @@ final class ApprovalHookPipelineIntegrationTests: XCTestCase {
         let (exitCode, stdout) = try await hookResult
 
         XCTAssertEqual(exitCode, 0, "the hook script must always exit 0")
-        XCTAssertEqual(try permissionDecision(fromStdout: stdout), "allow")
+        XCTAssertEqual(try permissionBehavior(fromStdout: stdout), "allow")
     }
 
     func test_denyDecision_printsDenyJSON_exitZero() async throws {
@@ -270,7 +281,7 @@ final class ApprovalHookPipelineIntegrationTests: XCTestCase {
         let (exitCode, stdout) = try await hookResult
 
         XCTAssertEqual(exitCode, 0)
-        XCTAssertEqual(try permissionDecision(fromStdout: stdout), "deny")
+        XCTAssertEqual(try permissionBehavior(fromStdout: stdout), "deny")
     }
 
     // MARK: - Toggle off
@@ -290,26 +301,59 @@ final class ApprovalHookPipelineIntegrationTests: XCTestCase {
 
     // MARK: - Timeout expiry
 
-    func test_timeoutExpiry_claude_printsAskJSON() async throws {
+    /// `waitForPendingRequest()` before awaiting the script's own result is
+    /// what makes this a real test of the expiry PATH, not merely of the
+    /// stdout string an unrelated gate (e.g. a hookEventName mismatch)
+    /// would ALSO leave empty: only a request that actually cleared every
+    /// upstream gate (kind, hookEventName, the enabled toggle) ever
+    /// becomes pending in the first place, so observing it pending proves
+    /// this run reached the long-poll before the 1s server timeout below
+    /// resolves it to `.expired`.
+    func test_timeoutExpiry_claude_printsNothing() async throws {
         CockpitSettings.agentHookApprovalEnabled = true
-        server.approvalRequestTimeoutMs = 500
+        server.approvalRequestTimeoutMs = 1_000
+        let surfaceID = UUID()
+        let hookScriptPath = scriptPath!
+        let hookHome = tempHome!
 
-        let (exitCode, stdout) = try await Self.runHookScript(
-            scriptPath: scriptPath, home: tempHome, stdinJSON: bashLsStdin, surfaceID: UUID()
+        async let hookResult = Self.runHookScript(
+            scriptPath: hookScriptPath, home: hookHome, stdinJSON: bashLsStdin, surfaceID: surfaceID
         )
 
-        XCTAssertEqual(exitCode, 0)
-        XCTAssertEqual(try permissionDecision(fromStdout: stdout), "ask",
-                       "an unanswered claude-code request must time out to \"ask\", never \"allow\"")
+        let pendingRequest = await waitForPendingRequest()
+        XCTAssertNotNil(pendingRequest,
+                        "the script's real POST must reach the injected approval inbox before it can time " +
+                        "out -- otherwise this run never exercised the expiry path at all")
+
+        let (exitCode, stdout) = try await hookResult
+
+        XCTAssertEqual(exitCode, 0, "the hook script must always exit 0")
+        XCTAssertEqual(stdout, "",
+                       "an unanswered claude-code request must time out to an EMPTY body -- " +
+                       "PermissionRequest has no \"ask\" analog, unlike the old PreToolUse contract")
     }
 
+    /// Mirrors `test_timeoutExpiry_claude_printsNothing`'s own rationale
+    /// for polling `waitForPendingRequest()` before awaiting the script's
+    /// result.
     func test_timeoutExpiry_codex_printsNothing() async throws {
         CockpitSettings.agentHookApprovalEnabled = true
-        server.approvalRequestTimeoutMs = 500
+        server.approvalRequestTimeoutMs = 1_000
+        let surfaceID = UUID()
+        let hookScriptPath = scriptPath!
+        let hookHome = tempHome!
 
-        let (exitCode, stdout) = try await Self.runHookScript(
-            scriptPath: scriptPath, home: tempHome, stdinJSON: bashLsStdin, surfaceID: UUID(), kindArgument: "codex"
+        async let hookResult = Self.runHookScript(
+            scriptPath: hookScriptPath, home: hookHome, stdinJSON: bashLsStdin, surfaceID: surfaceID,
+            kindArgument: "codex"
         )
+
+        let pendingRequest = await waitForPendingRequest()
+        XCTAssertNotNil(pendingRequest,
+                        "the script's real POST must reach the injected approval inbox before it can time " +
+                        "out -- otherwise this run never exercised the expiry path at all")
+
+        let (exitCode, stdout) = try await hookResult
 
         XCTAssertEqual(exitCode, 0)
         XCTAssertEqual(stdout, "", "codex has no \"ask\" analog -- an unanswered codex request prints nothing")
@@ -379,8 +423,8 @@ final class ApprovalHookPipelineIntegrationTests: XCTestCase {
         let (exitCode, stdout) = try await hookResult
 
         XCTAssertEqual(exitCode, 0)
-        XCTAssertEqual(try permissionDecision(fromStdout: stdout), "allow",
-                       "codex must get a real allow body on a genuine decision, not fail_safe()'s empty body")
+        XCTAssertEqual(try permissionBehavior(fromStdout: stdout), "allow",
+                       "codex must get a real allow body on a genuine decision, not an empty fail-safe body")
     }
 
     // MARK: - Connection drop mid-poll (R5)
@@ -560,11 +604,10 @@ final class ApprovalHookPipelineIntegrationTests: XCTestCase {
 
         let (exitCode, stdout) = await running.result.value
         XCTAssertEqual(exitCode, 0, "the hook script must always exit 0, even when its own curl child is killed")
-        if !stdout.isEmpty {
-            let decision = try permissionDecision(fromStdout: stdout)
-            XCTAssertEqual(decision, "ask",
-                           "a curl kill must never resolve as an allow decision -- at most claude-code's own " +
-                           "fail-safe \"ask\"")
-        }
+        XCTAssertEqual(stdout, "",
+                       "no decision is ever made in this test, so the long-poll can only resolve by the " +
+                       "connection drop this test triggers -- a SIGKILLed curl can't exit 0 (the only case " +
+                       "the script's own case statement ever prints anything), so stdout must be empty, " +
+                       "never a fabricated allow/deny/ask body")
     }
 }

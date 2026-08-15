@@ -15,7 +15,9 @@
 //    "*"; Notification uses matcher "permission_prompt"
 //  - installHooks preserves the user's own existing hook entries and
 //    unrelated top-level keys
-//  - Re-installing is idempotent (no duplicate command entries)
+//  - Re-installing is idempotent (no duplicate command entries, and a
+//    no-op reinstall -- content already matches -- never rewrites
+//    settings.json or re-snapshots .bak from the already-installed file)
 //  - removeHooks removes only Calyx's own entries, identified by command
 //    path, leaving co-located user hooks untouched
 //  - symlink config path is rejected
@@ -103,15 +105,12 @@ final class ClaudeHooksConfigManagerTests: XCTestCase {
 
     // MARK: - installHooks: fresh file
 
-    // Round 4: renamed from ...writesAllSevenEventsWithCommandEntry — the
-    // contract is now 8 events (PermissionRequest added, see
-    // `expectedEvents`'s doc comment).
-    //
-    // Stage C: PreToolUse alone now carries a SECOND Calyx-owned command
-    // entry (the synchronous approval entry, see
-    // `test_installHooks_preToolUse_writesMonitorAndApprovalEntriesWithCorrectShapes`
-    // below) alongside the pre-existing async monitor entry every other
-    // event still gets exactly one of.
+    // PreToolUse's Calyx-owned group carries only the async monitor
+    // entry. PermissionRequest's carries both that same monitor entry
+    // and a second, synchronous approval entry (calyx-approval-hook)
+    // that blocks the tool call until Calyx's own /approval-request
+    // long-poll resolves -- every other event still gets exactly one
+    // command entry.
     func test_installHooks_newFile_writesAllEightEventsWithCommandEntry() throws {
         try ClaudeHooksConfigManager.installHooks(scriptPath: scriptPath, approvalScriptPath: approvalScriptPath, configPath: configPath)
 
@@ -128,9 +127,9 @@ final class ClaudeHooksConfigManagerTests: XCTestCase {
 
             let commands = commandEntries(groups)
 
-            if eventName == "PreToolUse" {
+            if eventName == "PermissionRequest" {
                 XCTAssertEqual(commands.count, 2,
-                               "PreToolUse must contain both the async monitor entry and the " +
+                               "PermissionRequest must contain both the async monitor entry and the " +
                                "sync approval entry")
                 continue
             }
@@ -143,15 +142,13 @@ final class ClaudeHooksConfigManagerTests: XCTestCase {
         }
     }
 
-    // Round 4 review: PermissionRequest's matcher contract changed from
-    // "no matcher key at all" to `"*"` (unified with PreToolUse/
-    // PostToolUse — see targetEvents' doc comment), so this test — pre-review
-    // named ...hasCommandEntryAndNoMatcherKey and asserting `XCTAssertNil`
-    // — is renamed and its assertion flipped accordingly. The loop above
-    // already covers the same matcher value via `expectedMatcherByEvent`;
-    // this test additionally pins down PermissionRequest's command-entry
-    // shape (type/timeout/async) on its own.
-    func test_installHooks_permissionRequest_hasCommandEntryAndWildcardMatcher() throws {
+    // The loop in test_installHooks_newFile_writesAllEightEventsWithCommandEntry
+    // above already covers PermissionRequest's matcher value via
+    // expectedMatcherByEvent; this test additionally pins down that its
+    // group holds exactly two Calyx-owned command entries (monitor +
+    // approval), unified with PreToolUse/PostToolUse's "*" matcher
+    // rather than left without one.
+    func test_installHooks_permissionRequest_hasWildcardMatcherAndTwoCommandEntries() throws {
         try ClaudeHooksConfigManager.installHooks(scriptPath: scriptPath, approvalScriptPath: approvalScriptPath, configPath: configPath)
 
         let dict = try readConfigDict()
@@ -162,11 +159,9 @@ final class ClaudeHooksConfigManagerTests: XCTestCase {
                        "PermissionRequest's matcher must be \"*\", unified with PreToolUse/PostToolUse")
 
         let commands = commandEntries(groups)
-        XCTAssertEqual(commands.count, 1, "PermissionRequest must contain exactly one command entry")
-        let entry = commands.first ?? [:]
-        XCTAssertEqual(entry["type"] as? String, "command")
-        XCTAssertNotNil(entry["timeout"], "PermissionRequest command entry must specify a timeout")
-        XCTAssertEqual(entry["async"] as? Bool, true, "PermissionRequest command entry must be async")
+        XCTAssertEqual(commands.count, 2,
+                       "PermissionRequest must contain both the async monitor entry and the sync " +
+                       "approval entry")
     }
 
     // MARK: - installHooks: preserves existing content
@@ -204,35 +199,53 @@ final class ClaudeHooksConfigManagerTests: XCTestCase {
 
     func test_installHooks_reinstall_isIdempotent() throws {
         try ClaudeHooksConfigManager.installHooks(scriptPath: scriptPath, approvalScriptPath: approvalScriptPath, configPath: configPath)
+        let beforeModificationDate = try FileManager.default.attributesOfItem(atPath: configPath)[.modificationDate] as? Date
+        Thread.sleep(forTimeInterval: 0.2)
         try ClaudeHooksConfigManager.installHooks(scriptPath: scriptPath, approvalScriptPath: approvalScriptPath, configPath: configPath)
 
         let dict = try readConfigDict()
 
         for eventName in Self.expectedEvents {
             let commands = commandEntries(hookGroups(dict, event: eventName))
-            let expectedCount = eventName == "PreToolUse" ? 2 : 1
+            let expectedCount = eventName == "PermissionRequest" ? 2 : 1
             XCTAssertEqual(commands.count, expectedCount,
                            "\(eventName) must contain exactly \(expectedCount) Calyx hook entry(ies) " +
                            "after reinstalling twice")
         }
+
+        // installHooks reads settings.json directly (not through
+        // ConfigFileUtils.readConfigWithBackup) precisely so it can compare
+        // freshly generated bytes against what's already on disk and return
+        // before writing anything when they match -- see that guard's own
+        // comment. A second install of identical content must therefore
+        // never touch this file, which a CLI sharing it (claude itself
+        // writes permission grants here) depends on to avoid racing Calyx's
+        // own writes.
+        let afterModificationDate = try FileManager.default.attributesOfItem(atPath: configPath)[.modificationDate] as? Date
+        XCTAssertEqual(beforeModificationDate, afterModificationDate,
+                       "An unchanged reinstall must not rewrite the shared settings.json file")
     }
 
-    // MARK: - Stage C: PreToolUse monitor + approval entries
+    // MARK: - PermissionRequest monitor + approval entries
 
-    // Stage C: PreToolUse's group now carries two Calyx-owned command
-    // entries -- the pre-existing async monitor entry (unchanged shape)
-    // and a new synchronous approval entry that blocks the tool call
-    // until Calyx's own /approval-request long-poll resolves.
-    func test_installHooks_preToolUse_writesMonitorAndApprovalEntriesWithCorrectShapes() throws {
+    // PermissionRequest's group carries two Calyx-owned command entries
+    // -- the async monitor entry (same shape every other event gets) and
+    // a synchronous approval entry that blocks the tool call until
+    // Calyx's own /approval-request long-poll resolves. PermissionRequest
+    // fires only once the CLI has already decided it needs to show a
+    // confirmation prompt, so gating there (rather than PreToolUse, which
+    // fires for every tool call regardless of whether it needs approval)
+    // avoids a synchronous POST on every single tool call.
+    func test_installHooks_permissionRequest_writesMonitorAndApprovalEntriesWithCorrectShapes() throws {
         try ClaudeHooksConfigManager.installHooks(scriptPath: scriptPath, approvalScriptPath: approvalScriptPath, configPath: configPath)
 
         let dict = try readConfigDict()
-        let commands = commandEntries(hookGroups(dict, event: "PreToolUse"))
-        XCTAssertEqual(commands.count, 2, "PreToolUse must have exactly two Calyx command entries")
+        let commands = commandEntries(hookGroups(dict, event: "PermissionRequest"))
+        XCTAssertEqual(commands.count, 2, "PermissionRequest must have exactly two Calyx command entries")
 
         let monitor = try XCTUnwrap(
             commands.first { ($0["command"] as? String) == "\"\(scriptPath!)\"" },
-            "The existing async monitor entry (command = scriptPath) must survive unchanged"
+            "The async monitor entry (command = scriptPath) must be present"
         )
         XCTAssertEqual(monitor["type"] as? String, "command")
         XCTAssertEqual(monitor["timeout"] as? Int, 5)
@@ -240,18 +253,18 @@ final class ClaudeHooksConfigManagerTests: XCTestCase {
 
         let approval = try XCTUnwrap(
             commands.first { ($0["command"] as? String) == "\"\(approvalScriptPath!)\"" },
-            "A new synchronous approval entry (command = approvalScriptPath) must be added"
+            "The synchronous approval entry (command = approvalScriptPath) must be present"
         )
         XCTAssertEqual(approval["type"] as? String, "command")
         XCTAssertEqual(approval["timeout"] as? Int, ApprovalHookTiming.hookEntryTimeoutSeconds)
         XCTAssertNil(approval["async"], "The approval entry must be synchronous -- no \"async\" key at all")
     }
 
-    func test_installHooks_preToolUseApprovalEntry_hasNoAsyncKeyAndCorrectTimeout() throws {
+    func test_installHooks_permissionRequestApprovalEntry_hasNoAsyncKeyAndCorrectTimeout() throws {
         try ClaudeHooksConfigManager.installHooks(scriptPath: scriptPath, approvalScriptPath: approvalScriptPath, configPath: configPath)
 
         let dict = try readConfigDict()
-        let commands = commandEntries(hookGroups(dict, event: "PreToolUse"))
+        let commands = commandEntries(hookGroups(dict, event: "PermissionRequest"))
         let approvalEntry = try XCTUnwrap(
             commands.first { ($0["command"] as? String) == "\"\(approvalScriptPath!)\"" },
             "The approval entry (command = approvalScriptPath) must be present"
@@ -262,11 +275,25 @@ final class ClaudeHooksConfigManagerTests: XCTestCase {
         XCTAssertNil(approvalEntry["async"], "The approval entry must have no \"async\" key -- it runs synchronously")
     }
 
-    // Upgrade path: a config written by a pre-Stage-C Calyx version has
-    // PreToolUse's group with only the async monitor entry. installHooks
-    // must add the approval entry alongside it without duplicating the
-    // monitor entry or creating a second "*" matcher group.
-    func test_installHooks_upgradesOldSinglePreToolUseEntry_toTwoEntriesNoDuplicates() throws {
+    // MARK: - PreToolUse carries only the monitor entry
+
+    func test_installHooks_preToolUse_hasOnlyMonitorEntry_noApprovalEntry() throws {
+        try ClaudeHooksConfigManager.installHooks(scriptPath: scriptPath, approvalScriptPath: approvalScriptPath, configPath: configPath)
+
+        let dict = try readConfigDict()
+        let commands = commandEntries(hookGroups(dict, event: "PreToolUse"))
+
+        XCTAssertEqual(commands.count, 1, "PreToolUse must contain only the async monitor entry")
+        XCTAssertEqual(commands.first?["command"] as? String, "\"\(scriptPath!)\"")
+        XCTAssertFalse(commands.contains { ($0["command"] as? String) == "\"\(approvalScriptPath!)\"" },
+                       "The approval entry must never be installed under PreToolUse")
+    }
+
+    // A config written before this migration has PreToolUse's group with
+    // only the async monitor entry -- no approval entry ever existed for
+    // it at all. installHooks must leave it a single entry and must not
+    // duplicate the "*" matcher group.
+    func test_installHooks_existingPreToolUseMonitorOnlyEntry_remainsSingleEntryNoMatcherDuplication() throws {
         let existingConfig: [String: Any] = [
             "hooks": [
                 "PreToolUse": [
@@ -283,16 +310,64 @@ final class ClaudeHooksConfigManagerTests: XCTestCase {
         let dict = try readConfigDict()
         let groups = hookGroups(dict, event: "PreToolUse")
         let wildcardGroups = groups.filter { ($0["matcher"] as? String) == "*" }
-        XCTAssertEqual(wildcardGroups.count, 1, "Upgrading must not create a second '*' matcher group")
+        XCTAssertEqual(wildcardGroups.count, 1, "Reinstalling must not create a second '*' matcher group")
 
         let commands = commandEntries(groups)
-        XCTAssertEqual(commands.count, 2,
-                       "Upgrading an old single-entry PreToolUse group must yield exactly the " +
-                       "monitor + approval pair")
-        XCTAssertEqual(commands.filter { ($0["command"] as? String) == "\"\(scriptPath!)\"" }.count, 1,
-                       "The pre-existing monitor entry must not be duplicated")
-        XCTAssertEqual(commands.filter { ($0["command"] as? String) == "\"\(approvalScriptPath!)\"" }.count, 1,
-                       "Exactly one approval entry must be added")
+        XCTAssertEqual(commands.count, 1,
+                       "PreToolUse must remain a single entry -- the approval entry belongs under " +
+                       "PermissionRequest, not here")
+        XCTAssertEqual(commands.first?["command"] as? String, "\"\(scriptPath!)\"",
+                       "The pre-existing monitor entry must survive unchanged")
+    }
+
+    // MARK: - Migration: approval entry moves from PreToolUse to PermissionRequest
+
+    // A config written by a pre-migration Calyx version has the
+    // synchronous approval entry living under PreToolUse alongside its
+    // async monitor entry, with PermissionRequest already carrying its
+    // own monitor-only entry (installHooks always wrote one there too,
+    // even before this migration). Reinstalling with the current
+    // implementation must relocate the approval entry to
+    // PermissionRequest, without duplicating either event's monitor
+    // entry -- installHooks' own idempotent re-run doubles as the
+    // migration path, with no separate migration function needed.
+    func test_installHooks_reinstallOverOldPreToolUseApprovalEntry_migratesApprovalEntryToPermissionRequest() throws {
+        let existingConfig: [String: Any] = [
+            "hooks": [
+                "PreToolUse": [
+                    ["matcher": "*", "hooks": [
+                        ["type": "command", "command": "\"\(scriptPath!)\"", "timeout": 5, "async": true],
+                        ["type": "command", "command": "\"\(approvalScriptPath!)\"", "timeout": 600],
+                    ]],
+                ],
+                "PermissionRequest": [
+                    ["matcher": "*", "hooks": [
+                        ["type": "command", "command": "\"\(scriptPath!)\"", "timeout": 5, "async": true],
+                    ]],
+                ],
+            ],
+        ]
+        try writeConfigDict(existingConfig)
+
+        try ClaudeHooksConfigManager.installHooks(scriptPath: scriptPath, approvalScriptPath: approvalScriptPath, configPath: configPath)
+
+        let dict = try readConfigDict()
+
+        let preToolUseCommands = commandEntries(hookGroups(dict, event: "PreToolUse"))
+        XCTAssertEqual(preToolUseCommands.count, 1, "The approval entry must no longer be present under PreToolUse")
+        XCTAssertEqual(preToolUseCommands.first?["command"] as? String, "\"\(scriptPath!)\"",
+                       "Only the async monitor entry remains under PreToolUse")
+
+        let permissionRequestCommands = commandEntries(hookGroups(dict, event: "PermissionRequest"))
+        XCTAssertEqual(permissionRequestCommands.count, 2,
+                       "PermissionRequest must end up with both the monitor and approval entries, " +
+                       "without duplicating the monitor entry already there")
+        XCTAssertEqual(
+            permissionRequestCommands.filter { ($0["command"] as? String) == "\"\(scriptPath!)\"" }.count, 1,
+            "The pre-existing PermissionRequest monitor entry must not be duplicated"
+        )
+        XCTAssertTrue(permissionRequestCommands.contains { ($0["command"] as? String) == "\"\(approvalScriptPath!)\"" },
+                     "The approval entry must reappear under PermissionRequest")
     }
 
     // isOwnCommandEntry must recognize calyx-approval-hook's own filename
@@ -321,7 +396,7 @@ final class ClaudeHooksConfigManagerTests: XCTestCase {
         XCTAssertEqual(commands.first?["command"] as? String, "/usr/local/bin/user-approval-hook")
     }
 
-    func test_removeHooks_stripsBothMonitorAndApprovalEntriesPreservingUserEntries() throws {
+    func test_removeHooks_stripsMonitorEntryFromPreToolUsePreservingUserEntries() throws {
         let userCommand = "/usr/local/bin/user-hook"
         let existingConfig: [String: Any] = [
             "hooks": [
@@ -399,11 +474,12 @@ final class ClaudeHooksConfigManagerTests: XCTestCase {
         XCTAssertEqual(permissions?["allow"] as? [String], ["read"], "Unrelated top-level keys must be preserved")
     }
 
-    // Round 4: covers the full installHooks -> removeHooks round trip for
+    // Covers the full installHooks -> removeHooks round trip for
     // PermissionRequest specifically, alongside a co-located third-party
-    // hook (e.g. claude-remote-approver) the user installed themselves —
-    // installHooks must add Calyx's own entry without disturbing it, and
-    // removeHooks must take only Calyx's entry back out.
+    // hook (e.g. claude-remote-approver) the user installed themselves --
+    // installHooks must add both of Calyx's own entries without
+    // disturbing it, and removeHooks must take only Calyx's entries back
+    // out.
     func test_installThenRemove_permissionRequest_preservesUserOwnHookAndRemovesOnlyCalyxEntry() throws {
         let existingConfig: [String: Any] = [
             "hooks": [
@@ -420,16 +496,16 @@ final class ClaudeHooksConfigManagerTests: XCTestCase {
 
         let afterInstall = try readConfigDict()
         let installedCommands = commandEntries(hookGroups(afterInstall, event: "PermissionRequest"))
-        XCTAssertEqual(installedCommands.count, 2,
-                       "installHooks must add Calyx's own PermissionRequest entry alongside the " +
-                       "user's pre-existing one, not replace or skip it")
+        XCTAssertEqual(installedCommands.count, 3,
+                       "installHooks must add both of Calyx's own PermissionRequest entries (monitor + " +
+                       "approval) alongside the user's pre-existing one, not replace or skip it")
 
         try ClaudeHooksConfigManager.removeHooks(configPath: configPath)
 
         let afterRemove = try readConfigDict()
         let remainingCommands = commandEntries(hookGroups(afterRemove, event: "PermissionRequest"))
         XCTAssertEqual(remainingCommands.count, 1,
-                       "removeHooks must remove only Calyx's own PermissionRequest entry")
+                       "removeHooks must remove only Calyx's own PermissionRequest entries")
         XCTAssertEqual(remainingCommands.first?["command"] as? String, "/usr/local/bin/claude-remote-approver",
                        "The user's own PermissionRequest hook (e.g. claude-remote-approver) must " +
                        "survive removeHooks")
@@ -560,6 +636,54 @@ final class ClaudeHooksConfigManagerTests: XCTestCase {
         let bakContent = try String(contentsOfFile: bakPath, encoding: .utf8)
         XCTAssertTrue(bakContent.contains("calyx-agent-hook"),
                       "Backup must contain the pre-removal (installed) content")
+    }
+
+    // This is the core safety property behind installHooks' no-op guard
+    // (see that method's own comment on why it reads settings.json
+    // directly instead of going through ConfigFileUtils.readConfigWithBackup):
+    // a resync that runs on every app launch must not, the moment nothing
+    // has actually changed, silently overwrite the user's one true
+    // pre-Calyx backup with a Calyx-already-installed snapshot.
+    func test_installHooks_reinstallWithNoContentChange_bakStillHoldsOriginalPreCalyxContent() throws {
+        let originalConfig: [String: Any] = [
+            "hooks": [
+                "PreToolUse": [
+                    ["matcher": "Bash", "hooks": [
+                        ["type": "command", "command": "/usr/local/bin/user-hook", "timeout": 10],
+                    ]],
+                ],
+            ],
+            "permissions": ["allow": ["read", "write"]],
+        ]
+        try writeConfigDict(originalConfig)
+
+        try ClaudeHooksConfigManager.installHooks(scriptPath: scriptPath, approvalScriptPath: approvalScriptPath, configPath: configPath)
+
+        let bakPath = configPath + ".bak"
+        let bakContentAfterFirstInstall = try String(contentsOfFile: bakPath, encoding: .utf8)
+        // "user-hook" rather than the full "/usr/local/bin/user-hook" path:
+        // JSONSerialization escapes "/" as "\/", so a literal-path substring
+        // search would fail on the escaped bytes even though the same
+        // content round-trips correctly through JSON parsing.
+        XCTAssertTrue(bakContentAfterFirstInstall.contains("user-hook"),
+                     "Precondition: the first install's .bak must hold the user's pre-Calyx content")
+        XCTAssertFalse(bakContentAfterFirstInstall.contains("calyx-agent-hook"),
+                       "Precondition: the first install's .bak must not already contain Calyx's own hook entries")
+        let bakModificationDateAfterFirstInstall =
+            try FileManager.default.attributesOfItem(atPath: bakPath)[.modificationDate] as? Date
+
+        Thread.sleep(forTimeInterval: 0.2)
+        try ClaudeHooksConfigManager.installHooks(scriptPath: scriptPath, approvalScriptPath: approvalScriptPath, configPath: configPath)
+
+        let bakModificationDateAfterSecondInstall =
+            try FileManager.default.attributesOfItem(atPath: bakPath)[.modificationDate] as? Date
+        XCTAssertEqual(bakModificationDateAfterFirstInstall, bakModificationDateAfterSecondInstall,
+                       "A reinstall with no content change must not touch .bak at all")
+
+        let bakContentAfterSecondInstall = try String(contentsOfFile: bakPath, encoding: .utf8)
+        XCTAssertEqual(bakContentAfterSecondInstall, bakContentAfterFirstInstall,
+                       "A reinstall with no content change must leave .bak holding the user's original " +
+                       "pre-Calyx content, not the now-already-Calyx-modified content written by the first install")
     }
 
     // MARK: - Preserving unrecognized hook shapes

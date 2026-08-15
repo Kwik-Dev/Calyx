@@ -13,19 +13,21 @@
 // - If curl's timeout were <= the server's, curl would give up while
 //   Calyx is still legitimately waiting on a human decision, and the
 //   hook would report a spurious network failure even though the
-//   server would have answered (with the fail-safe body, at worst) a
-//   few seconds later.
+//   server would have answered a few seconds later.
 // - If the CLI's own hook-entry timeout were <= curl's, the CLI agent
-//   (Claude Code / Codex) would kill the hook process before curl's own
-//   `-m` deadline ever gets a chance to fire and print the fail-safe
-//   body -- the hook simply vanishes with no output at all, and the
-//   CLI falls back to its own in-pane prompt with no reason surfaced.
+//   (Claude Code / Codex) could kill the whole hook process before
+//   curl's own `-m` deadline -- and the script's own deterministic
+//   silent exit -- ever get a chance to run. That kill is uncontrolled:
+//   it can land at any point, including the instant after curl has
+//   already received a real decision from the server but before the
+//   script has printed it, discarding a real answer instead of curl's
+//   own clean, and by design silent, give-up.
 //
 // So the invariant this file exists to enforce is:
 //     serverTimeoutMs < curlTimeoutSeconds * 1000 < hookEntryTimeoutSeconds * 1000
 //
 // `holdSeconds` (600s -- Claude Code's and Codex's own default
-// PreToolUse hook timeout) is the one constant that isn't ours to
+// hook-entry timeout) is the one constant that isn't ours to
 // choose; everything else is derived backward from it, each with
 // enough margin for the layer below to have already given up before it
 // does. On total failure of the whole chain (server unreachable, or
@@ -40,7 +42,7 @@
 import Foundation
 
 enum ApprovalHookTiming {
-    /// Claude Code's and Codex's own default PreToolUse hook timeout, in
+    /// Claude Code's and Codex's own default hook-entry timeout, in
     /// seconds -- the outermost deadline in the chain, and the value
     /// every other constant here is derived backward from. Configurable
     /// per-hook entry in both CLIs; Calyx's own injected approval-hook
@@ -61,11 +63,12 @@ enum ApprovalHookTiming {
     static let serverTimeoutMs = holdSeconds * 1000 - 30_000
 
     /// The `calyx-approval-hook` script's own curl `-m` deadline, in
-    /// seconds. 15s of margin under `holdSeconds` so curl gives up (and
-    /// the hook can still fall back to its own fail-safe "ask" output)
+    /// seconds. 15s of margin under `holdSeconds` so curl gives up on
+    /// its own -- silently, no output, the correct fail-safe under
+    /// PermissionRequest (see `ApprovalHookScript`'s own doc comment) --
     /// strictly after the server has already answered, and strictly
-    /// before the CLI's own hook-entry timeout below would kill the
-    /// hook process outright.
+    /// before the CLI's own hook-entry timeout below would instead kill
+    /// the whole hook process outright, uncontrolled.
     static let curlTimeoutSeconds = holdSeconds - 15
 
     /// The CLI's own hook-entry timeout that kills the hook process if

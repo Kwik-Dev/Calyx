@@ -5,11 +5,11 @@
 //  TDD Red Phase for ApprovalHookScript: the `calyx-approval-hook` script
 //  installed alongside `calyx-agent-hook` (see AgentHookScriptTests.swift,
 //  which this mirrors). Unlike calyx-agent-hook's fire-and-forget async
-//  POST, this script is invoked *synchronously* by a PreToolUse hook entry
-//  and its stdout becomes Claude Code's / Codex's actual permission
-//  decision -- so its fail-safe behavior (never printing "allow", always
-//  exiting 0) is the single most safety-critical string invariant in this
-//  file.
+//  POST, this script is invoked *synchronously* by a PermissionRequest
+//  hook entry and its stdout becomes Claude Code's / Codex's actual
+//  permission decision -- so its fail-safe behavior (never printing
+//  "allow", always exiting 0) is the single most safety-critical string
+//  invariant in this file.
 //
 //  Coverage:
 //  - scriptBody guards on both CALYX_SURFACE_ID and CALYX_SESSION_ID being
@@ -17,9 +17,16 @@
 //  - curl is bounded by ApprovalHookTiming.curlTimeoutSeconds (585) and
 //    uses --fail so a non-2xx response is treated as a curl error
 //  - a successful response body is printed verbatim via printf '%s'
-//  - fail_safe() prints the exact "ask" JSON for claude-code, prints
-//    nothing for any other kind, and scriptBody never contains a
-//    fabricated "allow" decision anywhere
+//  - every curl failure path (any exit code other than 0/success,
+//    including 7/connection-refused, which has its own dedicated case
+//    arm) produces NO stdout output at all, verified by running the
+//    installed script as a real child process against a fake curl on
+//    PATH -- PermissionRequest has no interactive fallback body the way
+//    the old PreToolUse "ask" contract did, so a lost connection or
+//    unexpected curl failure must stay completely silent and let the
+//    CLI's own confirmation prompt take over
+//  - scriptBody never references the retired permissionDecision field
+//    name, and never fabricates an "allow" decision anywhere
 //  - curl exit 7 (connection refused / stale endpoint file) is silent
 //  - every exit path in the script is exit 0
 //  - install(toDirectory:) writes the script at 0755 with scriptBody's
@@ -118,7 +125,8 @@ final class ApprovalHookScriptTests: XCTestCase {
     func test_scriptBody_curlUsesFailFlag() {
         XCTAssertTrue(ApprovalHookScript.scriptBody.contains("--fail"),
                      "curl must use --fail so a non-2xx server response is treated as a curl error " +
-                     "(routed to fail_safe), never printed to Claude Code as if it were a real decision")
+                     "(silent, exactly like any other curl failure), never printed to Claude Code as if " +
+                     "it were a real decision")
     }
 
     func test_scriptBody_postsToApprovalRequestEndpoint() {
@@ -138,8 +146,10 @@ final class ApprovalHookScriptTests: XCTestCase {
         let body = ApprovalHookScript.scriptBody
 
         // Isolate the case-branch keyed on curl's connection-refused exit
-        // code (7): it must produce no output at all, unlike every other
-        // curl failure (which routes through fail_safe).
+        // code (7): its own case arm must never call printf. Execution-
+        // level confirmation that this branch actually produces no stdout
+        // lives in test_scriptBody_curlNonZeroExit_producesNoStdout below,
+        // whose own sweep includes exit code 7.
         guard let branchRange = body.range(of: #"7\)[\s\S]*?;;"#, options: .regularExpression) else {
             XCTFail("Script must have a case branch matching curl's connection-refused exit code (7)")
             return
@@ -149,51 +159,59 @@ final class ApprovalHookScriptTests: XCTestCase {
         XCTAssertFalse(branch.contains("printf"),
                        "curl exit 7 (connection refused / stale endpoint file after a crash) must " +
                        "produce NO output")
-        XCTAssertFalse(branch.contains("fail_safe"),
-                       "curl exit 7 must not invoke fail_safe -- it is the one failure mode that stays silent")
     }
 
-    // MARK: - scriptBody: fail_safe()
+    // MARK: - scriptBody: fail-safe paths produce no output (execution-based)
 
-    func test_scriptBody_failSafe_claudePrintsAskJSON() {
-        let body = ApprovalHookScript.scriptBody
-        let expectedJSON = "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\"," +
-            "\"permissionDecisionReason\":\"Calyx approval inbox unavailable\"}}"
+    /// Every curl exit code other than 0 (success, handled elsewhere) --
+    /// including exit 7 (connection refused / stale endpoint file after a
+    /// crash), which has its own dedicated case arm, not just the
+    /// wildcard catch-all -- must produce NO stdout at all, proven here by
+    /// real `/bin/sh` execution against a fake curl (see
+    /// FakeCurlScriptFixture.swift), not by string-matching scriptBody.
+    /// Covers a representative spread of curl's own error codes (couldn't
+    /// resolve host, timeout, --fail's own rejection of a non-2xx
+    /// response, connection refused, etc.) for both the default
+    /// (claude-code) and codex argv shapes, since PermissionRequest's
+    /// fail-safe silence applies to every CLI kind, not just claude-code.
+    func test_scriptBody_curlNonZeroExit_producesNoStdout() throws {
+        let nonZeroExitCodes: [Int32] = [1, 6, 7, 22, 28, 35, 52, 56]
+        let kindArguments: [String?] = [nil, "codex"]
 
-        XCTAssertTrue(body.contains(expectedJSON),
-                     "fail_safe() must print the exact ask-JSON literal for claude-code so a lost " +
-                     "connection surfaces as an interactive approval prompt, never a silent bypass")
-        XCTAssertTrue(body.contains("\"permissionDecision\":\"ask\""))
+        for kindArgument in kindArguments {
+            for exitCode in nonZeroExitCodes {
+                let label = "kind=\(kindArgument ?? "claude-code (default)"), curl exit \(exitCode)"
+                let fixture = try makeFakeCurlScriptFixture(
+                    rootDirectory: tempDir + "/\(kindArgument ?? "default")-\(exitCode)",
+                    port: 41_833, token: "fail-safe-execution-test-token",
+                    install: ApprovalHookScript.install(toDirectory:)
+                )
+                try makeFakeCurl(atDirectory: fixture.fakeBinDir, exitCode: exitCode)
+
+                let result = try runFakeCurlHookScript(
+                    fixture, stdinJSON: #"{"tool_name":"Bash","tool_input":{"command":"ls"}}"#,
+                    extraEnv: ["CALYX_SURFACE_ID": UUID().uuidString], kindArgument: kindArgument
+                )
+
+                XCTAssertEqual(result.exitCode, 0, "[\(label)] the script itself must still exit 0")
+                XCTAssertEqual(result.stdout, "",
+                               "[\(label)] a curl failure must produce NO stdout output at all -- the hook " +
+                               "must never fabricate a decision when its own connection to Calyx failed")
+            }
+        }
     }
 
-    func test_scriptBody_failSafe_onlyPrintsForClaudeCodeKind() {
-        let body = ApprovalHookScript.scriptBody
-
-        guard let fnNameRange = body.range(of: "fail_safe()") else {
-            XCTFail("Script must define a fail_safe() function")
-            return
-        }
-        guard let openBrace = body.range(of: "{", range: fnNameRange.upperBound..<body.endIndex) else {
-            XCTFail("fail_safe() must have a function body")
-            return
-        }
-        guard let closeBrace = body.range(of: "\n}", range: openBrace.upperBound..<body.endIndex) else {
-            XCTFail("fail_safe()'s function body must be closed with a matching '}'")
-            return
-        }
-        let fnBody = String(body[openBrace.upperBound..<closeBrace.lowerBound])
-
-        XCTAssertTrue(fnBody.contains("claude-code"),
-                     "fail_safe must special-case kind == claude-code -- other kinds (codex, opencode) " +
-                     "print nothing")
-        XCTAssertTrue(fnBody.contains("printf"),
-                     "fail_safe must print the ask-JSON body via printf when kind is claude-code")
+    func test_scriptBody_neverContainsPermissionDecisionLiteral() {
+        XCTAssertFalse(ApprovalHookScript.scriptBody.contains("permissionDecision"),
+                      "The script must never reference the retired PreToolUse permissionDecision field " +
+                      "name -- PermissionRequest's fail-safe path is silence (no output), not a " +
+                      "fabricated JSON body")
     }
 
     func test_scriptBody_failSafe_neverPrintsAllow() {
-        XCTAssertFalse(ApprovalHookScript.scriptBody.contains("permissionDecision\":\"allow"),
+        XCTAssertFalse(ApprovalHookScript.scriptBody.contains("\"allow\""),
                       "The script must never fabricate an 'allow' decision anywhere -- a lost " +
-                      "connection or any unexpected curl failure must fail closed (ask), not open")
+                      "connection or any unexpected curl failure must fail closed (silent), never open")
     }
 
     // MARK: - scriptBody: every path exits 0

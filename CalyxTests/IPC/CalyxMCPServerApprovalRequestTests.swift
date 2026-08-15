@@ -24,6 +24,11 @@
 //  - Unknown X-Calyx-Agent-Kind and the agentHookApprovalEnabled toggle
 //    being off each short-circuit to 200 with an EMPTY body and submit
 //    nothing to the inbox
+//  - A payload's hook_event_name must be exactly "PermissionRequest" to
+//    enter the approval flow at all -- any other value (e.g. "PreToolUse",
+//    a stale pre-migration hook's own event name) or a missing key both
+//    short-circuit the same inert way (200, EMPTY body, no submission, no
+//    notification)
 //  - Global auto-approve short-circuits to 200 with an allow body,
 //    without submitting
 //  - Stage E: an AgentHookApprovalMemory hit (pane OR cross scope)
@@ -98,9 +103,18 @@ final class CalyxMCPServerApprovalRequestTests: XCTestCase {
 
     // MARK: - Request-building helpers
 
-    private func validToolCallBody(command: String = "ls -la /tmp") -> Data {
-        Data("""
-        {"tool_name":"Bash","tool_input":{"command":"\(command)"}}
+    /// `hookEventName` defaults to `"PermissionRequest"` -- the only
+    /// value `routeApprovalRequest` now advances the approval flow for
+    /// -- so every existing call site below keeps exercising its own
+    /// intended short-circuit/submission path without also needing to
+    /// pass it explicitly. Pass `nil` to omit the `hook_event_name` key
+    /// entirely, or an explicit override (e.g. `"PreToolUse"`, a stale
+    /// pre-migration hook's own event name) to drive the inert
+    /// hook-event-name-gate tests below.
+    private func validToolCallBody(command: String = "ls -la /tmp", hookEventName: String? = "PermissionRequest") -> Data {
+        let hookEventNameField = hookEventName.map { ",\"hook_event_name\":\"\($0)\"" } ?? ""
+        return Data("""
+        {"tool_name":"Bash","tool_input":{"command":"\(command)"}\(hookEventNameField)}
         """.utf8)
     }
 
@@ -133,10 +147,16 @@ final class CalyxMCPServerApprovalRequestTests: XCTestCase {
         return try XCTUnwrap(object as? [String: Any], "response body must be a JSON object")
     }
 
-    private func permissionDecision(fromResponseBody body: Data?) throws -> String {
+    /// Parses the PermissionRequest response shape
+    /// (`hookSpecificOutput.decision.behavior`), replacing the older
+    /// PreToolUse-era `hookSpecificOutput.permissionDecision` this helper
+    /// used to read -- keeping the old name here would suggest a JSON
+    /// field that no longer exists.
+    private func permissionBehavior(fromResponseBody body: Data?) throws -> String {
         let json = try responseJSON(body)
         let hookSpecificOutput = try XCTUnwrap(json["hookSpecificOutput"] as? [String: Any])
-        return try XCTUnwrap(hookSpecificOutput["permissionDecision"] as? String)
+        let decision = try XCTUnwrap(hookSpecificOutput["decision"] as? [String: Any])
+        return try XCTUnwrap(decision["behavior"] as? String)
     }
 
     /// Bounded scheduler-yield loop, so a concurrently-spawned `Task`
@@ -295,6 +315,86 @@ final class CalyxMCPServerApprovalRequestTests: XCTestCase {
                       "even with agentHookApprovalEnabled on")
     }
 
+    // MARK: - hook_event_name gate (PermissionRequest only)
+
+    /// A payload whose `hook_event_name` is anything other than
+    /// `"PermissionRequest"` -- most notably `"PreToolUse"`, the event a
+    /// pre-migration Calyx install's synchronous approval hook entry
+    /// used to fire under -- must never enter the approval flow: 200, an
+    /// EMPTY body, nothing submitted, no notification. `approvalSurfaceExists`
+    /// is pinned to true (so the stale-surface guard can't short-circuit
+    /// this for an unrelated reason).
+    ///
+    /// `approvalRequestTimeoutMs` is set short only to keep this test fast,
+    /// NOT to make a missing gate observable through `response.body`: a
+    /// not-yet-gated implementation would still submit the request and
+    /// long-poll it to a `.expired` timeout, which renders the SAME empty
+    /// body for claude-code as the intentional short-circuit (see
+    /// `test_route_timeout_claude_returnsEmptyBody`) -- `response.body`
+    /// being nil cannot distinguish the two. What does distinguish them is
+    /// `XCTAssertEqual(spy.calls.count, 0, ...)` below: `routeApprovalRequest`
+    /// posts its submission notification synchronously, before it ever
+    /// suspends on the long-poll, so a not-yet-gated implementation that
+    /// submitted would already show `spy.calls.count == 1` by the time this
+    /// `await` returns, even though the returned body still looks
+    /// identical. Do not remove that assertion as apparently redundant with
+    /// the body/pending checks above it -- it is the one that actually
+    /// catches a missing gate.
+    func test_route_hookEventNamePreToolUse_returns200EmptyBody_submitsNothing_postsNoNotification() async throws {
+        CockpitSettings.agentHookApprovalEnabled = true
+        server.approvalRequestTimeoutMs = 50
+        let approvalInbox = ApprovalInboxStore()
+        server.approvalInbox = approvalInbox
+        server.approvalSurfaceExists = { _ in true }
+
+        let spy = ApprovalHookNotificationSpy()
+        let originalManager = NotificationManager.shared
+        NotificationManager.shared = spy
+        defer { NotificationManager.shared = originalManager }
+
+        let request = approvalRequestRequest(
+            token: testToken, surfaceIDHeader: UUID().uuidString,
+            body: validToolCallBody(hookEventName: "PreToolUse")
+        )
+
+        let response = await server.route(request: request)
+
+        XCTAssertEqual(response.statusCode, 200,
+                       "a stale PreToolUse-fired POST (pre-migration install) must still return 200, " +
+                       "not an error status")
+        XCTAssertNil(response.body, "hook_event_name other than PermissionRequest must return an EMPTY body")
+        XCTAssertTrue(approvalInbox.pending.isEmpty, "must never submit a request to the inbox")
+        XCTAssertEqual(spy.calls.count, 0, "must never post a notification")
+    }
+
+    /// A payload missing `hook_event_name` entirely must be treated the
+    /// same as an unrecognized value -- inert, not a default allow-through.
+    func test_route_hookEventNameMissing_returns200EmptyBody_submitsNothing_postsNoNotification() async throws {
+        CockpitSettings.agentHookApprovalEnabled = true
+        server.approvalRequestTimeoutMs = 50
+        let approvalInbox = ApprovalInboxStore()
+        server.approvalInbox = approvalInbox
+        server.approvalSurfaceExists = { _ in true }
+
+        let spy = ApprovalHookNotificationSpy()
+        let originalManager = NotificationManager.shared
+        NotificationManager.shared = spy
+        defer { NotificationManager.shared = originalManager }
+
+        let request = approvalRequestRequest(
+            token: testToken, surfaceIDHeader: UUID().uuidString,
+            body: validToolCallBody(hookEventName: nil)
+        )
+
+        let response = await server.route(request: request)
+
+        XCTAssertEqual(response.statusCode, 200,
+                       "a payload missing hook_event_name entirely must still return 200, not an error status")
+        XCTAssertNil(response.body, "a missing hook_event_name must return an EMPTY body")
+        XCTAssertTrue(approvalInbox.pending.isEmpty, "must never submit a request to the inbox")
+        XCTAssertEqual(spy.calls.count, 0, "must never post a notification")
+    }
+
     func test_route_globalAutoApproveOn_returnsAllowBody_withoutSubmitting() async throws {
         CockpitSettings.agentHookApprovalEnabled = true
         CockpitSettings.autoApproveEnabled = true
@@ -307,7 +407,7 @@ final class CalyxMCPServerApprovalRequestTests: XCTestCase {
         let response = await server.route(request: request)
 
         XCTAssertEqual(response.statusCode, 200)
-        let decision = try permissionDecision(fromResponseBody: response.body)
+        let decision = try permissionBehavior(fromResponseBody: response.body)
         XCTAssertEqual(decision, "allow",
                        "global cockpit auto-approve being on must return an ALLOW body for the default " +
                        "(claude-code) kind, without ever consulting the inbox")
@@ -337,7 +437,7 @@ final class CalyxMCPServerApprovalRequestTests: XCTestCase {
         let response = await server.route(request: request)
 
         XCTAssertEqual(response.statusCode, 200)
-        let decision = try permissionDecision(fromResponseBody: response.body)
+        let decision = try permissionBehavior(fromResponseBody: response.body)
         XCTAssertEqual(decision, "allow",
                        "a pane-scoped Always-Allow memory hit must return an ALLOW body immediately")
         XCTAssertTrue(approvalInbox.pending.isEmpty,
@@ -362,7 +462,7 @@ final class CalyxMCPServerApprovalRequestTests: XCTestCase {
         let response = await server.route(request: request)
 
         XCTAssertEqual(response.statusCode, 200)
-        let decision = try permissionDecision(fromResponseBody: response.body)
+        let decision = try permissionBehavior(fromResponseBody: response.body)
         XCTAssertEqual(decision, "allow",
                        "a cross-scoped Always-Allow memory hit must return an ALLOW body immediately, " +
                        "regardless of which surface the request targets")
@@ -460,7 +560,7 @@ final class CalyxMCPServerApprovalRequestTests: XCTestCase {
         let response = await task.value
 
         XCTAssertEqual(response.statusCode, 200)
-        let decision = try permissionDecision(fromResponseBody: response.body)
+        let decision = try permissionBehavior(fromResponseBody: response.body)
         XCTAssertEqual(decision, "allow", "an .allowed decision must map to an ALLOW permission body")
     }
 
@@ -484,13 +584,13 @@ final class CalyxMCPServerApprovalRequestTests: XCTestCase {
         let response = await task.value
 
         XCTAssertEqual(response.statusCode, 200)
-        let decision = try permissionDecision(fromResponseBody: response.body)
+        let decision = try permissionBehavior(fromResponseBody: response.body)
         XCTAssertEqual(decision, "deny", "a .denied decision must map to a DENY permission body")
     }
 
     // MARK: - Timeout
 
-    func test_route_timeout_claude_returnsAskBody() async throws {
+    func test_route_timeout_claude_returnsEmptyBody() async throws {
         CockpitSettings.agentHookApprovalEnabled = true
         server.approvalRequestTimeoutMs = 50
         let approvalInbox = ApprovalInboxStore()
@@ -506,9 +606,9 @@ final class CalyxMCPServerApprovalRequestTests: XCTestCase {
         let response = await server.route(request: request)
 
         XCTAssertEqual(response.statusCode, 200)
-        let decision = try permissionDecision(fromResponseBody: response.body)
-        XCTAssertEqual(decision, "ask",
-                       "a claude-code request that times out unanswered must map .expired -> \"ask\"")
+        XCTAssertNil(response.body,
+                     "PermissionRequest has no fallback body for claude-code either -- a request that " +
+                     "times out unanswered must map .expired -> an EMPTY body, never a fabricated decision")
         XCTAssertTrue(approvalInbox.pending.isEmpty, "a timed-out request must no longer be pending")
     }
 
@@ -585,17 +685,17 @@ final class CalyxMCPServerApprovalRequestTests: XCTestCase {
                       "cancelling the Task running route(request:) must expire the pending request, " +
                       "removing its banner")
         XCTAssertEqual(response.statusCode, 200)
-        let decision = try permissionDecision(fromResponseBody: response.body)
-        XCTAssertEqual(decision, "ask",
-                       "a mid-poll cancellation resolves as expired, mapped to \"ask\" for the default claude-code kind")
+        XCTAssertNil(response.body,
+                     "a mid-poll cancellation resolves as expired, which has no fallback body under " +
+                     "PermissionRequest for either CLI kind")
     }
 
     // MARK: - Server stop mid-poll
 
     func test_serverStop_expiresPendingHookApproval_returnsFailSafeBody() async throws {
-        let cases: [(label: String, kindHeader: String?, expectedDecision: String?)] = [
-            ("claude-code (default)", nil, "ask"),
-            ("codex", "codex", nil),
+        let cases: [(label: String, kindHeader: String?)] = [
+            ("claude-code (default)", nil),
+            ("codex", "codex"),
         ]
 
         for testCase in cases {
@@ -626,14 +726,9 @@ final class CalyxMCPServerApprovalRequestTests: XCTestCase {
             let response = await task.value
             XCTAssertEqual(response.statusCode, 200,
                            "[\(testCase.label)] the held route must still return 200 once stop() resolves it")
-            if let expectedDecision = testCase.expectedDecision {
-                let decision = try permissionDecision(fromResponseBody: response.body)
-                XCTAssertEqual(decision, expectedDecision, "[\(testCase.label)]")
-            } else {
-                XCTAssertNil(response.body,
-                             "[\(testCase.label)] codex has no \"ask\" analog -- stop()'s fail-safe expiry " +
-                             "must return an EMPTY body, not a decision JSON")
-            }
+            XCTAssertNil(response.body,
+                         "[\(testCase.label)] PermissionRequest has no fallback body for either CLI kind -- " +
+                         "stop()'s fail-safe expiry must return an EMPTY body, never a fabricated decision")
         }
     }
 

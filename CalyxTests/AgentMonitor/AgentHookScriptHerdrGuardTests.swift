@@ -70,91 +70,42 @@ final class AgentHookScriptHerdrGuardTests: XCTestCase {
 
     // MARK: - Properties
 
-    private var rootDir: String!
-    private var tempHome: String!
-    private var appSupportDir: String!
-    private var fakeBinDir: String!
+    private var fixture: FakeCurlScriptFixture!
     private var recordPath: String!
-    private var scriptPath: String!
 
     // MARK: - Lifecycle
 
     override func setUp() {
         super.setUp()
-        rootDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString).path
-        tempHome = rootDir + "/home"
-        appSupportDir = tempHome + "/Library/Application Support/Calyx"
-        fakeBinDir = rootDir + "/fakebin"
-        recordPath = rootDir + "/curl-invocations.log"
-        try! FileManager.default.createDirectory(atPath: appSupportDir, withIntermediateDirectories: true)
-
-        try! AgentEndpointFile.write(port: 41830, token: "herdr-guard-test-token", directory: appSupportDir)
-        scriptPath = try! AgentHookScript.install(toDirectory: appSupportDir + "/bin")
-        try! makeFakeCurl(atDirectory: fakeBinDir, recordingTo: recordPath)
+        fixture = try! makeFakeCurlScriptFixture(
+            port: 41_830, token: "herdr-guard-test-token",
+            install: AgentHookScript.install(toDirectory:)
+        )
+        recordPath = fixture.rootDir + "/curl-invocations.log"
+        try! makeFakeCurl(atDirectory: fixture.fakeBinDir, recordingTo: recordPath)
     }
 
     override func tearDown() {
-        if let rootDir { try? FileManager.default.removeItem(atPath: rootDir) }
-        rootDir = nil
-        tempHome = nil
-        appSupportDir = nil
-        fakeBinDir = nil
+        if let fixture { try? FileManager.default.removeItem(atPath: fixture.rootDir) }
+        fixture = nil
         recordPath = nil
-        scriptPath = nil
         super.tearDown()
     }
 
     // MARK: - Helpers
-
-    /// Writes a fake `curl` executable at `<dir>/curl` that drains its
-    /// own stdin (so the real script's `--data-binary @-` never leaves
-    /// anything unread), appends one "invoked" line to `recordPath` --
-    /// baked directly into this script's own body, not threaded
-    /// through an env var the real calyx-agent-hook script never
-    /// forwards to curl anyway -- and exits 0.
-    private func makeFakeCurl(atDirectory dir: String, recordingTo recordPath: String) throws {
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        let curlPath = dir + "/curl"
-        let body = """
-        #!/bin/sh
-        cat > /dev/null
-        printf 'invoked\\n' >> "\(recordPath)"
-        exit 0
-        """
-        try body.write(toFile: curlPath, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: curlPath)
-    }
 
     private func curlInvocationCount() -> Int {
         guard let text = try? String(contentsOfFile: recordPath, encoding: .utf8) else { return 0 }
         return text.split(separator: "\n").count
     }
 
-    /// Runs the installed `calyx-agent-hook` script as a real child
-    /// process (`/bin/sh <script>`), with `fakeBinDir` prepended to
-    /// PATH (ahead of the real system PATH, so `curl` resolves to the
-    /// fake one while `sed` etc. still resolve normally) and `extraEnv`
-    /// merged on top of the base HOME/PATH environment.
+    /// Runs the installed `calyx-agent-hook` script via the shared
+    /// `FakeCurlScriptFixture` harness (see FakeCurlScriptFixture.swift),
+    /// discarding its stdout -- every assertion in this file is about
+    /// curl's INVOCATION count, never the printed response body.
     @discardableResult
     private func runHookScript(stdinJSON: String, extraEnv: [String: String]) throws -> Int32 {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = [scriptPath]
-
-        let inheritedPath = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin:/usr/local/bin"
-        var env = ["HOME": tempHome!, "PATH": "\(fakeBinDir!):\(inheritedPath)"]
-        for (key, value) in extraEnv { env[key] = value }
-        process.environment = env
-
-        let stdinPipe = Pipe()
-        process.standardInput = stdinPipe
-
-        try process.run()
-        stdinPipe.fileHandleForWriting.write(Data(stdinJSON.utf8))
-        stdinPipe.fileHandleForWriting.closeFile()
-        process.waitUntilExit()
-        return process.terminationStatus
+        try runFakeCurlHookScript(fixture, stdinJSON: stdinJSON, extraEnv: extraEnv).exitCode
     }
 
     private let sampleStdin = """

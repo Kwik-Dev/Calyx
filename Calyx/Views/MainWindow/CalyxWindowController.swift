@@ -5235,7 +5235,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
             // degrades the Agents sidebar silently for the rest of the
             // session. `[]` when every tool installed cleanly, clearing
             // any banner left over from a prior enable attempt.
-            AgentRegistry.shared.setHooksIssues(Self.hooksIssueMessages(hooksResult))
+            AgentRegistry.shared.setHooksIssues(hooksResult.issueMessages)
 
             showIPCAlert(
                 title: "IPC Enabled",
@@ -5299,22 +5299,6 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
             configStatusLabel(result.codex, name: "Codex hooks", verb: verb),
             configStatusLabel(result.openCode, name: "OpenCode plugin", verb: verb),
         ].joined(separator: "\n")
-    }
-
-    /// One `"<name>: <localizedDescription>"` line per `.failed` tool in
-    /// `result`, for `AgentRegistry.hooksIssues`'s persistent sidebar
-    /// banner. `[]` when every tool installed successfully (or was
-    /// skipped) — `AgentStatusView` only renders the banner when this is
-    /// non-empty.
-    private static func hooksIssueMessages(_ result: AgentHooksResult) -> [String] {
-        [
-            ("Claude Code hooks", result.claudeCode),
-            ("Codex hooks", result.codex),
-            ("OpenCode plugin", result.openCode),
-        ].compactMap { name, status in
-            guard case .failed(let error) = status else { return nil }
-            return "\(name): \(error.localizedDescription)"
-        }
     }
 
     // MARK: - AI Agent Tab Detection

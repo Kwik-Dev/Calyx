@@ -119,18 +119,52 @@ final class CodexHooksConfigManagerTests: XCTestCase {
         XCTAssertEqual(occurrences(of: expectedCommandLine, in: content), Self.expectedEvents.count,
                        "Each of the 6 events must still get its own exact monitor command entry")
         XCTAssertEqual(occurrences(of: "type = \"command\"", in: content), Self.expectedEvents.count + 1,
-                       "6 monitor entries plus PreToolUse's extra synchronous approval entry")
+                       "6 monitor entries plus PermissionRequest's extra synchronous approval entry")
         XCTAssertEqual(occurrences(of: "timeout = 5", in: content), Self.expectedEvents.count,
                        "Only the 6 monitor entries use timeout = 5")
 
-        // Stage C: PreToolUse alone gets a second [[hooks.PreToolUse]] pair
-        // for the new synchronous approval entry.
-        XCTAssertEqual(occurrences(of: "[[hooks.PreToolUse]]", in: content), 2,
-                       "PreToolUse must have two array-of-tables pairs: the monitor entry and the approval entry")
+        // PermissionRequest alone gets a second [[hooks.PermissionRequest]]
+        // pair for the new synchronous approval entry; PreToolUse keeps
+        // only its single monitor-entry pair.
+        XCTAssertEqual(occurrences(of: "[[hooks.PreToolUse]]", in: content), 1,
+                       "PreToolUse must have exactly one array-of-tables pair: the monitor entry only")
+        XCTAssertEqual(occurrences(of: "[[hooks.PermissionRequest]]", in: content), 2,
+                       "PermissionRequest must have two array-of-tables pairs: the monitor entry and the approval entry")
         XCTAssertEqual(occurrences(of: expectedApprovalCommandLine, in: content), 1,
-                       "PreToolUse's approval entry must POST through calyx-approval-hook with the codex argv")
+                       "PermissionRequest's approval entry must POST through calyx-approval-hook with the codex argv")
         XCTAssertEqual(occurrences(of: "timeout = 600", in: content), 1,
                        "The approval entry's timeout must be 600 (ApprovalHookTiming.hookEntryTimeoutSeconds)")
+    }
+
+    // The approval entry's own contiguous TOML block must sit under
+    // [[hooks.PermissionRequest]], never under [[hooks.PreToolUse]] --
+    // PermissionRequest fires only once the CLI has already decided it
+    // needs to show a confirmation prompt, unlike PreToolUse, which fires
+    // for every tool call regardless of whether it needs approval.
+    func test_installHooks_approvalEntry_isNestedUnderPermissionRequestNotPreToolUse() throws {
+        try CodexHooksConfigManager.installHooks(scriptPath: scriptPath, approvalScriptPath: approvalScriptPath, configPath: configPath)
+        let content = readConfig()
+
+        let approvalUnderPermissionRequest = """
+        [[hooks.PermissionRequest]]
+        [[hooks.PermissionRequest.hooks]]
+        type = "command"
+        \(expectedApprovalCommandLine)
+        timeout = 600
+        """
+        XCTAssertTrue(content.contains(approvalUnderPermissionRequest),
+                      "The approval entry's exact contiguous TOML block must be nested under " +
+                      "[[hooks.PermissionRequest]]")
+
+        let approvalUnderPreToolUse = """
+        [[hooks.PreToolUse]]
+        [[hooks.PreToolUse.hooks]]
+        type = "command"
+        \(expectedApprovalCommandLine)
+        timeout = 600
+        """
+        XCTAssertFalse(content.contains(approvalUnderPreToolUse),
+                       "The approval entry must never be nested under [[hooks.PreToolUse]]")
     }
 
     func test_installHooks_eachEventPairsTableThenHooksTableInOrder() throws {
@@ -195,7 +229,7 @@ final class CodexHooksConfigManagerTests: XCTestCase {
         XCTAssertEqual(occurrences(of: expectedCommandLine, in: content), Self.expectedEvents.count,
                        "Reinstalling must not duplicate per-event monitor command entries")
         XCTAssertEqual(occurrences(of: expectedApprovalCommandLine, in: content), 1,
-                       "Reinstalling must not duplicate the PreToolUse approval command entry")
+                       "Reinstalling must not duplicate the PermissionRequest approval command entry")
         let afterModificationDate = try FileManager.default.attributesOfItem(atPath: configPath)[.modificationDate] as? Date
         XCTAssertEqual(beforeModificationDate, afterModificationDate,
                        "An unchanged reinstall must not rewrite Codex's shared config file")
@@ -280,8 +314,8 @@ final class CodexHooksConfigManagerTests: XCTestCase {
         USER_OWNED_SETTING = "preserve-me"
         """
         let approvalEntry = """
-        [[hooks.PreToolUse]]
-        [[hooks.PreToolUse.hooks]]
+        [[hooks.PermissionRequest]]
+        [[hooks.PermissionRequest.hooks]]
         type = "command"
         \(expectedApprovalCommandLine)
         timeout = 600
@@ -324,6 +358,120 @@ final class CodexHooksConfigManagerTests: XCTestCase {
             XCTAssertLessThan(foreignRange.lowerBound, beginRange.lowerBound,
                               "Preserved foreign tables must move outside Calyx's deletable block")
         }
+    }
+
+    // MARK: - Migration: approval entry moves from PreToolUse to PermissionRequest
+
+    /// One event's `[[hooks.X]]` + `[[hooks.X.hooks]]` pair using
+    /// `scriptPath`, hand-built to match `CodexHooksConfigManager`'s own
+    /// private `hookEntry(eventName:scriptPath:)` shape -- reproduced
+    /// here (rather than called directly, since it's private) so this
+    /// file can hand-construct a specific pre-migration fixture
+    /// independent of the very code that fixture exists to protect.
+    private func monitorEntry(eventName: String) -> String {
+        """
+        [[hooks.\(eventName)]]
+        [[hooks.\(eventName).hooks]]
+        type = "command"
+        command = '"\(scriptPath!)" codex'
+        timeout = 5
+        """
+    }
+
+    /// The exact contiguous TOML block `CodexHooksConfigManager`'s own
+    /// `approvalHookEntry` generated before this migration: nested under
+    /// `[[hooks.PreToolUse]]` (alongside PreToolUse's own monitor entry)
+    /// rather than `[[hooks.PermissionRequest]]`.
+    private var preMigrationApprovalEntryUnderPreToolUse: String {
+        """
+        [[hooks.PreToolUse]]
+        [[hooks.PreToolUse.hooks]]
+        type = "command"
+        \(expectedApprovalCommandLine)
+        timeout = 600
+        """
+    }
+
+    /// A full, well-formed (BEGIN...END, no orphan) config a pre-migration
+    /// Calyx version would have written: a user-owned `profile` root key,
+    /// then the 6 monitor entries, then the synchronous approval entry
+    /// nested under `[[hooks.PreToolUse]]`.
+    private var preMigrationConfig: String {
+        (["profile = \"default\"", Self.beginLine]
+            + Self.expectedEvents.map { monitorEntry(eventName: $0) }
+            + [preMigrationApprovalEntryUnderPreToolUse, Self.endLine]).joined(separator: "\n")
+    }
+
+    /// A config written by a pre-migration Calyx version has the
+    /// synchronous approval entry nested under `[[hooks.PreToolUse]]`
+    /// alongside its own monitor entry -- the shape
+    /// `CodexHooksConfigManager.approvalHookEntry` generated before this
+    /// migration. Reinstalling with the current implementation must
+    /// relocate it to `[[hooks.PermissionRequest]]`, without duplicating
+    /// any event's monitor entry -- installHooks' own idempotent re-run
+    /// doubles as the migration path, with no separate migration function
+    /// needed. Mirrors ClaudeHooksConfigManagerTests'
+    /// test_installHooks_reinstallOverOldPreToolUseApprovalEntry_migratesApprovalEntryToPermissionRequest.
+    ///
+    /// This is the actual upgrade path a user who installed Calyx before
+    /// this migration goes through, so it pins `removingManagedBlock` /
+    /// `foreignTableLines` / `isCalyxGeneratedBlockLine` against a future
+    /// change that stops recognizing the old PreToolUse-nested approval
+    /// entry as Calyx-owned -- which would instead preserve it as foreign
+    /// TOML outside the markers, leaving a stale synchronous PreToolUse
+    /// approval hook active indefinitely.
+    func test_installHooks_reinstallOverOldPreToolUseApprovalEntry_migratesApprovalEntryToPermissionRequest() throws {
+        writeConfig(preMigrationConfig)
+
+        try CodexHooksConfigManager.installHooks(scriptPath: scriptPath, approvalScriptPath: approvalScriptPath, configPath: configPath)
+
+        let content = readConfig()
+        XCTAssertTrue(content.contains("profile = \"default\""), "The user's own root key must survive the migration")
+        XCTAssertEqual(occurrences(of: "[[hooks.PreToolUse]]", in: content), 1,
+                       "PreToolUse must end up with exactly one pair -- its own monitor entry -- once the " +
+                       "pre-migration approval entry has moved to PermissionRequest")
+        XCTAssertEqual(occurrences(of: "[[hooks.PermissionRequest]]", in: content), 2,
+                       "PermissionRequest must end up with both pairs: its own monitor entry and the " +
+                       "migrated approval entry")
+        XCTAssertEqual(occurrences(of: expectedCommandLine, in: content), Self.expectedEvents.count,
+                       "Reinstalling over a pre-migration config must not duplicate any event's monitor entry")
+        XCTAssertEqual(occurrences(of: expectedApprovalCommandLine, in: content), 1,
+                       "The approval entry must reappear exactly once, not duplicated")
+
+        let approvalUnderPermissionRequest = """
+        [[hooks.PermissionRequest]]
+        [[hooks.PermissionRequest.hooks]]
+        type = "command"
+        \(expectedApprovalCommandLine)
+        timeout = 600
+        """
+        XCTAssertTrue(content.contains(approvalUnderPermissionRequest),
+                      "The migrated approval entry's exact contiguous TOML block must be nested under " +
+                      "[[hooks.PermissionRequest]]")
+    }
+
+    /// The same pre-migration shape run through `removeHooks` instead of
+    /// a reinstall: the old PreToolUse-nested approval entry must be
+    /// removed as part of the whole managed block, not preserved as
+    /// foreign TOML outside the markers -- surviving there would leave a
+    /// stale synchronous PreToolUse approval hook active even after
+    /// uninstall. The user's own `profile` root key must still survive,
+    /// so an implementation that over-deletes (e.g. stripping everything
+    /// including unrelated user content) can't pass this vacuously.
+    func test_removeHooks_preMigrationConfig_removesOldPreToolUseApprovalEntryToo() throws {
+        writeConfig(preMigrationConfig)
+
+        try CodexHooksConfigManager.removeHooks(configPath: configPath)
+
+        let content = readConfig()
+        XCTAssertTrue(content.contains("profile = \"default\""),
+                      "The user's own root key must survive an uninstall of a pre-migration config")
+        XCTAssertFalse(content.contains(Self.beginLine), "The whole managed block must be removed")
+        XCTAssertFalse(content.contains(expectedCommandLine), "No monitor entry may survive")
+        XCTAssertFalse(content.contains(expectedApprovalCommandLine),
+                       "The pre-migration PreToolUse-nested approval entry must be removed too, not " +
+                       "preserved as foreign TOML outside the markers")
+        XCTAssertFalse(content.contains("[[hooks.PreToolUse]]"))
     }
 
     // MARK: - removeHooks
@@ -463,8 +611,11 @@ final class CodexHooksConfigManagerTests: XCTestCase {
         XCTAssertEqual(occurrences(of: Self.beginLine, in: content), 1,
                        "Self-healing an orphan BEGIN (with a stale approval entry) and reinstalling " +
                        "must leave exactly one BEGIN marker")
-        XCTAssertEqual(occurrences(of: "[[hooks.PreToolUse]]", in: content), 2,
-                       "A clean reinstall must still write both PreToolUse pairs (monitor + approval)")
+        XCTAssertEqual(occurrences(of: "[[hooks.PreToolUse]]", in: content), 1,
+                       "A clean reinstall must write PreToolUse's monitor entry only -- the approval " +
+                       "entry no longer belongs there")
+        XCTAssertEqual(occurrences(of: "[[hooks.PermissionRequest]]", in: content), 2,
+                       "A clean reinstall must write both PermissionRequest pairs (monitor + approval)")
         XCTAssertEqual(occurrences(of: expectedApprovalCommandLine, in: content), 1,
                        "The freshly-wrapped approval entry must reference the current approvalScriptPath")
     }

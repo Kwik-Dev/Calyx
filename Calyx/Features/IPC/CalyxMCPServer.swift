@@ -453,14 +453,40 @@ final class CalyxMCPServer {
 
     /// Handles `POST /approval-request`, the long-poll endpoint the
     /// `calyx-approval-hook` script blocks on from a CLI agent's
-    /// PreToolUse hook while a human decides whether to allow its next
-    /// tool call. Contract, in order: bearer auth (401) -> body present
-    /// (400) -> body.count <= maxEventBodyBytes, checked BEFORE decode
-    /// (413, mirrors `routeCommandEvent`) -> `AgentHookToolCall.decode` (400)
-    /// -> `resolveSurfaceID` (400) -> an unrecognized `X-Calyx-Agent-Kind`
-    /// (anything other than claude-code/codex) short-circuits to 200
-    /// with an EMPTY body, never submitting anything ->
-    /// `CockpitSettings.agentHookApprovalEnabled` being off does the
+    /// PermissionRequest hook while a human decides whether to allow its
+    /// next tool call. Contract, in order: bearer auth (401) -> body
+    /// present (400) -> body.count <= maxEventBodyBytes, checked BEFORE
+    /// decode (413, mirrors `routeCommandEvent`) -> `AgentHookToolCall.decode`
+    /// (400) -> `resolveSurfaceID` (400) -> an unrecognized
+    /// `X-Calyx-Agent-Kind` (anything other than claude-code/codex)
+    /// short-circuits to 200 with an EMPTY body, never submitting
+    /// anything -> `call.hookEventName != "PermissionRequest"` (anything
+    /// else, including a missing key, or `"PreToolUse"` specifically)
+    /// short-circuits the same inert way. NOT harmless during the
+    /// migration window it exists for: a CLI session already running
+    /// before an app update re-migrates `settings.json`/`config.toml`
+    /// (see `AgentHooksCoordinator.resyncInstalled()`, run from
+    /// `AppDelegate.applicationDidFinishLaunching`) keeps the hook
+    /// snapshot it loaded at its own startup, so it keeps POSTing here
+    /// with `hook_event_name: "PreToolUse"` from the OLD synchronous
+    /// approval entry for as long as it stays alive. Before this
+    /// migration that same POST reached the auto-approve /
+    /// Always-Allow-memory / inbox-submission branches below;
+    /// short-circuiting it here instead means that, until such a
+    /// session restarts, no Calyx banner shows for its tool calls, and
+    /// any confirmation cockpit auto-approve or a remembered
+    /// Always-Allow used to suppress silently now surfaces instead as
+    /// that CLI's own local prompt, with no reason shown. Answering in
+    /// the OLD `PreToolUse` shape here to close that gap is not an
+    /// option: `PreToolUse` fires for every tool call regardless of
+    /// whether the CLI itself would ever show a confirmation for it, so
+    /// a real decision on this path would resurrect, for old sessions
+    /// only, exactly the over-prompting this migration to
+    /// `PermissionRequest` exists to remove for everyone (see
+    /// `ClaudeHooksConfigManager.installHooks`'s own doc comment).
+    /// Staying inert is the smaller, temporary cost, and resolves
+    /// itself the moment the session restarts and reloads its migrated
+    /// config -> `CockpitSettings.agentHookApprovalEnabled` being off does the
     /// same -> global auto-approve (`!ApprovalPolicy.requiresApproval()`)
     /// short-circuits to 200 with an ALLOW body, also without ever
     /// submitting -> a Stage E `agentHookApprovalMemory.isAutoAllowed`
@@ -478,16 +504,17 @@ final class CalyxMCPServer {
     ///
     /// (a) THE RESPONSE BODY IS THE HOOK'S STDOUT, BYTE FOR BYTE --
     ///     Claude Code / Codex parse it directly as their own
-    ///     PreToolUse hook JSON contract (see
+    ///     PermissionRequest hook JSON contract (see
     ///     `AgentHookPermissionResponse`'s header comment). Nothing here
     ///     may wrap, prepend, or otherwise reshape it.
     ///
     /// (b) Fail-safe mapping: every path that resolves without a genuine
     ///     human decision (timed-out long-poll, `server.stop()`'s drain,
     ///     or this call's own Task being cancelled mid-poll) maps to
-    ///     `.expired`, which `AgentHookPermissionResponse` renders as
-    ///     "ask" for claude-code (defer to Claude Code's own prompt) or
-    ///     an empty body for codex (no "ask" analog there) -- NEVER
+    ///     `.expired`, which `AgentHookPermissionResponse` renders as an
+    ///     EMPTY body for both claude-code and codex -- neither CLI has
+    ///     an "ask" analog under PermissionRequest, so absent output
+    ///     lets that CLI's own confirmation prompt take over -- NEVER
     ///     "allow". `awaitDecisionHonoringCancellation` is what re-maps an
     ///     `.allowed` decision that raced a concurrent cancellation of
     ///     this call's own Task to `.expired` -- see that method's own
@@ -537,6 +564,14 @@ final class CalyxMCPServer {
             // An agent CLI Calyx doesn't have a hook-response contract
             // for at all (see `AgentHookPermissionResponse`'s own
             // fail-safe contract) -- never submit to the inbox for one.
+            return HTTPParser.response(statusCode: 200, body: nil)
+        }
+
+        guard call.hookEventName == ApprovalHookEvent.name else {
+            // A stale PreToolUse-fired POST (a not-yet-migrated install,
+            // see this method's own doc comment) or any other/missing
+            // hook_event_name -- inert, same as the unrecognized-kind
+            // guard above, never submitted to the inbox.
             return HTTPParser.response(statusCode: 200, body: nil)
         }
 
