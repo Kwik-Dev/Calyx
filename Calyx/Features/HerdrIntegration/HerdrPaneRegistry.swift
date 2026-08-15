@@ -18,6 +18,35 @@
 // -- two surfaces must never simultaneously claim to bridge the same
 // herdr pane.
 //
+// BRIDGE OBSERVER (HerdrPaneBridgeObserver, set via setBridgeObserver):
+// a single, weakly-held observer notified of every ref whose bridge
+// state changed, once the triggering register/unregister mutation has
+// already completed -- mirrors HerdrStructureEventObserver's own weak
+// single-observer shape (HerdrIntegrationCoordinator.swift) exactly.
+// register(surfaceID:ref:) fires once for the newly registered ref, and
+// -- only when it displaces a DIFFERENT ref previously held by the SAME
+// surfaceID -- once more, first, for that displaced ref. A call that
+// changes nothing (the same surfaceID re-registered with the IDENTICAL
+// ref) fires nothing at all, mirroring unregister's own "notified only
+// when a removal actually happened" contract below. The
+// single-controller eviction path above fires only for the newly
+// registered ref, never once per surfaceID the mutation happens to
+// touch, since the evicted surfaceID's own ref is identical to the one
+// already being reported -- adequate for a consumer that matches by the
+// ref's own resolved pane, as HerdrAgentMirror does, but not a general
+// guarantee: the payload carries the ref alone, never a surfaceID, so
+// it cannot tell any observer that a SPECIFIC surfaceID (the evicted
+// one) stopped bridging. No call site reaches that gap today --
+// register's only two production callers are session restore and
+// workspace attach, and workspace attach's own focusExistingTab guard
+// (HerdrTabCoordinator.openWorkspace) already returns before
+// re-attaching a workspace whose panes it previously registered -- but
+// an observer needing a per-surface bridge-loss signal would need a
+// different notification than this one. The .calyxSurfaceDestroyed
+// self-prune path below routes through unregister, so it inherits this
+// notification for free, identical to a direct unregister(surfaceID:)
+// call.
+//
 // Pruned via .calyxSurfaceDestroyed (AgentRegistry.swift's notification,
 // posted by SurfaceRegistry.destroySurface with userInfo["surfaceID"])
 // -- mirrors HerdrHostedSurfaces's identical prune-on-teardown shape
@@ -41,6 +70,24 @@
 
 import Foundation
 
+// MARK: - HerdrPaneBridgeObserver
+
+/// Notified whenever a herdr pane's bridge state changes: a
+/// (socketPath, paneID) becomes newly bridged to a Calyx surface, an
+/// existing bridge moves to a different surface, or a bridge is
+/// removed. Fired AFTER the triggering `register`/`unregister` mutation
+/// has already completed, with the affected `HerdrPaneRef`.
+/// `setBridgeObserver` stores its argument WEAKLY, mirroring
+/// `HerdrStructureEventObserver`'s own weak single-observer shape
+/// (`HerdrIntegrationCoordinator.swift`) exactly: this registry never
+/// owns an observer's own lifecycle.
+@MainActor
+protocol HerdrPaneBridgeObserver: AnyObject {
+    func herdrPaneBridgeDidChange(ref: HerdrPaneRef)
+}
+
+// MARK: - HerdrPaneRegistry
+
 @MainActor
 final class HerdrPaneRegistry: NSObject {
 
@@ -50,8 +97,20 @@ final class HerdrPaneRegistry: NSObject {
     private var surfaceIDByPaneKey: [String: UUID] = [:]
     private var isObserving = false
 
+    /// See `HerdrPaneBridgeObserver`'s own doc comment -- stored
+    /// WEAKLY, set via `setBridgeObserver`, never through `init`.
+    private weak var bridgeObserver: (any HerdrPaneBridgeObserver)?
+
     override init() {
         super.init()
+    }
+
+    /// Registers `observer` to be notified of every bridge-state change
+    /// -- see `HerdrPaneBridgeObserver`'s own doc comment. Stored
+    /// WEAKLY: pass `nil` to clear; a deallocated observer simply stops
+    /// being notified rather than being kept alive by this registry.
+    func setBridgeObserver(_ observer: (any HerdrPaneBridgeObserver)?) {
+        bridgeObserver = observer
     }
 
     /// Idempotent: a second call is a no-op, mirroring
@@ -69,24 +128,49 @@ final class HerdrPaneRegistry: NSObject {
     /// the old (socketPath, paneID) reverse mapping. If some OTHER
     /// surfaceID already claims `ref`'s (socketPath, paneID) pair, that
     /// surfaceID is evicted entirely first (single-controller invariant:
-    /// see this file's header).
+    /// see this file's header). Notifies the bridge observer once the
+    /// mutation has fully completed, but only when the registry's state
+    /// actually changed as a result -- see this file's header "BRIDGE
+    /// OBSERVER" for the exact firing rules.
     func register(surfaceID: UUID, ref: HerdrPaneRef) {
-        if let previousRef = refsBySurfaceID[surfaceID] {
+        let previousRef = refsBySurfaceID[surfaceID]
+        let key = Self.paneKey(ref)
+        // Captured BEFORE any mutation below: a fully idempotent
+        // re-register (previousRef == ref) removes and immediately
+        // re-adds this same key's entry, so reading it any later would
+        // see this call's own re-insertion instead of the prior state.
+        let priorOwnerOfKey = surfaceIDByPaneKey[key]
+
+        if let previousRef {
             surfaceIDByPaneKey.removeValue(forKey: Self.paneKey(previousRef))
         }
-        let key = Self.paneKey(ref)
         if let priorSurfaceID = surfaceIDByPaneKey[key], priorSurfaceID != surfaceID {
             refsBySurfaceID.removeValue(forKey: priorSurfaceID)
         }
         refsBySurfaceID[surfaceID] = ref
         surfaceIDByPaneKey[key] = surfaceID
+
+        if let previousRef, previousRef != ref {
+            bridgeObserver?.herdrPaneBridgeDidChange(ref: previousRef)
+        }
+        // Fires for the new ref unless NOTHING changed: this surfaceID
+        // already held this exact ref, and this exact ref's key was
+        // already owned by this same surfaceID (the two can only ever
+        // disagree if the registry's own forward/reverse maps have
+        // fallen out of sync with each other).
+        if previousRef != ref || priorOwnerOfKey != surfaceID {
+            bridgeObserver?.herdrPaneBridgeDidChange(ref: ref)
+        }
     }
 
     /// Removes `surfaceID` from both the forward and reverse mapping.
-    /// A `surfaceID` never registered is a no-op.
+    /// A `surfaceID` never registered is a no-op -- including for the
+    /// bridge observer, which is notified only when a removal actually
+    /// happened.
     func unregister(surfaceID: UUID) {
         guard let ref = refsBySurfaceID.removeValue(forKey: surfaceID) else { return }
         surfaceIDByPaneKey.removeValue(forKey: Self.paneKey(ref))
+        bridgeObserver?.herdrPaneBridgeDidChange(ref: ref)
     }
 
     /// Whether `surfaceID` currently bridges a herdr pane.

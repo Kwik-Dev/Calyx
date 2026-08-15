@@ -2,7 +2,7 @@
 //  HerdrPaneRegistryTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for HerdrPaneRegistry: paneID-to-surfaceID
+//  Tests: HerdrPaneRegistry, the paneID-to-surfaceID
 //  side table, keyed both ways --
 //    surfaceID -> HerdrPaneRef (which herdr pane a given ghostty surface
 //    bridges)
@@ -55,9 +55,44 @@
 //  - registering a DIFFERENT surfaceID for a (socketPath, paneID) pair
 //    an existing surfaceID already claims evicts the existing surfaceID
 //
+//  BRIDGE OBSERVER (HerdrPaneBridgeObserver, set via setBridgeObserver):
+//  a single weakly-held observer, notified of every ref whose bridge
+//  state changed, once the triggering mutation has already completed.
+//  Mirrors HerdrStructureEventObserver's own weak single-observer shape
+//  (HerdrIntegrationCoordinator.swift) exactly.
+//  - register(surfaceID:ref:) notifies the observer once, with the
+//    newly registered ref
+//  - re-registering the SAME surfaceID with the IDENTICAL ref (a fully
+//    idempotent call that changes nothing) notifies the observer nothing
+//    at all
+//  - unregister(surfaceID:) of a registered surfaceID notifies the
+//    observer once, with the removed ref; of a surfaceID never
+//    registered, notifies nothing
+//  - re-registering the SAME surfaceID with a DIFFERENT ref notifies the
+//    observer twice: once for the old ref, once for the new one
+//  - the single-controller eviction path (register(surfaceID:ref:) for a
+//    (socketPath, paneID) pair another surfaceID already claims)
+//    notifies the observer exactly once, for the newly registered ref --
+//    never once per surfaceID the mutation touches
+//  - the .calyxSurfaceDestroyed self-prune path notifies the observer
+//    for the pruned ref, exactly like a direct unregister(surfaceID:)
+//    call would
+//  - the observer is held weakly: once the only strong reference to it
+//    is dropped, a later register(surfaceID:ref:)/unregister(surfaceID:)
+//    neither crashes nor notifies anything
+//
 
 import XCTest
 @testable import Calyx
+
+@MainActor
+private final class RecordingBridgeObserver: HerdrPaneBridgeObserver {
+    private(set) var receivedRefs: [HerdrPaneRef] = []
+
+    func herdrPaneBridgeDidChange(ref: HerdrPaneRef) {
+        receivedRefs.append(ref)
+    }
+}
 
 @MainActor
 final class HerdrPaneRegistryTests: XCTestCase {
@@ -218,6 +253,154 @@ final class HerdrPaneRegistryTests: XCTestCase {
         XCTAssertEqual(
             registry.surfaceID(forPaneID: "wB:p1", socketPath: "/Users/dev/.config/herdr/herdr.sock"),
             secondSurface
+        )
+    }
+
+    // MARK: - Bridge observer: register
+
+    func test_register_firesBridgeObserverOnce_withRegisteredRef() {
+        let observer = RecordingBridgeObserver()
+        registry.setBridgeObserver(observer)
+        let surfaceID = UUID()
+        let ref = HerdrPaneRef(socketPath: "/Users/dev/.config/herdr/herdr.sock", paneID: "wB:p1")
+
+        registry.register(surfaceID: surfaceID, ref: ref)
+
+        XCTAssertEqual(
+            observer.receivedRefs, [ref],
+            "register must fire the bridge observer exactly once, with the newly registered ref"
+        )
+    }
+
+    // MARK: - Bridge observer: idempotent re-register
+
+    func test_register_sameSurfaceIDSameRef_firesBridgeObserverNothing() {
+        let surfaceID = UUID()
+        let ref = HerdrPaneRef(socketPath: "/Users/dev/.config/herdr/herdr.sock", paneID: "wB:p1")
+        registry.register(surfaceID: surfaceID, ref: ref)
+        let observer = RecordingBridgeObserver()
+        registry.setBridgeObserver(observer)
+
+        registry.register(surfaceID: surfaceID, ref: ref)
+
+        XCTAssertTrue(
+            observer.receivedRefs.isEmpty,
+            "re-registering the same surfaceID with the identical ref changes nothing in the registry and must " +
+            "not fire the bridge observer at all"
+        )
+    }
+
+    // MARK: - Bridge observer: unregister
+
+    func test_unregister_ofRegisteredSurfaceID_firesBridgeObserverOnce_withRemovedRef() {
+        let surfaceID = UUID()
+        let ref = HerdrPaneRef(socketPath: "/Users/dev/.config/herdr/herdr.sock", paneID: "wB:p1")
+        registry.register(surfaceID: surfaceID, ref: ref)
+        let observer = RecordingBridgeObserver()
+        registry.setBridgeObserver(observer)
+
+        registry.unregister(surfaceID: surfaceID)
+
+        XCTAssertEqual(
+            observer.receivedRefs, [ref],
+            "unregister must fire the bridge observer exactly once, with the removed ref"
+        )
+    }
+
+    func test_unregister_ofNeverRegisteredSurfaceID_firesBridgeObserverNothing() {
+        let observer = RecordingBridgeObserver()
+        registry.setBridgeObserver(observer)
+
+        registry.unregister(surfaceID: UUID())
+
+        XCTAssertTrue(
+            observer.receivedRefs.isEmpty,
+            "unregister of a surfaceID that was never registered must not fire the bridge observer at all"
+        )
+    }
+
+    // MARK: - Bridge observer: replace (same surfaceID, different ref)
+
+    func test_register_sameSurfaceIDDifferentRef_firesBridgeObserverTwice_forOldRefThenNewRef() {
+        let surfaceID = UUID()
+        let firstRef = HerdrPaneRef(socketPath: "/Users/dev/.config/herdr/herdr.sock", paneID: "wB:p1")
+        let secondRef = HerdrPaneRef(socketPath: "/Users/dev/.config/herdr/herdr.sock", paneID: "wC:p1")
+        registry.register(surfaceID: surfaceID, ref: firstRef)
+        let observer = RecordingBridgeObserver()
+        registry.setBridgeObserver(observer)
+
+        registry.register(surfaceID: surfaceID, ref: secondRef)
+
+        XCTAssertEqual(
+            observer.receivedRefs, [firstRef, secondRef],
+            "replacing the same surfaceID's ref must fire the bridge observer twice: once for the old ref " +
+            "being displaced, once for the new ref taking its place"
+        )
+    }
+
+    // MARK: - Bridge observer: single-controller eviction
+
+    func test_register_secondSurfaceClaimingSamePane_firesBridgeObserverExactlyOnce_withNewRef() {
+        let firstSurface = UUID()
+        let secondSurface = UUID()
+        let sharedRef = HerdrPaneRef(socketPath: "/Users/dev/.config/herdr/herdr.sock", paneID: "wB:p1")
+        registry.register(surfaceID: firstSurface, ref: sharedRef)
+        let observer = RecordingBridgeObserver()
+        registry.setBridgeObserver(observer)
+
+        registry.register(surfaceID: secondSurface, ref: sharedRef)
+
+        XCTAssertEqual(
+            observer.receivedRefs, [sharedRef],
+            "the single-controller eviction path must fire the bridge observer exactly once, for the newly " +
+            "registered ref -- not once per surfaceID the mutation happens to touch"
+        )
+    }
+
+    // MARK: - Bridge observer: .calyxSurfaceDestroyed self-prune
+
+    func test_surfaceDestroyedNotification_firesBridgeObserver_withPrunedRef() {
+        let surfaceID = UUID()
+        let ref = HerdrPaneRef(socketPath: "/Users/dev/.config/herdr/herdr.sock", paneID: "wB:p1")
+        registry.register(surfaceID: surfaceID, ref: ref)
+        registry.startObserving()
+        let observer = RecordingBridgeObserver()
+        registry.setBridgeObserver(observer)
+
+        NotificationCenter.default.post(name: .calyxSurfaceDestroyed, object: nil, userInfo: ["surfaceID": surfaceID])
+
+        XCTAssertEqual(
+            observer.receivedRefs, [ref],
+            "the .calyxSurfaceDestroyed self-prune path routes through unregister and must fire the bridge " +
+            "observer for the pruned ref exactly like a direct unregister(surfaceID:) call would"
+        )
+    }
+
+    // MARK: - Bridge observer: held weakly
+
+    func test_setBridgeObserver_holdsObserverWeakly_registerAfterDeallocationDoesNotCrash_recordsNothing() {
+        weak var weakObserver: RecordingBridgeObserver?
+        do {
+            let observer = RecordingBridgeObserver()
+            weakObserver = observer
+            registry.setBridgeObserver(observer)
+            // `observer`'s only strong reference is this local -- goes
+            // out of scope at the end of this `do` block.
+        }
+
+        XCTAssertNil(
+            weakObserver,
+            "setBridgeObserver must hold its argument weakly: the observer must deallocate once its only " +
+            "strong reference (this test's own local) goes out of scope"
+        )
+
+        let surfaceID = UUID()
+        let ref = HerdrPaneRef(socketPath: "/Users/dev/.config/herdr/herdr.sock", paneID: "wB:p1")
+        registry.register(surfaceID: surfaceID, ref: ref) // must not crash with a deallocated observer
+
+        XCTAssertTrue(
+            registry.isBridgeSurface(surfaceID),
+            "registration itself must still succeed normally even after the bridge observer has deallocated"
         )
     }
 }

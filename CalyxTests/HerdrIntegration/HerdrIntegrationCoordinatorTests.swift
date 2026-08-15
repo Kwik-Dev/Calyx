@@ -161,7 +161,7 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
                 candidates: [HerdrSessionCandidate(name: "default", socketPath: socketPath)], alive: [socketPath]
             ),
             transportFactory: factory,
-            mirror: mirror ?? HerdrAgentMirror(registry: AgentRegistry()),
+            mirror: mirror ?? HerdrAgentMirror(registry: AgentRegistry(), paneRegistry: HerdrPaneRegistry()),
             reconnectDelays: reconnectDelays,
             maxLifetimeReconnectAttempts: maxLifetimeReconnectAttempts,
             replayBurstSettleWindow: replayBurstSettleWindow,
@@ -219,7 +219,7 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
             resolver: FakeHerdrBinaryResolver(result: nil),
             discovery: FakeHerdrSessionDiscovery(candidates: [], alive: []),
             transportFactory: factory,
-            mirror: HerdrAgentMirror(registry: AgentRegistry()),
+            mirror: HerdrAgentMirror(registry: AgentRegistry(), paneRegistry: HerdrPaneRegistry()),
             reconnectDelays: [],
             sleep: { _ in }
         )
@@ -262,7 +262,7 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
     func test_start_takesSnapshotBeforeSubscribing_appliesToMirror_subscribeListIsStructureEventsPlusRevealedPanes() async {
         let factory = SpyHerdrTransportFactory()
         let registry = AgentRegistry()
-        let mirror = HerdrAgentMirror(registry: registry)
+        let mirror = HerdrAgentMirror(registry: registry, paneRegistry: HerdrPaneRegistry())
         let coordinator = makeDetectableCoordinator(factory: factory, mirror: mirror)
         let expectedID = HerdrStableID.make(socketPath: socketPath, paneID: "w1:p1")
 
@@ -361,7 +361,7 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
     func test_snapshot_paneWithoutAgent_isStillSubscribed_butGetsNoMirrorRow() async {
         let factory = SpyHerdrTransportFactory()
         let registry = AgentRegistry()
-        let mirror = HerdrAgentMirror(registry: registry)
+        let mirror = HerdrAgentMirror(registry: registry, paneRegistry: HerdrPaneRegistry())
         let coordinator = makeDetectableCoordinator(factory: factory, mirror: mirror)
         let subscribedWithAgentID = HerdrStableID.make(socketPath: socketPath, paneID: "wB:p1")
         let agentlessID = HerdrStableID.make(socketPath: socketPath, paneID: "wC:p1")
@@ -637,7 +637,7 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
     func test_replayBurst_stalePanesBeyondSnapshot_rebuildsExactlyOnce_thenConverges() async {
         let factory = SpyHerdrTransportFactory()
         let registry = AgentRegistry()
-        let mirror = HerdrAgentMirror(registry: registry)
+        let mirror = HerdrAgentMirror(registry: registry, paneRegistry: HerdrPaneRegistry())
         let burstSettleWindow = Duration.milliseconds(1)
         let settleGate = OSAllocatedUnfairLock(initialState: false)
         let coordinator = makeDetectableCoordinator(
@@ -789,7 +789,7 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
     func test_paneAgentStatusChangedEvent_isForwardedToMirror() async {
         let factory = SpyHerdrTransportFactory()
         let registry = AgentRegistry()
-        let mirror = HerdrAgentMirror(registry: registry)
+        let mirror = HerdrAgentMirror(registry: registry, paneRegistry: HerdrPaneRegistry())
         let coordinator = makeDetectableCoordinator(factory: factory, mirror: mirror)
         let id = HerdrStableID.make(socketPath: socketPath, paneID: "w1:p1")
 
@@ -815,7 +815,7 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
     func test_streamEOF_callsConnectionLost_thenReconnectsWhileSocketStillAlive() async {
         let factory = SpyHerdrTransportFactory()
         let registry = AgentRegistry()
-        let mirror = HerdrAgentMirror(registry: registry)
+        let mirror = HerdrAgentMirror(registry: registry, paneRegistry: HerdrPaneRegistry())
         let discovery = FakeHerdrSessionDiscovery(
             candidates: [HerdrSessionCandidate(name: "default", socketPath: socketPath)], alive: [socketPath]
         )
@@ -1150,7 +1150,7 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
     func test_failedStart_clearsMirrorGhostRow_andRecognizedPaneIDs_soTheNextSuccessfulStartIsClean() async {
         let factory = SpyHerdrTransportFactory()
         let registry = AgentRegistry()
-        let mirror = HerdrAgentMirror(registry: registry)
+        let mirror = HerdrAgentMirror(registry: registry, paneRegistry: HerdrPaneRegistry())
         let coordinator = makeDetectableCoordinator(
             factory: factory, mirror: mirror, replayBurstSettleWindow: .zero, rebuildBackoffDelays: [.zero]
         )
@@ -1544,7 +1544,7 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
     func test_layoutUpdatedEvent_duringReplayBurst_notForwarded_thenForwardedOnceSettled() async {
         let factory = SpyHerdrTransportFactory()
         let registry = AgentRegistry()
-        let mirror = HerdrAgentMirror(registry: registry)
+        let mirror = HerdrAgentMirror(registry: registry, paneRegistry: HerdrPaneRegistry())
         let burstSettleWindow = Duration.milliseconds(1)
         let settleGate = OSAllocatedUnfairLock(initialState: false)
         let coordinator = makeDetectableCoordinator(

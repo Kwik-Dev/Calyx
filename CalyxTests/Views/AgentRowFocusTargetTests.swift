@@ -2,9 +2,9 @@
 //  AgentRowFocusTargetTests.swift
 //  CalyxTests
 //
-//  C2 fix (herdr TRACK C): AgentRowFocusTarget.resolve, the pure
-//  decision behind AgentRowView's tap gesture. Mirrors AgentSidebarGateTests'
-//  shape: a plain (non-@MainActor) XCTestCase directly calling a pure,
+//  AgentRowFocusTarget.resolve, the pure decision behind AgentRowView's
+//  tap gesture. Mirrors AgentSidebarGateTests' shape: a plain
+//  (non-@MainActor) XCTestCase directly calling a pure,
 //  already-computed-argument static function.
 //
 //  Coverage:
@@ -68,11 +68,13 @@ final class AgentRowFocusTargetTests: XCTestCase {
     // MARK: - No focusSurfaceID: .external has no resolvable target
 
     func test_resolve_noFocusSurfaceID_external_returnsNil() {
-        // The common case for every herdr row as of this stage --
-        // HerdrAgentMirror never resolves focusSurfaceID (see that
-        // file's header), and an .external entry's own surfaceID is a
-        // synthetic HerdrStableID no SurfaceRegistry knows, so it must
-        // never be used as a fallback the way .hooks/.titleHeuristic do.
+        // An .external entry's own surfaceID is a synthetic
+        // HerdrStableID no SurfaceRegistry knows (HerdrStableID.swift's
+        // own header), so it must never be used as a fallback the way
+        // .hooks/.titleHeuristic do. This covers an unbridged herdr
+        // pane: HerdrAgentMirror only resolves focusSurfaceID for a
+        // pane the pane registry actually bridges (see that file's own
+        // header), and leaves it nil otherwise.
         let surfaceID = UUID()
 
         let resolved = AgentRowFocusTarget.resolve(source: .external, surfaceID: surfaceID, focusSurfaceID: nil)
