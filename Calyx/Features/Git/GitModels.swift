@@ -14,12 +14,43 @@ enum SidebarMode: Sendable {
     case agents
 }
 
-enum GitChangesState: Sendable {
+enum GitChangesState: Sendable, Equatable {
     case notLoaded
     case notRepository
     case loading
     case loaded
     case error(String)
+
+    /// `.notLoaded` is the only state with no content already on screen,
+    /// so it is the only one allowed to show `GitChangesView`'s
+    /// content-replacing spinner. Every other state keeps whatever is
+    /// currently displayed while a refresh runs.
+    var allowsInitialSpinner: Bool {
+        self == .notLoaded
+    }
+}
+
+/// What a failed git refresh should do to `GitChangesState`, decided
+/// separately from applying it so the decision itself is testable
+/// without a running refresh task.
+enum GitRefreshFailureOutcome: Equatable, Sendable {
+    case showError(String)
+    case showNotRepository
+    case keepStale(message: String)
+
+    static func resolve(
+        current: GitChangesState,
+        isNotARepository: Bool,
+        message: String
+    ) -> GitRefreshFailureOutcome {
+        if isNotARepository {
+            return .showNotRepository
+        }
+        if current == .loaded {
+            return .keepStale(message: message)
+        }
+        return .showError(message)
+    }
 }
 
 // MARK: - Git Status

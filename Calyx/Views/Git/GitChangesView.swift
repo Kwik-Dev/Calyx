@@ -11,6 +11,8 @@ struct GitChangesView: View {
     let gitCommits: [GitCommit]
     let expandedCommitIDs: Set<String>
     let commitFiles: [String: [CommitFileEntry]]
+    let isRefreshing: Bool
+    let staleRefreshMessage: String?
 
     var onWorkingFileSelected: ((GitFileEntry) -> Void)?
     var onCommitFileSelected: ((CommitFileEntry) -> Void)?
@@ -28,12 +30,23 @@ struct GitChangesView: View {
                 Text("Changes")
                     .font(.headline)
                 Spacer()
-                Button(action: { onRefresh?() }) {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.body)
+                if let staleRefreshMessage {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .help(staleRefreshMessage)
                 }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier(AccessibilityID.Git.refreshButton)
+                if isRefreshing {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Button(action: { onRefresh?() }) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.body)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier(AccessibilityID.Git.refreshButton)
+                }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -65,8 +78,13 @@ struct GitChangesView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
-                    Button("Retry") { onRefresh?() }
-                        .buttonStyle(.plain)
+                    if isRefreshing {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Button("Retry") { onRefresh?() }
+                            .buttonStyle(.plain)
+                    }
                     Spacer()
                 }
                 .padding(.horizontal, 12)

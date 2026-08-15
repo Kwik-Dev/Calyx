@@ -16,6 +16,8 @@ struct SidebarContentView: View {
     var gitCommits: [GitCommit] = []
     var expandedCommitIDs: Set<String> = []
     var commitFiles: [String: [CommitFileEntry]] = [:]
+    var isGitRefreshing: Bool = false
+    var gitStaleRefreshMessage: String?
     var onGroupSelected: ((UUID) -> Void)?
     var onTabSelected: ((UUID) -> Void)?
     var onNewGroup: (() -> Void)?
@@ -196,6 +198,8 @@ struct SidebarContentView: View {
                     gitCommits: gitCommits,
                     expandedCommitIDs: expandedCommitIDs,
                     commitFiles: commitFiles,
+                    isRefreshing: isGitRefreshing,
+                    staleRefreshMessage: gitStaleRefreshMessage,
                     onWorkingFileSelected: onWorkingFileSelected,
                     onCommitFileSelected: onCommitFileSelected,
                     onRefresh: onRefreshGitStatus,
