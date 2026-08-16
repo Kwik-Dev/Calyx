@@ -95,6 +95,41 @@ struct CommitFileEntry: Identifiable, Equatable, Sendable {
     let status: GitFileStatus
 }
 
+// MARK: - Repository Sections
+
+enum GitRepoKind: Equatable, Sendable {
+    case repository
+    case worktree
+    case submodule
+}
+
+/// One Changes-sidebar section. `rootPath` is a standardized absolute
+/// work-tree root and doubles as the stable identity across refreshes.
+struct GitRepoDescriptor: Identifiable, Equatable, Sendable {
+    let rootPath: String
+    let displayName: String
+    let kind: GitRepoKind
+    /// `nil` when the work tree has a detached HEAD.
+    let branch: String?
+    let headShortHash: String?
+    let location: GitRepositoryLocation
+
+    var id: String { rootPath }
+}
+
+/// Per-section Changes state. Every field is scoped to one repository so
+/// pruning a vanished section is a single dictionary removal.
+struct GitRepoChanges: Equatable, Sendable {
+    var state: GitChangesState = .notLoaded
+    var entries: [GitFileEntry] = []
+    var commits: [GitCommit] = []
+    var expandedCommitIDs: Set<String> = []
+    /// Distinguishes "history fetched and empty" from "history not fetched".
+    var isLogLoaded = false
+    var hasMoreCommits = true
+    var staleRefreshMessage: String?
+}
+
 // MARK: - Diff
 
 enum DiffLineType: Sendable {

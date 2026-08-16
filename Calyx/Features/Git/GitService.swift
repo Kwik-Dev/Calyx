@@ -5,6 +5,44 @@
 
 import Foundation
 
+/// One record of `git worktree list --porcelain`. `path` is the only
+/// attribute the porcelain schema guarantees; everything else is optional
+/// or a bare flag label.
+struct GitWorktreeInfo: Equatable, Sendable {
+    let path: String
+    let headOID: String?
+    /// Full ref name such as `refs/heads/main`. Mutually exclusive with `isDetached`.
+    let branchRef: String?
+    let isDetached: Bool
+    let isBare: Bool
+    let isLocked: Bool
+    let lockReason: String?
+    let isPrunable: Bool
+    let prunableReason: String?
+
+    init(
+        path: String,
+        headOID: String? = nil,
+        branchRef: String? = nil,
+        isDetached: Bool = false,
+        isBare: Bool = false,
+        isLocked: Bool = false,
+        lockReason: String? = nil,
+        isPrunable: Bool = false,
+        prunableReason: String? = nil
+    ) {
+        self.path = path
+        self.headOID = headOID
+        self.branchRef = branchRef
+        self.isDetached = isDetached
+        self.isBare = isBare
+        self.isLocked = isLocked
+        self.lockReason = lockReason
+        self.isPrunable = isPrunable
+        self.prunableReason = prunableReason
+    }
+}
+
 enum GitService {
     enum GitError: Error, LocalizedError {
         case notARepository
@@ -79,27 +117,39 @@ enum GitService {
         return parseStatus(output)
     }
 
-    static func commitLog(workDir: String, maxCount: Int, skip: Int) async throws -> [GitCommit] {
+    /// Every worktree attached to the repository containing `workDir`,
+    /// including the main worktree (or the bare repository itself) first.
+    static func worktreeList(workDir: String) async throws -> [GitWorktreeInfo] {
+        let output = try await run(args: ["worktree", "list", "--porcelain", "-z"], workDir: workDir)
+        return parseWorktreeList(output)
+    }
+
+    /// Commit history for an already-resolved repository, skipping the
+    /// `rev-parse` that `commitLog(workDir:maxCount:skip:)` needs to
+    /// classify the work tree.
+    static func commitLog(
+        location: GitRepositoryLocation,
+        maxCount: Int,
+        skip: Int
+    ) async throws -> [GitCommit] {
         let format = "%x1f%H%x1f%h%x1f%s%x1f%an%x1f%ar%x1f%P%x1e"
-        let linkedWorktree = try await isLinkedWorktree(workDir: workDir)
         var args = ["log"]
-        // Linked worktrees share refs, so --all would include sibling branch history.
-        if !linkedWorktree {
+        // Linked worktrees share refs, so --all would include sibling branch
+        // history. They are the ones whose Git directory sits below the
+        // common one.
+        if location.gitDirectory == location.gitCommonDirectory {
             args.append("--all")
         }
         args += ["--graph", "--format=\(format)",
                  "--max-count=\(maxCount)", "--skip=\(skip)"]
 
-        let output = try await run(
-            args: args,
-            workDir: workDir
-        )
+        let output = try await run(args: args, workDir: location.workTree)
         return parseCommitLog(output)
     }
 
-    private static func isLinkedWorktree(workDir: String) async throws -> Bool {
+    static func commitLog(workDir: String, maxCount: Int, skip: Int) async throws -> [GitCommit] {
         let location = try await repositoryLocation(workDir: workDir)
-        return location.gitDirectory != location.gitCommonDirectory
+        return try await commitLog(location: location, maxCount: maxCount, skip: skip)
     }
 
     static func commitFiles(hash: String, workDir: String) async throws -> [CommitFileEntry] {
@@ -414,6 +464,87 @@ enum GitService {
         }
 
         return entries
+    }
+
+    /// Maps `git worktree list --porcelain -z` output onto records. Each
+    /// NUL-terminated element carries one attribute, label and value split
+    /// by a single space, and an empty element ends a record. Lock and
+    /// prune reasons are raw strings that may contain spaces and newlines.
+    static func parseWorktreeList(_ output: String) -> [GitWorktreeInfo] {
+        var infos: [GitWorktreeInfo] = []
+        var record = WorktreeRecord()
+        var isRecordOpen = false
+
+        for element in output.split(separator: "\0", omittingEmptySubsequences: false) {
+            guard !element.isEmpty else {
+                if isRecordOpen {
+                    if let info = record.info { infos.append(info) }
+                    record = WorktreeRecord()
+                    isRecordOpen = false
+                }
+                continue
+            }
+
+            let fields = element.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: false)
+            let label = String(fields[0])
+            let value = fields.count > 1 ? String(fields[1]) : nil
+
+            guard isRecordOpen else {
+                isRecordOpen = true
+                // `worktree` opens every record; anything else means this
+                // record is not one the schema describes, so it is dropped
+                // by leaving `path` unset.
+                if label == "worktree" { record.path = value }
+                continue
+            }
+            guard record.path != nil else { continue }
+
+            switch label {
+            case "HEAD": record.headOID = value
+            case "branch": record.branchRef = value
+            case "detached": record.isDetached = true
+            case "bare": record.isBare = true
+            case "locked":
+                record.isLocked = true
+                record.lockReason = value
+            case "prunable":
+                record.isPrunable = true
+                record.prunableReason = value
+            default: break
+            }
+        }
+
+        if isRecordOpen, let info = record.info {
+            infos.append(info)
+        }
+        return infos
+    }
+
+    private struct WorktreeRecord {
+        var path: String?
+        var headOID: String?
+        var branchRef: String?
+        var isDetached = false
+        var isBare = false
+        var isLocked = false
+        var lockReason: String?
+        var isPrunable = false
+        var prunableReason: String?
+
+        var info: GitWorktreeInfo? {
+            guard let path else { return nil }
+            return GitWorktreeInfo(
+                path: path,
+                headOID: headOID,
+                branchRef: branchRef,
+                isDetached: isDetached,
+                isBare: isBare,
+                isLocked: isLocked,
+                lockReason: lockReason,
+                isPrunable: isPrunable,
+                prunableReason: prunableReason
+            )
+        }
     }
 
     static func parseCommitLog(_ output: String) -> [GitCommit] {

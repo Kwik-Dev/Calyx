@@ -10,7 +10,7 @@ struct GitRepositoryLocation: Equatable, Sendable {
     let gitDirectory: String
     let gitCommonDirectory: String
 
-    fileprivate var standardized: GitRepositoryLocation {
+    var standardized: GitRepositoryLocation {
         GitRepositoryLocation(
             workTree: Self.standardize(workTree),
             gitDirectory: Self.standardize(gitDirectory),
@@ -18,7 +18,7 @@ struct GitRepositoryLocation: Equatable, Sendable {
         )
     }
 
-    private static func standardize(_ path: String) -> String {
+    static func standardize(_ path: String) -> String {
         URL(fileURLWithPath: path).standardizedFileURL.path
     }
 }
