@@ -88,7 +88,7 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
     private static let approvalBannerPayloadID = "calyx.approvalBanner.payload"
     private static let approvalBannerNextButtonID = "calyx.approvalBanner.nextButton"
     private static let approvalBannerPreviousButtonID = "calyx.approvalBanner.previousButton"
-    private static let approvalBannerPositionLabelID = "calyx.approvalBanner.positionLabel"
+    private static let approvalBannerQueueMenuID = "calyx.approvalBanner.queueMenu"
 
     // MARK: - Test
 
@@ -193,8 +193,10 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
         // empty at this point, MARK 4's Deny having drained it), banner
         // shows a position label + Next/Previous chevrons, a Next/
         // Previous/Next round-trip exercises BOTH chevrons end-to-end
-        // (Previous was otherwise only unit-covered), and Allow resolves
-        // the NAVIGATED-TO (displayed) request out of order.
+        // (Previous was otherwise only unit-covered), the position
+        // label's own queue preview menu jumps straight to the
+        // non-displayed request, and Allow resolves the NAVIGATED-TO
+        // (displayed) request out of order.
 
         let navAOutFile = "/tmp/calyx-e2e-cockpit-run-nav-a-\(ProcessInfo.processInfo.processIdentifier).json"
         toolCallBackgrounded(
@@ -215,7 +217,17 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
             outFile: navBOutFile, counter: &counter
         )
 
-        let positionLabel = app.staticTexts[Self.approvalBannerPositionLabelID]
+        // The "N / M" position text is read off the queue preview menu
+        // element itself, not the Text inside its label closure: macOS
+        // collapses a SwiftUI Menu into a single element that carries
+        // only the Menu's own identifier and accessibility label (see
+        // ApprovalBannerView.queueNavigator(positionInfo:), which sets
+        // that label explicitly for this reason). Queried
+        // type-agnostically, since which element type SwiftUI collapses
+        // that Menu into is its own choice, not this suite's.
+        let positionLabel = app.descendants(matching: .any)
+            .matching(identifier: Self.approvalBannerQueueMenuID)
+            .firstMatch
         XCTAssertTrue(waitFor(positionLabel, timeout: 15), "the position label never appeared once a second request queued behind NAV_A")
         XCTAssertTrue(elementText(positionLabel).contains("1 / 2"),
                      "with two requests queued, the still-displayed first request must read \"1 / 2\" -- got: \(elementText(positionLabel))")
@@ -264,6 +276,51 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
         }
         XCTAssertTrue(returnedToNavB, "clicking Next again must return the banner to the second (NAV_B) queued request, reading \"2 / 2\"")
 
+        // Queue preview menu: clicking the position label opens it (the
+        // label IS that Menu's own collapsed element, see the lookup
+        // above), and picking another request's row jumps straight to
+        // that request -- the ApprovalBannerModel.select(id:) path,
+        // which the chevrons never exercise. A row's text reaches the
+        // accessibility tree as its NSMenuItem `title`, never `label`
+        // (field-verified), and reads "N. <tool>: <command>" (see
+        // ApprovalBannerView.queueEntryLabel(_:)), so the NAV_A row is
+        // matched on its command text rather than a whole title, which
+        // carries a live position prefix.
+        positionLabel.click()
+
+        let navARow = app.menuItems
+            .matching(NSPredicate(format: "title CONTAINS %@", "COCKPIT_MARKER_NAV_A"))
+            .firstMatch
+        XCTAssertTrue(waitFor(navARow, timeout: 10), "the queue preview menu never listed a row for the still-queued NAV_A request")
+        navARow.click()
+
+        // Bounded poll, same 5x1s pattern: picking the NAV_A row must
+        // jump the banner to that request, position label included.
+        var jumpedToNavA = false
+        for _ in 0..<5 {
+            if elementText(navPayloadText).contains("NAV_A") && elementText(positionLabel).contains("1 / 2") {
+                jumpedToNavA = true
+                break
+            }
+            Thread.sleep(forTimeInterval: 1)
+        }
+        XCTAssertTrue(jumpedToNavA, "clicking the queue preview menu's NAV_A row must jump the banner to that request, reading \"1 / 2\"")
+
+        app.buttons[Self.approvalBannerNextButtonID].click()
+
+        // Bounded poll, same 5x1s pattern: back on NAV_B before the
+        // Allow below, so that decision still resolves the request that
+        // was queued SECOND.
+        var restoredToNavB = false
+        for _ in 0..<5 {
+            if elementText(navPayloadText).contains("NAV_B") && elementText(positionLabel).contains("2 / 2") {
+                restoredToNavB = true
+                break
+            }
+            Thread.sleep(forTimeInterval: 1)
+        }
+        XCTAssertTrue(restoredToNavB, "clicking Next after the queue-menu jump must put the banner back on the second (NAV_B) queued request")
+
         app.buttons[Self.approvalBannerAllowButtonID].click()
 
         let navBResultText = waitForFileContent(atPath: navBOutFile)
@@ -274,7 +331,7 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
 
         XCTAssertTrue(elementText(navPayloadText).contains("NAV_A"),
                      "once NAV_B is resolved, the banner must fall back to displaying the still-pending NAV_A request")
-        XCTAssertFalse(app.staticTexts[Self.approvalBannerPositionLabelID].exists,
+        XCTAssertFalse(app.descendants(matching: .any).matching(identifier: Self.approvalBannerQueueMenuID).firstMatch.exists,
                       "with only one request left pending, single-request rendering must show no position label")
 
         app.buttons[Self.approvalBannerDenyButtonID].click()
