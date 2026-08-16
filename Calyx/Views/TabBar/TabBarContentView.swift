@@ -22,75 +22,73 @@ struct TabBarContentView: View {
         HStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
-                    GlassEffectContainer(spacing: 10) {
-                        HStack(spacing: 10) {
-                            ForEach(Array(tabs.enumerated()), id: \.element.id) { index, tab in
-                                TabItemButton(
-                                    tab: tab,
-                                    isActive: tab.id == activeTabID,
-                                    onSelected: { onTabSelected?(tab.id) },
-                                    onClose: { onCloseTab?(tab.id) },
-                                    onTabRenamed: onTabRenamed,
-                                    onDragChanged: { translation in
-                                        // Tab reorder: equivalent to the
-                                        // former SwiftUI `DragGesture.onChanged`,
-                                        // but driven by `ClickContainerNSView`
-                                        // so no `PlatformGroupContainer`
-                                        // compositing layer is created on top
-                                        // of the tab.
-                                        guard tabs.count > 1, onMoveTab != nil else { return }
-                                        if reorderState.draggedTabID == nil {
-                                            reorderState.draggedTabID = tab.id
-                                            reorderState.draggedTabIndex = index
-                                        }
-                                        reorderState.dragOffset = translation.width
-                                        if let frame = reorderState.tabFrames[tab.id] {
-                                            let midpoint = frame.midX + translation.width
-                                            reorderState.updateInsertionSlot(dragMidpoint: midpoint, axis: .horizontal)
-                                        }
-                                    },
-                                    onDragEnded: {
-                                        let moveFrom = reorderState.draggedTabIndex
-                                        let moveTo = moveFrom.flatMap { reorderState.destinationIndex(fromIndex: $0, tabCount: tabs.count) }
-                                        withAnimation(.easeOut(duration: 0.15)) {
-                                            reorderState.reset()
-                                        }
-                                        if let from = moveFrom, let to = moveTo {
-                                            onMoveTab?(from, to)
-                                        }
+                    HStack(spacing: 10) {
+                        ForEach(Array(tabs.enumerated()), id: \.element.id) { index, tab in
+                            TabItemButton(
+                                tab: tab,
+                                isActive: tab.id == activeTabID,
+                                onSelected: { onTabSelected?(tab.id) },
+                                onClose: { onCloseTab?(tab.id) },
+                                onTabRenamed: onTabRenamed,
+                                onDragChanged: { translation in
+                                    // Tab reorder: equivalent to the
+                                    // former SwiftUI `DragGesture.onChanged`,
+                                    // but driven by `ClickContainerNSView`
+                                    // so no `PlatformGroupContainer`
+                                    // compositing layer is created on top
+                                    // of the tab.
+                                    guard tabs.count > 1, onMoveTab != nil else { return }
+                                    if reorderState.draggedTabID == nil {
+                                        reorderState.draggedTabID = tab.id
+                                        reorderState.draggedTabIndex = index
                                     }
-                                )
-                                .id(tab.id)
-                                .background(
-                                    GeometryReader { geo in
-                                        Color.clear.preference(
-                                            key: TabFramePreferenceKey.self,
-                                            value: [tab.id: geo.frame(in: .named("tabBarScroll"))]
-                                        )
+                                    reorderState.dragOffset = translation.width
+                                    if let frame = reorderState.tabFrames[tab.id] {
+                                        let midpoint = frame.midX + translation.width
+                                        reorderState.updateInsertionSlot(dragMidpoint: midpoint, axis: .horizontal)
                                     }
-                                )
-                                .offset(x: reorderState.draggedTabID == tab.id ? reorderState.dragOffset : 0)
-                                .zIndex(reorderState.draggedTabID == tab.id ? 1 : 0)
-                                .scaleEffect(reorderState.draggedTabID == tab.id ? 1.03 : 1.0)
-                                .shadow(color: .black.opacity(reorderState.draggedTabID == tab.id ? 0.15 : 0), radius: 8)
-                                // NOTE: `.gesture(tabDragGesture(...))` was
-                                // removed here. SwiftUI's gesture machinery
-                                // synthesizes a `PlatformGroupContainer`
-                                // ancestor whose `mouseDown` is a no-op, and
-                                // that layer was intercepting clicks before
-                                // they could reach `ClickContainerNSView`.
-                                // Drag tracking is now handled inside
-                                // `ClickContainerNSView` via `mouseDragged`
-                                // / `mouseUp`, see `onDragChanged` /
-                                // `onDragEnded` above.
-                                .accessibilityValue(AccessibilityID.TabBar.tabAtIndex(index))
-                            }
+                                },
+                                onDragEnded: {
+                                    let moveFrom = reorderState.draggedTabIndex
+                                    let moveTo = moveFrom.flatMap { reorderState.destinationIndex(fromIndex: $0, tabCount: tabs.count) }
+                                    withAnimation(.easeOut(duration: 0.15)) {
+                                        reorderState.reset()
+                                    }
+                                    if let from = moveFrom, let to = moveTo {
+                                        onMoveTab?(from, to)
+                                    }
+                                }
+                            )
+                            .id(tab.id)
+                            .background(
+                                GeometryReader { geo in
+                                    Color.clear.preference(
+                                        key: TabFramePreferenceKey.self,
+                                        value: [tab.id: geo.frame(in: .named("tabBarScroll"))]
+                                    )
+                                }
+                            )
+                            .offset(x: reorderState.draggedTabID == tab.id ? reorderState.dragOffset : 0)
+                            .zIndex(reorderState.draggedTabID == tab.id ? 1 : 0)
+                            .scaleEffect(reorderState.draggedTabID == tab.id ? 1.03 : 1.0)
+                            .shadow(color: .black.opacity(reorderState.draggedTabID == tab.id ? 0.15 : 0), radius: 8)
+                            // NOTE: `.gesture(tabDragGesture(...))` was
+                            // removed here. SwiftUI's gesture machinery
+                            // synthesizes a `PlatformGroupContainer`
+                            // ancestor whose `mouseDown` is a no-op, and
+                            // that layer was intercepting clicks before
+                            // they could reach `ClickContainerNSView`.
+                            // Drag tracking is now handled inside
+                            // `ClickContainerNSView` via `mouseDragged`
+                            // / `mouseUp`, see `onDragChanged` /
+                            // `onDragEnded` above.
+                            .accessibilityValue(AccessibilityID.TabBar.tabAtIndex(index))
                         }
-                        .overlay {
-                            if let slot = reorderState.insertionSlot,
-                               reorderState.draggedTabID != nil {
-                                insertionIndicator(slot: slot)
-                            }
+                    }
+                    .overlay {
+                        if let slot = reorderState.insertionSlot,
+                           reorderState.draggedTabID != nil {
+                            insertionIndicator(slot: slot)
                         }
                     }
                 }
@@ -335,13 +333,6 @@ private struct TabBarBackgroundModifier: ViewModifier {
             content.background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea(.all, edges: .top))
         } else {
             content
-                .modifier(GlassInactiveTintModifier(themeColor: themeColor, glassOpacity: glassOpacity))
-                .glassEffect(.clear.tint(Color(nsColor: GlassTheme.chromeTint(for: themeColor, glassOpacity: glassOpacity))), in: .rect)
-                .overlay(alignment: .bottom) {
-                    Rectangle()
-                        .fill(GlassTheme.specularStroke.opacity(0.28))
-                        .frame(height: 1)
-                }
                 .environment(\.colorScheme, chromeScheme)
                 .foregroundStyle(themePreset == "ghostty"
                     ? AnyShapeStyle(Color(nsColor: ghosttyProvider.ghosttyForeground))

@@ -255,8 +255,6 @@ private struct SidebarBackgroundModifier: ViewModifier {
             content.background(Color(nsColor: .controlBackgroundColor).ignoresSafeArea(.all, edges: .top))
         } else {
             content
-                .modifier(GlassInactiveTintModifier(themeColor: themeColor, glassOpacity: glassOpacity))
-                .glassEffect(.clear.tint(Color(nsColor: GlassTheme.chromeTint(for: themeColor, glassOpacity: glassOpacity))), in: .rect)
                 .environment(\.colorScheme, chromeScheme)
                 .foregroundStyle(themePreset == "ghostty"
                     ? AnyShapeStyle(Color(nsColor: ghosttyProvider.ghosttyForeground))
