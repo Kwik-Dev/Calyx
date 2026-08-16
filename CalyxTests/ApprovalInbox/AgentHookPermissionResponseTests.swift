@@ -211,6 +211,63 @@ final class AgentHookPermissionResponseTests: XCTestCase {
         }
     }
 
+    // MARK: - pi
+    //
+    // pi's gate is a `tool_call` extension handler that reads this body
+    // itself and returns `{ block: true, reason }` on a deny, so it uses
+    // the same flat, top-level decision vocabulary Grok does rather than
+    // Claude Code's and Codex's nested hookSpecificOutput envelope.
+    //
+    // An expired decision denies. pi ships no permission prompt of its
+    // own (`docs/usage.md`: it intentionally does not include permission
+    // popups), so there is nothing behind Calyx's gate to defer to: a
+    // silent answer would let an unreviewed call run, and a banner nobody
+    // answered within the hold window is not an approval.
+
+    func test_body_pi_allowed_isFlatAllowDecision() throws {
+        let data = try XCTUnwrap(
+            AgentHookPermissionResponse.body(kind: AgentEntry.piKind, decision: .allowed),
+            "pi must not fall into the fail-safe default branch: an unrecognized kind answers with no " +
+            "body at all, which the extension reads as no opinion, and the call runs unreviewed"
+        )
+        let object = try grokDecision(data)
+
+        XCTAssertEqual(object["decision"] as? String, "allow")
+        XCTAssertEqual(Set(object.keys), ["decision"],
+                       "An allow carries the decision alone. The extension reads a top-level decision " +
+                       "field and nothing else")
+    }
+
+    func test_body_pi_denied_isFlatDenyDecisionWithReason() throws {
+        let data = try XCTUnwrap(
+            AgentHookPermissionResponse.body(kind: AgentEntry.piKind, decision: .denied)
+        )
+        let object = try grokDecision(data)
+
+        XCTAssertEqual(object["decision"] as? String, "deny")
+        XCTAssertEqual(Set(object.keys), ["decision", "reason"],
+                       "A deny carries exactly decision and reason")
+        let reason = try XCTUnwrap(object["reason"] as? String)
+        XCTAssertFalse(reason.isEmpty,
+                       "pi hands the block reason to the model as the tool result content, so an empty " +
+                       "reason would tell the model nothing about why the call failed")
+    }
+
+    func test_body_pi_expired_isADenyDecision() throws {
+        let data = try XCTUnwrap(
+            AgentHookPermissionResponse.body(kind: AgentEntry.piKind, decision: .expired),
+            "pi has no confirmation prompt of its own to fall back on, so silence here would run the " +
+            "call unreviewed. An expiry must deny explicitly"
+        )
+        let object = try grokDecision(data)
+
+        XCTAssertEqual(object["decision"] as? String, "deny")
+        XCTAssertEqual(Set(object.keys), ["decision", "reason"])
+        let reason = try XCTUnwrap(object["reason"] as? String)
+        XCTAssertFalse(reason.isEmpty,
+                       "The model is told why the call was refused, so an expiry states its own reason")
+    }
+
     // MARK: - unrecognized kind
 
     func test_body_unknownKind_isNilForAllDecisions() {

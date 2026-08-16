@@ -64,6 +64,8 @@ extension AgentEntry {
         case Self.openCodeKind: return "OpenCode"
         case Self.hermesKind: return "Hermes Agent"
         case Self.grokKind: return "Grok"
+        // pi's product name is lowercase.
+        case Self.piKind: return "pi"
         default: return kind
         }
     }
@@ -87,6 +89,11 @@ extension AgentEntry {
     /// argument and `GrokConfigManager`'s `X-Calyx-Agent-Kind` header
     /// both resolve to this.
     static let grokKind = "grok"
+    /// pi's `kind`. Keep in sync with the `"pi"` literal in
+    /// `PiExtensionManager.scriptBody`'s `X-Calyx-Agent-Kind` header:
+    /// that value lives in a TypeScript string embedded in a Swift string
+    /// constant, so it cannot reference this constant directly.
+    static let piKind = "pi"
 }
 
 // MARK: - AgentEvent

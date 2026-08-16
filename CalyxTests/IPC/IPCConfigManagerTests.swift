@@ -216,7 +216,8 @@ final class IPCConfigManagerTests: XCTestCase {
             claudeCode: .success,
             codex: .skipped(reason: "not installed"),
             openCode: .skipped(reason: "not installed"),
-            grok: .failed(NSError(domain: "test", code: 8, userInfo: [NSLocalizedDescriptionKey: "boom"]))
+            grok: .failed(NSError(domain: "test", code: 8, userInfo: [NSLocalizedDescriptionKey: "boom"])),
+            pi: .skipped(reason: "not installed")
         )
 
         XCTAssertEqual(result.issueMessages, ["Grok hooks: boom"],
@@ -229,10 +230,43 @@ final class IPCConfigManagerTests: XCTestCase {
             claudeCode: .skipped(reason: "not installed"),
             codex: .skipped(reason: "not installed"),
             openCode: .skipped(reason: "not installed"),
-            grok: .success
+            grok: .success,
+            pi: .success
         )
 
         XCTAssertEqual(result.issueMessages, [], "A clean install raises no banner")
+    }
+
+    // MARK: - AgentHooksResult.issueMessages (pi axis)
+
+    /// pi reaches Calyx through exactly one axis: the extension file.
+    /// There is no MCP client config to fall back on, so a failed
+    /// extension install means a pi pane is invisible to Calyx entirely,
+    /// with nothing else on screen to reveal it. The label follows the
+    /// same "<tool> <artifact>" scheme as "OpenCode plugin" and
+    /// "Grok hooks", and matches the status line the IPC alert shows.
+    func test_issueMessages_piFailure_isReported_andACleanPiInstallAddsNothing() {
+        let failed = AgentHooksResult(
+            claudeCode: .success,
+            codex: .skipped(reason: "not installed"),
+            openCode: .skipped(reason: "not installed"),
+            grok: .skipped(reason: "not installed"),
+            pi: .failed(NSError(domain: "test", code: 9, userInfo: [NSLocalizedDescriptionKey: "boom"]))
+        )
+
+        XCTAssertEqual(failed.issueMessages, ["pi extension: boom"],
+                       "A failed pi extension install must reach the sidebar banner")
+
+        let clean = AgentHooksResult(
+            claudeCode: .skipped(reason: "not installed"),
+            codex: .skipped(reason: "not installed"),
+            openCode: .skipped(reason: "not installed"),
+            grok: .skipped(reason: "not installed"),
+            pi: .success
+        )
+
+        XCTAssertEqual(clean.issueMessages, [],
+                       "A successful pi install must not raise a banner of its own")
     }
 
     // MARK: - ConfigStatus pattern matching

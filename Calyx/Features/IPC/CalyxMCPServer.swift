@@ -458,7 +458,8 @@ final class CalyxMCPServer {
     /// present (400) -> body.count <= maxEventBodyBytes, checked BEFORE
     /// decode (413, mirrors `routeCommandEvent`) -> `AgentHookToolCall.decode`
     /// (400) -> `resolveSurfaceID` (400) -> an unrecognized
-    /// `X-Calyx-Agent-Kind` (anything other than claude-code/codex/grok)
+    /// `X-Calyx-Agent-Kind` (anything other than
+    /// claude-code/codex/grok/pi)
     /// short-circuits to 200 with an EMPTY body, never submitting
     /// anything -> a hook event name that isn't the one this kind's gate
     /// fires under (`ApprovalHookEvent.isApprovalGate(_:kind:)` -- so
@@ -512,9 +513,10 @@ final class CalyxMCPServer {
     /// (a) THE RESPONSE BODY IS THE HOOK'S STDOUT, BYTE FOR BYTE --
     ///     Claude Code / Codex parse it directly as their own
     ///     PermissionRequest hook JSON contract, Grok as its own flat
-    ///     PreToolUse decision (see `AgentHookPermissionResponse`'s
-    ///     header comment). Nothing here may wrap, prepend, or otherwise
-    ///     reshape it.
+    ///     PreToolUse decision, and pi's extension reads that same flat
+    ///     decision from the response body of this very request (see
+    ///     `AgentHookPermissionResponse`'s header comment). Nothing here
+    ///     may wrap, prepend, or otherwise reshape it.
     ///
     /// (b) Fail-safe mapping: every path that resolves without a genuine
     ///     human decision (timed-out long-poll, `server.stop()`'s drain,
@@ -523,9 +525,11 @@ final class CalyxMCPServer {
     ///     EMPTY body for both claude-code and codex -- neither CLI has
     ///     an "ask" analog under PermissionRequest, so absent output
     ///     lets that CLI's own confirmation prompt take over -- and as an
-    ///     explicit deny for grok, which reaches this point only under
-    ///     `bypassPermissions`, the one mode where nothing behind this
-    ///     gate would ask anyone before running the call. NEVER
+    ///     explicit deny for grok and pi: a grok request reaches this
+    ///     point only under `bypassPermissions`, the one mode where
+    ///     nothing behind this gate would ask anyone before running the
+    ///     call, and pi has no prompt of its own in any mode, so silence
+    ///     for either would let the call run unreviewed. NEVER
     ///     "allow". `awaitDecisionHonoringCancellation` is what re-maps an
     ///     `.allowed` decision that raced a concurrent cancellation of
     ///     this call's own Task to `.expired` -- see that method's own
@@ -572,7 +576,7 @@ final class CalyxMCPServer {
 
         let kind = agentKind(from: request.headers)
         guard kind == AgentEntry.claudeCodeKind || kind == AgentEntry.codexKind
-            || kind == AgentEntry.grokKind else {
+            || kind == AgentEntry.grokKind || kind == AgentEntry.piKind else {
             // An agent CLI Calyx doesn't have a hook-response contract
             // for at all (see `AgentHookPermissionResponse`'s own
             // fail-safe contract) -- never submit to the inbox for one.

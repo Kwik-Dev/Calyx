@@ -5386,6 +5386,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
             configStatusLabel(result.codex, name: "Codex hooks", verb: verb),
             configStatusLabel(result.openCode, name: "OpenCode plugin", verb: verb),
             configStatusLabel(result.grok, name: "Grok hooks", verb: verb),
+            configStatusLabel(result.pi, name: "pi extension", verb: verb),
         ].joined(separator: "\n")
     }
 
@@ -5395,6 +5396,13 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// supported AI agents (Claude Code, Codex, OpenCode, Hermes, Grok).
     /// Centralizes the title-substring check used by both compose and review
     /// send paths. Keep the agent list in sync with `IPCConfigResult` axes.
+    ///
+    /// pi is deliberately absent. Its name is two characters, so a
+    /// case-insensitive substring match on it fires for ordinary titles
+    /// such as "npm run api" or any path holding "pi", and every one of
+    /// those panes would be offered as a send target. A pi pane still
+    /// reaches the Agents sidebar through its extension's own events,
+    /// which name the kind explicitly instead of guessing from a title.
     private static func isAIAgentTitle(_ title: String) -> Bool {
         title.localizedCaseInsensitiveContains("claude") ||
         title.localizedCaseInsensitiveContains(AgentEntry.codexKind) ||

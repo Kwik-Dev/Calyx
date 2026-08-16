@@ -70,6 +70,10 @@ enum ApprovalHookEvent {
     /// event fires only for calls those CLIs have already decided to
     /// prompt about, and the hook's answer IS that prompt's answer.
     ///
+    /// Always true for pi too, by the opposite route: pi ships no
+    /// permission prompt at all, so its extension gate fires for every
+    /// tool call and nothing behind that gate would ever ask anyone.
+    ///
     /// Grok is mode-dependent. Its gate is PreToolUse, which runs before
     /// the permission system rather than in place of it: a hook deny
     /// stops the call, while a hook allow, or no decision at all, falls

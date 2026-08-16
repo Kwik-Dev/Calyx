@@ -12,10 +12,11 @@ struct ApprovalRequest: Identifiable, Sendable {
     enum Source: Sendable, Equatable {
         case mcpTool(name: String)
         /// A tool call intercepted from a non-MCP CLI agent's own
-        /// approval-gate hook (Claude Code / Codex / Grok) rather than
-        /// Calyx's own MCP server -- `kind` identifies the owning CLI
-        /// (`AgentEntry.claudeCodeKind` / `AgentEntry.codexKind` /
-        /// `AgentEntry.grokKind`); `toolName` and `summary` come from the
+        /// approval-gate hook (Claude Code / Codex / Grok), or from pi's
+        /// extension gate, rather than Calyx's own MCP server -- `kind`
+        /// identifies the owning CLI (`AgentEntry.claudeCodeKind` /
+        /// `AgentEntry.codexKind` / `AgentEntry.grokKind` /
+        /// `AgentEntry.piKind`); `toolName` and `summary` come from the
         /// decoded `AgentHookToolCall`.
         case agentHook(toolName: String, kind: String, summary: String)
     }

@@ -33,4 +33,12 @@ enum AgentToolPaths {
     static var grokConfigDirectory: String {
         NSHomeDirectory() + "/.grok"
     }
+
+    /// pi's agent root: `~/.pi/agent`, the directory holding the
+    /// `extensions/` folder `PiExtensionManager` writes into. The path
+    /// reaches down to `agent` rather than stopping at `~/.pi` so an
+    /// unrelated `~/.pi` directory cannot be read as an installed pi.
+    static var piConfigDirectory: String {
+        NSHomeDirectory() + "/.pi/agent"
+    }
 }
