@@ -47,6 +47,24 @@ struct GitRepoDiscoveryGaps: Equatable, Sendable {
     }
 }
 
+extension GitRepoDiscoveryGaps {
+    /// Why the run could not check `descriptor`, or `nil` when it did. A
+    /// submodule is enumerated by the work tree containing it, so a gap
+    /// over that work tree leaves the submodule unchecked as well.
+    func message(
+        for descriptor: GitRepoDescriptor,
+        containedBy containers: [String: GitRepoDescriptor]
+    ) -> String? {
+        var section = descriptor
+        while true {
+            if let message = message(for: section) { return message }
+            guard section.kind == .submodule,
+                  let container = containers[section.rootPath] else { return nil }
+            section = container
+        }
+    }
+}
+
 /// Remembers the file system's own spelling of the paths it has resolved.
 /// Reading that spelling is a file system access, a shell reports its
 /// working directory on every prompt, and every pane's directory is
@@ -86,11 +104,12 @@ struct GitSeedCoverage: Equatable, Sendable {
 
 enum GitRepoDiscovery {
     /// Expands terminal working directories into the full set of sections
-    /// to display: every seed's repository plus the other worktrees that
-    /// share its Git directory. Bare, prunable, and missing worktrees are
-    /// dropped, duplicates collapse by root path, and the result is in the
-    /// fixed display order (families by root path, main worktree before
-    /// linked worktrees).
+    /// to display: every seed's repository, the other worktrees sharing
+    /// its Git directory, the superprojects above it, and the submodules
+    /// each of those has checked out. Bare, prunable, and missing
+    /// worktrees are dropped, duplicates collapse by root path, and the
+    /// result is in the fixed display order (families by root path, main
+    /// worktree before linked worktrees before submodules).
     static func discover(seedWorkDirs: [String]) async -> GitRepoDiscoveryResult {
         var seeds: [String] = []
         var seenSeeds: Set<String> = []
@@ -108,7 +127,19 @@ enum GitRepoDiscovery {
             gaps.workDirs[GitRepositoryLocation.standardize(resolution.workDir)] = failureMessage
         }
 
-        let families = groupIntoFamilies(resolutions.compactMap(\.location))
+        // A pane inside a submodule is a pane inside the repository that
+        // contains it, so the superprojects above the seeds are sections
+        // of their own and bring their other worktrees with them.
+        let seedLocations = resolutions.compactMap(\.location)
+        let walk = await superprojectAncestors(of: seedLocations)
+        gaps.formUnion(walk.gaps)
+        let ancestorResolutions = await resolveSeeds(walk.workTrees)
+        for resolution in ancestorResolutions {
+            guard let failureMessage = resolution.failureMessage else { continue }
+            gaps.workDirs[GitRepositoryLocation.standardize(resolution.workDir)] = failureMessage
+        }
+
+        let families = groupIntoFamilies(seedLocations + ancestorResolutions.compactMap(\.location))
         let expanded = await expandFamilies(families)
         for expansion in expanded {
             gaps.formUnion(expansion.gaps)
@@ -134,8 +165,10 @@ enum GitRepoDiscovery {
         gaps: GitRepoDiscoveryGaps
     ) -> [GitRepoDescriptor] {
         let discoveredIDs = Set(discovered.map(\.id))
+        let containers = containingSections(of: discovered + displayed)
         let unchecked = displayed.filter {
-            !discoveredIDs.contains($0.id) && gaps.message(for: $0) != nil
+            !discoveredIDs.contains($0.id)
+                && gaps.message(for: $0, containedBy: containers) != nil
         }
         return ordered(discovered + unchecked)
     }
@@ -144,16 +177,18 @@ enum GitRepoDiscovery {
     /// together, ordered by the root path of their first section, and
     /// within one of those families the repository itself comes before its
     /// linked worktrees and those before its submodules. Duplicate root
-    /// paths collapse onto their first occurrence.
+    /// paths collapse onto one section.
     static func ordered(_ descriptors: [GitRepoDescriptor]) -> [GitRepoDescriptor] {
-        var byCommonDirectory: [String: [GitRepoDescriptor]] = [:]
-        var seenRootPaths: Set<String> = []
-        for descriptor in descriptors where seenRootPaths.insert(descriptor.rootPath).inserted {
-            byCommonDirectory[descriptor.location.gitCommonDirectory, default: []].append(descriptor)
+        let sections = collapseDuplicateRootPaths(descriptors)
+        var byFamily: [String: [GitRepoDescriptor]] = [:]
+        let containers = containingSections(of: sections)
+        for descriptor in sections {
+            byFamily[familyKey(of: descriptor, containers: containers), default: []]
+                .append(descriptor)
         }
 
         let families: [(sortKey: String, descriptors: [GitRepoDescriptor])] =
-            byCommonDirectory.values.compactMap { family in
+            byFamily.values.compactMap { family in
                 let sorted = family.sorted {
                     ($0.kind.sortRank, $0.rootPath) < ($1.kind.sortRank, $1.rootPath)
                 }
@@ -164,6 +199,69 @@ enum GitRepoDiscovery {
                 return (first.rootPath, sorted)
             }
         return families.sorted { $0.sortKey < $1.sortKey }.flatMap(\.descriptors)
+    }
+
+    /// One section per root path, keeping the first occurrence except
+    /// where a later one classifies the same path as a submodule. A
+    /// repository a pane sits inside is discovered as a family root of
+    /// its own as well as a submodule of the repository containing it;
+    /// the submodule is where it belongs on screen, and which of the two
+    /// arrives first is an accident of the run.
+    private static func collapseDuplicateRootPaths(
+        _ descriptors: [GitRepoDescriptor]
+    ) -> [GitRepoDescriptor] {
+        var positions: [String: Int] = [:]
+        var sections: [GitRepoDescriptor] = []
+        for descriptor in descriptors {
+            guard let position = positions[descriptor.rootPath] else {
+                positions[descriptor.rootPath] = sections.count
+                sections.append(descriptor)
+                continue
+            }
+            if descriptor.kind == .submodule, sections[position].kind != .submodule {
+                sections[position] = descriptor
+            }
+        }
+        return sections
+    }
+
+    /// Which family a section belongs to: its own Git directory, except
+    /// for a submodule, which belongs to the repository containing it. A
+    /// submodule's Git directory lies below its superproject's rather
+    /// than being the same one, so grouping on that alone would give it a
+    /// family of its own and separate it from the repository it is part
+    /// of. A submodule of a submodule follows the chain up to the section
+    /// that is not one; a submodule whose superproject is not displayed
+    /// heads its own family.
+    private static func familyKey(
+        of descriptor: GitRepoDescriptor,
+        containers: [String: GitRepoDescriptor]
+    ) -> String {
+        var owner = descriptor
+        while owner.kind == .submodule, let container = containers[owner.rootPath] {
+            owner = container
+        }
+        return owner.location.gitCommonDirectory
+    }
+
+    /// For each section, the section it sits inside: the longest root
+    /// path that is a proper ancestor of its own. Matching is on path
+    /// components, so `/a/Calyx` never claims `/a/Calyx-worktrees/x`.
+    /// Every step up shortens the root path, so following the result
+    /// repeatedly terminates.
+    static func containingSections(
+        of descriptors: [GitRepoDescriptor]
+    ) -> [String: GitRepoDescriptor] {
+        var containers: [String: GitRepoDescriptor] = [:]
+        for descriptor in descriptors {
+            for candidate in descriptors
+            where descriptor.rootPath.hasPrefix(candidate.rootPath + "/") {
+                if candidate.rootPath.count > (containers[descriptor.rootPath]?.rootPath.count ?? -1) {
+                    containers[descriptor.rootPath] = candidate
+                }
+            }
+        }
+        return containers
     }
 
     /// The section owning `workDir`: the longest `rootPath` that equals it
@@ -343,7 +441,11 @@ enum GitRepoDiscovery {
                     location: location
                 )
             }
-        return FamilyExpansion(descriptors: listed + seeds, gaps: gaps)
+
+        let worktrees = listed + seeds
+        let submodules = await submoduleSections(ofWorktreeRoots: worktrees.map(\.rootPath))
+        gaps.formUnion(submodules.gaps)
+        return FamilyExpansion(descriptors: worktrees + submodules.descriptors, gaps: gaps)
     }
 
     private struct DescribedWorktrees: Sendable {
@@ -400,6 +502,198 @@ enum GitRepoDiscovery {
             }
             return DescribedWorktrees(descriptors: descriptors, gaps: gaps)
         }
+    }
+
+    // MARK: - Submodules
+
+    private struct SubmoduleExpansion: Sendable {
+        let descriptors: [GitRepoDescriptor]
+        let gaps: GitRepoDiscoveryGaps
+    }
+
+    private enum SubmoduleListing: Sendable {
+        case listed(workDirs: [String])
+        case unlisted(workDir: String, message: String)
+    }
+
+    private enum SubmoduleOutcome: Sendable {
+        case described(GitRepoDescriptor)
+        case notCheckedOut
+        case unverified(workDir: String, message: String)
+    }
+
+    /// The checked-out submodules of `worktreeRoots`, pooled across the
+    /// family and ordered by root path, so a submodule declared on a
+    /// linked worktree lands beside one declared on the main worktree.
+    /// Only the direct submodules of those work trees: a submodule of a
+    /// submodule is a section of the family its own superproject heads.
+    private static func submoduleSections(
+        ofWorktreeRoots worktreeRoots: [String]
+    ) async -> SubmoduleExpansion {
+        let listings = await withTaskGroup(of: SubmoduleListing.self) { group in
+            for worktreeRoot in worktreeRoots {
+                group.addTask {
+                    do {
+                        let submodules = try await GitService.submoduleList(repoRoot: worktreeRoot)
+                        return .listed(
+                            workDirs: submodules.map {
+                                (worktreeRoot as NSString).appendingPathComponent($0.path)
+                            }
+                        )
+                    } catch {
+                        return .unlisted(
+                            workDir: worktreeRoot, message: error.localizedDescription
+                        )
+                    }
+                }
+            }
+            var listings: [SubmoduleListing] = []
+            for await listing in group {
+                listings.append(listing)
+            }
+            return listings
+        }
+
+        var candidates: [String] = []
+        var gaps = GitRepoDiscoveryGaps()
+        for listing in listings {
+            switch listing {
+            case .listed(let workDirs):
+                candidates += workDirs
+            case .unlisted(let workDir, let message):
+                gaps.workDirs[workDir] = message
+            }
+        }
+
+        return await withTaskGroup(of: SubmoduleOutcome.self) { group in
+            for candidate in candidates {
+                group.addTask { await describeSubmodule(at: candidate) }
+            }
+            var descriptors: [GitRepoDescriptor] = []
+            for await outcome in group {
+                switch outcome {
+                case .described(let descriptor):
+                    descriptors.append(descriptor)
+                case .notCheckedOut:
+                    break
+                case .unverified(let workDir, let message):
+                    gaps.workDirs[workDir] = message
+                }
+            }
+            return SubmoduleExpansion(
+                descriptors: descriptors.sorted { $0.rootPath < $1.rootPath }, gaps: gaps
+            )
+        }
+    }
+
+    /// The section for one gitlink the index records, or nothing when the
+    /// path holds no repository to open. The index keeps a gitlink whether
+    /// or not the directory below it is filled in: `git submodule deinit`
+    /// empties it, a fresh clone never fills it, and `git worktree add`
+    /// leaves the same empty directory in the new worktree. All three
+    /// leave no `.git` behind, which is what tells them apart from a
+    /// checked-out submodule.
+    private static func describeSubmodule(at workDir: String) async -> SubmoduleOutcome {
+        let gitPath = (workDir as NSString).appendingPathComponent(".git")
+        guard FileManager.default.fileExists(atPath: gitPath) else { return .notCheckedOut }
+        let rootPath = GitRepositoryLocation.standardize(workDir)
+
+        let location: GitRepositoryLocation
+        do {
+            location = try await GitService.repositoryLocation(workDir: workDir)
+        } catch {
+            return .unverified(workDir: rootPath, message: error.localizedDescription)
+        }
+        let standardized = location.standardized
+        guard standardized.workTree == rootPath else { return .notCheckedOut }
+
+        // The superproject's worktree list covers its own worktrees and
+        // says nothing about a submodule's HEAD.
+        let head: GitHeadSummary
+        do {
+            head = try await GitService.headSummary(workDir: standardized.workTree)
+        } catch {
+            return .unverified(
+                workDir: standardized.workTree, message: error.localizedDescription
+            )
+        }
+        return .described(
+            GitRepoDescriptor(
+                rootPath: standardized.workTree,
+                displayName: (standardized.workTree as NSString).lastPathComponent,
+                kind: .submodule,
+                branch: head.branch,
+                headShortHash: head.shortHash,
+                location: standardized
+            )
+        )
+    }
+
+    // MARK: - Superprojects
+
+    private struct SuperprojectWalk: Sendable {
+        let workTrees: [String]
+        let gaps: GitRepoDiscoveryGaps
+    }
+
+    /// How far up the chain of superprojects a seed is followed. Nesting
+    /// this deep does not occur in a repository anyone works in.
+    private static let superprojectWalkLimit = 8
+
+    /// Every superproject above `locations`, without repeats, so several
+    /// panes inside one submodule are walked up once.
+    private static func superprojectAncestors(
+        of locations: [GitRepositoryLocation]
+    ) async -> SuperprojectWalk {
+        var startPoints: [String] = []
+        var seenStartPoints: Set<String> = []
+        for location in locations where seenStartPoints.insert(location.workTree).inserted {
+            startPoints.append(location.workTree)
+        }
+
+        return await withTaskGroup(of: SuperprojectWalk.self) { group in
+            for startPoint in startPoints {
+                group.addTask { await superprojectChain(from: startPoint) }
+            }
+            var workTrees: [String] = []
+            var seenWorkTrees: Set<String> = []
+            var gaps = GitRepoDiscoveryGaps()
+            for await walk in group {
+                for workTree in walk.workTrees where seenWorkTrees.insert(workTree).inserted {
+                    workTrees.append(workTree)
+                }
+                gaps.formUnion(walk.gaps)
+            }
+            return SuperprojectWalk(workTrees: workTrees, gaps: gaps)
+        }
+    }
+
+    /// The chain of superprojects above `workTree`, closest first, up to
+    /// `superprojectWalkLimit` of them. A step that cannot be taken ends
+    /// the walk with what it reached and records that the rest was not
+    /// checked, which is not the same as having reached the outermost
+    /// repository.
+    private static func superprojectChain(from workTree: String) async -> SuperprojectWalk {
+        var workTrees: [String] = []
+        var current = workTree
+        for _ in 0..<superprojectWalkLimit {
+            do {
+                guard let superproject = try await GitService.superprojectWorkTree(workDir: current)
+                else { break }
+                workTrees.append(superproject)
+                current = superproject
+            } catch {
+                return SuperprojectWalk(
+                    workTrees: workTrees,
+                    gaps: GitRepoDiscoveryGaps(
+                        workDirs: [
+                            GitRepositoryLocation.standardize(current): error.localizedDescription
+                        ]
+                    )
+                )
+            }
+        }
+        return SuperprojectWalk(workTrees: workTrees, gaps: GitRepoDiscoveryGaps())
     }
 
     private static let shortHashLength = 7

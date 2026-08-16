@@ -5111,8 +5111,9 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         windowSession.applyGitSections(sections)
         windowSession.gitChangesState = .loaded
         windowSession.gitStaleRefreshMessage = nil
+        let containers = GitRepoDiscovery.containingSections(of: sections)
         for section in sections {
-            guard let message = result.gaps.message(for: section),
+            guard let message = result.gaps.message(for: section, containedBy: containers),
                   !checkedRepoIDs.contains(section.id) else { continue }
             windowSession.gitRepoChanges[section.id]?.staleRefreshMessage = message
         }

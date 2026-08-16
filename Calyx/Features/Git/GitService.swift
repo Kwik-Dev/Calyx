@@ -43,6 +43,21 @@ struct GitWorktreeInfo: Equatable, Sendable {
     }
 }
 
+/// One submodule of a superproject, as its index records it. The index is
+/// the only place git validates the path: `.gitmodules` is a tracked text
+/// file whose declarations nothing checks.
+struct GitSubmoduleInfo: Equatable, Sendable {
+    /// Relative to the superproject's work-tree root.
+    let path: String
+}
+
+/// What HEAD resolves to. A detached HEAD has no branch, and a HEAD before
+/// the first commit names no commit, so both halves can be absent.
+struct GitHeadSummary: Equatable, Sendable {
+    let branch: String?
+    let shortHash: String?
+}
+
 enum GitService {
     enum GitError: Error, LocalizedError {
         case notARepository
@@ -122,6 +137,79 @@ enum GitService {
     static func worktreeList(workDir: String) async throws -> [GitWorktreeInfo] {
         let output = try await run(args: ["worktree", "list", "--porcelain", "-z"], workDir: workDir)
         return parseWorktreeList(output)
+    }
+
+    /// Every submodule recorded in the index of the repository rooted at
+    /// `repoRoot`, in index order. Whether a submodule's directory is
+    /// actually filled in is a separate question this does not answer.
+    static func submoduleList(repoRoot: String) async throws -> [GitSubmoduleInfo] {
+        let output = try await run(args: ["ls-files", "-z", "--stage"], workDir: repoRoot)
+        return parseIndexGitlinks(output)
+    }
+
+    /// The gitlinks in `git ls-files -z --stage` output. Each record is
+    /// `<mode> <sha> <stage>`, a tab, then the path, NUL-terminated, and
+    /// mode 160000 is a gitlink. `-z` leaves the path unquoted, so it can
+    /// hold spaces and tabs of its own and only the first tab separates
+    /// it from the fields. A path an unresolved merge lists once per
+    /// stage is still one submodule. The index of a large repository runs
+    /// to hundreds of thousands of entries, so the scan stays on the UTF-8
+    /// bytes (0x00 ends a record, 0x09 is the tab) and only the gitlink
+    /// paths become Strings.
+    static func parseIndexGitlinks(_ output: String) -> [GitSubmoduleInfo] {
+        let gitlinkMode = Array("160000 ".utf8)
+        var seenPaths: Set<String> = []
+        var submodules: [GitSubmoduleInfo] = []
+        for record in output.utf8.split(separator: 0, omittingEmptySubsequences: true) {
+            guard record.starts(with: gitlinkMode),
+                  let tabIndex = record.firstIndex(of: 0x09) else { continue }
+            let path = String(decoding: record[record.index(after: tabIndex)...], as: UTF8.self)
+            guard seenPaths.insert(path).inserted else { continue }
+            submodules.append(GitSubmoduleInfo(path: path))
+        }
+        return submodules
+    }
+
+    /// The branch and abbreviated commit HEAD points at. The two queries
+    /// are independent, so they run concurrently.
+    static func headSummary(workDir: String) async throws -> GitHeadSummary {
+        async let branch = runReportingNoAnswerAsNil(
+            args: ["symbolic-ref", "--short", "-q", "HEAD"], workDir: workDir
+        )
+        // `-q --verify` is what makes an unborn HEAD exit 1 instead of the
+        // 128 a plain `rev-parse --short HEAD` returns, which a corrupt
+        // repository returns as well.
+        async let shortHash = runReportingNoAnswerAsNil(
+            args: ["rev-parse", "--short", "-q", "--verify", "HEAD"], workDir: workDir
+        )
+        return try await GitHeadSummary(branch: branch, shortHash: shortHash)
+    }
+
+    /// The work tree of the superproject this repository is a submodule
+    /// of, or `nil` when it is not one. A repository that is nobody's
+    /// submodule answers with no output and exit 0.
+    static func superprojectWorkTree(workDir: String) async throws -> String? {
+        let output = try await run(
+            args: ["rev-parse", "--show-superproject-working-tree"], workDir: workDir
+        )
+        let workTree = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return workTree.isEmpty ? nil : workTree
+    }
+
+    /// Runs a query whose `-q` turns "there is no such thing to report"
+    /// into a silent exit 1, and reports that answer as nil. Detached HEAD
+    /// and unborn HEAD reach their callers this way, so exit 1 here is a
+    /// value rather than a failure. Every other exit code still throws.
+    private static func runReportingNoAnswerAsNil(
+        args: [String],
+        workDir: String
+    ) async throws -> String? {
+        do {
+            let output = try await run(args: args, workDir: workDir)
+            return output.trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch GitError.commandFailed(let exitCode, _, _) where exitCode == 1 {
+            return nil
+        }
     }
 
     /// Commit history for an already-resolved repository, skipping the
