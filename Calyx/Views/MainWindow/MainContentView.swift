@@ -160,10 +160,6 @@ struct MainContentView: View {
                         .offset(x: 0)
                         .zIndex(1)
                     }
-
-                    if reduceTransparency {
-                        Divider()
-                    }
                 }
 
                 ZStack {
