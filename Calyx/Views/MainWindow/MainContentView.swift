@@ -84,20 +84,18 @@ struct MainContentView: View {
     // `mainContent` is applied here exactly once, unconditionally, as the
     // base of `.safeAreaInset` -- NOT branched inside an `if`/`else` (the
     // previous `VStack(spacing: 0) { conditional bar; mainContent }`
-    // shape). Two reasons:
+    // shape). Two reasons, in order of how they were found:
     //
-    // 1. Root-shape invariant: `mainContent`'s own `GlassEffectContainer`
-    //    chain must stay the SwiftUI root, because the single root glass
-    //    sheet (`mainContent`'s own `.background` with
-    //    `.ignoresSafeArea()`, further down in this file) only covers the
-    //    titlebar and safe-area-inset strips (RecoveryBar/ApprovalBanner)
-    //    when nothing ordinary sits above it in the tree. An `if`/`else`
-    //    `VStack(spacing: 0) { conditional bar; mainContent }` shape puts
-    //    an unstyled, non-safe-area-ignoring `VStack` at the root instead,
-    //    which would clip that coverage and break the transparent/glass
+    // 1. Titlebar regression (found via `git diff 1a17867c1^ 1a17867c1`
+    //    -- pre-feature `body` returned `mainContent`'s own
+    //    `GlassEffectContainer` chain directly as the SwiftUI root; the
+    //    VStack wrapper made an unstyled, non-safe-area-ignoring `VStack`
+    //    the new root instead, which changed what `geo.safeAreaInsets.top`
+    //    reports inside `mainContent`'s own titlebar-glass overlay
+    //    (further down in this file), breaking the transparent/glass
     //    titlebar even with the bar hidden. `mainContent.safeAreaInset(...)`
-    //    keeps `mainContent` itself as the root chain when the inset
-    //    content is empty, preserving the sheet's coverage exactly.
+    //    keeps `mainContent` itself as that same root chain when the inset
+    //    content is empty, restoring the pre-feature root exactly.
     // 2. `mainContent` hosts `SplitContainerView` (real ghostty terminal
     //    `NSView`s via `TerminalContainerView`'s `NSViewRepresentable`). An
     //    `if { VStack { bar; mainContent } } else { mainContent }` shape
@@ -230,6 +228,8 @@ struct MainContentView: View {
                                     }
                                 }
                             }
+                            .modifier(GlassInactiveTintModifier(themeColor: themeColor, glassOpacity: glassOpacity, leadingBleed: -1))
+                            .glassEffect(.clear.tint(Color(nsColor: GlassTheme.chromeTint(for: themeColor, glassOpacity: glassOpacity))), in: .rect)
                             .accessibilityIdentifier(AccessibilityID.Diff.container)
                         } else if let browserController = activeBrowserController {
                             BrowserContainerView(controller: browserController)
@@ -240,6 +240,9 @@ struct MainContentView: View {
                                     reduceTransparency: reduceTransparency,
                                     glassOpacity: glassOpacity
                                 )
+                                .padding(.top, -1)
+                                .modifier(GlassInactiveTintModifier(themeColor: themeColor, glassOpacity: glassOpacity, leadingBleed: -1))
+                                .glassEffect(.clear.tint(Color(nsColor: GlassTheme.chromeTint(for: themeColor, glassOpacity: glassOpacity))), in: .rect)
                                 .onDrop(of: [.fileURL], delegate: TerminalDropDelegate(splitContainerView: splitContainerView))
                                 .layoutPriority(1)
                                 .overlay(alignment: .topTrailing) {
@@ -271,6 +274,8 @@ struct MainContentView: View {
                                         .padding(.horizontal, 12)
                                         .padding(.bottom, 12)
                                     }
+                                    .modifier(GlassInactiveTintModifier(themeColor: themeColor, glassOpacity: glassOpacity, leadingBleed: -1))
+                                    .glassEffect(.clear.tint(Color(nsColor: GlassTheme.chromeTint(for: themeColor, glassOpacity: glassOpacity))), in: .rect)
                                 }
                             }
                         }
@@ -294,19 +299,14 @@ struct MainContentView: View {
                     }
                 }
             }
-            .background {
-                Group {
-                    if reduceTransparency {
-                        Color.clear
-                            .modifier(GlassInactiveTintModifier(themeColor: themeColor, glassOpacity: glassOpacity))
-                            .background(Color(nsColor: .windowBackgroundColor))
-                    } else {
-                        Color.clear
-                            .modifier(GlassInactiveTintModifier(themeColor: themeColor, glassOpacity: glassOpacity))
-                            .glassEffect(.clear.tint(Color(nsColor: GlassTheme.chromeTint(for: themeColor, glassOpacity: glassOpacity))), in: .rect)
-                    }
+            .overlay(alignment: .top) {
+                GeometryReader { geo in
+                    Color.white.opacity(0.001)
+                        .frame(height: geo.safeAreaInsets.top + 1)
+                        .modifier(GlassInactiveTintModifier(themeColor: themeColor, glassOpacity: glassOpacity, bottomInset: 1))
+                        .glassEffect(.clear.tint(Color(nsColor: GlassTheme.chromeTint(for: themeColor, glassOpacity: glassOpacity))), in: .rect)
+                        .offset(y: -geo.safeAreaInsets.top)
                 }
-                .ignoresSafeArea()
                 .allowsHitTesting(false)
             }
             .background {

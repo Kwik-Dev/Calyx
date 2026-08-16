@@ -22,8 +22,6 @@ struct BrowserContainerView: View {
 private struct BrowserToolbarView: View {
     let controller: BrowserTabController
 
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-
     var body: some View {
         HStack(spacing: 8) {
             Button(action: { controller.goBack() }) {
@@ -57,7 +55,7 @@ private struct BrowserToolbarView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
-        .modifier(RecoveryBarBackgroundModifier(reduceTransparency: reduceTransparency))
+        .glassEffect(.regular, in: .rect(cornerRadius: 0))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AccessibilityID.Browser.toolbar)
     }
