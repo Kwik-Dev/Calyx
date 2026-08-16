@@ -2,8 +2,8 @@
 // Calyx
 //
 // Coordinates IPC config registration across Claude Code, Codex, OpenCode,
-// and Hermes, collecting results independently so one failure does not block
-// the others.
+// Hermes, and Grok, collecting results independently so one failure does not
+// block the others.
 
 import Foundation
 
@@ -22,12 +22,14 @@ struct IPCConfigResult: Sendable {
     let codex: ConfigStatus
     let openCode: ConfigStatus
     let hermes: ConfigStatus
+    let grok: ConfigStatus
 
     var anySucceeded: Bool {
         if case .success = claudeCode { return true }
         if case .success = codex { return true }
         if case .success = openCode { return true }
         if case .success = hermes { return true }
+        if case .success = grok { return true }
         return false
     }
 }
@@ -38,43 +40,48 @@ struct IPCConfigManager: Sendable {
 
     // MARK: - Public API
 
-    /// Enables IPC MCP server config in Claude Code, Codex, OpenCode, and Hermes config files.
+    /// Enables IPC MCP server config in Claude Code, Codex, OpenCode, Hermes, and Grok config files.
     /// Each tool is handled independently — one failing does not prevent the others.
     static func enableIPC(port: Int, token: String) -> IPCConfigResult {
         let claudeCode = enableClaudeCode(port: port, token: token)
         let codex = enableCodex(port: port, token: token)
         let openCode = enableOpenCode(port: port, token: token)
         let hermes = enableHermes(port: port, token: token)
+        let grok = enableGrok(port: port, token: token)
         return IPCConfigResult(
             claudeCode: claudeCode,
             codex: codex,
             openCode: openCode,
-            hermes: hermes
+            hermes: hermes,
+            grok: grok
         )
     }
 
-    /// Disables IPC MCP server config in Claude Code, Codex, OpenCode, and Hermes config files.
+    /// Disables IPC MCP server config in Claude Code, Codex, OpenCode, Hermes, and Grok config files.
     /// Does not check directory existence — the individual managers handle missing files as no-ops.
     static func disableIPC() -> IPCConfigResult {
         let claudeCode = disableClaudeCode()
         let codex = disableCodex()
         let openCode = disableOpenCode()
         let hermes = disableHermes()
+        let grok = disableGrok()
         return IPCConfigResult(
             claudeCode: claudeCode,
             codex: codex,
             openCode: openCode,
-            hermes: hermes
+            hermes: hermes,
+            grok: grok
         )
     }
 
     /// Returns whether IPC is currently enabled in each tool's config.
-    static func isIPCEnabled() -> (claudeCode: Bool, codex: Bool, openCode: Bool, hermes: Bool) {
+    static func isIPCEnabled() -> (claudeCode: Bool, codex: Bool, openCode: Bool, hermes: Bool, grok: Bool) {
         (
             claudeCode: ClaudeConfigManager.isIPCEnabled(),
             codex: CodexConfigManager.isIPCEnabled(),
             openCode: OpenCodeConfigManager.isIPCEnabled(),
-            hermes: HermesConfigManager.isIPCEnabled()
+            hermes: HermesConfigManager.isIPCEnabled(),
+            grok: GrokConfigManager.isIPCEnabled()
         )
     }
 
@@ -165,6 +172,29 @@ struct IPCConfigManager: Sendable {
     private static func disableHermes() -> ConfigStatus {
         do {
             try HermesConfigManager.disableIPC()
+            return .success
+        } catch {
+            return .failed(error)
+        }
+    }
+
+    // MARK: - Private: Grok
+
+    private static func enableGrok(port: Int, token: String) -> ConfigStatus {
+        guard ConfigFileUtils.directoryExists(at: AgentToolPaths.grokConfigDirectory) else {
+            return .skipped(reason: "not installed")
+        }
+        do {
+            try GrokConfigManager.enableIPC(port: port, token: token)
+            return .success
+        } catch {
+            return .failed(error)
+        }
+    }
+
+    private static func disableGrok() -> ConfigStatus {
+        do {
+            try GrokConfigManager.disableIPC()
             return .success
         } catch {
             return .failed(error)

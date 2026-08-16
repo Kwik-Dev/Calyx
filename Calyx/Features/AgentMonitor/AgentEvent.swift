@@ -63,6 +63,7 @@ extension AgentEntry {
         case Self.codexKind: return "Codex"
         case Self.openCodeKind: return "OpenCode"
         case Self.hermesKind: return "Hermes Agent"
+        case Self.grokKind: return "Grok"
         default: return kind
         }
     }
@@ -82,12 +83,18 @@ extension AgentEntry {
     /// so it can't reference this constant directly.
     static let openCodeKind = "opencode"
     static let hermesKind = "hermes"
+    /// Grok's `kind`: `GrokHooksConfigManager`'s installed `command`
+    /// argument and `GrokConfigManager`'s `X-Calyx-Agent-Kind` header
+    /// both resolve to this.
+    static let grokKind = "grok"
 }
 
 // MARK: - AgentEvent
 
 /// Decoded form of a Claude Code hook's stdin JSON payload
-/// (`hook_event_name` / `session_id` / `cwd` / `message`, snake_case).
+/// (`hook_event_name` / `session_id` / `cwd` / `message`, snake_case), or
+/// of Grok's camelCase equivalent normalized onto the same field and
+/// event-name vocabulary -- see `decode(from:)`.
 struct AgentEvent: Sendable, Equatable {
     let hookEventName: String
     let sessionID: String?
@@ -118,9 +125,22 @@ struct AgentEvent: Sendable, Equatable {
 
     /// Decodes a hook's stdin JSON payload. `hook_event_name` is mandatory;
     /// all other fields are optional. Unknown fields are tolerated.
+    ///
+    /// A payload that names no `hook_event_name` at all but does name
+    /// `hookEventName` is Grok's envelope and goes through
+    /// `decodeGrokShaped` instead: Grok spells every key in camelCase and
+    /// every event value in snake_case, and a `/bin/sh` hook script cannot
+    /// rewrite JSON, so the normalization happens here. A payload carrying
+    /// both keys is a Claude Code / Codex payload and stays on the
+    /// snake_case path, which reads no camelCase alias of any field.
     static func decode(from data: Data) -> AgentEvent? {
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let hookEventName = object["hook_event_name"] as? String else {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        if object["hook_event_name"] == nil, object["hookEventName"] != nil {
+            return decodeGrokShaped(object: object)
+        }
+        guard let hookEventName = object["hook_event_name"] as? String else {
             return nil
         }
         return AgentEvent(
@@ -130,6 +150,76 @@ struct AgentEvent: Sendable, Equatable {
             message: object["message"] as? String,
             ipcSelfPeerID: extractIPCSelfPeerID(hookEventName: hookEventName, object: object)
         )
+    }
+
+    /// Grok's `stop` `reason` for a genuine turn end. Grok fires an extra
+    /// observe-only `stop` at session teardown with `channel_closed` or
+    /// `shutdown`; treating those as turn ends would roll a
+    /// `SessionEnd`-settled `.done` row back to `.idle`.
+    private static let grokTurnEndReason = "end_turn"
+
+    /// The one `notificationType` that fires while a permission UI is
+    /// actually waiting. The accompanying `message` is display text that
+    /// changes between releases, so the type is what gets matched.
+    private static let grokPermissionNotificationType = "permission_prompt"
+
+    /// Decodes Grok's camelCase envelope. `hookEventName` is the only
+    /// field Grok guarantees; everything else is optional.
+    ///
+    /// An event carrying a non-empty `subagentType` happened inside a
+    /// child agent, so its name is left as the unmapped raw value (which
+    /// `AgentRegistry.resultingState` ignores) and its `sessionId` / `cwd`
+    /// are dropped: recording a child's session ID into the pane's resume
+    /// meta would make a later reattach offer `grok --resume <child>`.
+    ///
+    /// No `ipcSelfPeerID` is extracted here: Grok binds its peer through
+    /// the MCP `initialize` surface header rather than through tool
+    /// arguments.
+    private static func decodeGrokShaped(object: [String: Any]) -> AgentEvent? {
+        guard let rawEventName = object["hookEventName"] as? String else { return nil }
+
+        let subagentType = object["subagentType"] as? String
+        let isSubagentEvent = !(subagentType ?? "").isEmpty
+
+        return AgentEvent(
+            hookEventName: isSubagentEvent ? rawEventName : grokEventName(rawEventName, object: object),
+            sessionID: isSubagentEvent ? nil : object["sessionId"] as? String,
+            cwd: isSubagentEvent ? nil : object["cwd"] as? String,
+            message: object["message"] as? String,
+            ipcSelfPeerID: nil
+        )
+    }
+
+    /// Maps a Grok event value onto the event vocabulary
+    /// `AgentRegistry.resultingState` reads. An unmapped name is passed
+    /// through verbatim so the registry ignores it rather than the
+    /// decoder inventing a state change.
+    private static func grokEventName(_ rawEventName: String, object: [String: Any]) -> String {
+        switch rawEventName {
+        case "session_start":
+            return "SessionStart"
+        case "user_prompt_submit":
+            return "UserPromptSubmit"
+        case "pre_tool_use":
+            return "PreToolUse"
+        case "post_tool_use", "post_tool_use_failure":
+            // A failed tool call still means the turn is running.
+            return "PostToolUse"
+        case "stop":
+            guard let reason = object["reason"] as? String else { return "Stop" }
+            return reason == grokTurnEndReason ? "Stop" : rawEventName
+        case "stop_failure", "stop_cancelled":
+            // Either runs instead of `stop` when a turn ends on an API
+            // error or without completing: the turn is over either way.
+            return "Stop"
+        case "session_end":
+            return "SessionEnd"
+        case "notification":
+            return (object["notificationType"] as? String) == grokPermissionNotificationType
+                ? "PermissionRequest" : "Notification"
+        default:
+            return rawEventName
+        }
     }
 
     /// `tool_name`s whose self peer ID is carried in `tool_input.from`

@@ -2,7 +2,7 @@
 
 **Run more coding agents without babysitting more terminals.**
 
-Calyx is a native macOS terminal for running and supervising coding agents (Claude Code, Codex, OpenCode, and Hermes...) in parallel. It keeps every agent visible and controllable with one approval inbox, live status, persistent sessions, agent-readable command history, and inline diff review -- without replacing the terminal workflow you already use.
+Calyx is a native macOS terminal for running and supervising coding agents (Claude Code, Codex, OpenCode, Hermes, and Grok...) in parallel. It keeps every agent visible and controllable with one approval inbox, live status, persistent sessions, agent-readable command history, and inline diff review -- without replacing the terminal workflow you already use.
 
 [Documentation](https://help.getcalyx.app) · [Latest release](https://github.com/yuuichieguchi/Calyx/releases/latest) · [MIT license](LICENSE)
 
@@ -36,11 +36,11 @@ The Agents Sidebar shows every connected agent as working, blocked, idle, or don
 
 ### Approve tool calls from one inbox
 
-Claude Code and Codex permission prompts appear in a shared in-window approval queue. Inspect the exact request, allow or deny it, and move through pending requests without hunting for the pane that raised them. Enable the integration explicitly in Settings; nothing is automatically approved unless you separately opt in.
+Claude Code and Codex permission prompts, and the tool calls of Grok sessions running in always-approve mode, appear in a shared in-window approval queue. Inspect the exact request, allow or deny it, and move through pending requests without hunting for the pane that raised them. Enable the integration explicitly in Settings; nothing is automatically approved unless you separately opt in.
 
 ### Review code without leaving the terminal
 
-Inspect working changes and commit history in the Git sidebar, add comments to individual diff lines, and submit the complete review directly to a Claude Code, Codex, OpenCode, or Hermes pane.
+Inspect working changes and commit history in the Git sidebar, add comments to individual diff lines, and submit the complete review directly to a Claude Code, Codex, OpenCode, Hermes, or Grok pane.
 
 ### Give agents a terminal they can understand
 
@@ -50,8 +50,8 @@ Calyx exposes panes, commands, captured output, browser tabs, language servers, 
 
 ### Agent supervision
 
-- **Agents Sidebar** -- live status for Claude Code, Codex, OpenCode, and Hermes, with unread badges, last-seen timestamps, and click-to-focus navigation
-- **Approval Inbox** -- one opt-in queue for Claude Code and Codex permission prompts across every pane, with Allow, Deny, per-pane or global session-scoped approval, and safe fallback to the agent's own prompt
+- **Agents Sidebar** -- live status for Claude Code, Codex, OpenCode, Hermes, and Grok, with unread badges, last-seen timestamps, and click-to-focus navigation
+- **Approval Inbox** -- one opt-in queue across every pane for Claude Code and Codex permission prompts and for the tool calls of always-approve Grok sessions, with Allow, Deny, and per-pane or global session-scoped approval; Claude Code and Codex fall back to the agent's own prompt, while an unanswered Grok request is denied
 - **Approval Queue Navigation** -- inspect and decide pending requests in any order, with automatic navigation to the nearest remaining request
 - **Agent Cockpit** -- MCP tools for listing, creating, and splitting panes; commands and keystrokes remain approval-gated unless auto-approve is enabled
 - **Command Log** -- structured commands, working directories, exit status, and captured output exposed to agents through MCP; known secret patterns are redacted before exposure
@@ -153,13 +153,13 @@ Calyx exposes panes, commands, captured output, browser tabs, language servers, 
 
 ## IPC (Inter-Pane Communication)
 
-AI agent instances (Claude Code, Codex CLI, OpenCode, Hermes) running in different Calyx tabs or panes can communicate with each other via a built-in MCP server.
+AI agent instances (Claude Code, Codex CLI, OpenCode, Hermes, Grok) running in different Calyx tabs or panes can communicate with each other via a built-in MCP server.
 
 1. Open the command palette (`Cmd+Shift+P`) and run **Enable AI Agent IPC**
-2. Start agents (Claude Code, Codex, OpenCode, or Hermes) in two or more terminal panes
+2. Start agents (Claude Code, Codex, OpenCode, Hermes, or Grok) in two or more terminal panes
 3. Each instance automatically registers as a peer and can send/receive messages
 
-Config is auto-written to `~/.claude.json`, `~/.codex/config.toml`, `~/.config/opencode/{opencode.json,AGENTS.md}`, and `~/.hermes/config.yaml` when the respective tool is installed. Restart running agent instances to pick up the new MCP server.
+Config is auto-written to `~/.claude.json`, `~/.codex/config.toml`, `~/.config/opencode/{opencode.json,AGENTS.md}`, `~/.hermes/config.yaml`, and `~/.grok/config.toml` when the respective tool is installed. Restart running agent instances to pick up the new MCP server.
 
 Available MCP tools: `register_peer`, `list_peers`, `send_message`, `broadcast`, `receive_messages`, `get_peer_status`. `receive_messages` deletes each message from the inbox as it returns it, so a message is only ever delivered once.
 

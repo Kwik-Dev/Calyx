@@ -49,6 +49,26 @@ final class SessionResumePlannerTests: XCTestCase {
         XCTAssertNil(command, "An empty/invalid agentSessionID must return nil, never a malformed command")
     }
 
+    func test_resumeCommand_grok_buildsExpectedShape() {
+        let command = SessionResumePlanner.resumeCommand(
+            agentKind: AgentEntry.grokKind, agentSessionID: "abc-123"
+        )
+
+        XCTAssertEqual(command, "grok --resume abc-123",
+                       "resumeCommand for Grok must be exactly 'grok --resume <id>'")
+    }
+
+    func test_resumeCommand_grok_emptyAgentSessionID_returnsNil() {
+        let command = SessionResumePlanner.resumeCommand(agentKind: AgentEntry.grokKind, agentSessionID: "")
+
+        XCTAssertNil(command, "Grok inherits the empty-session-ID rejection, never 'grok --resume '")
+    }
+
+    func test_resumeCommand_codex_stillHasNoResumeCommand() {
+        XCTAssertNil(SessionResumePlanner.resumeCommand(agentKind: AgentEntry.codexKind, agentSessionID: "abc-123"),
+                     "Adding Grok must not accidentally hand every remaining kind a resume command")
+    }
+
     // MARK: - initialInput
 
     func test_initialInput_proposeMode_hasNoTrailingNewline() {

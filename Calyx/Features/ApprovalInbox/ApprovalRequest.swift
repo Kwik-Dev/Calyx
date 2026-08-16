@@ -11,11 +11,12 @@ import Foundation
 struct ApprovalRequest: Identifiable, Sendable {
     enum Source: Sendable, Equatable {
         case mcpTool(name: String)
-        /// A `PreToolUse` call intercepted from a non-MCP CLI agent hook
-        /// (Claude Code / Codex) rather than Calyx's own MCP server --
-        /// `kind` identifies the owning CLI (`AgentEntry.claudeCodeKind`
-        /// / `AgentEntry.codexKind`); `toolName` and `summary` come from
-        /// the decoded `AgentHookToolCall`.
+        /// A tool call intercepted from a non-MCP CLI agent's own
+        /// approval-gate hook (Claude Code / Codex / Grok) rather than
+        /// Calyx's own MCP server -- `kind` identifies the owning CLI
+        /// (`AgentEntry.claudeCodeKind` / `AgentEntry.codexKind` /
+        /// `AgentEntry.grokKind`); `toolName` and `summary` come from the
+        /// decoded `AgentHookToolCall`.
         case agentHook(toolName: String, kind: String, summary: String)
     }
 

@@ -232,6 +232,14 @@ final class AgentEventTests: XCTestCase {
         XCTAssertEqual(AgentEntry.displayName(forKind: "hermes"), "Hermes Agent")
     }
 
+    func test_displayName_grokKind_returnsGrok() {
+        XCTAssertEqual(AgentEntry.displayName(forKind: AgentEntry.grokKind), "Grok",
+                       "The sidebar row's secondary line shows the product name, not the wire kind")
+        XCTAssertEqual(AgentEntry.grokKind, "grok",
+                       "The kind constant is the literal Calyx writes into Grok's hook command argument " +
+                       "and X-Calyx-Agent-Kind header, so its value is part of the wire contract")
+    }
+
     // MARK: - ipcSelfPeerID extraction (Round 3: unread message badges)
     //
     // A PreToolUse for one of Calyx's own mcp__calyx-ipc__* tools carries

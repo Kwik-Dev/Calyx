@@ -280,4 +280,132 @@ final class AgentHookToolCallTests: XCTestCase {
 
         XCTAssertNil(call.hookEventName, "a non-string hook_event_name value must decode to nil, not crash or coerce")
     }
+
+    // MARK: - permissionMode decoding
+    //
+    // Grok names the session's permission mode on every hook payload, and
+    // `routeApprovalRequest` holds a grok tool call for a human only when
+    // that mode is `bypassPermissions` -- the one mode where Grok's own
+    // permission pipeline would otherwise run the call without asking
+    // anyone. A fabricated default here would either gate calls Grok is
+    // about to prompt for itself, or drop the gate where nothing else
+    // asks.
+
+    func test_decode_permissionModePresent_isDecodedVerbatim() throws {
+        let data = json(["toolName": "run_terminal_command", "permissionMode": "bypassPermissions"])
+
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data))
+
+        XCTAssertEqual(call.permissionMode, "bypassPermissions")
+    }
+
+    func test_decode_permissionModeAbsent_isNil() throws {
+        let data = json(["toolName": "run_terminal_command"])
+
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data))
+
+        XCTAssertNil(call.permissionMode,
+                     "An absent permissionMode must decode to nil, never to a fabricated default")
+    }
+
+    func test_decode_permissionModeExplicitNull_isNil() throws {
+        let data = json(["toolName": "run_terminal_command", "permissionMode": NSNull()])
+
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data))
+
+        XCTAssertNil(call.permissionMode,
+                     "an explicit JSON null for permissionMode must decode the same as an absent key")
+    }
+
+    func test_decode_permissionModeNonStringValue_isNil() throws {
+        let data = json(["toolName": "run_terminal_command", "permissionMode": 42])
+
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data))
+
+        XCTAssertNil(call.permissionMode, "a non-string permissionMode value must decode to nil, not coerce")
+    }
+
+    /// The tool-input-less early return builds the struct on its own, so
+    /// it has to carry the mode too: a payload with no `toolInput` at all
+    /// must not lose the field the gate branches on.
+    func test_decode_permissionModeSurvivesAMissingToolInput() throws {
+        let data = json(["toolName": "run_terminal_command", "permissionMode": "bypassPermissions"])
+
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data))
+
+        XCTAssertEqual(call.payload, "", "Precondition: this payload carries no tool input")
+        XCTAssertEqual(call.permissionMode, "bypassPermissions")
+    }
+
+    // MARK: - Grok's camelCase envelope
+    //
+    // Grok spells the same two fields toolName / toolInput, and names its
+    // shell tool run_terminal_command rather than Bash. Without the
+    // aliases the whole payload is rejected on the mandatory-tool_name
+    // guard, so a Grok banner would carry no tool name at all.
+
+    func test_decode_camelCaseToolNameAndToolInput_areAccepted() throws {
+        let toolInput: [String: Any] = ["command": "npm test"]
+        let data = json(["toolName": "run_terminal_command", "toolInput": toolInput])
+
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data),
+                                 "Grok's camelCase envelope must decode, not be rejected as nameless")
+
+        XCTAssertEqual(call.toolName, "run_terminal_command")
+        XCTAssertEqual(call.payload, try compactJSON(toolInput))
+    }
+
+    func test_decode_runTerminalCommand_summaryIsTheCommand() throws {
+        let toolInput: [String: Any] = ["command": "rm -rf build"]
+        let data = json(["toolName": "run_terminal_command", "toolInput": toolInput])
+
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data))
+
+        XCTAssertEqual(call.summary, "rm -rf build",
+                       "run_terminal_command is Grok's Bash: the banner must show the command a human " +
+                       "is being asked about, not the raw JSON wrapping it")
+    }
+
+    func test_decode_runTerminalCommand_missingCommandKey_fallsBackToCompactJSON() throws {
+        let toolInput: [String: Any] = ["cwd": "/repo"]
+        let data = json(["toolName": "run_terminal_command", "toolInput": toolInput])
+
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data))
+
+        XCTAssertEqual(call.summary, try compactJSON(toolInput),
+                       "A recognized tool missing its expected key falls back to the compact JSON, the " +
+                       "same rule Bash already follows")
+    }
+
+    func test_decode_unrecognizedGrokTool_summaryIsCompactJSON() throws {
+        let toolInput: [String: Any] = ["query": "hooks"]
+        let data = json(["toolName": "web_search", "toolInput": toolInput])
+
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data))
+
+        XCTAssertEqual(call.summary, try compactJSON(toolInput))
+    }
+
+    func test_decode_snakeCaseKeysWinOverCamelCaseAliases() throws {
+        let snakeInput: [String: Any] = ["command": "ls"]
+        let camelInput: [String: Any] = ["command": "rm -rf /"]
+        let data = json([
+            "tool_name": "Bash", "tool_input": snakeInput,
+            "toolName": "run_terminal_command", "toolInput": camelInput,
+        ])
+
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data))
+
+        XCTAssertEqual(call.toolName, "Bash",
+                       "The camelCase keys are a fallback, never an override: a payload carrying both " +
+                       "is a Claude Code / Codex payload")
+        XCTAssertEqual(call.summary, "ls",
+                       "tool_input must be read from the same envelope tool_name came from, or the " +
+                       "banner would name one call and describe another")
+    }
+
+    func test_decode_camelCaseToolNameEmpty_rejectsPayload() {
+        XCTAssertNil(AgentHookToolCall.decode(from: json(["toolName": ""])),
+                     "The alias inherits the non-empty requirement: an empty name is no name")
+    }
 }

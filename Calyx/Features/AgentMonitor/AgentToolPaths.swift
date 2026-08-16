@@ -25,4 +25,12 @@ enum AgentToolPaths {
     static var openCodeConfigDirectory: String {
         NSHomeDirectory() + "/.config/opencode"
     }
+
+    /// Grok's config root: `~/.grok`. Holds both `config.toml`
+    /// (`GrokConfigManager`'s `[mcp_servers.calyx-ipc]` entry) and
+    /// `hooks/calyx.json` (`GrokHooksConfigManager`'s Calyx-owned hook
+    /// file).
+    static var grokConfigDirectory: String {
+        NSHomeDirectory() + "/.grok"
+    }
 }
