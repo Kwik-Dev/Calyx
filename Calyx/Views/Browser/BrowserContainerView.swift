@@ -68,6 +68,8 @@ private struct BrowserToolbarView: View {
 private struct ErrorBannerView: View {
     let message: String
 
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
     var body: some View {
         HStack {
             Image(systemName: "exclamationmark.triangle.fill")
@@ -80,6 +82,7 @@ private struct ErrorBannerView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .background(Color.red.opacity(0.15))
+        .modifier(RecoveryBarBackgroundModifier(reduceTransparency: reduceTransparency))
         .accessibilityIdentifier(AccessibilityID.Browser.errorBanner)
     }
 }

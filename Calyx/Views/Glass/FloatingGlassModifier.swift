@@ -105,8 +105,9 @@ struct TabChromeModifier: ViewModifier {
     }
 }
 
-/// Overlays a saturation-boosted, theme-derived tint when the window is not key,
-/// matching Ghostty's inactive-window dimming (ported from TerminalViewContainer.swift).
+/// Overlays a theme-derived tint (hue, saturation, and brightness carried
+/// through unchanged) when the window is not key, matching Ghostty's
+/// inactive-window dimming (ported from TerminalViewContainer.swift).
 /// The tint renders into the modified view's own `.background`: it covers exactly
 /// the host view's frame (coverage is set by what you attach it to, not by options
 /// here), and the glass or flat fill it dims must be chained after it so the tint
