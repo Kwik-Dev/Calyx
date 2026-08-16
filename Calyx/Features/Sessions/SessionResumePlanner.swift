@@ -44,6 +44,8 @@ enum SessionResumePlanner {
         switch agentKind {
         case AgentEntry.claudeCodeKind:
             return "claude --resume \(agentSessionID)"
+        case AgentEntry.grokKind:
+            return "grok --resume \(agentSessionID)"
         default:
             // Other agent kinds (e.g. Codex) have no known resume
             // invocation yet — future work, not this phase.

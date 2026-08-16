@@ -10,7 +10,8 @@ final class IPCConfigManagerTests: XCTestCase {
             claudeCode: .success,
             codex: .success,
             openCode: .skipped(reason: "not installed"),
-            hermes: .skipped(reason: "not installed")
+            hermes: .skipped(reason: "not installed"),
+            grok: .skipped(reason: "not installed")
         )
         XCTAssertTrue(result.anySucceeded)
     }
@@ -20,7 +21,8 @@ final class IPCConfigManagerTests: XCTestCase {
             claudeCode: .success,
             codex: .skipped(reason: "not installed"),
             openCode: .skipped(reason: "not installed"),
-            hermes: .skipped(reason: "not installed")
+            hermes: .skipped(reason: "not installed"),
+            grok: .skipped(reason: "not installed")
         )
         XCTAssertTrue(result.anySucceeded)
     }
@@ -30,7 +32,8 @@ final class IPCConfigManagerTests: XCTestCase {
             claudeCode: .skipped(reason: "not installed"),
             codex: .success,
             openCode: .skipped(reason: "not installed"),
-            hermes: .skipped(reason: "not installed")
+            hermes: .skipped(reason: "not installed"),
+            grok: .skipped(reason: "not installed")
         )
         XCTAssertTrue(result.anySucceeded)
     }
@@ -40,7 +43,8 @@ final class IPCConfigManagerTests: XCTestCase {
             claudeCode: .skipped(reason: "not installed"),
             codex: .skipped(reason: "not installed"),
             openCode: .skipped(reason: "not installed"),
-            hermes: .skipped(reason: "not installed")
+            hermes: .skipped(reason: "not installed"),
+            grok: .skipped(reason: "not installed")
         )
         XCTAssertFalse(result.anySucceeded)
     }
@@ -51,7 +55,8 @@ final class IPCConfigManagerTests: XCTestCase {
             claudeCode: .failed(error),
             codex: .skipped(reason: "not installed"),
             openCode: .skipped(reason: "not installed"),
-            hermes: .skipped(reason: "not installed")
+            hermes: .skipped(reason: "not installed"),
+            grok: .skipped(reason: "not installed")
         )
         XCTAssertFalse(result.anySucceeded)
     }
@@ -64,7 +69,8 @@ final class IPCConfigManagerTests: XCTestCase {
             claudeCode: .skipped(reason: "not installed"),
             codex: .skipped(reason: "not installed"),
             openCode: .success,
-            hermes: .skipped(reason: "not installed")
+            hermes: .skipped(reason: "not installed"),
+            grok: .skipped(reason: "not installed")
         )
         // Then
         XCTAssertTrue(result.anySucceeded,
@@ -77,7 +83,8 @@ final class IPCConfigManagerTests: XCTestCase {
             claudeCode: .skipped(reason: "not installed"),
             codex: .skipped(reason: "not installed"),
             openCode: .skipped(reason: "not installed"),
-            hermes: .skipped(reason: "not installed")
+            hermes: .skipped(reason: "not installed"),
+            grok: .skipped(reason: "not installed")
         )
         // Then
         XCTAssertFalse(result.anySucceeded,
@@ -91,7 +98,8 @@ final class IPCConfigManagerTests: XCTestCase {
             claudeCode: .skipped(reason: "not installed"),
             codex: .skipped(reason: "not installed"),
             openCode: .failed(error),
-            hermes: .skipped(reason: "not installed")
+            hermes: .skipped(reason: "not installed"),
+            grok: .skipped(reason: "not installed")
         )
         // Then
         XCTAssertFalse(result.anySucceeded,
@@ -105,7 +113,8 @@ final class IPCConfigManagerTests: XCTestCase {
             claudeCode: .failed(error),
             codex: .failed(error),
             openCode: .success,
-            hermes: .failed(error)
+            hermes: .failed(error),
+            grok: .skipped(reason: "not installed")
         )
         // Then
         XCTAssertTrue(result.anySucceeded,
@@ -120,7 +129,8 @@ final class IPCConfigManagerTests: XCTestCase {
             claudeCode: .skipped(reason: "not installed"),
             codex: .skipped(reason: "not installed"),
             openCode: .skipped(reason: "not installed"),
-            hermes: .success
+            hermes: .success,
+            grok: .skipped(reason: "not installed")
         )
         // Then
         XCTAssertTrue(result.anySucceeded,
@@ -134,7 +144,8 @@ final class IPCConfigManagerTests: XCTestCase {
             claudeCode: .skipped(reason: "not installed"),
             codex: .skipped(reason: "not installed"),
             openCode: .skipped(reason: "not installed"),
-            hermes: .failed(error)
+            hermes: .failed(error),
+            grok: .skipped(reason: "not installed")
         )
         // Then
         XCTAssertFalse(result.anySucceeded,
@@ -148,11 +159,114 @@ final class IPCConfigManagerTests: XCTestCase {
             claudeCode: .failed(error),
             codex: .failed(error),
             openCode: .failed(error),
-            hermes: .success
+            hermes: .success,
+            grok: .skipped(reason: "not installed")
         )
         // Then
         XCTAssertTrue(result.anySucceeded,
                       "anySucceeded should return true when hermes succeeded despite other failures")
+    }
+
+    // MARK: - IPCConfigResult.anySucceeded (grok axis)
+
+    func test_anySucceeded_onlyGrok() {
+        let result = IPCConfigResult(
+            claudeCode: .skipped(reason: "not installed"),
+            codex: .skipped(reason: "not installed"),
+            openCode: .skipped(reason: "not installed"),
+            hermes: .skipped(reason: "not installed"),
+            grok: .success
+        )
+
+        XCTAssertTrue(result.anySucceeded,
+                      "A machine with Grok as its only agent CLI must still count as configured: " +
+                      "anySucceeded gates whether the agent hooks get installed at all, so leaving grok " +
+                      "out of it silently strands that machine with an MCP entry and no hooks")
+    }
+
+    func test_anySucceeded_grokFailedOthersSkipped() {
+        let result = IPCConfigResult(
+            claudeCode: .skipped(reason: "not installed"),
+            codex: .skipped(reason: "not installed"),
+            openCode: .skipped(reason: "not installed"),
+            hermes: .skipped(reason: "not installed"),
+            grok: .failed(NSError(domain: "test", code: 6))
+        )
+
+        XCTAssertFalse(result.anySucceeded, "A failure is not a success on the grok axis either")
+    }
+
+    func test_anySucceeded_grokSuccessOthersFailed() {
+        let error = NSError(domain: "test", code: 7)
+        let result = IPCConfigResult(
+            claudeCode: .failed(error),
+            codex: .failed(error),
+            openCode: .failed(error),
+            hermes: .failed(error),
+            grok: .success
+        )
+
+        XCTAssertTrue(result.anySucceeded)
+    }
+
+    // MARK: - AgentHooksResult.issueMessages (grok axis)
+
+    func test_issueMessages_grokFailure_isReported() {
+        let result = AgentHooksResult(
+            claudeCode: .success,
+            codex: .skipped(reason: "not installed"),
+            openCode: .skipped(reason: "not installed"),
+            grok: .failed(NSError(domain: "test", code: 8, userInfo: [NSLocalizedDescriptionKey: "boom"])),
+            pi: .skipped(reason: "not installed")
+        )
+
+        XCTAssertEqual(result.issueMessages, ["Grok hooks: boom"],
+                       "A failed Grok hook install must reach the sidebar banner. Silence there is the " +
+                       "worst outcome: the user sees a Grok pane with no row and no reason why")
+    }
+
+    func test_issueMessages_grokSuccess_addsNothing() {
+        let result = AgentHooksResult(
+            claudeCode: .skipped(reason: "not installed"),
+            codex: .skipped(reason: "not installed"),
+            openCode: .skipped(reason: "not installed"),
+            grok: .success,
+            pi: .success
+        )
+
+        XCTAssertEqual(result.issueMessages, [], "A clean install raises no banner")
+    }
+
+    // MARK: - AgentHooksResult.issueMessages (pi axis)
+
+    /// pi reaches Calyx through exactly one axis: the extension file.
+    /// There is no MCP client config to fall back on, so a failed
+    /// extension install means a pi pane is invisible to Calyx entirely,
+    /// with nothing else on screen to reveal it. The label follows the
+    /// same "<tool> <artifact>" scheme as "OpenCode plugin" and
+    /// "Grok hooks", and matches the status line the IPC alert shows.
+    func test_issueMessages_piFailure_isReported_andACleanPiInstallAddsNothing() {
+        let failed = AgentHooksResult(
+            claudeCode: .success,
+            codex: .skipped(reason: "not installed"),
+            openCode: .skipped(reason: "not installed"),
+            grok: .skipped(reason: "not installed"),
+            pi: .failed(NSError(domain: "test", code: 9, userInfo: [NSLocalizedDescriptionKey: "boom"]))
+        )
+
+        XCTAssertEqual(failed.issueMessages, ["pi extension: boom"],
+                       "A failed pi extension install must reach the sidebar banner")
+
+        let clean = AgentHooksResult(
+            claudeCode: .skipped(reason: "not installed"),
+            codex: .skipped(reason: "not installed"),
+            openCode: .skipped(reason: "not installed"),
+            grok: .skipped(reason: "not installed"),
+            pi: .success
+        )
+
+        XCTAssertEqual(clean.issueMessages, [],
+                       "A successful pi install must not raise a banner of its own")
     }
 
     // MARK: - ConfigStatus pattern matching

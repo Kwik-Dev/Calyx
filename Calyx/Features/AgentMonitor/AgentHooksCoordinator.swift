@@ -3,10 +3,11 @@
 //
 // Coordinates installing/removing calyx-agent-hook plus each agent CLI's
 // own hook/plugin wiring (Claude Code's hooks.json, Codex's config.toml
-// managed block, OpenCode's plugin file) across the three tools Phase 2
-// supports, collecting results independently so one tool's failure does
-// not block the others. Mirrors IPCConfigManager's shape (ConfigStatus per
-// tool, directory-existence-based skip).
+// managed block, OpenCode's plugin file, Grok's own hook file under
+// ~/.grok/hooks, pi's extension file under ~/.pi/agent/extensions) across
+// the tools Calyx supports, collecting results independently so one
+// tool's failure does not block the others. Mirrors IPCConfigManager's
+// shape (ConfigStatus per tool, directory-existence-based skip).
 
 import Foundation
 
@@ -16,6 +17,12 @@ struct AgentHooksResult: Sendable {
     let claudeCode: ConfigStatus
     let codex: ConfigStatus
     let openCode: ConfigStatus
+    let grok: ConfigStatus
+    /// pi's axis. pi has no MCP client configuration file at all, so
+    /// unlike the other tools it reaches Calyx through this one axis
+    /// only: `PiExtensionManager`'s extension file is the entire
+    /// integration, and `IPCConfigResult` has no pi counterpart.
+    let pi: ConfigStatus
 
     /// One `"<name>: <localizedDescription>"` line per `.failed` tool,
     /// for `AgentRegistry.hooksIssues`'s persistent sidebar banner. `[]`
@@ -31,6 +38,8 @@ struct AgentHooksResult: Sendable {
             ("Claude Code hooks", claudeCode),
             ("Codex hooks", codex),
             ("OpenCode plugin", openCode),
+            ("Grok hooks", grok),
+            ("pi extension", pi),
         ].compactMap { name, status in
             guard case .failed(let error) = status else { return nil }
             return "\(name): \(error.localizedDescription)"
@@ -46,14 +55,14 @@ struct AgentHooksCoordinator: Sendable {
 
     /// Installs `calyx-agent-hook` and `calyx-approval-hook` once, then
     /// wires each tool's own hook/plugin configuration to invoke them
-    /// (Claude Code, Codex) or to POST directly (OpenCode). Either
-    /// script's install failure only marks Claude Code / Codex `.failed`
-    /// when that tool is actually installed (its config directory
-    /// exists) — an uninstalled tool reports `.skipped` exactly as it
-    /// would have regardless of the script error, rather than a
-    /// misleading `.failed`. Does not block OpenCode, whose plugin talks
-    /// to the IPC endpoint over `fetch` rather than through the shared
-    /// shell scripts.
+    /// (Claude Code, Codex, Grok) or to POST directly (OpenCode, pi).
+    /// Either script's install failure only marks Claude Code / Codex /
+    /// Grok `.failed` when that tool is actually installed (its config
+    /// directory exists): an uninstalled tool reports `.skipped` exactly
+    /// as it would have regardless of the script error, rather than a
+    /// misleading `.failed`. Does not block OpenCode or pi, whose plugin
+    /// and extension talk to the IPC endpoint over `fetch` rather than
+    /// through the shared shell scripts.
     static func install() -> AgentHooksResult {
         let scriptPath: String
         let approvalScriptPath: String
@@ -64,14 +73,18 @@ struct AgentHooksCoordinator: Sendable {
             return AgentHooksResult(
                 claudeCode: scriptFailureStatus(error, directory: AgentToolPaths.claudeConfigDirectory),
                 codex: scriptFailureStatus(error, directory: AgentToolPaths.codexConfigDirectory),
-                openCode: installOpenCode()
+                openCode: installOpenCode(),
+                grok: scriptFailureStatus(error, directory: AgentToolPaths.grokConfigDirectory),
+                pi: installPi()
             )
         }
 
         return AgentHooksResult(
             claudeCode: installClaudeCode(scriptPath: scriptPath, approvalScriptPath: approvalScriptPath),
             codex: installCodex(scriptPath: scriptPath, approvalScriptPath: approvalScriptPath),
-            openCode: installOpenCode()
+            openCode: installOpenCode(),
+            grok: installGrok(scriptPath: scriptPath, approvalScriptPath: approvalScriptPath),
+            pi: installPi()
         )
     }
 
@@ -83,7 +96,9 @@ struct AgentHooksCoordinator: Sendable {
         AgentHooksResult(
             claudeCode: removeClaudeCode(),
             codex: removeCodex(),
-            openCode: removeOpenCode()
+            openCode: removeOpenCode(),
+            grok: removeGrok(),
+            pi: removePi()
         )
     }
 
@@ -100,7 +115,7 @@ struct AgentHooksCoordinator: Sendable {
     /// `.skipped` when it isn't already present, exactly like `remove()`
     /// above.
     ///
-    /// When none of the three tools already have Calyx's hooks, returns
+    /// When none of the tools already have Calyx's hooks, returns
     /// every tool `.skipped` WITHOUT installing the shared
     /// `calyx-agent-hook`/`calyx-approval-hook` scripts at all -- a user
     /// who has never opted into IPC for any tool must never get hook
@@ -109,10 +124,14 @@ struct AgentHooksCoordinator: Sendable {
         let claudeInstalled = ClaudeHooksConfigManager.areHooksInstalled()
         let codexInstalled = CodexHooksConfigManager.areHooksInstalled()
         let openCodeInstalled = OpenCodePluginManager.isInstalled()
+        let grokInstalled = GrokHooksConfigManager.areHooksInstalled()
+        let piInstalled = PiExtensionManager.isInstalled()
 
-        guard claudeInstalled || codexInstalled || openCodeInstalled else {
+        guard claudeInstalled || codexInstalled || openCodeInstalled || grokInstalled || piInstalled else {
             let skipped = ConfigStatus.skipped(reason: "not installed")
-            return AgentHooksResult(claudeCode: skipped, codex: skipped, openCode: skipped)
+            return AgentHooksResult(
+                claudeCode: skipped, codex: skipped, openCode: skipped, grok: skipped, pi: skipped
+            )
         }
 
         let scriptPath: String
@@ -124,7 +143,9 @@ struct AgentHooksCoordinator: Sendable {
             return AgentHooksResult(
                 claudeCode: resyncScriptFailureStatus(error, alreadyInstalled: claudeInstalled),
                 codex: resyncScriptFailureStatus(error, alreadyInstalled: codexInstalled),
-                openCode: resyncOpenCode(alreadyInstalled: openCodeInstalled)
+                openCode: resyncOpenCode(alreadyInstalled: openCodeInstalled),
+                grok: resyncScriptFailureStatus(error, alreadyInstalled: grokInstalled),
+                pi: resyncPi(alreadyInstalled: piInstalled)
             )
         }
 
@@ -135,7 +156,11 @@ struct AgentHooksCoordinator: Sendable {
             codex: resyncCodex(
                 alreadyInstalled: codexInstalled, scriptPath: scriptPath, approvalScriptPath: approvalScriptPath
             ),
-            openCode: resyncOpenCode(alreadyInstalled: openCodeInstalled)
+            openCode: resyncOpenCode(alreadyInstalled: openCodeInstalled),
+            grok: resyncGrok(
+                alreadyInstalled: grokInstalled, scriptPath: scriptPath, approvalScriptPath: approvalScriptPath
+            ),
+            pi: resyncPi(alreadyInstalled: piInstalled)
         )
     }
 
@@ -218,6 +243,47 @@ struct AgentHooksCoordinator: Sendable {
         }
     }
 
+    // MARK: - Private: Grok
+
+    private static func installGrok(scriptPath: String, approvalScriptPath: String) -> ConfigStatus {
+        guard ConfigFileUtils.directoryExists(at: AgentToolPaths.grokConfigDirectory) else {
+            return .skipped(reason: "not installed")
+        }
+        return captureStatus {
+            try GrokHooksConfigManager.installHooks(
+                scriptPath: scriptPath, approvalScriptPath: approvalScriptPath
+            )
+        }
+    }
+
+    private static func removeGrok() -> ConfigStatus {
+        // See removeClaudeCode's comment: removal must check whether
+        // Calyx's own hook file is actually installed, not just whether
+        // ~/.grok exists.
+        guard GrokHooksConfigManager.areHooksInstalled() else {
+            return .skipped(reason: "not installed")
+        }
+        return captureStatus {
+            try GrokHooksConfigManager.removeHooks()
+        }
+    }
+
+    /// `resyncInstalled()`'s Grok leg -- see `resyncClaudeCode`'s own doc
+    /// comment for why `alreadyInstalled` is a pre-captured snapshot
+    /// rather than a fresh `areHooksInstalled()` call.
+    private static func resyncGrok(
+        alreadyInstalled: Bool, scriptPath: String, approvalScriptPath: String
+    ) -> ConfigStatus {
+        guard alreadyInstalled else {
+            return .skipped(reason: "not installed")
+        }
+        return captureStatus {
+            try GrokHooksConfigManager.installHooks(
+                scriptPath: scriptPath, approvalScriptPath: approvalScriptPath
+            )
+        }
+    }
+
     // MARK: - Private: OpenCode
 
     private static func installOpenCode() -> ConfigStatus {
@@ -253,6 +319,44 @@ struct AgentHooksCoordinator: Sendable {
         }
     }
 
+    // MARK: - Private: pi
+
+    private static func installPi() -> ConfigStatus {
+        guard ConfigFileUtils.directoryExists(at: AgentToolPaths.piConfigDirectory) else {
+            return .skipped(reason: "not installed")
+        }
+        return captureStatus {
+            _ = try PiExtensionManager.install()
+        }
+    }
+
+    private static func removePi() -> ConfigStatus {
+        // See removeClaudeCode's comment: removal must check whether
+        // Calyx's own extension file is actually installed, not just
+        // whether ~/.pi/agent exists.
+        guard PiExtensionManager.isInstalled() else {
+            return .skipped(reason: "not installed")
+        }
+        return captureStatus {
+            try PiExtensionManager.remove()
+        }
+    }
+
+    /// `resyncInstalled()`'s pi leg -- see `resyncClaudeCode`'s own doc
+    /// comment for why `alreadyInstalled` is a pre-captured snapshot
+    /// rather than a fresh `isInstalled()` call. Runs independently of
+    /// whether the shared `calyx-agent-hook` scripts installed cleanly:
+    /// pi's extension POSTs to the IPC endpoint directly rather than
+    /// through them, exactly like OpenCode's plugin above.
+    private static func resyncPi(alreadyInstalled: Bool) -> ConfigStatus {
+        guard alreadyInstalled else {
+            return .skipped(reason: "not installed")
+        }
+        return captureStatus {
+            _ = try PiExtensionManager.install()
+        }
+    }
+
     // MARK: - Private: Helpers
 
     /// Runs `body`, mapping a thrown error to `.failed` and a clean return
@@ -268,7 +372,7 @@ struct AgentHooksCoordinator: Sendable {
         }
     }
 
-    /// Status for Claude Code / Codex when the shared `calyx-agent-hook`
+    /// Status for Claude Code / Codex / Grok when the shared `calyx-agent-hook`
     /// script itself failed to install: `.skipped` if the tool isn't even
     /// installed (its config directory is absent — it would have been
     /// skipped regardless of the script error), `.failed(error)` only when

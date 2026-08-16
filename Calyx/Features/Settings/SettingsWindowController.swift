@@ -115,14 +115,14 @@ class SettingsWindowController: NSWindowController {
             return SectionHeading(
                 title: "Command Approval",
                 subtitle: "Applies to agent-initiated pane commands (run, send keys, palette) and to CLI agents' "
-                    + "(Claude Code, Codex) tool-call approval requests. Off = ask every time."
+                    + "(Claude Code, Codex, Grok, pi) tool-call approval requests. Off = ask every time."
             )
         case .commandTracking:
             return SectionHeading(title: "Command Tracking", subtitle: "Changes apply to new terminals only.")
         case .agentHookApproval:
             return SectionHeading(
                 title: "Agent Hook Approval",
-                subtitle: "Routes CLI agents' (Claude Code, Codex) tool-permission prompts to the Calyx approval banner. Off = agents prompt in their own pane, as before."
+                subtitle: "Routes Claude Code and Codex permission prompts, all always-approve Grok tool calls, and every pi tool call to the Calyx approval banner. Off = agents decide alone, and pi, which has no prompt of its own, just runs the call."
             )
         case .openConfigFileFooter:
             return SectionHeading(title: nil, subtitle: nil)

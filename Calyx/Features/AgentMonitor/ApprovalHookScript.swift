@@ -126,6 +126,19 @@ enum ApprovalHookScript {
 
     kind="${1:-claude-code}"
 
+    # Grok scans ~/.claude/settings.json for hooks by default, so Calyx's
+    # Claude Code entries -- which pass no kind argument and therefore
+    # resolve to claude-code -- also fire inside a Grok session, where
+    # this script's stdout would become Grok's decision in a vocabulary
+    # (Claude Code's nested hookSpecificOutput.decision) Grok does not
+    # recognize. GROK_HOOK_EVENT is a reserved variable Grok's hook
+    # runner injects into every hook process, so it is set for Calyx's
+    # own Grok entries too; those pass an explicit kind and are
+    # unaffected. The user's own [compat.*] settings are never touched.
+    if [ "$kind" = "claude-code" ] && [ -n "$GROK_HOOK_EVENT" ]; then
+        exit 0
+    fi
+
     endpoint_file="$HOME/Library/Application Support/Calyx/agent-endpoint.json"
     if [ ! -f "$endpoint_file" ]; then
         exit 0

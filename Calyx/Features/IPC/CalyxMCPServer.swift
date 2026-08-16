@@ -458,11 +458,13 @@ final class CalyxMCPServer {
     /// present (400) -> body.count <= maxEventBodyBytes, checked BEFORE
     /// decode (413, mirrors `routeCommandEvent`) -> `AgentHookToolCall.decode`
     /// (400) -> `resolveSurfaceID` (400) -> an unrecognized
-    /// `X-Calyx-Agent-Kind` (anything other than claude-code/codex)
+    /// `X-Calyx-Agent-Kind` (anything other than
+    /// claude-code/codex/grok/pi)
     /// short-circuits to 200 with an EMPTY body, never submitting
-    /// anything -> `call.hookEventName != "PermissionRequest"` (anything
-    /// else, including a missing key, or `"PreToolUse"` specifically)
-    /// short-circuits the same inert way. NOT harmless during the
+    /// anything -> a hook event name that isn't the one this kind's gate
+    /// fires under (`ApprovalHookEvent.isApprovalGate(_:kind:)` -- so
+    /// anything else, including a missing key, or `"PreToolUse"`
+    /// specifically) short-circuits the same inert way. NOT harmless during the
     /// migration window it exists for: a CLI session already running
     /// before an app update re-migrates `settings.json`/`config.toml`
     /// (see `AgentHooksCoordinator.resyncInstalled()`, run from
@@ -486,7 +488,13 @@ final class CalyxMCPServer {
     /// `ClaudeHooksConfigManager.installHooks`'s own doc comment).
     /// Staying inert is the smaller, temporary cost, and resolves
     /// itself the moment the session restarts and reloads its migrated
-    /// config -> `CockpitSettings.agentHookApprovalEnabled` being off does the
+    /// config -> a grok payload whose `permissionMode` is anything but
+    /// `bypassPermissions` (`ApprovalHookEvent.gateIsSoleAuthority`)
+    /// short-circuits the same inert way, because Grok's own permission
+    /// pipeline still runs behind this gate in every other mode: a
+    /// banner here would duplicate the prompt Grok is about to show in
+    /// its own pane, and an allow here would not answer that prompt
+    /// -> `CockpitSettings.agentHookApprovalEnabled` being off does the
     /// same -> global auto-approve (`!ApprovalPolicy.requiresApproval()`)
     /// short-circuits to 200 with an ALLOW body, also without ever
     /// submitting -> a Stage E `agentHookApprovalMemory.isAutoAllowed`
@@ -504,7 +512,9 @@ final class CalyxMCPServer {
     ///
     /// (a) THE RESPONSE BODY IS THE HOOK'S STDOUT, BYTE FOR BYTE --
     ///     Claude Code / Codex parse it directly as their own
-    ///     PermissionRequest hook JSON contract (see
+    ///     PermissionRequest hook JSON contract, Grok as its own flat
+    ///     PreToolUse decision, and pi's extension reads that same flat
+    ///     decision from the response body of this very request (see
     ///     `AgentHookPermissionResponse`'s header comment). Nothing here
     ///     may wrap, prepend, or otherwise reshape it.
     ///
@@ -514,7 +524,12 @@ final class CalyxMCPServer {
     ///     `.expired`, which `AgentHookPermissionResponse` renders as an
     ///     EMPTY body for both claude-code and codex -- neither CLI has
     ///     an "ask" analog under PermissionRequest, so absent output
-    ///     lets that CLI's own confirmation prompt take over -- NEVER
+    ///     lets that CLI's own confirmation prompt take over -- and as an
+    ///     explicit deny for grok and pi: a grok request reaches this
+    ///     point only under `bypassPermissions`, the one mode where
+    ///     nothing behind this gate would ask anyone before running the
+    ///     call, and pi has no prompt of its own in any mode, so silence
+    ///     for either would let the call run unreviewed. NEVER
     ///     "allow". `awaitDecisionHonoringCancellation` is what re-maps an
     ///     `.allowed` decision that raced a concurrent cancellation of
     ///     this call's own Task to `.expired` -- see that method's own
@@ -560,18 +575,30 @@ final class CalyxMCPServer {
         }
 
         let kind = agentKind(from: request.headers)
-        guard kind == AgentEntry.claudeCodeKind || kind == AgentEntry.codexKind else {
+        guard kind == AgentEntry.claudeCodeKind || kind == AgentEntry.codexKind
+            || kind == AgentEntry.grokKind || kind == AgentEntry.piKind else {
             // An agent CLI Calyx doesn't have a hook-response contract
             // for at all (see `AgentHookPermissionResponse`'s own
             // fail-safe contract) -- never submit to the inbox for one.
             return HTTPParser.response(statusCode: 200, body: nil)
         }
 
-        guard call.hookEventName == ApprovalHookEvent.name else {
+        guard ApprovalHookEvent.isApprovalGate(call.hookEventName, kind: kind) else {
             // A stale PreToolUse-fired POST (a not-yet-migrated install,
             // see this method's own doc comment) or any other/missing
-            // hook_event_name -- inert, same as the unrecognized-kind
+            // hook event name -- inert, same as the unrecognized-kind
             // guard above, never submitted to the inbox.
+            return HTTPParser.response(statusCode: 200, body: nil)
+        }
+
+        guard ApprovalHookEvent.gateIsSoleAuthority(kind: kind, permissionMode: call.permissionMode) else {
+            // A Grok session outside bypassPermissions: Grok's own
+            // permission pipeline, its in-pane prompt included, still
+            // runs after this gate, and a decision here could not grant
+            // anything anyway (see `gateIsSoleAuthority`). Answering
+            // with no decision at all leaves that pipeline deciding
+            // exactly as it would without Calyx, rather than asking the
+            // same human the same question in two places.
             return HTTPParser.response(statusCode: 200, body: nil)
         }
 

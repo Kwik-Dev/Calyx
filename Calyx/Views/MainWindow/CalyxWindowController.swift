@@ -5728,6 +5728,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
             configStatusLabel(result.codex, name: "Codex", verb: "configured"),
             configStatusLabel(result.openCode, name: "OpenCode", verb: "configured"),
             configStatusLabel(result.hermes, name: "Hermes", verb: "configured"),
+            configStatusLabel(result.grok, name: "Grok", verb: "configured"),
         ].joined(separator: "\n")
     }
 
@@ -5737,20 +5738,30 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
             configStatusLabel(result.claudeCode, name: "Claude Code hooks", verb: verb),
             configStatusLabel(result.codex, name: "Codex hooks", verb: verb),
             configStatusLabel(result.openCode, name: "OpenCode plugin", verb: verb),
+            configStatusLabel(result.grok, name: "Grok hooks", verb: verb),
+            configStatusLabel(result.pi, name: "pi extension", verb: verb),
         ].joined(separator: "\n")
     }
 
     // MARK: - AI Agent Tab Detection
 
     /// Returns true if a terminal tab title indicates it is running one of the
-    /// supported AI agents (Claude Code, Codex, OpenCode, Hermes). Centralizes
-    /// the title-substring check used by both compose and review send paths.
-    /// Keep the agent list in sync with `IPCConfigResult` axes.
+    /// supported AI agents (Claude Code, Codex, OpenCode, Hermes, Grok).
+    /// Centralizes the title-substring check used by both compose and review
+    /// send paths. Keep the agent list in sync with `IPCConfigResult` axes.
+    ///
+    /// pi is deliberately absent. Its name is two characters, so a
+    /// case-insensitive substring match on it fires for ordinary titles
+    /// such as "npm run api" or any path holding "pi", and every one of
+    /// those panes would be offered as a send target. A pi pane still
+    /// reaches the Agents sidebar through its extension's own events,
+    /// which name the kind explicitly instead of guessing from a title.
     private static func isAIAgentTitle(_ title: String) -> Bool {
         title.localizedCaseInsensitiveContains("claude") ||
         title.localizedCaseInsensitiveContains(AgentEntry.codexKind) ||
         title.localizedCaseInsensitiveContains(AgentEntry.openCodeKind) ||
-        title.localizedCaseInsensitiveContains("hermes")
+        title.localizedCaseInsensitiveContains("hermes") ||
+        title.localizedCaseInsensitiveContains(AgentEntry.grokKind)
     }
 
     private func sendReviewToAgent(_ payload: String) -> ReviewSendResult {
@@ -5761,7 +5772,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         }
 
         guard !agentTabs.isEmpty else {
-            showIPCAlert(title: "No AI Agent", message: "No terminal tabs running Claude Code, Codex, OpenCode, or Hermes found. Start an AI agent first.")
+            showIPCAlert(title: "No AI Agent", message: "No terminal tabs running Claude Code, Codex, OpenCode, Hermes, or Grok found. Start an AI agent first.")
             return .failed
         }
 
