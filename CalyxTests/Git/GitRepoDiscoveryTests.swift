@@ -44,17 +44,35 @@ private func makeWorktreeFamily(_ label: String) throws -> WorktreeFamily {
     )
 }
 
-private func section(_ rootPath: String) -> GitRepoDescriptor {
+private func section(_ rootPath: String, branch: String = "main") -> GitRepoDescriptor {
     GitRepoDescriptor(
         rootPath: rootPath,
         displayName: (rootPath as NSString).lastPathComponent,
         kind: .repository,
-        branch: "main",
+        branch: branch,
         headShortHash: "0123456",
         location: GitRepositoryLocation(
             workTree: rootPath,
             gitDirectory: rootPath + "/.git",
             gitCommonDirectory: rootPath + "/.git"
+        )
+    )
+}
+
+/// A linked worktree of the repository rooted at `mainRootPath`, which is
+/// what makes the two share a Git directory.
+private func worktreeSection(_ rootPath: String, of mainRootPath: String) -> GitRepoDescriptor {
+    let commonDirectory = mainRootPath + "/.git"
+    return GitRepoDescriptor(
+        rootPath: rootPath,
+        displayName: (rootPath as NSString).lastPathComponent,
+        kind: .worktree,
+        branch: (rootPath as NSString).lastPathComponent,
+        headShortHash: "0123456",
+        location: GitRepositoryLocation(
+            workTree: rootPath,
+            gitDirectory: commonDirectory + "/worktrees/" + (rootPath as NSString).lastPathComponent,
+            gitCommonDirectory: commonDirectory
         )
     )
 }
@@ -259,5 +277,210 @@ struct GitRepoDiscoveryTests {
                 in: [section("/a/Calyx")]
             ) == nil
         )
+    }
+
+    // MARK: - What a run could not check
+
+    @Test func test_discover_keepsASeedTheWorktreeListDoesNotMention() async throws {
+        let family = try makeWorktreeFamily("discover-moved-worktree")
+        defer { try? FileManager.default.removeItem(at: family.scratch) }
+
+        // git lists a moved worktree at the path it no longer occupies,
+        // marked prunable, and never mentions where it actually is.
+        let moved = family.scratch.appendingPathComponent("alpha-moved")
+        try FileManager.default.moveItem(at: family.alpha, to: moved)
+
+        let result = await GitRepoDiscovery.discover(seedWorkDirs: [moved.path])
+
+        #expect(result.sections.map(\.rootPath).contains(moved.path))
+        #expect(result.sections.map(\.rootPath) == [
+            family.mainRepo.path, moved.path, family.beta.path,
+        ])
+    }
+
+    @Test func test_discover_reportsAGapForASeedThatCouldNotBeResolved() async throws {
+        let family = try makeWorktreeFamily("discover-gap")
+        defer { try? FileManager.default.removeItem(at: family.scratch) }
+
+        let missing = family.scratch.appendingPathComponent("deleted-pane-cwd")
+
+        let result = await GitRepoDiscovery.discover(seedWorkDirs: [missing.path, family.alpha.path])
+
+        #expect(result.gaps.workDirs.keys.contains(missing.path))
+        #expect(result.gaps.message(for: section(missing.path)) != nil)
+        #expect(result.gaps.message(for: section(family.alpha.path)) == nil)
+    }
+
+    @Test func test_discoverAndMerge_keepARepositoryThatDidNotAnswer() async throws {
+        let scratch = try GitScratch.makeDirectory("discover-two-repos")
+        defer { try? FileManager.default.removeItem(at: scratch) }
+
+        let alpha = scratch.appendingPathComponent("alpha")
+        let beta = scratch.appendingPathComponent("beta")
+        for repository in [alpha, beta] {
+            try GitScratch.run(["init", "-q", "-b", "main", repository.path], in: scratch)
+            try GitScratch.commit(
+                file: "base.txt", contents: "base\n", message: "base commit", in: repository
+            )
+        }
+
+        let displayed = await GitRepoDiscovery.discover(seedWorkDirs: [alpha.path, beta.path]).sections
+        try #require(displayed.map(\.rootPath) == [alpha.path, beta.path])
+
+        // One repository stops answering while the other is fine.
+        try FileManager.default.removeItem(at: alpha)
+        let result = await GitRepoDiscovery.discover(seedWorkDirs: [alpha.path, beta.path])
+        #expect(result.sections.map(\.rootPath) == [beta.path])
+        #expect(result.failureMessage == nil)
+
+        let merged = GitRepoDiscovery.merge(
+            discovered: result.sections, keeping: displayed, gaps: result.gaps
+        )
+        #expect(merged.map(\.rootPath) == [alpha.path, beta.path])
+    }
+
+    // MARK: - merge
+
+    @Test func test_merge_dropsASectionTheRunLookedForAndDidNotFind() {
+        let displayed = [section("/a/alpha"), section("/a/beta")]
+
+        let merged = GitRepoDiscovery.merge(
+            discovered: [section("/a/alpha")],
+            keeping: displayed,
+            gaps: GitRepoDiscoveryGaps()
+        )
+
+        #expect(merged.map(\.rootPath) == ["/a/alpha"])
+    }
+
+    @Test func test_merge_keepsASectionCoveredByAGap() {
+        let displayed = [section("/a/alpha"), section("/a/beta")]
+        let byWorkDir = GitRepoDiscoveryGaps(workDirs: ["/a/beta/src": "git is busy"])
+        let byCommonDirectory = GitRepoDiscoveryGaps(
+            commonDirectories: ["/a/beta/.git": "worktree list failed"]
+        )
+
+        for gaps in [byWorkDir, byCommonDirectory] {
+            let merged = GitRepoDiscovery.merge(
+                discovered: [section("/a/alpha")], keeping: displayed, gaps: gaps
+            )
+            #expect(merged.map(\.rootPath) == ["/a/alpha", "/a/beta"])
+        }
+    }
+
+    @Test func test_merge_prefersTheDescriptorTheRunConfirmed() {
+        let stale = section("/a/alpha", branch: "old")
+        let fresh = section("/a/alpha", branch: "new")
+
+        let merged = GitRepoDiscovery.merge(
+            discovered: [fresh],
+            keeping: [stale],
+            gaps: GitRepoDiscoveryGaps(workDirs: ["/a/alpha": "git is busy"])
+        )
+
+        #expect(merged.map(\.branch) == ["new"])
+    }
+
+    // MARK: - ordered
+
+    @Test func test_ordered_putsEachFamilyTogetherWithItsRepositoryFirst() {
+        let alphaWorktree = worktreeSection("/z/alpha-wt", of: "/z/zeta")
+        let betaWorktree = worktreeSection("/z/beta-wt", of: "/z/zeta")
+
+        let ordered = GitRepoDiscovery.ordered([
+            betaWorktree, section("/a/other"), alphaWorktree, section("/z/zeta"),
+        ])
+
+        #expect(ordered.map(\.rootPath) == ["/a/other", "/z/zeta", "/z/alpha-wt", "/z/beta-wt"])
+    }
+
+    // MARK: - Path identity
+
+    @Test func test_activeRepoID_matchesAPaneReachedThroughASymlink() async throws {
+        let scratch = try GitScratch.makeDirectory("active-symlink")
+        defer { try? FileManager.default.removeItem(at: scratch) }
+
+        let real = scratch.appendingPathComponent("real")
+        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+        let repository = real.appendingPathComponent("Proj")
+        try GitScratch.run(["init", "-q", "-b", "main", repository.path], in: real)
+        try GitScratch.commit(
+            file: "base.txt", contents: "base\n", message: "base commit", in: repository
+        )
+        let nested = repository.appendingPathComponent("sub")
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        let link = scratch.appendingPathComponent("link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+
+        let sections = await GitRepoDiscovery.discover(seedWorkDirs: [repository.path]).sections
+        try #require(sections.map(\.rootPath) == [repository.path])
+
+        // What the shell reports for a pane opened through the symlink.
+        let linkedRoot = link.appendingPathComponent("Proj").path
+        let linkedNested = link.appendingPathComponent("Proj/sub").path
+
+        #expect(GitRepoDiscovery.activeRepoID(for: linkedRoot, in: sections) == repository.path)
+        #expect(GitRepoDiscovery.activeRepoID(for: linkedNested, in: sections) == repository.path)
+        #expect(
+            GitRepoDiscovery.coverage(of: [linkedNested], in: sections)
+                == GitSeedCoverage(ownerRepoIDs: [repository.path])
+        )
+    }
+
+    @Test func test_discover_findsTheSameSectionThroughASymlinkedSeed() async throws {
+        let scratch = try GitScratch.makeDirectory("discover-symlink")
+        defer { try? FileManager.default.removeItem(at: scratch) }
+
+        let real = scratch.appendingPathComponent("real")
+        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+        let repository = real.appendingPathComponent("Proj")
+        try GitScratch.run(["init", "-q", "-b", "main", repository.path], in: real)
+        try GitScratch.commit(
+            file: "base.txt", contents: "base\n", message: "base commit", in: repository
+        )
+        let link = scratch.appendingPathComponent("link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+
+        let result = await GitRepoDiscovery.discover(
+            seedWorkDirs: [link.appendingPathComponent("Proj").path]
+        )
+
+        #expect(result.sections.map(\.rootPath) == [repository.path])
+    }
+
+    // MARK: - coverage
+
+    @Test func test_coverage_isUnchangedWhenAPaneMovesInsideItsRepository() {
+        let sections = [section("/a/alpha"), section("/a/beta")]
+
+        let before = GitRepoDiscovery.coverage(of: ["/a/alpha", "/a/beta"], in: sections)
+        let after = GitRepoDiscovery.coverage(
+            of: ["/a/alpha/Sources/Deep", "/a/beta"], in: sections
+        )
+
+        #expect(before == after)
+        #expect(before == GitSeedCoverage(ownerRepoIDs: ["/a/alpha", "/a/beta"]))
+    }
+
+    @Test func test_coverage_changesWhenTheLastPaneLeavesARepository() {
+        let sections = [section("/a/alpha"), section("/a/beta")]
+
+        let before = GitRepoDiscovery.coverage(of: ["/a/alpha", "/a/beta"], in: sections)
+        let after = GitRepoDiscovery.coverage(of: ["/a/alpha"], in: sections)
+
+        #expect(before != after)
+        #expect(after == GitSeedCoverage(ownerRepoIDs: ["/a/alpha"]))
+    }
+
+    @Test func test_coverage_recordsADirectoryNoSectionCovers() {
+        let sections = [section("/a/alpha")]
+
+        let coverage = GitRepoDiscovery.coverage(
+            of: ["/a/alpha", "/elsewhere/newly-cloned"], in: sections
+        )
+
+        #expect(coverage == GitSeedCoverage(
+            ownerRepoIDs: ["/a/alpha"], uncoveredWorkDirs: ["/elsewhere/newly-cloned"]
+        ))
     }
 }

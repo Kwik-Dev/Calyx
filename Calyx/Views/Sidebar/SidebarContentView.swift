@@ -11,13 +11,7 @@ struct SidebarContentView: View {
     let activeGroupID: UUID?
     let activeTabID: UUID?
     @Binding var sidebarMode: SidebarMode
-    var gitChangesState: GitChangesState = .notLoaded
-    var gitEntries: [GitFileEntry] = []
-    var gitCommits: [GitCommit] = []
-    var expandedCommitIDs: Set<String> = []
-    var commitFiles: [String: [CommitFileEntry]] = [:]
-    var isGitRefreshing: Bool = false
-    var gitStaleRefreshMessage: String?
+    var gitSidebarState = GitSidebarViewState()
     var onGroupSelected: ((UUID) -> Void)?
     var onTabSelected: ((UUID) -> Void)?
     var onNewGroup: (() -> Void)?
@@ -26,11 +20,13 @@ struct SidebarContentView: View {
     var onTabRenamed: (() -> Void)?
     var onCollapseToggled: (() -> Void)?
     var onCloseAllTabsInGroup: ((UUID) -> Void)?
-    var onWorkingFileSelected: ((GitFileEntry) -> Void)?
-    var onCommitFileSelected: ((CommitFileEntry) -> Void)?
+    var onWorkingFileSelected: ((String, GitFileEntry) -> Void)?
+    var onCommitFileSelected: ((String, CommitFileEntry) -> Void)?
     var onRefreshGitStatus: (() -> Void)?
-    var onLoadMoreCommits: (() -> Void)?
-    var onExpandCommit: ((String) -> Void)?
+    var onLoadMoreCommits: ((String) -> Void)?
+    var onExpandCommit: ((String, String) -> Void)?
+    var onToggleGitRepoSection: ((String) -> Void)?
+    var onRetryGitRepoSection: ((String) -> Void)?
     var onMoveTab: ((UUID, Int, Int) -> Void)?
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -193,18 +189,14 @@ struct SidebarContentView: View {
 
             case .changes:
                 GitChangesView(
-                    gitChangesState: gitChangesState,
-                    gitEntries: gitEntries,
-                    gitCommits: gitCommits,
-                    expandedCommitIDs: expandedCommitIDs,
-                    commitFiles: commitFiles,
-                    isRefreshing: isGitRefreshing,
-                    staleRefreshMessage: gitStaleRefreshMessage,
+                    state: gitSidebarState,
                     onWorkingFileSelected: onWorkingFileSelected,
                     onCommitFileSelected: onCommitFileSelected,
                     onRefresh: onRefreshGitStatus,
                     onLoadMore: onLoadMoreCommits,
-                    onExpandCommit: onExpandCommit
+                    onExpandCommit: onExpandCommit,
+                    onToggleRepoSection: onToggleGitRepoSection,
+                    onRetryRepoSection: onRetryGitRepoSection
                 )
                 .padding(.top, 10)
 
