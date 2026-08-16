@@ -89,6 +89,27 @@ final class ApprovalBannerModelTests: XCTestCase {
         )
     }
 
+    /// Compact JSON `Data` for an `AgentHookToolCall.decode(from:)`
+    /// fixture -- mirrors AgentHookToolCallTests.swift's own `json(_:)`
+    /// helper.
+    private func json(_ object: [String: Any]) -> Data {
+        try! JSONSerialization.data(withJSONObject: object)
+    }
+
+    /// Realistic `.agentHook`-sourced fixture for the `previewLine` tests
+    /// below: routes through the REAL `AgentHookToolCall.decode(from:)`
+    /// rather than hand-writing a summary string, mirroring exactly how
+    /// `CalyxMCPServer` builds an `.agentHook` `ApprovalRequest` from a
+    /// decoded `AgentHookToolCall` (`source: .agentHook(toolName:
+    /// call.toolName, kind: kind, summary: call.summary)`).
+    private func agentHookRequest(_ toolInput: [String: Any], toolName: String) throws -> ApprovalRequest {
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: json(["tool_name": toolName, "tool_input": toolInput])))
+        return ApprovalRequest(
+            id: UUID(), source: .agentHook(toolName: call.toolName, kind: AgentEntry.claudeCodeKind, summary: call.summary),
+            targetSurfaceID: nil, payload: call.payload, createdAt: Date()
+        )
+    }
+
     /// Bounded scheduler-yield loop, so a concurrently-spawned `Task`
     /// awaiting `store.awaitDecision` has every reasonable opportunity
     /// to actually reach its suspension point before the test proceeds
@@ -996,6 +1017,295 @@ final class ApprovalBannerModelTests: XCTestCase {
         XCTAssertEqual(resultSecond, .allowed)
     }
 
+    // MARK: - previewLine (Queue preview menu)
+    //
+    // ApprovalRequest.previewLine is "\(displayToolName): \(compactTarget)",
+    // where compactTarget takes displayPayload through three steps: (1)
+    // collapse every run of whitespace (including newlines and tabs) into
+    // a single space, (2) trim leading/trailing whitespace, (3) truncate
+    // to a trailing U+2026 ellipsis once step (2)'s result exceeds either
+    // of two caps, 80 Characters or 240 unicode scalars -- for plain ASCII
+    // only the Character cap can bite, so 80 stays intact and 81 becomes
+    // its first 79 plus the ellipsis. An empty compactTarget after steps
+    // (1)-(2) omits the trailing colon entirely, rendering displayToolName
+    // alone. RAW, unescaped -- same caveat as displayToolName/
+    // displayPayload themselves (ControlCharacterDisplay escaping is the
+    // view layer's job, applied later, not here).
+
+    func test_previewLine_agentHookBash_combinesDisplayToolNameAndCommand() throws {
+        let request = try agentHookRequest(["command": "npm test"], toolName: "Bash")
+
+        XCTAssertEqual(request.previewLine, "Claude Code · Bash: npm test",
+                       "previewLine must combine displayToolName and the compacted target with a colon separator")
+    }
+
+    func test_previewLine_agentHookEdit_usesFilePathAsTarget() throws {
+        let request = try agentHookRequest(["file_path": "/Users/dev/project/Sources/App.swift"], toolName: "Edit")
+
+        XCTAssertEqual(request.previewLine, "Claude Code · Edit: /Users/dev/project/Sources/App.swift")
+    }
+
+    func test_previewLine_agentHookWrite_usesFilePathAsTarget() throws {
+        let request = try agentHookRequest(["file_path": "/Users/dev/project/README.md"], toolName: "Write")
+
+        XCTAssertEqual(request.previewLine, "Claude Code · Write: /Users/dev/project/README.md")
+    }
+
+    func test_previewLine_agentHookNotebookEdit_usesNotebookPathAsTarget() throws {
+        let request = try agentHookRequest(["notebook_path": "/Users/dev/repo/notebook.ipynb"], toolName: "NotebookEdit")
+
+        XCTAssertEqual(request.previewLine, "Claude Code · NotebookEdit: /Users/dev/repo/notebook.ipynb",
+                       "NotebookEdit's target must come from tool_input.notebook_path, its own distinct key, never file_path")
+    }
+
+    func test_previewLine_agentHookWebFetch_usesUrlAsTarget() throws {
+        let request = try agentHookRequest(["url": "https://example.com/docs"], toolName: "WebFetch")
+
+        XCTAssertEqual(request.previewLine, "Claude Code · WebFetch: https://example.com/docs")
+    }
+
+    func test_previewLine_mcpToolSource_usesPayloadAsTarget() {
+        let request = makeRequest(targetSurfaceID: nil, payload: "ls -la /tmp")
+
+        XCTAssertEqual(request.previewLine, "pane_run: ls -la /tmp")
+    }
+
+    func test_previewLine_collapsesNewlinesAndTabsToSingleSpaces() {
+        let request = makeRequest(targetSurfaceID: nil, payload: "line one\n\nline   two\t\tend")
+
+        XCTAssertEqual(request.previewLine, "pane_run: line one line two end",
+                       "every run of whitespace, including newlines and tabs, must collapse to exactly one space")
+    }
+
+    func test_previewLine_boundaryAt80Characters_notTruncated() {
+        let target = String(repeating: "a", count: 80)
+        let request = makeRequest(targetSurfaceID: nil, payload: target)
+
+        XCTAssertEqual(request.previewLine, "pane_run: " + target, "a target of exactly 80 characters must not be truncated")
+    }
+
+    func test_previewLine_above80Characters_truncatedTo79CharsPlusEllipsis() {
+        let target = String(repeating: "a", count: 81)
+        let expectedTarget = String(repeating: "a", count: 79) + "…"
+        let request = makeRequest(targetSurfaceID: nil, payload: target)
+
+        XCTAssertEqual(request.previewLine, "pane_run: " + expectedTarget,
+                       "a target over 80 characters must truncate to its first 79 characters plus a single U+2026 ellipsis")
+    }
+
+    func test_previewLine_emptyTarget_omitsTrailingColon() {
+        let request = makeRequest(targetSurfaceID: nil, payload: "   \n\t  ")
+
+        XCTAssertEqual(request.previewLine, "pane_run",
+                       "a payload that collapses to an empty compact target must render as displayToolName alone, with no trailing colon")
+    }
+
+    // MARK: - queueEntries (Queue preview menu)
+    //
+    // ApprovalBannerModel.queueEntries lists every request in
+    // visibleRequests (same ownsSurface/isKeyWindow filter as current/
+    // pendingCountForWindow), oldest-first, as a QueueEntry(id, 1-based
+    // position, previewLine, isCurrent) -- the data the banner's queue
+    // menu renders one row per pending request from.
+
+    func test_queueEntries_oldestFirst_onebasedPositions_isCurrentOnlyOnCurrentPage() {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let first = makeRequest(targetSurfaceID: surfaceID, payload: "first", createdAt: Date(timeIntervalSince1970: 1_700_000_000))
+        let second = makeRequest(targetSurfaceID: surfaceID, payload: "second", createdAt: Date(timeIntervalSince1970: 1_700_000_100))
+        let third = makeRequest(targetSurfaceID: surfaceID, payload: "third", createdAt: Date(timeIntervalSince1970: 1_700_000_200))
+        store.submit(first)
+        store.submit(second)
+        store.submit(third)
+
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true })
+        model.selectNext()
+        XCTAssertEqual(model.current?.id, second.id, "precondition: current is the displayed (middle) request")
+
+        let entries = model.queueEntries
+
+        XCTAssertEqual(entries.map(\.id), [first.id, second.id, third.id],
+                       "queueEntries must list every visible request oldest-first, same order as visibleRequests")
+        XCTAssertEqual(entries.map(\.position), [1, 2, 3], "position must be a 1-based index into that same order")
+        XCTAssertEqual(entries.map(\.isCurrent), [false, true, false],
+                       "isCurrent must be true only for the entry matching current's own id")
+        XCTAssertEqual(entries.map(\.previewLine), ["pane_run: first", "pane_run: second", "pane_run: third"],
+                       "each entry's previewLine must be its own request's previewLine")
+    }
+
+    func test_queueEntries_excludesRequestsOwnedByAnotherWindow() {
+        let store = ApprovalInboxStore()
+        let ownedSurfaceID = UUID()
+        let foreignSurfaceID = UUID()
+        let t1 = makeRequest(targetSurfaceID: ownedSurfaceID, payload: "t1", createdAt: Date(timeIntervalSince1970: 1_700_000_000))
+        let t2 = makeRequest(targetSurfaceID: foreignSurfaceID, payload: "t2", createdAt: Date(timeIntervalSince1970: 1_700_000_100))
+        let t3 = makeRequest(targetSurfaceID: ownedSurfaceID, payload: "t3", createdAt: Date(timeIntervalSince1970: 1_700_000_200))
+        store.submit(t1)
+        store.submit(t2)
+        store.submit(t3)
+
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == ownedSurfaceID }, isKeyWindow: { true })
+
+        let entries = model.queueEntries
+
+        XCTAssertEqual(entries.map(\.id), [t1.id, t3.id],
+                       "queueEntries must exclude a request targeting a surface this window doesn't own, same visibility filter as visibleRequests")
+        XCTAssertEqual(entries.map(\.position), [1, 2],
+                       "position must renumber 1-based over only the visible subset, skipping the excluded foreign request")
+    }
+
+    func test_queueEntries_emptyWhenNoVisibleRequests() {
+        let store = ApprovalInboxStore()
+        let model = ApprovalBannerModel(store: store, ownsSurface: { _ in false }, isKeyWindow: { false })
+
+        XCTAssertEqual(model.queueEntries, [], "queueEntries must be empty when visibleRequests is empty")
+    }
+
+    /// The selected request is resolved through the store directly, not
+    /// through model.allow(id:)/deny(id:): those advance the cursor onto
+    /// a surviving neighbor (see advanceCursor(pastDisplayed:excluding:)),
+    /// which is the opposite of the stale cursor this pins -- one still
+    /// pointing at a request that has left visibleRequests, with nothing
+    /// having reassigned it.
+    func test_queueEntries_withStaleCursor_marksOldestVisibleEntryCurrent() {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let first = makeRequest(targetSurfaceID: surfaceID, payload: "first", createdAt: Date(timeIntervalSince1970: 1_700_000_000))
+        let second = makeRequest(targetSurfaceID: surfaceID, payload: "second", createdAt: Date(timeIntervalSince1970: 1_700_000_100))
+        let third = makeRequest(targetSurfaceID: surfaceID, payload: "third", createdAt: Date(timeIntervalSince1970: 1_700_000_200))
+        store.submit(first)
+        store.submit(second)
+        store.submit(third)
+
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true })
+        model.select(id: second.id)
+        XCTAssertEqual(model.current?.id, second.id, "precondition: the cursor points at the middle request")
+
+        store.decide(id: second.id, .allowed)
+
+        let entries = model.queueEntries
+
+        XCTAssertEqual(entries.map(\.id), [first.id, third.id],
+                       "precondition: the selected request has left visibleRequests, leaving the cursor stale")
+        XCTAssertEqual(entries.map(\.isCurrent), [true, false],
+                       "a stale cursor must mark the OLDEST visible entry current, exactly where current itself falls back to -- never leave every entry unmarked")
+        XCTAssertEqual(model.current?.id, first.id,
+                       "queueEntries and current must resolve the same stale cursor to the same request")
+    }
+
+    // MARK: - select(id:) (Queue preview menu jump)
+    //
+    // select(id:) is the queue menu's row-click action: jump straight to a
+    // chosen request instead of stepping one at a time via selectNext()/
+    // selectPrevious(). Same visibleRequests-membership contract as those
+    // two -- an id outside this window's own visible queue (never
+    // submitted, already decided, or owned by another window) is a no-op.
+    // Unlike those two, a select that actually moves the cursor posts
+    // .calyxApprovalInboxChanged itself, since an NSMenuItem's action runs
+    // outside the rendered view hierarchy (see select(id:)'s own doc
+    // comment in ApprovalBannerModel.swift).
+
+    func test_select_movesCurrentAndPositionInfoToTheChosenRequest() {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let first = makeRequest(targetSurfaceID: surfaceID, payload: "first", createdAt: Date(timeIntervalSince1970: 1_700_000_000))
+        let second = makeRequest(targetSurfaceID: surfaceID, payload: "second", createdAt: Date(timeIntervalSince1970: 1_700_000_100))
+        let third = makeRequest(targetSurfaceID: surfaceID, payload: "third", createdAt: Date(timeIntervalSince1970: 1_700_000_200))
+        store.submit(first)
+        store.submit(second)
+        store.submit(third)
+
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true })
+        XCTAssertEqual(model.current?.id, first.id, "precondition: current starts at the oldest pending request")
+
+        model.select(id: third.id)
+
+        XCTAssertEqual(model.current?.id, third.id, "select(id:) must move current directly to the chosen request")
+        XCTAssertEqual(model.positionInfo?.index, 3, "positionInfo must follow the newly selected request")
+        XCTAssertEqual(model.positionInfo?.count, 3)
+    }
+
+    /// A wrong implementation that unconditionally assigns the cursor
+    /// (skipping the visibleRequests membership check) would still make a
+    /// bogus id LOOK like a no-op here, since `current`'s own fallback for
+    /// an unresolvable selectedRequestID lands on the oldest visible
+    /// request anyway -- so this starts from an explicit prior selection
+    /// (second, not the oldest) to actually distinguish "stayed at second"
+    /// from "silently fell back to first".
+    func test_select_withIDNotInVisibleRequests_isNoOp() {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let first = makeRequest(targetSurfaceID: surfaceID, payload: "first", createdAt: Date(timeIntervalSince1970: 1_700_000_000))
+        let second = makeRequest(targetSurfaceID: surfaceID, payload: "second", createdAt: Date(timeIntervalSince1970: 1_700_000_100))
+        store.submit(first)
+        store.submit(second)
+
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true })
+        model.select(id: second.id)
+        XCTAssertEqual(model.current?.id, second.id, "precondition: current follows an explicit select(id:) to the second request")
+
+        model.select(id: UUID())
+
+        XCTAssertEqual(model.current?.id, second.id,
+                       "select(id:) with an id absent from visibleRequests must be a no-op, leaving the prior explicit selection at second untouched")
+        XCTAssertEqual(model.positionInfo?.index, 2)
+        XCTAssertEqual(model.positionInfo?.count, 2)
+    }
+
+    /// Same discriminating shape as the stale-id test above, but for an id
+    /// that IS pending store-wide, just owned by a different window -- an
+    /// implementation checking membership against store.pending instead of
+    /// this window's own visibleRequests would wrongly accept it.
+    func test_select_withForeignSurfaceID_isNoOp() {
+        let store = ApprovalInboxStore()
+        let ownedSurfaceID = UUID()
+        let foreignSurfaceID = UUID()
+        let owned1 = makeRequest(targetSurfaceID: ownedSurfaceID, payload: "owned1", createdAt: Date(timeIntervalSince1970: 1_700_000_000))
+        let owned2 = makeRequest(targetSurfaceID: ownedSurfaceID, payload: "owned2", createdAt: Date(timeIntervalSince1970: 1_700_000_100))
+        let foreign = makeRequest(targetSurfaceID: foreignSurfaceID, payload: "foreign", createdAt: Date(timeIntervalSince1970: 1_700_000_200))
+        store.submit(owned1)
+        store.submit(owned2)
+        store.submit(foreign)
+
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == ownedSurfaceID }, isKeyWindow: { true })
+        model.select(id: owned2.id)
+        XCTAssertEqual(model.current?.id, owned2.id, "precondition: current follows an explicit select(id:) to the second owned request")
+
+        model.select(id: foreign.id)
+
+        XCTAssertEqual(model.current?.id, owned2.id,
+                       "select(id:) targeting a request pending store-wide but owned by ANOTHER window must be a no-op -- membership must be checked against this window's own visibleRequests, not store.pending")
+    }
+
+    func test_select_thenNewArrival_neverMovesSelection() {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let first = makeRequest(targetSurfaceID: surfaceID, payload: "first", createdAt: Date(timeIntervalSince1970: 1_700_000_000))
+        let second = makeRequest(targetSurfaceID: surfaceID, payload: "second", createdAt: Date(timeIntervalSince1970: 1_700_000_100))
+        store.submit(first)
+        store.submit(second)
+
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true })
+        model.select(id: second.id)
+        XCTAssertEqual(model.current?.id, second.id, "precondition: current is the explicitly selected (second) request")
+
+        let newer = makeRequest(targetSurfaceID: surfaceID, payload: "newer", createdAt: Date(timeIntervalSince1970: 1_700_000_200))
+        store.submit(newer)
+
+        XCTAssertEqual(model.current?.id, second.id,
+                       "a new arrival submitted with a NEWER createdAt after select(id:) must never move that existing selection")
+        XCTAssertEqual(model.positionInfo?.index, 2)
+        XCTAssertEqual(model.positionInfo?.count, 3)
+
+        let older = makeRequest(targetSurfaceID: surfaceID, payload: "older", createdAt: Date(timeIntervalSince1970: 1_699_999_900))
+        store.submit(older)
+
+        XCTAssertEqual(model.current?.id, second.id,
+                       "a new arrival with an OLDER createdAt, inserted at the head of the queue, must also never move the select(id:) selection")
+        XCTAssertEqual(model.positionInfo?.index, 3)
+        XCTAssertEqual(model.positionInfo?.count, 4)
+    }
+
     // MARK: - AccessibilityID coverage for the new cross-actions menu (Stage E, spec-level only)
     //
     // SwiftUI Menu rendering itself is not unit-testable (no production
@@ -1033,5 +1343,30 @@ final class ApprovalBannerModelTests: XCTestCase {
                        "the 6 new identifiers must be distinct from every pre-existing ApprovalBanner identifier")
         XCTAssertEqual(Set(newIdentifiers).count, newIdentifiers.count,
                        "the 6 new identifiers must also be distinct from each other")
+    }
+
+    // MARK: - AccessibilityID coverage for the new queue preview menu (spec-level only, same shape as the cross-actions menu coverage above)
+
+    func test_accessibilityID_approvalBanner_queueMenuIdentifier_existsAndIsDistinct() {
+        let newIdentifier = AccessibilityID.ApprovalBanner.queueMenu
+
+        XCTAssertTrue(newIdentifier.hasPrefix("calyx.approvalBanner."),
+                     "\(newIdentifier) must follow the existing calyx.approvalBanner.* naming convention")
+
+        let preExistingIdentifiers = [
+            AccessibilityID.ApprovalBanner.container,
+            AccessibilityID.ApprovalBanner.allowButton,
+            AccessibilityID.ApprovalBanner.denyButton,
+            AccessibilityID.ApprovalBanner.alwaysAllowButton,
+            AccessibilityID.ApprovalBanner.payload,
+            AccessibilityID.ApprovalBanner.crossActionsMenu,
+            AccessibilityID.ApprovalBanner.allowAllPendingItem,
+            AccessibilityID.ApprovalBanner.alwaysAllowAllPanesItem,
+            AccessibilityID.ApprovalBanner.previousButton,
+            AccessibilityID.ApprovalBanner.nextButton,
+            AccessibilityID.ApprovalBanner.positionLabel,
+        ]
+        XCTAssertFalse(preExistingIdentifiers.contains(newIdentifier),
+                       "queueMenu must be distinct from every pre-existing ApprovalBanner identifier")
     }
 }

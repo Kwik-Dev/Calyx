@@ -169,19 +169,35 @@ struct ApprovalBannerView: View {
     /// only while more than one request is queued for this window (see
     /// the call site's own `positionInfo.count > 1` gate) -- mirrors
     /// `BrowserToolbarView`'s own chevron.left/chevron.right precedent
-    /// (Calyx/Views/Browser/BrowserContainerView.swift).
-    /// `.buttonStyle(.borderless)` + `.controlSize(.small)` +
-    /// `.fixedSize()` keep this content-hugging, same rationale as
-    /// `crossActionsMenu`'s own header comment, so it never stretches
-    /// the banner's action row. Disabled states are derived directly
-    /// from the passed `positionInfo` (`index <= 1` / `index >= count`)
-    /// rather than a separate `model.canSelectPrevious`/`canSelectNext`
-    /// read -- one source (the same `positionInfo` already used for the
-    /// label) for both the label and the chevrons' enabled state, rather
-    /// than two independently-computed answers that could in principle
-    /// disagree. `canSelectPrevious`/`canSelectNext` stay public on the
-    /// model regardless -- `selectNext()`/`selectPrevious()` still guard
-    /// on them internally, and CalyxTests/ApprovalInbox/
+    /// (Calyx/Views/Browser/BrowserContainerView.swift). The label
+    /// itself is a `Menu` wrapping the same "N / M" `Text`, listing this
+    /// window's queued requests oldest-first (see
+    /// `queueMenuItems`); clicking a row jumps straight to that request
+    /// via `model.select(id:)`.
+    ///
+    /// That same "N / M" text is ALSO set as the `Menu`'s own
+    /// `.accessibilityLabel`: on macOS SwiftUI collapses a `Menu` into a
+    /// single pop-up element that surfaces neither the identifier nor
+    /// the text of the views inside its label closure (field-verified --
+    /// an XCUITest lookup for `AccessibilityID.ApprovalBanner.
+    /// positionLabel` matched no element of any type while that
+    /// identifier sat only on the inner `Text`), so the explicit label
+    /// is what carries the position into the accessibility tree at all.
+    /// The inner `Text` keeps that identifier, which the collapse leaves
+    /// inert. `.buttonStyle(.borderless)` on the chevrons +
+    /// `.menuStyle(.borderlessButton)` on the `Menu` + `.controlSize(
+    /// .small)` + `.fixedSize()` throughout keep this content-hugging,
+    /// same rationale as `crossActionsMenu`'s own header comment, so it
+    /// never stretches the banner's action row. Disabled states are
+    /// derived directly from the passed `positionInfo` (`index <= 1` /
+    /// `index >= count`) rather than a separate `model.
+    /// canSelectPrevious`/`canSelectNext` read -- one source (the same
+    /// `positionInfo` already used for the label) for both the label and
+    /// the chevrons' enabled state, rather than two independently-
+    /// computed answers that could in principle disagree.
+    /// `canSelectPrevious`/`canSelectNext` stay public on the model
+    /// regardless -- `selectNext()`/`selectPrevious()` still guard on
+    /// them internally, and CalyxTests/ApprovalInbox/
     /// ApprovalBannerModelTests.swift asserts them directly.
     private func queueNavigator(positionInfo: (index: Int, count: Int)) -> some View {
         HStack(spacing: 8) {
@@ -191,11 +207,20 @@ struct ApprovalBannerView: View {
             .disabled(positionInfo.index <= 1)
             .accessibilityIdentifier(AccessibilityID.ApprovalBanner.previousButton)
 
-            Text("\(positionInfo.index) / \(positionInfo.count)")
-                .font(.callout)
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
-                .accessibilityIdentifier(AccessibilityID.ApprovalBanner.positionLabel)
+            Menu {
+                queueMenuItems
+            } label: {
+                Text("\(positionInfo.index) / \(positionInfo.count)")
+                    .font(.callout)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier(AccessibilityID.ApprovalBanner.positionLabel)
+            }
+            .menuStyle(.borderlessButton)
+            .controlSize(.small)
+            .fixedSize()
+            .accessibilityIdentifier(AccessibilityID.ApprovalBanner.queueMenu)
+            .accessibilityLabel(Text("\(positionInfo.index) / \(positionInfo.count)"))
 
             Button(action: { model.selectNext() }) {
                 Image(systemName: "chevron.right")
@@ -206,6 +231,42 @@ struct ApprovalBannerView: View {
         .buttonStyle(.borderless)
         .controlSize(.small)
         .fixedSize()
+    }
+
+    /// The queue preview menu's rows: one clickable
+    /// `queueEntryLabel(_:)` per request `model.queueEntries` reports,
+    /// oldest-first, with every entry listed. `NSMenu` scrolls a menu
+    /// whose items do not fit on screen, so even a long backlog stays
+    /// operable. No cap trimming the list from the front is applied:
+    /// with the cursor past such a cap, neither the current row (the one
+    /// carrying "▸") nor its neighbors would be drawn at all, leaving
+    /// nothing in the menu to jump to them by -- and a backlog that
+    /// large is exactly when this list is worth more than the chevrons.
+    @ViewBuilder
+    private var queueMenuItems: some View {
+        ForEach(model.queueEntries) { entry in
+            Button(queueEntryLabel(entry)) {
+                model.select(id: entry.id)
+            }
+        }
+    }
+
+    /// A queue preview menu row's label: `"N. <rendered previewLine>"`,
+    /// prefixed with "▸ " for the entry matching the currently displayed
+    /// request, so the current page reads clearly at a glance among the
+    /// rest of this window's backlog. `ControlCharacterDisplay.render`
+    /// on `previewLine`, same untrusted-provenance caveat as `toolName`/
+    /// `payloadText` above. Any literal newline the rendered text still
+    /// carries folds to a space here: an `NSMenuItem` draws a newline in
+    /// its title as a real line break, turning one row into a multi-line
+    /// one. The only literal newline `render` can return is its own
+    /// truncation suffix's leading one -- every C0 control in the input,
+    /// U+000A included, comes back as caret notation, and line/paragraph
+    /// separators come back as `<U+XXXX>` tokens.
+    private func queueEntryLabel(_ entry: ApprovalBannerModel.QueueEntry) -> String {
+        let rendered = ControlCharacterDisplay.render(entry.previewLine).replacingOccurrences(of: "\n", with: " ")
+        let label = "\(entry.position). \(rendered)"
+        return entry.isCurrent ? "▸ \(label)" : label
     }
 
     /// Compact cross-actions menu, shown only for an `.agentHook`-sourced

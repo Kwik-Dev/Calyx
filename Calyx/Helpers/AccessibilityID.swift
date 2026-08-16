@@ -126,7 +126,14 @@ enum AccessibilityID {
     /// ApprovalBannerView. Queue navigation adds `previousButton`/
     /// `nextButton`/`positionLabel`, shown only while more than one
     /// request is queued for this window (see
-    /// ApprovalBannerModel.positionInfo).
+    /// ApprovalBannerModel.positionInfo). The queue preview menu wraps
+    /// that same position label in a `Menu` (`queueMenu`) listing every
+    /// request in ApprovalBannerModel.queueEntries, so a click can jump
+    /// straight to any queued request via ApprovalBannerModel.select(id:).
+    /// macOS collapses that `Menu` into one accessibility element, which
+    /// leaves `positionLabel` unreachable from the accessibility tree:
+    /// the "N / M" text is exposed as `queueMenu`'s own accessibility
+    /// label instead (see ApprovalBannerView.queueNavigator(positionInfo:)).
     enum ApprovalBanner {
         static let container = "calyx.approvalBanner.container"
         static let allowButton = "calyx.approvalBanner.allowButton"
@@ -139,6 +146,7 @@ enum AccessibilityID {
         static let previousButton = "calyx.approvalBanner.previousButton"
         static let nextButton = "calyx.approvalBanner.nextButton"
         static let positionLabel = "calyx.approvalBanner.positionLabel"
+        static let queueMenu = "calyx.approvalBanner.queueMenu"
     }
     enum Diff {
         static let container = "calyx.diff"

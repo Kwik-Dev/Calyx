@@ -26,6 +26,20 @@ import Foundation
 @Observable
 final class ApprovalBannerModel {
 
+    /// A single row of the queue preview menu (`queueEntries`, rendered
+    /// by `ApprovalBannerView`'s queue navigator Menu): one per request
+    /// in this window's `visibleRequests`, oldest-first.
+    struct QueueEntry: Identifiable, Equatable, Sendable {
+        let id: UUID
+        /// 1-based index into `visibleRequests`, matching `positionInfo`'s
+        /// own indexing.
+        let position: Int
+        let previewLine: String
+        /// True only for the entry matching `ApprovalBannerModel.current`'s
+        /// own id.
+        let isCurrent: Bool
+    }
+
     private let store: ApprovalInboxStore
     private let ownsSurface: (UUID) -> Bool
     private let isKeyWindow: () -> Bool
@@ -87,28 +101,38 @@ final class ApprovalBannerModel {
     /// (`allowAllPending()`).
     var current: ApprovalRequest? {
         let visible = visibleRequests
-        if let selectedRequestID, let selected = visible.first(where: { $0.id == selectedRequestID }) {
-            return selected
-        }
-        return visible.first
+        guard !visible.isEmpty else { return nil }
+        return visible[currentIndex(in: visible)]
+    }
+
+    /// Index within `visible` of the request this window displays:
+    /// `selectedRequestID`'s own position while it is still present
+    /// there, else 0 (the oldest visible request, which is what a stale
+    /// or unset cursor falls back to -- see `current`'s own doc comment).
+    /// The single resolution rule `current`, `positionInfo` and
+    /// `queueEntries` all share, so the three can never disagree about
+    /// which request is the current one. An empty `visible` also yields
+    /// 0, which is not a valid subscript: a caller that indexes into
+    /// `visible` must guard emptiness itself first.
+    private func currentIndex(in visible: [ApprovalRequest]) -> Int {
+        guard let selectedRequestID,
+              let index = visible.firstIndex(where: { $0.id == selectedRequestID }) else { return 0 }
+        return index
     }
 
     /// This window's 1-based (index, count) position of `current` within
     /// `visibleRequests` -- nil exactly when `current` is nil. Backs the
     /// banner's "N / M" position label (`ApprovalBannerView.
     /// queueNavigator(positionInfo:)`), shown only while more than one
-    /// request is queued for this window. Locates the displayed request
-    /// within its own already-computed `visible` local directly (mirrors
-    /// `current`'s own selected-if-present-else-first selection logic)
-    /// rather than calling `current` itself, which would re-filter
-    /// `store.pending` a second time for the same answer.
+    /// request is queued for this window. Resolves the displayed
+    /// request's index through `currentIndex(in:)` against its own
+    /// already-computed `visible` local rather than calling `current`
+    /// itself, which would re-filter `store.pending` a second time for
+    /// the same answer.
     var positionInfo: (index: Int, count: Int)? {
         let visible = visibleRequests
         guard !visible.isEmpty else { return nil }
-        let index = selectedRequestID.flatMap { selectedID in
-            visible.firstIndex(where: { $0.id == selectedID })
-        } ?? 0
-        return (index: index + 1, count: visible.count)
+        return (index: currentIndex(in: visible) + 1, count: visible.count)
     }
 
     /// Whether `current` has a predecessor in `visibleRequests` to step
@@ -148,6 +172,26 @@ final class ApprovalBannerModel {
         store.pending.count
     }
 
+    /// Every request in `visibleRequests` (same ownsSurface/isKeyWindow
+    /// filter as `current`/`pendingCountForWindow`), oldest-first, as a
+    /// `QueueEntry` -- what `ApprovalBannerView`'s queue preview menu
+    /// (`queueMenuItems`) draws its rows from. EVERY visible request is
+    /// reported here, and that menu renders one row per entry.
+    /// Resolves the current entry's index
+    /// through `currentIndex(in:)` against its own local `visible`, the
+    /// same single rule `current`/`positionInfo` resolve through, rather
+    /// than reading either of them -- so `visibleRequests` is filtered
+    /// from `store.pending` only once here (see `positionInfo`'s own doc
+    /// comment for the same rationale). Empty whenever `visibleRequests`
+    /// is.
+    var queueEntries: [QueueEntry] {
+        let visible = visibleRequests
+        let currentEntryIndex = currentIndex(in: visible)
+        return visible.enumerated().map { index, request in
+            QueueEntry(id: request.id, position: index + 1, previewLine: request.previewLine, isCurrent: index == currentEntryIndex)
+        }
+    }
+
     /// Neither this nor `selectPrevious()` below calls
     /// `refreshHostingView()` or posts `.calyxApprovalInboxChanged`: both
     /// are invoked from an in-hierarchy SwiftUI `Button` inside
@@ -185,6 +229,35 @@ final class ApprovalBannerModel {
     func selectPrevious() {
         guard canSelectPrevious, let current, let index = visibleRequests.firstIndex(where: { $0.id == current.id }) else { return }
         selectedRequestID = visibleRequests[index - 1].id
+    }
+
+    /// The queue preview menu's row-click action
+    /// (`ApprovalBannerView`'s `queueNavigator(positionInfo:)` Menu):
+    /// jump straight to a chosen request instead of stepping one at a
+    /// time via `selectNext()`/`selectPrevious()`. A no-op unless `id`
+    /// is a member of THIS window's own `visibleRequests` -- checked
+    /// there rather than `store.pending`, so a request pending
+    /// store-wide but owned by another window can never be selected
+    /// here.
+    ///
+    /// Unlike `selectNext()`/`selectPrevious()` above, this DOES post
+    /// `.calyxApprovalInboxChanged` explicitly: those two are clicked
+    /// from an in-hierarchy SwiftUI `Button`, while this one is clicked
+    /// from an `NSMenuItem` of the queue preview `Menu`, whose action
+    /// runs on AppKit's own menu event loop rather than from inside the
+    /// currently rendered view hierarchy -- exactly the outside-the-
+    /// hierarchy mutation the explicit-refresh doctrine covers (see
+    /// `ApprovalInboxStore.swift`'s own `.calyxApprovalInboxChanged` doc
+    /// comment). Posted only when the cursor's stored value actually
+    /// changes: re-picking the row already selected mutates nothing, so
+    /// it must not make every open window rebuild its main content.
+    /// `object` carries the store, same as every post
+    /// `ApprovalInboxStore` makes itself, so the notification's object
+    /// is one type across all senders.
+    func select(id: UUID) {
+        guard visibleRequests.contains(where: { $0.id == id }), selectedRequestID != id else { return }
+        selectedRequestID = id
+        NotificationCenter.default.post(name: .calyxApprovalInboxChanged, object: store)
     }
 
     /// Called immediately before the `store.decide`/`store.decide(ids:)`
