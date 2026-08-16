@@ -185,17 +185,47 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     private var browserControllers: [UUID: BrowserTabController] = [:]
     private var diffStates: [UUID: DiffLoadState] = [:]
     private var diffTasks = KeyedTaskRegistry<UUID>()
-    private var refreshTask: Task<Void, Never>?
-    /// Identifies each `refreshGitStatus` call. `refreshGitStatus` cancels
-    /// `refreshTask` before creating its replacement, so the cancelled
-    /// task still resumes and reaches its own exit points, racing the new
-    /// task's. Each call captures the counter's value at start; only the
-    /// exit whose captured value still matches this counter is the
-    /// current refresh and may clear `windowSession.isGitRefreshing`.
+    /// Repository discovery for the Changes sidebar. One at a time: a new
+    /// discovery cancels the one in flight.
+    private var discoveryTask: Task<Void, Never>?
+    /// Identifies each discovery run. A new run cancels `discoveryTask`
+    /// before creating its replacement, so the cancelled task still
+    /// resumes and reaches its own exit points, racing the new task's.
+    /// Each run captures the counter's value at start; only the exit whose
+    /// captured value still matches this counter is the current run and
+    /// may clear `windowSession.isGitRefreshing`.
     private var refreshGeneration = 0
-    private var gitChangesMonitor: GitChangesMonitor?
-    private var gitMonitorStopTask: Task<Void, Never>?
-    private var loadMoreTask: Task<Void, Never>?
+    /// The scope of the discovery run in flight. A run that supersedes it
+    /// inherits the scope, so a background event cannot narrow a refresh
+    /// the user asked for into one that fetches nothing.
+    private var pendingDiscoveryScope: GitSectionRefreshScope?
+    /// Per-section status/log fetches, one at a time per section and in
+    /// parallel across sections, so one large repository never delays the
+    /// others and no two fetches write one section's commit list at once.
+    private lazy var gitSectionRefreshes = GitSectionRefreshScheduler {
+        [weak self] repoID, scope in
+        await self?.performRepoRefresh(repoID: repoID, scope: scope)
+    }
+    /// One file-system monitor per displayed section. Alive only while the
+    /// Changes sidebar is visible.
+    private let gitChangesMonitorPool = GitChangesMonitorPool()
+    /// Keeps the pool's requests in the order they were made, and gives the
+    /// discovery that asked for a sync something to wait on before it reads
+    /// the repositories those monitors watch.
+    private var gitMonitorSyncTask: Task<Void, Never>?
+    /// Set once the window is closing, which makes the Changes sidebar
+    /// count as hidden: monitors stay retired and refreshes stop being
+    /// requested however late an event arrives.
+    private var isGitChangesTornDown = false
+    /// How the displayed sections accounted for the panes' directories at
+    /// the last discovery, so a pane moving inside a section it already has
+    /// can skip discovery entirely.
+    private var gitSeedCoverage = GitSeedCoverage()
+    /// The file system's spelling of the panes' working directories, which
+    /// is what those directories are compared against the sections by. Held
+    /// across the prompts that report the same directory again, and trimmed
+    /// by `gitSeedWorkDirs()` to the directories the panes are in.
+    private let gitPathStandardizer = GitPathStandardizer()
     /// Herdr layer-2 screen-classification poll (see
     /// `startScreenPollTask`). Runs for the window's lifetime, cancelled
     /// in `windowWillClose`.
@@ -228,7 +258,6 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// other siblings, per this file's established per-window `Task`-
     /// dictionary discipline.
     private var reconnectEstablishGraceTasks = KeyedTaskRegistry<UUID>()
-    private var hasMoreCommits = true
     private var reviewStores: [UUID: DiffReviewStore] = [:]
     private var clipboardConfirmationController: ClipboardConfirmationController?
     private var composeOverlayTargetSurfaceID: UUID?
@@ -668,7 +697,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
             self?.refreshHostingView()
         })
         commandRegistry.register(PaletteCommand(id: "git.refresh", title: "Refresh Git Changes", category: "Git") { [weak self] in
-            self?.refreshGitStatus(isUserInitiated: true)
+            self?.refreshGitSidebar(trigger: .manualRefresh)
         })
         commandRegistry.register(PaletteCommand(id: "ipc.enable", title: "Enable AI Agent IPC", category: "IPC", isAvailable: {
             !CalyxMCPServer.shared.isRunning
@@ -1279,13 +1308,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
                 get: { [weak self] in self?.windowSession.sidebarMode ?? .tabs },
                 set: { [weak self] in self?.setSidebarMode($0) }
             ),
-            gitChangesState: windowSession.gitChangesState,
-            gitEntries: windowSession.gitEntries,
-            gitCommits: windowSession.gitCommits,
-            expandedCommitIDs: windowSession.expandedCommitIDs,
-            commitFiles: windowSession.commitFiles,
-            isGitRefreshing: windowSession.isGitRefreshing,
-            gitStaleRefreshMessage: windowSession.gitStaleRefreshMessage,
+            gitSidebarState: buildGitSidebarViewState(),
             onTabSelected: { [weak self] tabID in self?.switchToTab(id: tabID) },
             onGroupSelected: { [weak self] groupID in self?.switchToGroup(id: groupID) },
             onNewTab: { [weak self] in self?.createNewTab() },
@@ -1295,11 +1318,19 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
             onTabRenamed: { [weak self] in self?.requestSave() },
             onToggleSidebar: { [weak self] in self?.toggleSidebar() },
             onDismissCommandPalette: { [weak self] in self?.dismissCommandPalette() },
-            onWorkingFileSelected: { [weak self] entry in self?.handleWorkingFileSelected(entry) },
-            onCommitFileSelected: { [weak self] entry in self?.handleCommitFileSelected(entry) },
-            onRefreshGitStatus: { [weak self] in self?.refreshGitStatus(isUserInitiated: true) },
-            onLoadMoreCommits: { [weak self] in self?.loadMoreCommits() },
-            onExpandCommit: { [weak self] hash in self?.expandCommit(hash: hash) },
+            onWorkingFileSelected: { [weak self] repoID, entry in
+                self?.handleWorkingFileSelected(repoID: repoID, entry: entry)
+            },
+            onCommitFileSelected: { [weak self] repoID, entry in
+                self?.handleCommitFileSelected(repoID: repoID, entry: entry)
+            },
+            onRefreshGitStatus: { [weak self] in self?.refreshGitSidebar(trigger: .manualRefresh) },
+            onLoadMoreCommits: { [weak self] repoID in self?.loadMoreCommits(repoID: repoID) },
+            onExpandCommit: { [weak self] repoID, hash in
+                self?.expandCommit(repoID: repoID, hash: hash)
+            },
+            onToggleGitRepoSection: { [weak self] repoID in self?.toggleGitRepoSection(repoID: repoID) },
+            onRetryGitRepoSection: { [weak self] repoID in self?.retryGitRepoSection(repoID: repoID) },
             onSidebarWidthChanged: { [weak self] width in self?.windowSession.sidebarWidth = width },
             onCollapseToggled: { [weak self] in self?.requestSave() },
             onCloseAllTabsInGroup: { [weak self] groupID in self?.closeAllTabsInGroup(id: groupID) },
@@ -1456,7 +1487,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         }
         retargetComposeOverlayIfNeeded()
         if isGitChangesSidebarVisible {
-            refreshGitStatus()
+            refreshGitSidebar(trigger: .tabActivated)
         }
     }
 
@@ -2139,7 +2170,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     @objc func toggleSidebar() {
         windowSession.showSidebar.toggle()
         if isGitChangesSidebarVisible {
-            refreshGitStatus()
+            refreshGitSidebar(trigger: .sidebarShown)
         } else {
             stopGitChangesMonitoring()
         }
@@ -4212,8 +4243,11 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         let changed = owningTab.pwd != pwd
         owningTab.pwd = pwd
         requestSave()
-        if changed, owningTab.id == activeTab?.id, isGitChangesSidebarVisible {
-            refreshGitStatus()
+        // Any terminal tab's directory can add or drop a repository from
+        // the sidebar, not just the active one. Discovery only reruns when
+        // the resulting set of seed directories actually differs.
+        if changed, isGitChangesSidebarVisible {
+            refreshGitSidebar(trigger: .paneDirectoryChanged)
         }
     }
 
@@ -4842,11 +4876,21 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         expandTasks.cancelAll()
         childExitedTasks.cancelAll()
         reconnectEstablishGraceTasks.cancelAll()
-        refreshTask?.cancel()
-        let gitChangesMonitor = gitChangesMonitor
-        gitMonitorStopTask?.cancel()
-        Task { await gitChangesMonitor?.stop() }
-        loadMoreTask?.cancel()
+        // Every later request reads this as "the sidebar is not visible",
+        // so nothing re-arms the monitors behind the teardown below.
+        isGitChangesTornDown = true
+        discoveryTask?.cancel()
+        pendingDiscoveryScope = nil
+        gitSectionRefreshes.cancelAll()
+        let pool = gitChangesMonitorPool
+        let pendingMonitorSync = gitMonitorSyncTask
+        // Awaited rather than cancelled: a sync cancelled mid-flight can
+        // leave a monitor running that `stopAll` has already walked past.
+        // It stays the chain's tail so anything queued behind it follows.
+        gitMonitorSyncTask = Task {
+            await pendingMonitorSync?.value
+            await pool.stopAll()
+        }
         screenPollTask?.cancel()
 
         if let appDelegate = NSApp.delegate as? AppDelegate {
@@ -4882,277 +4926,571 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - Git Source Control
 
     private var isGitChangesSidebarVisible: Bool {
-        windowSession.showSidebar && windowSession.sidebarMode == .changes
+        windowSession.showSidebar
+            && windowSession.sidebarMode == .changes
+            && !isGitChangesTornDown
     }
 
     private func setSidebarMode(_ mode: SidebarMode) {
         windowSession.sidebarMode = mode
         if isGitChangesSidebarVisible {
-            refreshGitStatus()
+            refreshGitSidebar(trigger: .sidebarShown)
         } else {
             stopGitChangesMonitoring()
         }
     }
 
-    private func refreshGitStatus(
-        kind: GitChangesRefreshKind = .repositoryMetadata,
-        isUserInitiated: Bool = false
-    ) {
-        refreshTask?.cancel()
+    /// The single entry point for every Changes-sidebar refresh. Each
+    /// trigger pays only for what its event can have changed; see
+    /// `GitSidebarRefreshTrigger`.
+    private func refreshGitSidebar(trigger: GitSidebarRefreshTrigger) {
+        switch trigger {
+        case .sidebarShown:
+            runGitDiscovery(scope: .everySection, isUserInitiated: false)
+        case .manualRefresh:
+            runGitDiscovery(scope: .everySection, isUserInitiated: true)
+        case .paneDirectoryChanged, .tabActivated:
+            // Which repositories the panes sit in is what decides the
+            // sections. Moving inside one, or between tabs that are in the
+            // ones already displayed, changes only the highlight.
+            let seeds = gitSeedWorkDirs()
+            let coverage = GitRepoDiscovery.coverage(
+                of: seeds,
+                in: windowSession.gitRepoSections,
+                standardizer: gitPathStandardizer
+            )
+            if coverage == gitSeedCoverage {
+                updateActiveGitRepo()
+            } else {
+                runGitDiscovery(scope: .appearedSections, isUserInitiated: false)
+            }
+        case .monitorEvent(let repoIDs, let kind):
+            switch kind {
+            case .workingTree:
+                for repoID in repoIDs {
+                    scheduleRepoRefresh(repoID: repoID, scope: .status)
+                }
+            case .repositoryMetadata:
+                // Ref and index changes can also mean a worktree was added
+                // or removed, which only discovery can see.
+                runGitDiscovery(scope: .sections(repoIDs), isUserInitiated: false)
+            }
+        }
+    }
+
+    private func runGitDiscovery(scope requestedScope: GitSectionRefreshScope, isUserInitiated: Bool) {
+        // The superseded run's sections are still owed a fetch, so its
+        // scope carries over rather than being dropped with its task.
+        let scope = requestedScope.merged(with: pendingDiscoveryScope ?? GitSectionRefreshScope())
+        discoveryTask?.cancel()
+        pendingDiscoveryScope = scope
+
+        let seeds = gitSeedWorkDirs()
+        // Recorded before the run rather than after it, so a directory
+        // change back to the state a still-running discovery superseded is
+        // seen as a change and supersedes that discovery in turn.
+        gitSeedCoverage = GitRepoDiscovery.coverage(
+            of: seeds,
+            in: windowSession.gitRepoSections,
+            standardizer: gitPathStandardizer
+        )
+        guard !seeds.isEmpty else {
+            // Without a terminal pane there is nowhere to search from, so
+            // discovery would only report an absence it cannot verify.
+            // Skipping it leaves the sections in place, so file-system
+            // events keep the sidebar current.
+            applyGitDiscoveryFailure(
+                GitRefreshFailureOutcome.resolveDiscovery(
+                    current: windowSession.gitChangesState,
+                    hasSeedWorkDirs: false,
+                    failureMessage: nil
+                )
+            )
+            windowSession.isGitRefreshing = false
+            syncGitMonitors()
+            refreshHostingView()
+            return
+        }
         let isInitialLoad = windowSession.gitChangesState.allowsInitialSpinner
         refreshGeneration += 1
         let generation = refreshGeneration
         if isUserInitiated {
             windowSession.isGitRefreshing = true
+        }
+        if isInitialLoad {
+            windowSession.gitChangesState = .loading
+        }
+        if isUserInitiated || isInitialLoad {
             refreshHostingView()
         }
 
-        refreshTask = Task { [weak self] in
+        discoveryTask = Task { [weak self] in
             guard let self else { return }
 
-            // Only the refresh that started most recently may clear the
-            // progress flag: an earlier call's task keeps running
+            // Only the run that started most recently may clear the
+            // progress flag: an earlier run's task keeps running
             // (cooperatively) after being cancelled and would otherwise
-            // clear a flag a newer call already set.
+            // clear a flag a newer run already set.
             @MainActor func finishRefreshing() {
-                guard self.refreshGeneration == generation else { return }
+                guard self.refreshGeneration == generation,
+                      self.windowSession.isGitRefreshing else { return }
                 self.windowSession.isGitRefreshing = false
+                self.refreshHostingView()
             }
 
-            let workDir = self.findWorkDir()
-            guard let workDir else {
-                self.stopGitChangesMonitoring(cancelRefresh: false)
-                let outcome = GitRefreshFailureOutcome.resolve(
-                    current: self.windowSession.gitChangesState,
-                    isNotARepository: false,
-                    message: "No working directory found"
-                )
-                self.applyGitRefreshFailure(outcome)
+            let result = await GitRepoDiscovery.discover(seedWorkDirs: seeds)
+            guard !Task.isCancelled else {
                 finishRefreshing()
-                self.refreshHostingView()
                 return
             }
 
-            if isInitialLoad {
-                self.windowSession.gitChangesState = .loading
-                self.refreshHostingView()
+            let sectionIDs = self.applyGitDiscovery(result, scope: scope, seeds: seeds)
+            // Recorded against what is now displayed, so the next pane
+            // event compares like with like.
+            self.gitSeedCoverage = GitRepoDiscovery.coverage(
+                of: seeds,
+                in: self.windowSession.gitRepoSections,
+                standardizer: self.gitPathStandardizer
+            )
+            if self.refreshGeneration == generation {
+                self.pendingDiscoveryScope = nil
+            }
+            self.refreshHostingView()
+
+            // The monitors have to be watching before the sections are
+            // read, or a change made between the read and the stream
+            // starting is never reported by anything.
+            await self.syncGitMonitors().value
+            guard !Task.isCancelled else {
+                finishRefreshing()
+                return
             }
 
-            do {
-                let repository = try await GitService.repositoryLocation(workDir: workDir)
-                guard !Task.isCancelled else {
-                    finishRefreshing()
-                    self.refreshHostingView()
-                    return
+            // The sections run in parallel, so one large repository cannot
+            // hold the rest of the sidebar back.
+            await withTaskGroup(of: Void.self) { group in
+                for sectionID in sectionIDs {
+                    guard let refresh = self.scheduleRepoRefresh(
+                        repoID: sectionID,
+                        scope: .status(includingLog: self.shouldRefreshLog(repoID: sectionID))
+                    ) else { continue }
+                    group.addTask { await refresh.value }
                 }
-
-                self.windowSession.repoRoots[workDir] = repository.workTree
-                await self.startGitChangesMonitoring(repository: repository)
-                guard !Task.isCancelled else {
-                    finishRefreshing()
-                    self.refreshHostingView()
-                    return
-                }
-
-                let entries: [GitFileEntry]
-                var commits: [GitCommit]?
-                if kind == .repositoryMetadata {
-                    let commitCount = isInitialLoad
-                        ? 100
-                        : max(100, self.windowSession.gitCommits.count)
-                    async let statusResult = GitService.gitStatus(workDir: repository.workTree)
-                    async let logResult = GitService.commitLog(
-                        workDir: repository.workTree,
-                        maxCount: commitCount,
-                        skip: 0
-                    )
-                    let (statusEntries, logCommits) = try await (statusResult, logResult)
-                    entries = statusEntries
-                    commits = logCommits
-                } else {
-                    entries = try await GitService.gitStatus(workDir: repository.workTree)
-                    commits = nil
-                }
-                guard !Task.isCancelled else {
-                    finishRefreshing()
-                    self.refreshHostingView()
-                    return
-                }
-
-                self.windowSession.gitEntries = entries
-                if let commits {
-                    self.windowSession.gitCommits = commits
-                    self.hasMoreCommits = true
-                    if isInitialLoad {
-                        self.windowSession.expandedCommitIDs = []
-                        self.windowSession.commitFiles = [:]
-                    } else {
-                        let visibleCommitIDs = Set(commits.map(\.id))
-                        self.windowSession.expandedCommitIDs.formIntersection(visibleCommitIDs)
-                        self.windowSession.commitFiles = self.windowSession.commitFiles.filter {
-                            visibleCommitIDs.contains($0.key)
-                        }
-                    }
-                }
-                self.windowSession.gitChangesState = .loaded
-                self.windowSession.gitStaleRefreshMessage = nil
-                finishRefreshing()
-                self.refreshHostingView()
-            } catch let error as GitService.GitError {
-                guard !Task.isCancelled else {
-                    finishRefreshing()
-                    self.refreshHostingView()
-                    return
-                }
-                self.stopGitChangesMonitoring(cancelRefresh: false)
-                let isNotARepository: Bool
-                if case .notARepository = error {
-                    isNotARepository = true
-                } else {
-                    isNotARepository = false
-                }
-                let outcome = GitRefreshFailureOutcome.resolve(
-                    current: self.windowSession.gitChangesState,
-                    isNotARepository: isNotARepository,
-                    message: error.localizedDescription
-                )
-                self.applyGitRefreshFailure(outcome)
-                finishRefreshing()
-                self.refreshHostingView()
-            } catch {
-                guard !Task.isCancelled else {
-                    finishRefreshing()
-                    self.refreshHostingView()
-                    return
-                }
-                self.stopGitChangesMonitoring(cancelRefresh: false)
-                let outcome = GitRefreshFailureOutcome.resolve(
-                    current: self.windowSession.gitChangesState,
-                    isNotARepository: false,
-                    message: error.localizedDescription
-                )
-                self.applyGitRefreshFailure(outcome)
-                finishRefreshing()
-                self.refreshHostingView()
             }
+            finishRefreshing()
         }
     }
 
-    /// Applies a resolved refresh failure to `windowSession`. A `.keepStale`
-    /// outcome leaves `gitChangesState` untouched (there is content on
-    /// screen worth preserving) and only records the warning message and
-    /// logs the underlying failure.
-    private func applyGitRefreshFailure(_ outcome: GitRefreshFailureOutcome) {
+    /// Applies a discovery result and returns the sections to fetch. What
+    /// the run could not check keeps its place: only a run that looked
+    /// where a section lives, and did not find it, retires it.
+    private func applyGitDiscovery(
+        _ result: GitRepoDiscoveryResult,
+        scope: GitSectionRefreshScope,
+        seeds: [String]
+    ) -> [String] {
+        let sections = GitRepoDiscovery.merge(
+            discovered: result.sections,
+            keeping: windowSession.gitRepoSections,
+            gaps: result.gaps
+        )
+        guard !sections.isEmpty else {
+            applyGitDiscoveryFailure(
+                GitRefreshFailureOutcome.resolveDiscovery(
+                    current: windowSession.gitChangesState,
+                    hasSeedWorkDirs: !seeds.isEmpty,
+                    failureMessage: result.failureMessage
+                )
+            )
+            return []
+        }
+
+        let knownRepoIDs = Set(windowSession.gitRepoChanges.keys)
+        let checkedRepoIDs = Set(result.sections.map(\.id))
+
+        windowSession.applyGitSections(sections)
+        windowSession.gitChangesState = .loaded
+        windowSession.gitStaleRefreshMessage = nil
+        let containers = GitRepoDiscovery.containingSections(of: sections)
+        for section in sections {
+            guard let message = result.gaps.message(for: section, containedBy: containers),
+                  !checkedRepoIDs.contains(section.id) else { continue }
+            windowSession.gitRepoChanges[section.id]?.staleRefreshMessage = message
+        }
+        windowSession.gitActiveRepoID = currentActiveRepoID(in: sections)
+        // Sections start collapsed; the one owning the active pane is the
+        // exception, and only until the user collapses it themselves.
+        if let activeRepoID = windowSession.gitActiveRepoID,
+           !knownRepoIDs.contains(activeRepoID) {
+            windowSession.gitExpandedRepoIDs.insert(activeRepoID)
+        }
+        pruneCommitFiles()
+
+        return scope.sectionsToFetch(
+            from: sections,
+            checked: checkedRepoIDs,
+            known: knownRepoIDs,
+            changes: windowSession.gitRepoChanges
+        )
+    }
+
+    /// Applies a resolved outcome for a run that produced no sections. A
+    /// `.keepStale` outcome leaves the sections alone (there is content on
+    /// screen worth preserving) and only records the warning message; the
+    /// caller syncs the monitors either way.
+    private func applyGitDiscoveryFailure(_ outcome: GitRefreshFailureOutcome) {
         switch outcome {
         case .showNotRepository:
-            windowSession.gitChangesState = .notRepository
-            windowSession.gitStaleRefreshMessage = nil
+            applyEmptyGitSections(state: .notRepository)
         case .showError(let message):
-            windowSession.gitChangesState = .error(message)
-            windowSession.gitStaleRefreshMessage = nil
+            applyEmptyGitSections(state: .error(message))
         case .keepStale(let message):
             windowSession.gitStaleRefreshMessage = message
-            logger.error("Git refresh failed, keeping stale content: \(message, privacy: .public)")
+            logger.error(
+                "Keeping stale git sections: \(message, privacy: .public)"
+            )
         }
     }
 
-    private func startGitChangesMonitoring(repository: GitRepositoryLocation) async {
-        if let stopTask = gitMonitorStopTask {
-            await stopTask.value
-        }
-        guard !Task.isCancelled, isGitChangesSidebarVisible else { return }
+    private func applyEmptyGitSections(state: GitChangesState) {
+        windowSession.applyGitSections([])
+        windowSession.gitChangesState = state
+        windowSession.gitStaleRefreshMessage = nil
+        pruneCommitFiles()
+    }
 
-        let monitor: GitChangesMonitor
-        if let existingMonitor = gitChangesMonitor {
-            monitor = existingMonitor
-        } else {
-            monitor = GitChangesMonitor { @MainActor [weak self] kind in
-                guard let self, self.isGitChangesSidebarVisible else { return }
-                self.refreshGitStatus(kind: kind)
-            }
-            gitChangesMonitor = monitor
+    /// Queues one section's fetch. Status is eager for every section
+    /// because the header badge counts it; history is the expensive half
+    /// and is fetched only for sections whose commits are on screen.
+    @discardableResult
+    private func scheduleRepoRefresh(
+        repoID: String,
+        scope: GitSectionFetchScope
+    ) -> Task<Void, Never>? {
+        guard gitRepoSection(id: repoID) != nil else { return nil }
+        if windowSession.gitChanges(for: repoID).state.showsLoadingWhileFetching {
+            windowSession.gitRepoChanges[repoID]?.state = .loading
+            // A section only says it is fetching if the transition is
+            // drawn, and callers are not required to redraw for it.
+            refreshHostingView()
         }
+        return gitSectionRefreshes.schedule(repoID: repoID, scope: scope)
+    }
+
+    private func performRepoRefresh(repoID: String, scope: GitSectionFetchScope) async {
+        guard let descriptor = gitRepoSection(id: repoID) else { return }
+
+        if scope.includesStatus || scope.includesLog {
+            await fetchRepoSection(descriptor: descriptor, scope: scope)
+        }
+        if scope.loadsMoreCommits {
+            await appendMoreCommits(descriptor: descriptor)
+        }
+    }
+
+    private func fetchRepoSection(descriptor: GitRepoDescriptor, scope: GitSectionFetchScope) async {
+        let changes = windowSession.gitChanges(for: descriptor.id)
+        let isInitialLoad = changes.commits.isEmpty && !changes.isLogLoaded
+        // A section grown past 100 commits by load-more keeps its length
+        // across refreshes.
+        let commitCount = changes.isLogLoaded ? max(100, changes.commits.count) : 100
 
         do {
-            try await monitor.watch(repository: repository)
-        } catch {
-            logger.error("Failed to start Git Changes monitor: \(error.localizedDescription, privacy: .public)")
-        }
-    }
-
-    private func stopGitChangesMonitoring(cancelRefresh: Bool = true) {
-        if cancelRefresh {
-            refreshTask?.cancel()
-        }
-        guard let monitor = gitChangesMonitor else { return }
-        let previousStopTask = gitMonitorStopTask
-        gitMonitorStopTask = Task {
-            if let previousStopTask {
-                await previousStopTask.value
-            }
-            await monitor.stop()
-        }
-    }
-
-    private func loadMoreCommits() {
-        guard hasMoreCommits else { return }
-        guard loadMoreTask == nil || loadMoreTask?.isCancelled == true else { return }
-        loadMoreTask = Task { [weak self] in
-            guard let self else { return }
-            let currentCount = self.windowSession.gitCommits.count
-
-            guard let workDir = self.findWorkDir(),
-                  let repoRoot = self.windowSession.repoRoots[workDir] else { return }
-
-            do {
-                let moreCommits = try await GitService.commitLog(
-                    workDir: repoRoot, maxCount: 50, skip: currentCount
+            var entries: [GitFileEntry]?
+            var commits: [GitCommit]?
+            if scope.includesStatus, scope.includesLog {
+                async let statusResult = GitService.gitStatus(workDir: descriptor.rootPath)
+                async let logResult = GitService.commitLog(
+                    location: descriptor.location,
+                    maxCount: commitCount,
+                    skip: 0
                 )
-                guard !Task.isCancelled else { return }
-                guard !moreCommits.isEmpty else {
-                    self.hasMoreCommits = false
-                    return
-                }
-
-                self.windowSession.gitCommits.append(contentsOf: moreCommits)
-                self.refreshHostingView()
-            } catch {
-                // Silently ignore load-more errors
+                let (statusEntries, logCommits) = try await (statusResult, logResult)
+                entries = statusEntries
+                commits = logCommits
+            } else if scope.includesStatus {
+                entries = try await GitService.gitStatus(workDir: descriptor.rootPath)
+            } else if scope.includesLog {
+                commits = try await GitService.commitLog(
+                    location: descriptor.location,
+                    maxCount: commitCount,
+                    skip: 0
+                )
             }
-            self.loadMoreTask = nil
+            guard !Task.isCancelled else { return }
+            applyRepoRefresh(
+                repoID: descriptor.id,
+                entries: entries,
+                commits: commits,
+                isInitialLoad: isInitialLoad
+            )
+            refreshHostingView()
+        } catch {
+            guard !Task.isCancelled else { return }
+            applyRepoRefreshFailure(repoID: descriptor.id, error: error)
+            refreshHostingView()
         }
     }
 
-    private func expandCommit(hash: String) {
-        if windowSession.expandedCommitIDs.contains(hash) {
-            windowSession.expandedCommitIDs.remove(hash)
+    /// Appends the next page of history. It runs on the section's own queue
+    /// with no other fetch in flight for it, so the number of commits it
+    /// pages from is the number the list is showing.
+    private func appendMoreCommits(descriptor: GitRepoDescriptor) async {
+        let repoID = descriptor.id
+        let changes = windowSession.gitChanges(for: repoID)
+        guard changes.hasMoreCommits else { return }
+        let loadedCount = changes.commits.count
+
+        do {
+            let moreCommits = try await GitService.commitLog(
+                location: descriptor.location, maxCount: 50, skip: loadedCount
+            )
+            guard !Task.isCancelled else { return }
+            guard windowSession.gitRepoChanges[repoID] != nil else { return }
+            if moreCommits.isEmpty {
+                windowSession.gitRepoChanges[repoID]?.hasMoreCommits = false
+            } else {
+                windowSession.gitRepoChanges[repoID]?.commits.append(contentsOf: moreCommits)
+                refreshHostingView()
+            }
+        } catch {
+            // Silently ignore load-more errors
+        }
+    }
+
+    private func applyRepoRefresh(
+        repoID: String,
+        entries: [GitFileEntry]?,
+        commits: [GitCommit]?,
+        isInitialLoad: Bool
+    ) {
+        // A section can vanish while its fetch is in flight; the result
+        // must not resurrect the entry `applyGitSections` removed.
+        guard var changes = windowSession.gitRepoChanges[repoID] else { return }
+
+        if let entries {
+            changes.entries = entries
+        }
+        if let commits {
+            changes.commits = commits
+            changes.isLogLoaded = true
+            changes.hasMoreCommits = true
+            if isInitialLoad {
+                changes.expandedCommitIDs = []
+            } else {
+                changes.expandedCommitIDs.formIntersection(Set(commits.map(\.id)))
+            }
+        }
+        changes.state = .loaded
+        changes.staleRefreshMessage = nil
+        windowSession.gitRepoChanges[repoID] = changes
+        pruneCommitFiles()
+    }
+
+    /// Applies a resolved refresh failure to one section. A `.keepStale`
+    /// outcome leaves the section's state untouched (there is content on
+    /// screen worth preserving) and only records the warning message and
+    /// logs the underlying failure.
+    private func applyRepoRefreshFailure(repoID: String, error: Error) {
+        guard var changes = windowSession.gitRepoChanges[repoID] else { return }
+
+        let isNotARepository: Bool
+        if let gitError = error as? GitService.GitError, case .notARepository = gitError {
+            isNotARepository = true
+        } else {
+            isNotARepository = false
+        }
+        let outcome = GitRefreshFailureOutcome.resolve(
+            current: changes.state,
+            isNotARepository: isNotARepository,
+            message: error.localizedDescription
+        )
+        switch outcome {
+        case .showNotRepository:
+            changes.state = .notRepository
+            changes.staleRefreshMessage = nil
+        case .showError(let message):
+            changes.state = .error(message)
+            changes.staleRefreshMessage = nil
+        case .keepStale(let message):
+            changes.staleRefreshMessage = message
+            logger.error(
+                "Git refresh failed for \(repoID, privacy: .public), keeping stale content: \(message, privacy: .public)"
+            )
+        }
+        windowSession.gitRepoChanges[repoID] = changes
+
+        // A directory that has stopped being a repository is a change in
+        // which repositories exist, and discovery is what decides that: it
+        // retires the section, and with it the monitor watching a path
+        // nothing is left at, or confirms the repository and fetches it
+        // again.
+        if case .showNotRepository = outcome {
+            runGitDiscovery(scope: .sections([repoID]), isUserInitiated: false)
+        }
+    }
+
+    /// Drops cached commit file lists no section can show. The union
+    /// across every section is what matters: worktrees of one repository
+    /// see the same commits, so pruning against a single section would
+    /// discard the files of a commit expanded in another.
+    private func pruneCommitFiles() {
+        var visibleCommitIDs: Set<String> = []
+        for changes in windowSession.gitRepoChanges.values {
+            visibleCommitIDs.formUnion(changes.commits.map(\.id))
+        }
+        windowSession.commitFiles = windowSession.commitFiles.filter {
+            visibleCommitIDs.contains($0.key)
+        }
+    }
+
+    /// History is fetched for the sections showing it. A collapsed section
+    /// having fetched it once is not a reason to keep paying for a
+    /// `git log` on every refresh for the rest of the window's life.
+    private func shouldRefreshLog(repoID: String) -> Bool {
+        windowSession.gitExpandedRepoIDs.contains(repoID)
+    }
+
+    private func gitRepoSection(id: String) -> GitRepoDescriptor? {
+        windowSession.gitRepoSections.first { $0.id == id }
+    }
+
+    /// The section owning the active pane's directory now. The directory is
+    /// read here rather than taken from what a discovery run started with,
+    /// because a run takes long enough for the user to switch panes while
+    /// it is in flight, and the highlight belongs to the pane they are in.
+    private func currentActiveRepoID(in sections: [GitRepoDescriptor]) -> String? {
+        GitRepoDiscovery.activeRepoID(
+            for: gitSeedWorkDirs().first,
+            in: sections,
+            standardizer: gitPathStandardizer
+        )
+    }
+
+    private func updateActiveGitRepo() {
+        let activeRepoID = currentActiveRepoID(in: windowSession.gitRepoSections)
+        guard activeRepoID != windowSession.gitActiveRepoID else { return }
+        windowSession.gitActiveRepoID = activeRepoID
+        refreshHostingView()
+    }
+
+    private func toggleGitRepoSection(repoID: String) {
+        if windowSession.gitExpandedRepoIDs.contains(repoID) {
+            windowSession.gitExpandedRepoIDs.remove(repoID)
             refreshHostingView()
             return
         }
 
-        windowSession.expandedCommitIDs.insert(hash)
+        // History is fetched when a section is opened, not kept current
+        // while it is closed, so opening one asks for it again.
+        windowSession.gitExpandedRepoIDs.insert(repoID)
+        scheduleRepoRefresh(repoID: repoID, scope: .log)
+        refreshHostingView()
+    }
+
+    private func retryGitRepoSection(repoID: String) {
+        scheduleRepoRefresh(
+            repoID: repoID,
+            scope: .status(includingLog: shouldRefreshLog(repoID: repoID))
+        )
+        refreshHostingView()
+    }
+
+    /// Drives the monitor pool to exactly the displayed sections, or to
+    /// nothing while the Changes sidebar is hidden. The returned task is
+    /// what a caller waits on to know the streams are running.
+    @discardableResult
+    private func syncGitMonitors() -> Task<Void, Never> {
+        var repositories: [String: GitRepositoryLocation] = [:]
+        if isGitChangesSidebarVisible {
+            for section in windowSession.gitRepoSections {
+                repositories[section.id] = section.location
+            }
+        }
+
+        let onRefresh: GitChangesMonitorPool.RefreshHandler = { [weak self] repoIDs, kind in
+            guard let self, self.isGitChangesSidebarVisible else { return }
+            self.refreshGitSidebar(trigger: .monitorEvent(repoIDs: repoIDs, kind: kind))
+        }
+        let pool = gitChangesMonitorPool
+        let previousSync = gitMonitorSyncTask
+        let task = Task {
+            await previousSync?.value
+            await pool.sync(repositories: repositories, onRefresh: onRefresh)
+        }
+        gitMonitorSyncTask = task
+        return task
+    }
+
+    /// Called when the Changes sidebar stops being visible: the work it
+    /// asked for is abandoned and the pool is driven to the empty set.
+    private func stopGitChangesMonitoring() {
+        discoveryTask?.cancel()
+        pendingDiscoveryScope = nil
+        gitSectionRefreshes.cancelAll()
+        syncGitMonitors()
+    }
+
+    private func buildGitSidebarViewState() -> GitSidebarViewState {
+        let sections = windowSession.gitRepoSections.map { descriptor in
+            GitRepoSectionViewData(
+                descriptor: descriptor,
+                changes: windowSession.gitChanges(for: descriptor.id),
+                isActive: descriptor.id == windowSession.gitActiveRepoID,
+                isExpanded: windowSession.gitExpandedRepoIDs.contains(descriptor.id)
+            )
+        }
+        return GitSidebarViewState(
+            phase: windowSession.gitChangesState,
+            isRefreshing: windowSession.isGitRefreshing,
+            staleRefreshMessage: windowSession.gitStaleRefreshMessage,
+            sections: sections,
+            commitFiles: windowSession.commitFiles
+        )
+    }
+
+    private func loadMoreCommits(repoID: String) {
+        guard windowSession.gitChanges(for: repoID).hasMoreCommits else { return }
+        // Queued on the section's own queue rather than run alongside its
+        // refresh: the page to fetch is decided by how many commits the
+        // list holds, and a refresh replaces that list wholesale.
+        scheduleRepoRefresh(repoID: repoID, scope: .moreCommits)
+    }
+
+    private func expandCommit(repoID: String, hash: String) {
+        guard var changes = windowSession.gitRepoChanges[repoID] else { return }
+
+        if changes.expandedCommitIDs.contains(hash) {
+            changes.expandedCommitIDs.remove(hash)
+            windowSession.gitRepoChanges[repoID] = changes
+            refreshHostingView()
+            return
+        }
+
+        changes.expandedCommitIDs.insert(hash)
+        windowSession.gitRepoChanges[repoID] = changes
         refreshHostingView()
 
         if windowSession.commitFiles[hash] != nil { return }
-
-        guard let workDir = findWorkDir(),
-              let repoRoot = windowSession.repoRoots[workDir] else { return }
+        guard let descriptor = gitRepoSection(id: repoID) else { return }
 
         // Plain subscript store, not `insert(_:task:)`: unlike this
-        // file's other three `KeyedTaskRegistry`s, `hash` is NOT
-        // guaranteed fresh here -- a rapid double-expand of the same
-        // not-yet-loaded commit before this Task completes reaches this
-        // line twice for the same key (the guard above only checks
-        // `commitFiles[hash] != nil`, not whether a fetch is already in
-        // flight). `insert`'s cancel-before-replace would cancel the
-        // first fetch's Task, which -- because `GitService.commitFiles`
-        // routes through `GitService.run`'s cancellation propagation --
-        // would terminate its underlying git subprocess early, changing
-        // today's behavior (both fetches currently run to completion).
+        // file's other `KeyedTaskRegistry`s, `hash` is NOT guaranteed
+        // fresh here -- a rapid double-expand of the same not-yet-loaded
+        // commit before this Task completes reaches this line twice for
+        // the same key (the guard above only checks `commitFiles[hash] !=
+        // nil`, not whether a fetch is already in flight). `insert`'s
+        // cancel-before-replace would cancel the first fetch's Task,
+        // which -- because `GitService.commitFiles` routes through
+        // `GitService.run`'s cancellation propagation -- would terminate
+        // its underlying git subprocess early, changing today's behavior
+        // (both fetches currently run to completion).
         expandTasks[hash] = Task { [weak self] in
             guard let self else { return }
             do {
-                let files = try await GitService.commitFiles(hash: hash, workDir: repoRoot)
+                let files = try await GitService.commitFiles(
+                    hash: hash, workDir: descriptor.rootPath
+                )
                 self.windowSession.commitFiles[hash] = files
                 self.refreshHostingView()
             } catch {
@@ -5162,9 +5500,9 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    private func handleWorkingFileSelected(_ entry: GitFileEntry) {
-        guard let workDir = findWorkDir(),
-              let repoRoot = windowSession.repoRoots[workDir] else { return }
+    private func handleWorkingFileSelected(repoID: String, entry: GitFileEntry) {
+        guard let descriptor = gitRepoSection(id: repoID) else { return }
+        let repoRoot = descriptor.rootPath
 
         let source: DiffSource
         if entry.isStaged {
@@ -5178,11 +5516,12 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         openDiffTab(source: source)
     }
 
-    private func handleCommitFileSelected(_ entry: CommitFileEntry) {
-        guard let workDir = findWorkDir(),
-              let repoRoot = windowSession.repoRoots[workDir] else { return }
+    private func handleCommitFileSelected(repoID: String, entry: CommitFileEntry) {
+        guard let descriptor = gitRepoSection(id: repoID) else { return }
 
-        let source: DiffSource = .commit(hash: entry.commitHash, path: entry.path, workDir: repoRoot)
+        let source: DiffSource = .commit(
+            hash: entry.commitHash, path: entry.path, workDir: descriptor.rootPath
+        )
         openDiffTab(source: source)
     }
 
@@ -5253,29 +5592,43 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    private func findWorkDir() -> String? {
-        // 1. Active terminal tab's pwd
-        if let tab = activeTab, case .terminal = tab.content, let pwd = tab.pwd {
-            return pwd
+    /// `findSeedWorkDirs()` for the Changes sidebar, with the standardizer
+    /// trimmed to what it returns: a directory no pane is in any more is
+    /// not worth a remembered spelling.
+    private func gitSeedWorkDirs() -> [String] {
+        let seeds = findSeedWorkDirs()
+        gitPathStandardizer.keepOnly(Set(seeds))
+        return seeds
+    }
+
+    /// Every working directory repository discovery should start from, in
+    /// the order that decides which section owns the active pane: the
+    /// active terminal tab first, then the rest of its group, then every
+    /// other group. Duplicates are dropped and the order is kept.
+    private func findSeedWorkDirs() -> [String] {
+        var seeds: [String] = []
+        var seen: Set<String> = []
+
+        func appendPwd(of tab: Tab) {
+            guard case .terminal = tab.content, let pwd = tab.pwd else { return }
+            guard seen.insert(pwd).inserted else { return }
+            seeds.append(pwd)
         }
-        // 2. Any terminal tab in same group
+
+        if let tab = activeTab {
+            appendPwd(of: tab)
+        }
         if let group = windowSession.activeGroup {
             for tab in group.tabs {
-                if case .terminal = tab.content, let pwd = tab.pwd {
-                    return pwd
-                }
+                appendPwd(of: tab)
             }
         }
-        // 3. Any terminal tab in any group
         for group in windowSession.groups {
             for tab in group.tabs {
-                if case .terminal = tab.content, let pwd = tab.pwd {
-                    return pwd
-                }
+                appendPwd(of: tab)
             }
         }
-        // 4. Fallback from cached repo roots
-        return windowSession.repoRoots.values.first
+        return seeds
     }
 
     // MARK: - IPC

@@ -5,6 +5,59 @@
 
 import Foundation
 
+/// One record of `git worktree list --porcelain`. `path` is the only
+/// attribute the porcelain schema guarantees; everything else is optional
+/// or a bare flag label.
+struct GitWorktreeInfo: Equatable, Sendable {
+    let path: String
+    let headOID: String?
+    /// Full ref name such as `refs/heads/main`. Mutually exclusive with `isDetached`.
+    let branchRef: String?
+    let isDetached: Bool
+    let isBare: Bool
+    let isLocked: Bool
+    let lockReason: String?
+    let isPrunable: Bool
+    let prunableReason: String?
+
+    init(
+        path: String,
+        headOID: String? = nil,
+        branchRef: String? = nil,
+        isDetached: Bool = false,
+        isBare: Bool = false,
+        isLocked: Bool = false,
+        lockReason: String? = nil,
+        isPrunable: Bool = false,
+        prunableReason: String? = nil
+    ) {
+        self.path = path
+        self.headOID = headOID
+        self.branchRef = branchRef
+        self.isDetached = isDetached
+        self.isBare = isBare
+        self.isLocked = isLocked
+        self.lockReason = lockReason
+        self.isPrunable = isPrunable
+        self.prunableReason = prunableReason
+    }
+}
+
+/// One submodule of a superproject, as its index records it. The index is
+/// the only place git validates the path: `.gitmodules` is a tracked text
+/// file whose declarations nothing checks.
+struct GitSubmoduleInfo: Equatable, Sendable {
+    /// Relative to the superproject's work-tree root.
+    let path: String
+}
+
+/// What HEAD resolves to. A detached HEAD has no branch, and a HEAD before
+/// the first commit names no commit, so both halves can be absent.
+struct GitHeadSummary: Equatable, Sendable {
+    let branch: String?
+    let shortHash: String?
+}
+
 enum GitService {
     enum GitError: Error, LocalizedError {
         case notARepository
@@ -79,27 +132,112 @@ enum GitService {
         return parseStatus(output)
     }
 
-    static func commitLog(workDir: String, maxCount: Int, skip: Int) async throws -> [GitCommit] {
+    /// Every worktree attached to the repository containing `workDir`,
+    /// including the main worktree (or the bare repository itself) first.
+    static func worktreeList(workDir: String) async throws -> [GitWorktreeInfo] {
+        let output = try await run(args: ["worktree", "list", "--porcelain", "-z"], workDir: workDir)
+        return parseWorktreeList(output)
+    }
+
+    /// Every submodule recorded in the index of the repository rooted at
+    /// `repoRoot`, in index order. Whether a submodule's directory is
+    /// actually filled in is a separate question this does not answer.
+    static func submoduleList(repoRoot: String) async throws -> [GitSubmoduleInfo] {
+        let output = try await run(args: ["ls-files", "-z", "--stage"], workDir: repoRoot)
+        return parseIndexGitlinks(output)
+    }
+
+    /// The gitlinks in `git ls-files -z --stage` output. Each record is
+    /// `<mode> <sha> <stage>`, a tab, then the path, NUL-terminated, and
+    /// mode 160000 is a gitlink. `-z` leaves the path unquoted, so it can
+    /// hold spaces and tabs of its own and only the first tab separates
+    /// it from the fields. A path an unresolved merge lists once per
+    /// stage is still one submodule. The index of a large repository runs
+    /// to hundreds of thousands of entries, so the scan stays on the UTF-8
+    /// bytes (0x00 ends a record, 0x09 is the tab) and only the gitlink
+    /// paths become Strings.
+    static func parseIndexGitlinks(_ output: String) -> [GitSubmoduleInfo] {
+        let gitlinkMode = Array("160000 ".utf8)
+        var seenPaths: Set<String> = []
+        var submodules: [GitSubmoduleInfo] = []
+        for record in output.utf8.split(separator: 0, omittingEmptySubsequences: true) {
+            guard record.starts(with: gitlinkMode),
+                  let tabIndex = record.firstIndex(of: 0x09) else { continue }
+            let path = String(decoding: record[record.index(after: tabIndex)...], as: UTF8.self)
+            guard seenPaths.insert(path).inserted else { continue }
+            submodules.append(GitSubmoduleInfo(path: path))
+        }
+        return submodules
+    }
+
+    /// The branch and abbreviated commit HEAD points at. The two queries
+    /// are independent, so they run concurrently.
+    static func headSummary(workDir: String) async throws -> GitHeadSummary {
+        async let branch = runReportingNoAnswerAsNil(
+            args: ["symbolic-ref", "--short", "-q", "HEAD"], workDir: workDir
+        )
+        // `-q --verify` is what makes an unborn HEAD exit 1 instead of the
+        // 128 a plain `rev-parse --short HEAD` returns, which a corrupt
+        // repository returns as well.
+        async let shortHash = runReportingNoAnswerAsNil(
+            args: ["rev-parse", "--short", "-q", "--verify", "HEAD"], workDir: workDir
+        )
+        return try await GitHeadSummary(branch: branch, shortHash: shortHash)
+    }
+
+    /// The work tree of the superproject this repository is a submodule
+    /// of, or `nil` when it is not one. A repository that is nobody's
+    /// submodule answers with no output and exit 0.
+    static func superprojectWorkTree(workDir: String) async throws -> String? {
+        let output = try await run(
+            args: ["rev-parse", "--show-superproject-working-tree"], workDir: workDir
+        )
+        let workTree = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return workTree.isEmpty ? nil : workTree
+    }
+
+    /// Runs a query whose `-q` turns "there is no such thing to report"
+    /// into a silent exit 1, and reports that answer as nil. Detached HEAD
+    /// and unborn HEAD reach their callers this way, so exit 1 here is a
+    /// value rather than a failure. Every other exit code still throws.
+    private static func runReportingNoAnswerAsNil(
+        args: [String],
+        workDir: String
+    ) async throws -> String? {
+        do {
+            let output = try await run(args: args, workDir: workDir)
+            return output.trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch GitError.commandFailed(let exitCode, _, _) where exitCode == 1 {
+            return nil
+        }
+    }
+
+    /// Commit history for an already-resolved repository, skipping the
+    /// `rev-parse` that `commitLog(workDir:maxCount:skip:)` needs to
+    /// classify the work tree.
+    static func commitLog(
+        location: GitRepositoryLocation,
+        maxCount: Int,
+        skip: Int
+    ) async throws -> [GitCommit] {
         let format = "%x1f%H%x1f%h%x1f%s%x1f%an%x1f%ar%x1f%P%x1e"
-        let linkedWorktree = try await isLinkedWorktree(workDir: workDir)
         var args = ["log"]
-        // Linked worktrees share refs, so --all would include sibling branch history.
-        if !linkedWorktree {
+        // Linked worktrees share refs, so --all would include sibling branch
+        // history. They are the ones whose Git directory sits below the
+        // common one.
+        if location.gitDirectory == location.gitCommonDirectory {
             args.append("--all")
         }
         args += ["--graph", "--format=\(format)",
                  "--max-count=\(maxCount)", "--skip=\(skip)"]
 
-        let output = try await run(
-            args: args,
-            workDir: workDir
-        )
+        let output = try await run(args: args, workDir: location.workTree)
         return parseCommitLog(output)
     }
 
-    private static func isLinkedWorktree(workDir: String) async throws -> Bool {
+    static func commitLog(workDir: String, maxCount: Int, skip: Int) async throws -> [GitCommit] {
         let location = try await repositoryLocation(workDir: workDir)
-        return location.gitDirectory != location.gitCommonDirectory
+        return try await commitLog(location: location, maxCount: maxCount, skip: skip)
     }
 
     static func commitFiles(hash: String, workDir: String) async throws -> [CommitFileEntry] {
@@ -414,6 +552,87 @@ enum GitService {
         }
 
         return entries
+    }
+
+    /// Maps `git worktree list --porcelain -z` output onto records. Each
+    /// NUL-terminated element carries one attribute, label and value split
+    /// by a single space, and an empty element ends a record. Lock and
+    /// prune reasons are raw strings that may contain spaces and newlines.
+    static func parseWorktreeList(_ output: String) -> [GitWorktreeInfo] {
+        var infos: [GitWorktreeInfo] = []
+        var record = WorktreeRecord()
+        var isRecordOpen = false
+
+        for element in output.split(separator: "\0", omittingEmptySubsequences: false) {
+            guard !element.isEmpty else {
+                if isRecordOpen {
+                    if let info = record.info { infos.append(info) }
+                    record = WorktreeRecord()
+                    isRecordOpen = false
+                }
+                continue
+            }
+
+            let fields = element.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: false)
+            let label = String(fields[0])
+            let value = fields.count > 1 ? String(fields[1]) : nil
+
+            guard isRecordOpen else {
+                isRecordOpen = true
+                // `worktree` opens every record; anything else means this
+                // record is not one the schema describes, so it is dropped
+                // by leaving `path` unset.
+                if label == "worktree" { record.path = value }
+                continue
+            }
+            guard record.path != nil else { continue }
+
+            switch label {
+            case "HEAD": record.headOID = value
+            case "branch": record.branchRef = value
+            case "detached": record.isDetached = true
+            case "bare": record.isBare = true
+            case "locked":
+                record.isLocked = true
+                record.lockReason = value
+            case "prunable":
+                record.isPrunable = true
+                record.prunableReason = value
+            default: break
+            }
+        }
+
+        if isRecordOpen, let info = record.info {
+            infos.append(info)
+        }
+        return infos
+    }
+
+    private struct WorktreeRecord {
+        var path: String?
+        var headOID: String?
+        var branchRef: String?
+        var isDetached = false
+        var isBare = false
+        var isLocked = false
+        var lockReason: String?
+        var isPrunable = false
+        var prunableReason: String?
+
+        var info: GitWorktreeInfo? {
+            guard let path else { return nil }
+            return GitWorktreeInfo(
+                path: path,
+                headOID: headOID,
+                branchRef: branchRef,
+                isDetached: isDetached,
+                isBare: isBare,
+                isLocked: isLocked,
+                lockReason: lockReason,
+                isPrunable: isPrunable,
+                prunableReason: prunableReason
+            )
+        }
     }
 
     static func parseCommitLog(_ output: String) -> [GitCommit] {

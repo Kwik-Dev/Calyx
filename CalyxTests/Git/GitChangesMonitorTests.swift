@@ -79,6 +79,12 @@ private final class RecordingGitEventSourceFactory: @unchecked Sendable {
     }
 }
 
+/// The assignment given to a monitor that is the one watching the Git
+/// directories outside its work tree.
+private func watchTarget(_ repository: GitRepositoryLocation) -> GitChangesWatchTarget {
+    GitChangesWatchTarget(repository: repository, watchesExternalGitDirectories: true)
+}
+
 @MainActor
 final class GitChangesMonitorTests: XCTestCase {
     private let debounceDuration = Duration.milliseconds(20)
@@ -97,8 +103,8 @@ final class GitChangesMonitorTests: XCTestCase {
             gitCommonDirectory: "/repo/.git"
         )
 
-        try await monitor.watch(repository: location)
-        try await monitor.watch(repository: location)
+        try await monitor.watch(target: watchTarget(location))
+        try await monitor.watch(target: watchTarget(location))
 
         let sources = factory.sources()
         XCTAssertEqual(sources.count, 1)
@@ -145,7 +151,7 @@ final class GitChangesMonitorTests: XCTestCase {
             gitCommonDirectory: "/repo/.git"
         )
 
-        try await monitor.watch(repository: location)
+        try await monitor.watch(target: watchTarget(location))
 
         let sources = factory.sources()
         XCTAssertEqual(sources.count, 2)
@@ -191,12 +197,12 @@ final class GitChangesMonitorTests: XCTestCase {
             gitCommonDirectory: "/repo-b/.git"
         )
 
-        try await monitor.watch(repository: first)
+        try await monitor.watch(target: watchTarget(first))
         let firstSource = try XCTUnwrap(factory.sources().first)
         let queuedHandlerValue = await firstSource.capturedHandler()
         let queuedHandler = try XCTUnwrap(queuedHandlerValue)
 
-        try await monitor.watch(repository: second)
+        try await monitor.watch(target: watchTarget(second))
 
         let firstStopCount = await firstSource.stopCount()
         XCTAssertEqual(firstStopCount, 1)

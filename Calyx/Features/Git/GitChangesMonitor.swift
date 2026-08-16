@@ -10,7 +10,7 @@ struct GitRepositoryLocation: Equatable, Sendable {
     let gitDirectory: String
     let gitCommonDirectory: String
 
-    fileprivate var standardized: GitRepositoryLocation {
+    var standardized: GitRepositoryLocation {
         GitRepositoryLocation(
             workTree: Self.standardize(workTree),
             gitDirectory: Self.standardize(gitDirectory),
@@ -18,8 +18,33 @@ struct GitRepositoryLocation: Equatable, Sendable {
         )
     }
 
-    private static func standardize(_ path: String) -> String {
-        URL(fileURLWithPath: path).standardizedFileURL.path
+    /// The file system's own spelling of `path`: symlinks resolved, the
+    /// letter case as recorded on disk, and `/private` where the volume
+    /// really puts it. That is the spelling git reports for a work tree,
+    /// while a shell reports the logical directory it was given, so both
+    /// have to pass through here before they can be compared. A path that
+    /// does not exist has no such spelling and keeps its lexical form.
+    static func standardize(_ path: String) -> String {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        let values = try? url.resourceValues(forKeys: [.canonicalPathKey])
+        return values?.canonicalPath ?? url.path
+    }
+}
+
+/// One monitor's assignment: the repository whose layout classifies the
+/// events it sees, and whether it also watches the Git directories that lie
+/// outside that work tree. Worktrees of one repository share a Git
+/// directory, so exactly one monitor watches it and the others would only
+/// open a second stream on the same files.
+struct GitChangesWatchTarget: Equatable, Sendable {
+    let repository: GitRepositoryLocation
+    let watchesExternalGitDirectories: Bool
+
+    var standardized: GitChangesWatchTarget {
+        GitChangesWatchTarget(
+            repository: repository.standardized,
+            watchesExternalGitDirectories: watchesExternalGitDirectories
+        )
     }
 }
 
@@ -32,11 +57,12 @@ enum GitChangesRefreshKind: Int, Equatable, Sendable {
     }
 }
 
-/// Watches the active repository and coalesces FSEvents batches into one
-/// Changes refresh. A normal repository needs only its work-tree watcher
-/// because `.git` is inside that tree. A linked worktree also watches the
-/// shared Git directory so index, ref, checkout, and commit operations are
-/// observed even though its `.git` entry is only a pointer file.
+/// Watches one repository and coalesces FSEvents batches into one Changes
+/// refresh. A normal repository needs only its work-tree watcher because
+/// `.git` is inside that tree. A linked worktree needs the shared Git
+/// directory as well, so index, ref, checkout, and commit operations are
+/// observed even though its `.git` entry is only a pointer file, and its
+/// target says whether it is the monitor responsible for watching it.
 actor GitChangesMonitor {
     private struct WatchRoot: Sendable {
         let url: URL
@@ -47,7 +73,7 @@ actor GitChangesMonitor {
     private let eventSourceFactory: @Sendable () -> any FileSystemEventSource
     private let onRefresh: @MainActor @Sendable (GitChangesRefreshKind) async -> Void
 
-    private var repository: GitRepositoryLocation?
+    private var target: GitChangesWatchTarget?
     private var eventSources: [any FileSystemEventSource] = []
     private var debounceTask: Task<Void, Never>?
     private var pendingKind: GitChangesRefreshKind?
@@ -64,9 +90,9 @@ actor GitChangesMonitor {
         self.onRefresh = onRefresh
     }
 
-    func watch(repository requestedRepository: GitRepositoryLocation) async throws {
-        let requestedRepository = requestedRepository.standardized
-        if repository == requestedRepository, !eventSources.isEmpty {
+    func watch(target requestedTarget: GitChangesWatchTarget) async throws {
+        let requestedTarget = requestedTarget.standardized
+        if target == requestedTarget, !eventSources.isEmpty {
             return
         }
 
@@ -78,7 +104,7 @@ actor GitChangesMonitor {
 
         let previousSources = eventSources
         eventSources = []
-        repository = nil
+        target = nil
         for source in previousSources {
             await source.stop()
         }
@@ -86,14 +112,14 @@ actor GitChangesMonitor {
 
         var startedSources: [any FileSystemEventSource] = []
         do {
-            for root in Self.watchRoots(for: requestedRepository) {
+            for root in Self.watchRoots(for: requestedTarget) {
                 guard generation == requestedGeneration else { break }
                 let source = eventSourceFactory()
                 try await source.start(at: root.url) { [weak self] events in
                     await self?.receive(
                         events,
                         from: root,
-                        repository: requestedRepository,
+                        repository: requestedTarget.repository,
                         generation: requestedGeneration
                     )
                 }
@@ -113,7 +139,7 @@ actor GitChangesMonitor {
             return
         }
         eventSources = startedSources
-        repository = requestedRepository
+        target = requestedTarget
     }
 
     func stop() async {
@@ -121,7 +147,7 @@ actor GitChangesMonitor {
         debounceTask?.cancel()
         debounceTask = nil
         pendingKind = nil
-        repository = nil
+        target = nil
 
         let sources = eventSources
         eventSources = []
@@ -171,9 +197,11 @@ actor GitChangesMonitor {
         await onRefresh(kind)
     }
 
-    private static func watchRoots(for repository: GitRepositoryLocation) -> [WatchRoot] {
+    private static func watchRoots(for target: GitChangesWatchTarget) -> [WatchRoot] {
+        let repository = target.repository
         let workTreeURL = URL(fileURLWithPath: repository.workTree).standardizedFileURL
         var roots = [WatchRoot(url: workTreeURL, defaultKind: .workingTree)]
+        guard target.watchesExternalGitDirectories else { return roots }
 
         let metadataCandidates = Set([
             repository.gitDirectory,

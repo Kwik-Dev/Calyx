@@ -68,6 +68,8 @@ enum AccessibilityID {
         static let commitsSection = "calyx.git.commits"
         static func fileEntry(_ path: String) -> String { "calyx.git.file.\(path)" }
         static func commitRow(_ hash: String) -> String { "calyx.git.commit.\(hash)" }
+        /// `id` is the repository's work-tree root path.
+        static func repoSection(_ id: String) -> String { "calyx.git.repoSection.\(id)" }
     }
     /// Sessions pane of the Settings window
     /// (Calyx/Features/Settings/SettingsWindowController.swift). Applied

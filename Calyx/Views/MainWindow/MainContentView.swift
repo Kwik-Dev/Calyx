@@ -29,13 +29,7 @@ struct MainContentView: View {
     var approvalBannerModel: ApprovalBannerModel?
 
     @Binding var sidebarMode: SidebarMode
-    var gitChangesState: GitChangesState = .notLoaded
-    var gitEntries: [GitFileEntry] = []
-    var gitCommits: [GitCommit] = []
-    var expandedCommitIDs: Set<String> = []
-    var commitFiles: [String: [CommitFileEntry]] = [:]
-    var isGitRefreshing: Bool = false
-    var gitStaleRefreshMessage: String?
+    var gitSidebarState = GitSidebarViewState()
 
     var onTabSelected: ((UUID) -> Void)?
     var onGroupSelected: ((UUID) -> Void)?
@@ -46,11 +40,13 @@ struct MainContentView: View {
     var onTabRenamed: (() -> Void)?
     var onToggleSidebar: (() -> Void)?
     var onDismissCommandPalette: (() -> Void)?
-    var onWorkingFileSelected: ((GitFileEntry) -> Void)?
-    var onCommitFileSelected: ((CommitFileEntry) -> Void)?
+    var onWorkingFileSelected: ((String, GitFileEntry) -> Void)?
+    var onCommitFileSelected: ((String, CommitFileEntry) -> Void)?
     var onRefreshGitStatus: (() -> Void)?
-    var onLoadMoreCommits: (() -> Void)?
-    var onExpandCommit: ((String) -> Void)?
+    var onLoadMoreCommits: ((String) -> Void)?
+    var onExpandCommit: ((String, String) -> Void)?
+    var onToggleGitRepoSection: ((String) -> Void)?
+    var onRetryGitRepoSection: ((String) -> Void)?
     var onSidebarWidthChanged: ((CGFloat) -> Void)?
     var onCollapseToggled: (() -> Void)?
     var onCloseAllTabsInGroup: ((UUID) -> Void)?
@@ -134,13 +130,7 @@ struct MainContentView: View {
                         activeGroupID: windowSession.activeGroupID,
                         activeTabID: activeTabID,
                         sidebarMode: $sidebarMode,
-                        gitChangesState: gitChangesState,
-                        gitEntries: gitEntries,
-                        gitCommits: gitCommits,
-                        expandedCommitIDs: expandedCommitIDs,
-                        commitFiles: commitFiles,
-                        isGitRefreshing: isGitRefreshing,
-                        gitStaleRefreshMessage: gitStaleRefreshMessage,
+                        gitSidebarState: gitSidebarState,
                         onGroupSelected: onGroupSelected,
                         onTabSelected: onTabSelected,
                         onNewGroup: onNewGroup,
@@ -154,6 +144,8 @@ struct MainContentView: View {
                         onRefreshGitStatus: onRefreshGitStatus,
                         onLoadMoreCommits: onLoadMoreCommits,
                         onExpandCommit: onExpandCommit,
+                        onToggleGitRepoSection: onToggleGitRepoSection,
+                        onRetryGitRepoSection: onRetryGitRepoSection,
                         onMoveTab: onMoveTab
                     )
                     .frame(width: windowSession.sidebarWidth)

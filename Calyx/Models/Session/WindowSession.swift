@@ -22,14 +22,24 @@ class WindowSession: Identifiable {
     var composeOverlayHeight: CGFloat = 120
     var composeOverlayText: String = ""
     var sidebarMode: SidebarMode = .tabs
+    /// Phase of the Changes sidebar as a whole: `.notLoaded` before the
+    /// first discovery, `.loading` during it, `.loaded` once sections are
+    /// on screen, `.notRepository` when no seed directory is inside a
+    /// repository, and `.error` when discovery itself could not run.
+    /// Per-section state lives in `gitRepoChanges`.
     var gitChangesState: GitChangesState = .notLoaded
-    var gitEntries: [GitFileEntry] = []
-    var gitCommits: [GitCommit] = []
-    var expandedCommitIDs: Set<String> = []
+    /// Commit file lists keyed by full SHA. Global rather than per-repo
+    /// because a commit's file list is identical from every worktree that
+    /// can see it.
     var commitFiles: [String: [CommitFileEntry]] = [:]
     var isGitRefreshing: Bool = false
+    /// Set when repository discovery itself fails while sections are still
+    /// on screen. Per-section failures use `GitRepoChanges.staleRefreshMessage`.
     var gitStaleRefreshMessage: String?
-    var repoRoots: [String: String] = [:]
+    var gitRepoSections: [GitRepoDescriptor] = []
+    var gitRepoChanges: [String: GitRepoChanges] = [:]
+    var gitActiveRepoID: String?
+    var gitExpandedRepoIDs: Set<String> = []
     var sidebarWidth: CGFloat = SidebarLayout.defaultWidth
 
     static let minSidebarWidth: CGFloat = SidebarLayout.minWidth
@@ -151,6 +161,36 @@ class WindowSession: Identifiable {
             return .switchedGroup(groupID: ag.id, tabID: tab.id)
         }
         return .windowShouldClose
+    }
+
+    // MARK: - Git Sections
+
+    /// The Changes state of the section identified by `repoID`.
+    /// `applyGitSections` keeps one entry per displayed section, so every
+    /// section in `gitRepoSections` finds its own.
+    func gitChanges(for repoID: String) -> GitRepoChanges {
+        gitRepoChanges[repoID] ?? GitRepoChanges()
+    }
+
+    /// Installs `sections` as the displayed order. Repo IDs that survive
+    /// keep their loaded data and expansion state, IDs that appear start at
+    /// `.notLoaded`, and every trace of an ID that vanished is dropped,
+    /// including the active selection when it pointed at that ID.
+    func applyGitSections(_ sections: [GitRepoDescriptor]) {
+        let liveIDs = Set(sections.map(\.id))
+
+        var changes: [String: GitRepoChanges] = [:]
+        changes.reserveCapacity(sections.count)
+        for section in sections {
+            changes[section.id] = gitRepoChanges[section.id] ?? GitRepoChanges()
+        }
+
+        gitRepoSections = sections
+        gitRepoChanges = changes
+        gitExpandedRepoIDs.formIntersection(liveIDs)
+        if let activeID = gitActiveRepoID, !liveIDs.contains(activeID) {
+            gitActiveRepoID = nil
+        }
     }
 
     // MARK: - Tab Navigation
