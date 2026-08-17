@@ -1346,6 +1346,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
                 self.requestSave()
             },
             paneTitle: { SurfacePropertyStore.shared.title(for: $0) },
+            paneCwd: { SurfacePropertyStore.shared.cwd(for: $0) },
             onSidebarDragCommitted: { [weak self] in self?.requestSave() },
             onSubmitReview: { [weak self] in
                 guard let self, let tab = self.activeTab else { return }

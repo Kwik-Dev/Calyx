@@ -30,6 +30,11 @@
 //    resolvable focus target and composes to "N/A"
 //  - a native (.hooks) row with no focusSurfaceID composes its label
 //    through its own surfaceID
+//  - a .titleHeuristic-shaped row (AgentEntry.cwd nil, as every
+//    .titleHeuristic entry's is) resolves its cwd line through the
+//    pane's own SurfacePropertyStore-recorded pwd, fed here by a real
+//    NotificationCenter.default.post(.ghosttySetPwd, ...), rather than
+//    falling back to "N/A"
 //
 
 import XCTest
@@ -239,5 +244,35 @@ final class AgentRowPaneTitleTests: XCTestCase {
 
         XCTAssertEqual(label, "Run integration tests",
                        "a native (.hooks) row with no focusSurfaceID must resolve its composed label through its own surfaceID")
+    }
+
+    // MARK: - A titleHeuristic row resolves its cwd through SurfacePropertyStore
+
+    /// `AgentRegistry` never sets `cwd` on a `.titleHeuristic` entry
+    /// (see `AgentRegistry.swift`'s `.titleHeuristic` upsert paths), so
+    /// the row's cwd line can only resolve through the pane's own
+    /// recorded cwd in `SurfacePropertyStore`, fed here by a real
+    /// `NotificationCenter.default.post(.ghosttySetPwd, ...)` exactly as
+    /// `CalyxWindowController` posts it, with no stub or fake standing
+    /// in for the store.
+    func test_cwdLabel_titleHeuristicRow_resolvesThroughSurfacePropertyStorePwd() {
+        let registry = SurfaceRegistry()
+        let surfaceID = UUID()
+        let view = SurfaceView(frame: .zero)
+        registry._testInsert(view: view, id: surfaceID)
+
+        store.startObserving()
+        NotificationCenter.default.post(name: .ghosttySetPwd, object: view, userInfo: ["pwd": "/Users/dev/repo-a"])
+
+        let label = AgentRowDisplay.cwdLabel(
+            entryCwd: nil,
+            source: .titleHeuristic,
+            surfaceID: surfaceID,
+            focusSurfaceID: nil,
+            paneCwd: store.cwd(for:)
+        )
+
+        XCTAssertEqual(label, "repo-a",
+                       "a .titleHeuristic row's cwd line must resolve through the pane's own SurfacePropertyStore-recorded pwd rather than falling back to N/A")
     }
 }
