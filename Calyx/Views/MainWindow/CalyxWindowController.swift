@@ -1346,6 +1346,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
                 self.requestSave()
             },
             paneTitle: { SurfacePropertyStore.shared.title(for: $0) },
+            paneCwd: { SurfacePropertyStore.shared.cwd(for: $0) },
             onSidebarDragCommitted: { [weak self] in self?.requestSave() },
             onSubmitReview: { [weak self] in
                 guard let self, let tab = self.activeTab else { return }
@@ -3302,7 +3303,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// the default" convention). `refreshHostingView()` is required (not
     /// automatic — see this file's own "mutate observable state, then
     /// explicitly refresh" convention on `refreshRecoveryBar()`'s doc
-    /// comment): the TabBar/Sidebar read `titleOverride ?? title`.
+    /// comment): the TabBar/Sidebar read `tab.displayTitle`.
     /// `requestSave()` persists it into `TabSnapshot.titleOverride`.
     func processSetTabTitle(tab: Tab, title: String) {
         tab.titleOverride = title.isEmpty ? nil : title
@@ -3318,12 +3319,12 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// `.ghosttyCopyTitleToClipboard` (`GHOSTTY_ACTION_COPY_TITLE_TO_CLIPBOARD`)
-    /// receiver. Copies `tab.titleOverride ?? tab.title` via
-    /// `clipboardWriter`, writing nothing when that resolved title is
-    /// empty (an empty clipboard write would silently clobber whatever
-    /// the user last copied, for no useful payload).
+    /// receiver. Copies `tab.displayTitle` via `clipboardWriter`, writing
+    /// nothing when that resolved title is empty (an empty clipboard write
+    /// would silently clobber whatever the user last copied, for no
+    /// useful payload).
     func processCopyTitleToClipboard(tab: Tab) {
-        let resolvedTitle = tab.titleOverride ?? tab.title
+        let resolvedTitle = tab.displayTitle
         guard !resolvedTitle.isEmpty else { return }
         clipboardWriter.copyToClipboard(resolvedTitle)
     }
@@ -4633,12 +4634,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// Agents sidebar row click — each window's controller independently
     /// checks its own `windowSession`, so only the owning window acts.
     private func findTab(surfaceID: UUID) -> Tab? {
-        for group in windowSession.groups {
-            for tab in group.tabs where tab.registry.contains(surfaceID) {
-                return tab
-            }
-        }
-        return nil
+        windowSession.groups.tabAndGroup(owningSurface: surfaceID)?.tab
     }
 
     /// Whether THIS window's `windowSession` owns `surfaceID` -- backs
@@ -4769,12 +4765,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// `WindowSession.removeTab(id:fromGroup:)` when a persistent
     /// session's pane closes and empties the tab's split tree.
     private func findTabAndGroup(surfaceID: UUID) -> (Tab, TabGroup)? {
-        for group in windowSession.groups {
-            for tab in group.tabs where tab.registry.contains(surfaceID) {
-                return (tab, group)
-            }
-        }
-        return nil
+        windowSession.groups.tabAndGroup(owningSurface: surfaceID)
     }
 
     private var focusedController: GhosttySurfaceController? {
@@ -5794,7 +5785,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
             let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
             for (i, tab) in agentTabs.enumerated() {
                 let groupName = windowSession.groups.first { $0.tabs.contains { $0.id == tab.id } }?.name ?? ""
-                let label = "\(tab.titleOverride ?? tab.title) — \(groupName) (#\(i + 1))"
+                let label = "\(tab.displayTitle) — \(groupName) (#\(i + 1))"
                 popup.addItem(withTitle: label)
             }
             alert.accessoryView = popup

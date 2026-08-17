@@ -354,7 +354,7 @@ private struct TabItemButton: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
-        let visibleTitle = tab.titleOverride ?? tab.title
+        let visibleTitle = tab.displayTitle
         let closeIsActive = (isHovering || isActive) && !isEditing
 
         // AppKit-native click container. The hosting NSView owns the

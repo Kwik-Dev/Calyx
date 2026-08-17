@@ -14,15 +14,22 @@
 //    trimming of decoration glyphs or bracketed prefixes an agent CLI
 //    writes into a pane title; falls back to "N/A" for a nil, empty, or
 //    whitespace-only title
-//  - cwdLabel: returns AgentRegistry.basename(cwd) unchanged, including
-//    its empty-string result for a nil or empty cwd
+//  - cwdLabel: returns AgentRegistry.basename(cwd) unchanged for a
+//    non-empty basename; falls back to "N/A" for a nil or empty cwd,
+//    matching primaryLabel's own fallback
+//  - cwdLabel(entryCwd:source:surfaceID:focusSurfaceID:paneCwd:): mirrors
+//    primaryLabel(source:surfaceID:focusSurfaceID:paneTitle:)'s
+//    composition exactly. A non-empty entryCwd wins outright and
+//    paneCwd is never consulted; a nil or empty entryCwd falls back to
+//    the basename of paneCwd(focusTarget). focusTarget comes from the
+//    same AgentRowFocusTarget.resolve primaryLabel's composed overload
+//    uses; an .external row reaches paneCwd only through
+//    focusSurfaceID, never its own (herdr) surfaceID
 //  - subtitle: kind label per agent kind, plus a " via herdr" suffix
 //    for an .external source
-//  - tooltip: title/cwdLabel/subtitle newline-joined in that order when
-//    all three are present; an empty cwdLabel is omitted entirely (no
-//    blank line), not left as a blank line; every string is passed
-//    through verbatim, including non-ASCII characters and the " via
-//    herdr" suffix
+//  - tooltip: title/cwdLabel/subtitle newline-joined in that order,
+//    always three lines; every string is passed through verbatim,
+//    including non-ASCII characters and the " via herdr" suffix
 //  - unreadAccessibilityValue: empty string for a non-positive count,
 //    mirroring the `entry.unreadCount > 0` guard the row wraps
 //    UnreadCountBadge in; "N unread" for 1...99; capped at "99+ unread"
@@ -86,12 +93,219 @@ final class AgentRowDisplayTests: XCTestCase {
         XCTAssertEqual(AgentRowDisplay.cwdLabel(cwd: "/Users/dev/repo-a"), "repo-a")
     }
 
-    func test_cwdLabel_nilCwd_returnsEmptyString() {
-        XCTAssertEqual(AgentRowDisplay.cwdLabel(cwd: nil), "")
+    func test_cwdLabel_nilCwd_returnsNA() {
+        XCTAssertEqual(AgentRowDisplay.cwdLabel(cwd: nil), "N/A")
     }
 
-    func test_cwdLabel_emptyCwd_returnsEmptyString() {
-        XCTAssertEqual(AgentRowDisplay.cwdLabel(cwd: ""), "")
+    func test_cwdLabel_emptyCwd_returnsNA() {
+        XCTAssertEqual(AgentRowDisplay.cwdLabel(cwd: ""), "N/A")
+    }
+
+    /// Pins that `cwdLabel` and `primaryLabel` share the exact same
+    /// fallback string for their respective unresolvable inputs, so the
+    /// two rules cannot silently diverge into two different "missing
+    /// value" spellings.
+    func test_cwdLabel_and_primaryLabel_shareTheSameFallbackString() {
+        let cwdFallback = AgentRowDisplay.cwdLabel(cwd: nil)
+        let titleFallback = AgentRowDisplay.primaryLabel(title: nil)
+
+        XCTAssertEqual(cwdFallback, "N/A")
+        XCTAssertEqual(titleFallback, "N/A")
+        XCTAssertEqual(cwdFallback, titleFallback)
+    }
+
+    // MARK: - cwdLabel(entryCwd:source:surfaceID:focusSurfaceID:paneCwd:)
+
+    /// entryCwd wins whenever non-empty: paneCwd must not be consulted
+    /// at all, proven by recording every invocation rather than only
+    /// asserting the returned string -- an implementation that calls
+    /// paneCwd and discards its result would still pass a
+    /// return-value-only assertion.
+    func test_cwdLabel_composed_entryCwdNonEmpty_returnsBasenameWithoutConsultingPaneCwd() {
+        var paneCwdInvocations: [UUID] = []
+        let paneCwd: (UUID) -> String? = { id in
+            paneCwdInvocations.append(id)
+            return "/should/not/be/used"
+        }
+
+        let result = AgentRowDisplay.cwdLabel(
+            entryCwd: "/Users/dev/repo-a",
+            source: .hooks,
+            surfaceID: UUID(),
+            focusSurfaceID: nil,
+            paneCwd: paneCwd
+        )
+
+        XCTAssertEqual(result, "repo-a")
+        XCTAssertEqual(paneCwdInvocations, [],
+                       "paneCwd must not be consulted at all when entryCwd is non-empty")
+    }
+
+    /// A nil entryCwd falls back to paneCwd(focusTarget) -- for a
+    /// .hooks row with no focusSurfaceID, the focus target is the row's
+    /// own surfaceID. paneCwd distinguishes surfaceID from an unrelated
+    /// id so this fails if the implementation resolves the wrong target.
+    func test_cwdLabel_composed_entryCwdNil_returnsBasenameOfPaneCwdAtFocusTarget() {
+        let surfaceID = UUID()
+        let unrelatedID = UUID()
+        let paneCwd: (UUID) -> String? = { id in
+            switch id {
+            case surfaceID: return "/Users/dev/live-pane-cwd"
+            case unrelatedID: return "/should/not/be/used/unrelated-cwd"
+            default: return nil
+            }
+        }
+
+        let result = AgentRowDisplay.cwdLabel(
+            entryCwd: nil,
+            source: .hooks,
+            surfaceID: surfaceID,
+            focusSurfaceID: nil,
+            paneCwd: paneCwd
+        )
+
+        XCTAssertEqual(result, "live-pane-cwd",
+                       "a .hooks row with no focusSurfaceID must resolve its cwd through its own surfaceID")
+    }
+
+    /// An empty entryCwd must be treated exactly like nil -- falling
+    /// back to paneCwd -- not returned as an empty basename.
+    func test_cwdLabel_composed_entryCwdEmpty_returnsBasenameOfPaneCwdAtFocusTarget() {
+        let surfaceID = UUID()
+        let paneCwd: (UUID) -> String? = { id in
+            id == surfaceID ? "/Users/dev/live-pane-cwd" : nil
+        }
+
+        let result = AgentRowDisplay.cwdLabel(
+            entryCwd: "",
+            source: .hooks,
+            surfaceID: surfaceID,
+            focusSurfaceID: nil,
+            paneCwd: paneCwd
+        )
+
+        XCTAssertEqual(result, "live-pane-cwd",
+                       "an empty entryCwd must fall back to paneCwd exactly like a nil entryCwd")
+    }
+
+    /// entryCwd nil and paneCwd's resolved value also nil: both halves
+    /// are unresolvable, so the fallback is "N/A".
+    func test_cwdLabel_composed_entryCwdNilAndPaneCwdNil_returnsNA() {
+        let paneCwd: (UUID) -> String? = { _ in nil }
+
+        let result = AgentRowDisplay.cwdLabel(
+            entryCwd: nil,
+            source: .hooks,
+            surfaceID: UUID(),
+            focusSurfaceID: nil,
+            paneCwd: paneCwd
+        )
+
+        XCTAssertEqual(result, "N/A")
+    }
+
+    /// Same as above for the empty-string spelling of "unresolvable" on
+    /// both sides -- an empty paneCwd result must reach the same "N/A"
+    /// fallback as a nil one, not an empty basename.
+    func test_cwdLabel_composed_entryCwdEmptyAndPaneCwdEmpty_returnsNA() {
+        let paneCwd: (UUID) -> String? = { _ in "" }
+
+        let result = AgentRowDisplay.cwdLabel(
+            entryCwd: "",
+            source: .hooks,
+            surfaceID: UUID(),
+            focusSurfaceID: nil,
+            paneCwd: paneCwd
+        )
+
+        XCTAssertEqual(result, "N/A")
+    }
+
+    /// Pins the same focus-target resolution primaryLabel's composed
+    /// overload uses: an .external row's own surfaceID is a herdr pane
+    /// id, never resolvable in paneCwd, so only focusSurfaceID can reach
+    /// the bridging Calyx surface's recorded cwd. The two ids carry
+    /// different cwd values so this fails if the implementation
+    /// wrongly passes surfaceID instead of the resolved focus target.
+    func test_cwdLabel_composed_externalRow_resolvesThroughFocusSurfaceIDNotOwnSurfaceID() {
+        let herdrPaneID = UUID()
+        let calyxSurfaceID = UUID()
+        let paneCwd: (UUID) -> String? = { id in
+            switch id {
+            case herdrPaneID: return "/should/not/be/used/herdr-pane-cwd"
+            case calyxSurfaceID: return "/Users/dev/bridged-surface-cwd"
+            default: return nil
+            }
+        }
+
+        let result = AgentRowDisplay.cwdLabel(
+            entryCwd: nil,
+            source: .external,
+            surfaceID: herdrPaneID,
+            focusSurfaceID: calyxSurfaceID,
+            paneCwd: paneCwd
+        )
+
+        XCTAssertEqual(result, "bridged-surface-cwd",
+                       "an .external row must reach its cwd through focusSurfaceID -- reading the entry's own surfaceID instead would return \"herdr-pane-cwd\"")
+    }
+
+    /// An unbridged herdr row (.external source, no focusSurfaceID) has
+    /// no resolvable focus target at all, so it falls back to "N/A"
+    /// rather than resolving through its own (herdr) surfaceID.
+    func test_cwdLabel_composed_externalRowNoFocusSurfaceID_returnsNA() {
+        let herdrPaneID = UUID()
+        let paneCwd: (UUID) -> String? = { id in
+            id == herdrPaneID ? "/should/not/be/used/herdr-pane-cwd" : nil
+        }
+
+        let result = AgentRowDisplay.cwdLabel(
+            entryCwd: nil,
+            source: .external,
+            surfaceID: herdrPaneID,
+            focusSurfaceID: nil,
+            paneCwd: paneCwd
+        )
+
+        XCTAssertEqual(result, "N/A",
+                       "an unbridged .external row must fall back to N/A rather than resolving through its own herdr surfaceID")
+    }
+
+    /// A trailing slash on entryCwd must not survive into the basename
+    /// -- basename derivation must stay AgentRegistry.basename, not a
+    /// separately reimplemented split.
+    func test_cwdLabel_composed_entryCwdTrailingSlash_returnsBasenameWithoutTrailingSlash() {
+        let paneCwd: (UUID) -> String? = { _ in nil }
+
+        let result = AgentRowDisplay.cwdLabel(
+            entryCwd: "/Users/dev/repo-a/",
+            source: .hooks,
+            surfaceID: UUID(),
+            focusSurfaceID: nil,
+            paneCwd: paneCwd
+        )
+
+        XCTAssertEqual(result, "repo-a")
+    }
+
+    /// A single-segment (no path separator) paneCwd value passes
+    /// through basename unchanged, matching AgentRegistry.basename's own
+    /// single-segment behavior.
+    func test_cwdLabel_composed_paneCwdSingleSegment_returnsBasenameUnchanged() {
+        let surfaceID = UUID()
+        let paneCwd: (UUID) -> String? = { id in
+            id == surfaceID ? "repo-a" : nil
+        }
+
+        let result = AgentRowDisplay.cwdLabel(
+            entryCwd: nil,
+            source: .hooks,
+            surfaceID: surfaceID,
+            focusSurfaceID: nil,
+            paneCwd: paneCwd
+        )
+
+        XCTAssertEqual(result, "repo-a")
     }
 
     // MARK: - subtitle
@@ -150,15 +364,16 @@ final class AgentRowDisplayTests: XCTestCase {
     }
 
     /// Asserts on the exact composed string, not just the line count --
-    /// a stray blank line between title and subtitle (e.g. an
-    /// unconditional cwd line joined as an empty string) would still
-    /// produce two visible lines of TEXT but a third, blank line in the
-    /// string, which a line-count-only assertion would miss.
-    func test_tooltip_emptyCwdLabel_omitsCwdLineWithNoBlankLine() {
+    /// `tooltip` joins whatever `cwdLabel` string it's given
+    /// unconditionally, with no emptiness special-casing of its own, so
+    /// an empty `cwdLabel` still produces three newline-joined lines
+    /// with a blank middle line, not two lines with the cwd line
+    /// dropped.
+    func test_tooltip_emptyCwdLabel_stillJoinsThreeLines() {
         let result = AgentRowDisplay.tooltip(title: "Refactor billing service", cwdLabel: "", subtitle: "Claude Code")
 
-        XCTAssertEqual(result, "Refactor billing service\nClaude Code",
-                       "an empty cwdLabel must be omitted entirely, not joined in as a blank line between title and subtitle")
+        XCTAssertEqual(result, "Refactor billing service\n\nClaude Code",
+                       "an empty cwdLabel must still be joined as the middle line, not dropped -- tooltip performs no emptiness check of its own")
     }
 
     /// Reuses the same non-ASCII title as

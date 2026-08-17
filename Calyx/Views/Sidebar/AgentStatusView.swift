@@ -23,6 +23,12 @@ struct AgentStatusView: View {
     /// defaulted: a host that forgets to wire this fails to build rather
     /// than silently rendering every row "N/A".
     var paneTitle: (UUID) -> String?
+    /// Resolves the pane's own recorded cwd (`SurfacePropertyStore
+    /// .cwd(for:)`, threaded down from `CalyxWindowController`), passed
+    /// down to each `AgentRowView` for its cwd line. Required, not
+    /// defaulted: a host that forgets to wire this fails to build rather
+    /// than silently rendering every row's cwd line "N/A".
+    var paneCwd: (UUID) -> String?
 
     var body: some View {
         content
@@ -95,7 +101,7 @@ struct AgentStatusView: View {
                                     VStack(spacing: 0) {
                                         VStack(spacing: 4) {
                                             ForEach(entries) { entry in
-                                                AgentRowView(entry: entry, now: context.date, paneTitle: paneTitle)
+                                                AgentRowView(entry: entry, now: context.date, paneTitle: paneTitle, paneCwd: paneCwd)
                                             }
                                         }
                                         .padding(.horizontal, 8)
@@ -323,6 +329,11 @@ private struct AgentRowView: View {
     /// primary label source. Passed down from `AgentStatusView`'s own
     /// `paneTitle`.
     let paneTitle: (UUID) -> String?
+    /// Resolves the pane's own recorded cwd (`SurfacePropertyStore
+    /// .cwd(for:)`) for the surface `focusTarget` names, this row's cwd
+    /// line fallback when `entry.cwd` is `nil`/empty. Passed down from
+    /// `AgentStatusView`'s own `paneCwd`.
+    let paneCwd: (UUID) -> String?
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.controlActiveState) private var controlActiveState
@@ -359,11 +370,20 @@ private struct AgentRowView: View {
     }
 
     /// The row's second line: the pane's working directory basename.
-    /// Delegates to `AgentRowDisplay.cwdLabel` so the derivation exists
-    /// in exactly one place, directly testable without mounting this
-    /// view.
+    /// Delegates to `AgentRowDisplay.cwdLabel(entryCwd:source:surfaceID:
+    /// focusSurfaceID:paneCwd:)` so the derivation -- including the
+    /// fallback to the pane's live cwd for a `.titleHeuristic` row
+    /// (always created with `cwd: nil`) or a fresh `.mcpConnection`
+    /// row -- exists in exactly one place, directly testable without
+    /// mounting this view.
     private var cwdLabel: String {
-        AgentRowDisplay.cwdLabel(cwd: entry.cwd)
+        AgentRowDisplay.cwdLabel(
+            entryCwd: entry.cwd,
+            source: entry.source,
+            surfaceID: entry.surfaceID,
+            focusSurfaceID: entry.focusSurfaceID,
+            paneCwd: paneCwd
+        )
     }
 
     /// The row's third line. Delegates to `AgentRowDisplay.subtitle`
@@ -460,17 +480,10 @@ private struct AgentRowView: View {
                 Text(title)
                     .font(.system(size: 12.5, weight: .semibold, design: .rounded))
                     .lineLimit(1)
-                // Omitted entirely for an empty cwd (`.titleHeuristic`
-                // and fresh `.mcpConnection` rows routinely have
-                // `cwd: nil`) rather than rendered as a blank `Text` --
-                // an empty string still reserves its line's full height,
-                // which would leave a blank gap mid-row.
-                if !cwdLabel.isEmpty {
-                    Text(cwdLabel)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+                Text(cwdLabel)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 Text(subtitle)
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
@@ -569,9 +582,40 @@ enum AgentRowDisplay {
     /// The Agents sidebar row's second line: the pane's working
     /// directory basename. Reuses `AgentRegistry.basename` rather than
     /// re-deriving it, so the basename logic exists in exactly one
-    /// place.
+    /// place. `"N/A"` for a `nil` or empty `cwd` (an empty basename),
+    /// matching `primaryLabel(title:)`'s own fallback.
     static func cwdLabel(cwd: String?) -> String {
-        AgentRegistry.basename(cwd)
+        let basename = AgentRegistry.basename(cwd)
+        guard !basename.isEmpty else { return "N/A" }
+        return basename
+    }
+
+    /// The Agents sidebar row's second line, composed end to end from an
+    /// entry's own `cwd` plus a live pane cwd lookup -- mirrors
+    /// `primaryLabel(source:surfaceID:focusSurfaceID:paneTitle:)`'s
+    /// composition shape. `entryCwd` wins outright whenever non-empty
+    /// (`paneCwd` is never called in that case); a `nil` or empty
+    /// `entryCwd` falls back to `paneCwd` at the surface resolved by
+    /// `AgentRowFocusTarget.resolve(source:surfaceID:focusSurfaceID:)`,
+    /// the same resolution `primaryLabel`'s composed overload uses, so a
+    /// `.titleHeuristic` row (always created with `cwd: nil`) or a fresh
+    /// `.mcpConnection` row still reaches its pane's live cwd, and a bridged
+    /// `.external` row reaches it through `focusSurfaceID` rather than
+    /// its own (herdr) `surfaceID`. Delegates to `cwdLabel(cwd:)` for the
+    /// basename derivation and the `"N/A"` fallback rather than
+    /// duplicating either.
+    static func cwdLabel(
+        entryCwd: String?,
+        source: AgentSource,
+        surfaceID: UUID,
+        focusSurfaceID: UUID?,
+        paneCwd: (UUID) -> String?
+    ) -> String {
+        if let entryCwd, !entryCwd.isEmpty {
+            return cwdLabel(cwd: entryCwd)
+        }
+        let focusTarget = AgentRowFocusTarget.resolve(source: source, surfaceID: surfaceID, focusSurfaceID: focusSurfaceID)
+        return cwdLabel(cwd: focusTarget.flatMap(paneCwd))
     }
 
     /// The Agents sidebar row's third line: `AgentEntry
@@ -592,18 +636,13 @@ enum AgentRowDisplay {
     }
 
     /// The Agents sidebar row's tooltip and accessibility-label text:
-    /// `title`, `cwdLabel`, and `subtitle` newline-joined, omitting the
-    /// `cwdLabel` line when it's empty. This conditional must stay
-    /// mirrored with `AgentRowView.rowContent`'s own conditional cwd
-    /// `Text` -- both `AgentRowView`'s `.help` tooltip and its
-    /// `.accessibilityLabel` are built from this function's result, so a
-    /// row's tooltip/label would otherwise claim a cwd line the row
-    /// itself never renders, or drop one it does.
+    /// `title`, `cwdLabel`, and `subtitle` newline-joined, always three
+    /// lines. Both `AgentRowView`'s `.help` tooltip and its
+    /// `.accessibilityLabel` are built from this function's result, and
+    /// `AgentRowView.rowContent` renders the same three lines
+    /// unconditionally, so the two always stay in agreement.
     static func tooltip(title: String, cwdLabel: String, subtitle: String) -> String {
-        var lines = [title]
-        if !cwdLabel.isEmpty { lines.append(cwdLabel) }
-        lines.append(subtitle)
-        return lines.joined(separator: "\n")
+        [title, cwdLabel, subtitle].joined(separator: "\n")
     }
 
     /// The Agents sidebar row's `.accessibilityValue`: the unread count

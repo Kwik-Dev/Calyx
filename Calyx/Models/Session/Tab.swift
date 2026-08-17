@@ -44,6 +44,13 @@ class Tab: Identifiable {
     let id: UUID
     var title: String
     var titleOverride: String?
+    /// The title to show for this tab: `titleOverride` when set, otherwise
+    /// `title`. Every UI surface that displays this tab's name (tab bar,
+    /// sidebar, window title, clipboard copy) must resolve it through this
+    /// precedence rather than reading `titleOverride`/`title` directly.
+    var displayTitle: String {
+        titleOverride ?? title
+    }
     var pwd: String?
     var splitTree: SplitTree
     var content: TabContent
