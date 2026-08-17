@@ -22,6 +22,8 @@ struct BrowserContainerView: View {
 private struct BrowserToolbarView: View {
     let controller: BrowserTabController
 
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
     var body: some View {
         HStack(spacing: 8) {
             Button(action: { controller.goBack() }) {
@@ -55,7 +57,7 @@ private struct BrowserToolbarView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
-        .glassEffect(.regular, in: .rect(cornerRadius: 0))
+        .modifier(RecoveryBarBackgroundModifier(reduceTransparency: reduceTransparency))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AccessibilityID.Browser.toolbar)
     }
@@ -65,6 +67,8 @@ private struct BrowserToolbarView: View {
 
 private struct ErrorBannerView: View {
     let message: String
+
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
         HStack {
@@ -78,6 +82,7 @@ private struct ErrorBannerView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .background(Color.red.opacity(0.15))
+        .modifier(RecoveryBarBackgroundModifier(reduceTransparency: reduceTransparency))
         .accessibilityIdentifier(AccessibilityID.Browser.errorBanner)
     }
 }

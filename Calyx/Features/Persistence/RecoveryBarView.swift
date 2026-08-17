@@ -45,48 +45,25 @@ struct RecoveryBarView: View {
     }
 }
 
-/// Same glass-chrome treatment as `TabBarContentView`'s own
-/// `TabBarBackgroundModifier` (the closest existing precedent: another
-/// horizontal bar sitting directly above/adjacent to the tab strip,
-/// bottom-edge-separated from what follows it) -- ties this bar's
-/// look to the user's theme color + glass opacity instead of a fixed
-/// `.thinMaterial`, so it reads as part of the window chrome rather
-/// than a foreign overlay.
+/// Ties a chrome bar's text/button colors to the user's theme color and
+/// glass opacity rather than a fixed `.thinMaterial`, so it reads as
+/// part of the window chrome. Applies no `.glassEffect` of its own:
+/// `MainContentView`'s single root glass sheet (one `.background` with
+/// `.ignoresSafeArea()`, covering the whole window) already paints
+/// through wherever this modifier is applied, using the same
+/// `GlassTheme.chromeTint(...)` formula as `chromeScheme` below. A
+/// second `.glassEffect` here would stack a second tint pass on top of
+/// that one, reading visibly darker than the single-pass chrome around
+/// it. This modifier supplies legibility handling only; the glass
+/// surface itself comes from the root sheet.
 ///
-/// Deliberately does NOT apply its own `.glassEffect(...)` tint pass
-/// (unlike `TabBarBackgroundModifier`/`SidebarBackgroundModifier`,
-/// which do): this bar is hosted via `mainContent.safeAreaInset(edge:
-/// .top)` in `MainContentView`, and `mainContent`'s own titlebar-glass
-/// overlay (the `GeometryReader`-sized rect further down in that file)
-/// sizes itself from `geo.safeAreaInsets.top`, which now spans BOTH the
-/// real titlebar height AND this bar's own height while it's shown --
-/// so that overlay's single glassEffect tint pass already paints
-/// straight through this bar's strip with the exact same
-/// `GlassTheme.chromeTint(...)` formula used below. Adding a second
-/// `.glassEffect` here stacked two passes of the identical tint in this
-/// one strip, reading visibly darker than the single-pass chrome above
-/// and below it (user-reported). This modifier now only supplies
-/// text/button legibility handling; the glass surface itself is
-/// inherited from `mainContent`.
+/// The glass path has no bottom stroke of its own, since it stays
+/// seamless with the root sheet by construction; the reduceTransparency
+/// path keeps its `Divider()`, since that flat mode has no shared glass
+/// surface to stay seamless with.
 ///
-/// Also deliberately has no bottom stroke in the glass path (unlike
-/// TabBarBackgroundModifier's own bottom stroke, which sits between the
-/// tab strip and the pane content below it): since this bar shares one
-/// continuous glass surface with the titlebar above AND the tab strip
-/// below (see above), a stroke on only one of its two edges read as an
-/// inconsistency (user-reported) -- the titlebar side already connects
-/// seamlessly, so the bar's own bottom edge should too. The
-/// reduceTransparency path keeps its plain `Divider()`: that flat,
-/// non-glass mode has no shared surface to stay seamless with, so it
-/// still needs an explicit separator.
-///
-/// Reused as-is by `ApprovalBannerView` (Cockpit P2): both bars are
-/// hosted inside the same `MainContentView.body`'s `safeAreaInset(edge:
-/// .top)` VStack, sharing the identical continuous glass surface this
-/// modifier's own doc comment above describes -- widened from `private`
-/// to internal for that reuse, despite the RecoveryBar-specific name
-/// (only two usages so far; see this codebase's rule-of-three
-/// convention for why this isn't extracted further/renamed yet).
+/// Reused by `ApprovalBannerView`, `BrowserContainerView`'s toolbar,
+/// and its `ErrorBannerView`, all hosted on the same root sheet.
 struct RecoveryBarBackgroundModifier: ViewModifier {
     let reduceTransparency: Bool
     @AppStorage("terminalGlassOpacity") private var glassOpacity = 0.7

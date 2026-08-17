@@ -105,26 +105,22 @@ struct TabChromeModifier: ViewModifier {
     }
 }
 
-/// Overlays a saturation-boosted, theme-derived tint when the window is not key,
-/// matching Ghostty's inactive-window dimming (ported from TerminalViewContainer.swift).
+/// Overlays a theme-derived tint (hue, saturation, and brightness carried
+/// through unchanged) when the window is not key, matching Ghostty's
+/// inactive-window dimming (ported from TerminalViewContainer.swift).
+/// The tint renders into the modified view's own `.background`: it covers exactly
+/// the host view's frame (coverage is set by what you attach it to, not by options
+/// here), and the glass or flat fill it dims must be chained after it so the tint
+/// sits in front of that fill, not behind it.
 struct GlassInactiveTintModifier: ViewModifier {
     let themeColor: NSColor
     let glassOpacity: Double
-    /// Extra leading inset (negative values bleed the tint past this view's
-    /// own leading edge) to close hairline gaps at seams between adjacent
-    /// tinted surfaces. Defaults to 0 (no bleed, matches the tint's own bounds).
-    var leadingBleed: CGFloat = 0
-    /// Keeps the inactive tint out of a surface's bottom overlap without
-    /// changing the surface's layout or glass-effect bounds.
-    var bottomInset: CGFloat = 0
     @Environment(\.controlActiveState) private var controlActiveState
 
     func body(content: Content) -> some View {
         content.background(
             Color(nsColor: GlassTheme.inactiveOverlayColor(for: themeColor))
                 .opacity(controlActiveState == .key ? 0 : GlassTheme.inactiveOverlayOpacity(for: glassOpacity))
-                .padding(.leading, leadingBleed)
-                .padding(.bottom, bottomInset)
                 .allowsHitTesting(false)
         )
     }

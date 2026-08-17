@@ -130,8 +130,9 @@ struct AgentStatusView: View {
     /// visible for as long as it remains unresolved. Rendered as plain,
     /// quiet text -- no icon, no background -- matching
     /// `disabledPlaceholder` / `emptyPlaceholder` below rather than a
-    /// designed warning box, so nothing opaque paints over the sidebar's
-    /// `.glassEffect` chrome.
+    /// designed warning box, so nothing opaque paints over
+    /// `MainContentView`'s single root glass sheet showing through the
+    /// sidebar.
     private func hooksIssuesBanner(_ issues: [String]) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Some agent hooks failed to install")
