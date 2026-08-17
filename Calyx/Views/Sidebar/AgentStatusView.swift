@@ -17,6 +17,13 @@ struct AgentStatusView: View {
     /// drift the moment row height, spacing, or padding change.
     @State private var rowsHeight: CGFloat = 0
 
+    /// Resolves the pane's own recorded title (`SurfacePropertyStore
+    /// .title(for:)`, threaded down from `CalyxWindowController`), passed
+    /// down to each `AgentRowView` for its primary label. Required, not
+    /// defaulted: a host that forgets to wire this fails to build rather
+    /// than silently rendering every row "N/A".
+    var paneTitle: (UUID) -> String?
+
     var body: some View {
         content
             // Tracks how many windows currently have this view mounted
@@ -88,7 +95,7 @@ struct AgentStatusView: View {
                                     VStack(spacing: 0) {
                                         VStack(spacing: 4) {
                                             ForEach(entries) { entry in
-                                                AgentRowView(entry: entry, now: context.date)
+                                                AgentRowView(entry: entry, now: context.date, paneTitle: paneTitle)
                                             }
                                         }
                                         .padding(.horizontal, 8)
@@ -310,6 +317,11 @@ private struct AgentRowView: View {
     /// label, supplied by the enclosing `TimelineView` so it stays live
     /// without this row managing its own timer.
     let now: Date
+    /// Resolves the pane's own recorded title (`SurfacePropertyStore
+    /// .title(for:)`) for the surface `focusTarget` names, this row's
+    /// primary label source. Passed down from `AgentStatusView`'s own
+    /// `paneTitle`.
+    let paneTitle: (UUID) -> String?
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.controlActiveState) private var controlActiveState
@@ -330,14 +342,30 @@ private struct AgentRowView: View {
         }
     }
 
-    /// The row's primary label. Delegates to `AgentRowDisplay.primaryLabel`
-    /// so the derivation exists in exactly one place, directly testable
+    /// The row's primary label: the pane's own recorded title. Delegates
+    /// to `AgentRowDisplay.primaryLabel(source:surfaceID:focusSurfaceID:
+    /// paneTitle:)` so the derivation -- including the focus-target
+    /// resolution that reaches a bridged herdr row's title through
+    /// `focusSurfaceID` -- exists in exactly one place, directly testable
     /// without mounting this view.
     private var displayName: String {
-        AgentRowDisplay.primaryLabel(cwd: entry.cwd, kind: entry.kind)
+        AgentRowDisplay.primaryLabel(
+            source: entry.source,
+            surfaceID: entry.surfaceID,
+            focusSurfaceID: entry.focusSurfaceID,
+            paneTitle: paneTitle
+        )
     }
 
-    /// The row's secondary label. Delegates to `AgentRowDisplay.subtitle`
+    /// The row's second line: the pane's working directory basename.
+    /// Delegates to `AgentRowDisplay.cwdLabel` so the derivation exists
+    /// in exactly one place, directly testable without mounting this
+    /// view.
+    private var cwdLabel: String {
+        AgentRowDisplay.cwdLabel(cwd: entry.cwd)
+    }
+
+    /// The row's third line. Delegates to `AgentRowDisplay.subtitle`
     /// so the derivation exists in exactly one place, directly testable
     /// without mounting this view.
     private var subtitle: String {
@@ -373,9 +401,20 @@ private struct AgentRowView: View {
         // removed, matching how every other purely-informational element
         // in this sidebar (e.g. `hooksIssuesBanner`) already has no
         // hover/tap treatment at all.
+        // `displayName` and its tooltip string are each resolved exactly
+        // once per render, here, and threaded into
+        // `rowContent(title:tooltip:)` and the `.help` modifier below.
+        // `displayName` delegates to `paneTitle`, an injected closure
+        // that ends in a dictionary lookup (`SurfacePropertyStore
+        // .title(for:)`), and the tooltip is built from `resolvedTitle`
+        // plus `cwdLabel`/`subtitle` besides -- resolving both once here
+        // avoids rebuilding either for the row's two consumers of the
+        // tooltip text, `.help` and `.accessibilityLabel`.
+        let resolvedTitle = displayName
+        let resolvedTooltip = AgentRowDisplay.tooltip(title: resolvedTitle, cwdLabel: cwdLabel, subtitle: subtitle)
         Group {
             if let focusTarget {
-                rowContent
+                rowContent(title: resolvedTitle, tooltip: resolvedTooltip)
                     .onAssumeInsideHover($isHovering)
                     .onTapGesture {
                         NotificationCenter.default.post(
@@ -385,9 +424,16 @@ private struct AgentRowView: View {
                         )
                     }
             } else {
-                rowContent
+                rowContent(title: resolvedTitle, tooltip: resolvedTooltip)
             }
         }
+        // The title/cwd/subtitle lines `rowContent` renders are each
+        // `.lineLimit(1)` and can truncate on screen -- the subtitle in
+        // particular truncates with `.truncationMode(.middle)` in a
+        // narrow column -- so the tooltip is how a row's full text is
+        // reached, whether or not the row is clickable. Attached to the
+        // `Group` so both branches of the `if` above get it.
+        .help(resolvedTooltip)
         // `focusTarget` can flip non-nil -> nil at runtime (its bridging
         // Calyx pane closing prunes `focusSurfaceID`), which tears down
         // `.onAssumeInsideHover` above along with it -- AppKit sends no
@@ -401,7 +447,7 @@ private struct AgentRowView: View {
         }
     }
 
-    private var rowContent: some View {
+    private func rowContent(title: String, tooltip: String) -> some View {
         HStack(spacing: 8) {
             // State dot
             Circle()
@@ -410,9 +456,20 @@ private struct AgentRowView: View {
 
             // Name + agent kind
             VStack(alignment: .leading, spacing: 2) {
-                Text(displayName)
+                Text(title)
                     .font(.system(size: 12.5, weight: .semibold, design: .rounded))
                     .lineLimit(1)
+                // Omitted entirely for an empty cwd (`.titleHeuristic`
+                // and fresh `.mcpConnection` rows routinely have
+                // `cwd: nil`) rather than rendered as a blank `Text` --
+                // an empty string still reserves its line's full height,
+                // which would leave a blank gap mid-row.
+                if !cwdLabel.isEmpty {
+                    Text(cwdLabel)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
                 Text(subtitle)
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
@@ -441,7 +498,26 @@ private struct AgentRowView: View {
             }
         }
         .opacity(controlActiveState == .key ? 1.0 : 0.5)
+        // `.combine` merges this row's own Text children into a single
+        // accessibility element whose content VoiceOver announces once --
+        // unlike `.contain`, which keeps each child individually
+        // accessible inside a labelled container and would announce the
+        // row's content once for the container and again as separate
+        // stops for every child. The explicit `.accessibilityLabel`
+        // below then replaces that merged content with `tooltip`
+        // (title/cwd/subtitle), and `.accessibilityValue` separately
+        // surfaces the unread count `UnreadCountBadge` draws, so the row
+        // is exactly one VoiceOver stop carrying both.
+        //
+        // The relative last-event time is deliberately left out of
+        // both: this row sits inside a
+        // `TimelineView(.periodic(from: .now, by: 1))` that re-renders
+        // every second, so a value that changed every second would
+        // re-announce while VoiceOver focus sits on the row.
+        .accessibilityElement(children: .combine)
         .accessibilityIdentifier(AccessibilityID.Sidebar.agentRow(id: entry.id))
+        .accessibilityLabel(tooltip)
+        .accessibilityValue(AgentRowDisplay.unreadAccessibilityValue(count: entry.unreadCount))
     }
 }
 
@@ -452,18 +528,52 @@ private struct AgentRowView: View {
 @MainActor
 enum AgentRowDisplay {
 
-    /// The Agents sidebar row's primary label: the pane's working
-    /// directory basename, or `AgentEntry.displayName(forKind:)` when
-    /// no `cwd` has been reported yet. Reuses `AgentRegistry.basename`
-    /// rather than re-deriving it, so the basename logic exists in
-    /// exactly one place (same reasoning as `AgentRowView.displayName`
-    /// itself already documented).
-    static func primaryLabel(cwd: String?, kind: String) -> String {
-        let basename = AgentRegistry.basename(cwd)
-        return basename.isEmpty ? AgentEntry.displayName(forKind: kind) : basename
+    /// The Agents sidebar row's primary label: the pane's own recorded
+    /// title (`paneTitle`, ultimately `SurfacePropertyStore
+    /// .title(for:)`), returned verbatim -- no stripping, truncation, or
+    /// trimming of whatever an agent CLI wrote into the pane's title.
+    /// `"N/A"` for a `nil`, empty, or whitespace-only title (no
+    /// resolvable pane, a pane whose own title is empty, or a title
+    /// consisting only of whitespace/newlines). The emptiness check
+    /// trims a copy to decide, but the returned string is always the
+    /// original, untrimmed `title` -- a title with real content keeps
+    /// its exact bytes, including any leading/trailing padding.
+    static func primaryLabel(title: String?) -> String {
+        guard let title, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "N/A" }
+        return title
     }
 
-    /// The Agents sidebar row's secondary label: `AgentEntry
+    /// The Agents sidebar row's primary label, composed end to end from
+    /// an entry's own `source`/`surfaceID`/`focusSurfaceID` plus a pane
+    /// title lookup -- the full composition `AgentRowView.displayName`
+    /// performs, hoisted here so it exists in exactly one place, directly
+    /// testable without mounting the view. Resolves the surface to look
+    /// up through `AgentRowFocusTarget.resolve(source:surfaceID:
+    /// focusSurfaceID:)` rather than passing `surfaceID` straight to
+    /// `paneTitle`: an `.external` row's own `surfaceID` is a herdr pane
+    /// id and is never resolvable in the per-surface title store
+    /// `paneTitle` reads from, so a bridged herdr row reaches its title
+    /// only through `focusSurfaceID`. Delegates to `primaryLabel(title:)`
+    /// for the "N/A" fallback rather than duplicating that rule.
+    static func primaryLabel(
+        source: AgentSource,
+        surfaceID: UUID,
+        focusSurfaceID: UUID?,
+        paneTitle: (UUID) -> String?
+    ) -> String {
+        let focusTarget = AgentRowFocusTarget.resolve(source: source, surfaceID: surfaceID, focusSurfaceID: focusSurfaceID)
+        return primaryLabel(title: focusTarget.flatMap(paneTitle))
+    }
+
+    /// The Agents sidebar row's second line: the pane's working
+    /// directory basename. Reuses `AgentRegistry.basename` rather than
+    /// re-deriving it, so the basename logic exists in exactly one
+    /// place.
+    static func cwdLabel(cwd: String?) -> String {
+        AgentRegistry.basename(cwd)
+    }
+
+    /// The Agents sidebar row's third line: `AgentEntry
     /// .displayName(forKind:)`, with a plain `" via herdr"` suffix for
     /// `.external` rows so a row sourced from herdr rather than Calyx's
     /// own hooks/title-heuristic pipeline is distinguishable at a
@@ -478,5 +588,35 @@ enum AgentRowDisplay {
         let kindLabel = AgentEntry.displayName(forKind: kind)
         guard source == .external else { return kindLabel }
         return "\(kindLabel) via herdr"
+    }
+
+    /// The Agents sidebar row's tooltip and accessibility-label text:
+    /// `title`, `cwdLabel`, and `subtitle` newline-joined, omitting the
+    /// `cwdLabel` line when it's empty. This conditional must stay
+    /// mirrored with `AgentRowView.rowContent`'s own conditional cwd
+    /// `Text` -- both `AgentRowView`'s `.help` tooltip and its
+    /// `.accessibilityLabel` are built from this function's result, so a
+    /// row's tooltip/label would otherwise claim a cwd line the row
+    /// itself never renders, or drop one it does.
+    static func tooltip(title: String, cwdLabel: String, subtitle: String) -> String {
+        var lines = [title]
+        if !cwdLabel.isEmpty { lines.append(cwdLabel) }
+        lines.append(subtitle)
+        return lines.joined(separator: "\n")
+    }
+
+    /// The Agents sidebar row's `.accessibilityValue`: the unread count
+    /// `AgentRowView.rowContent` also draws via `UnreadCountBadge`,
+    /// spoken so the row's most actionable fact survives the
+    /// `.accessibilityLabel(tooltip)` override on the same element.
+    /// Mirrors `UnreadCountBadge`'s two rules exactly, so the spoken
+    /// value can never disagree with the drawn badge: empty (nothing
+    /// announced) for `count <= 0`, matching the `if entry.unreadCount >
+    /// 0` guard `rowContent` wraps `UnreadCountBadge` in; capped at
+    /// `"99+ unread"` for `count > 99`, matching `UnreadCountBadge`'s own
+    /// `count > 99 ? "99+" : "\(count)"` digit cap.
+    static func unreadAccessibilityValue(count: Int) -> String {
+        guard count > 0 else { return "" }
+        return count > 99 ? "99+ unread" : "\(count) unread"
     }
 }
