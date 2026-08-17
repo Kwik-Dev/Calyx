@@ -33,6 +33,7 @@
 // there is nothing to step to.
 
 import SwiftUI
+import AppKit
 
 struct ApprovalBannerView: View {
     let model: ApprovalBannerModel
@@ -263,10 +264,51 @@ struct ApprovalBannerView: View {
     /// truncation suffix's leading one -- every C0 control in the input,
     /// U+000A included, comes back as caret notation, and line/paragraph
     /// separators come back as `<U+XXXX>` tokens.
+    /// The finished row is fitted to `menuRowWidth` by
+    /// `fittedToMenuWidth(_:)` rather than left as wide as its character
+    /// count happens to draw.
     private func queueEntryLabel(_ entry: ApprovalBannerModel.QueueEntry) -> String {
         let rendered = ControlCharacterDisplay.render(entry.previewLine).replacingOccurrences(of: "\n", with: " ")
         let label = "\(entry.position). \(rendered)"
-        return entry.isCurrent ? "▸ \(label)" : label
+        let row = entry.isCurrent ? "▸ \(label)" : label
+        return Self.fittedToMenuWidth(row)
+    }
+
+    /// The width, in points, a queue preview menu row is bounded to. A
+    /// character count bounds how wide a row DRAWS only for one script:
+    /// the same count is roughly 560pt of ASCII and roughly 1040pt of
+    /// CJK, so the menu's width swung with whatever the payload happened
+    /// to contain. Measuring in points is what actually bounds it.
+    private static let menuRowWidth: CGFloat = 450
+
+    /// Elides `row` in the MIDDLE until it draws within `menuRowWidth` in
+    /// the menu font, keeping its tail: the end of a path or a command is
+    /// usually what distinguishes one queued request from another, and a
+    /// trailing ellipsis drops exactly that. Binary search for the widest
+    /// kept-`Character` count that fits, appending whole `Character`s
+    /// only so a grapheme cluster is never split.
+    private static func fittedToMenuWidth(_ row: String) -> String {
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.menuFont(ofSize: 0)]
+        func width(_ text: String) -> CGFloat { text.size(withAttributes: attributes).width }
+        guard width(row) > menuRowWidth else { return row }
+
+        let characters = Array(row)
+        func elided(keeping keptCount: Int) -> String {
+            let headCount = (keptCount + 1) / 2
+            return String(characters.prefix(headCount)) + "…" + String(characters.suffix(keptCount - headCount))
+        }
+
+        var low = 0
+        var high = characters.count - 1
+        while low < high {
+            let candidate = (low + high + 1) / 2
+            if width(elided(keeping: candidate)) <= menuRowWidth {
+                low = candidate
+            } else {
+                high = candidate - 1
+            }
+        }
+        return elided(keeping: low)
     }
 
     /// Compact cross-actions menu, shown only for an `.agentHook`-sourced

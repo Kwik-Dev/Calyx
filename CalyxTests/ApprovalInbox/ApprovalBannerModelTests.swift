@@ -1020,17 +1020,16 @@ final class ApprovalBannerModelTests: XCTestCase {
     // MARK: - previewLine (Queue preview menu)
     //
     // ApprovalRequest.previewLine is "\(displayToolName): \(compactTarget)",
-    // where compactTarget takes displayPayload through three steps: (1)
+    // where compactTarget takes displayPayload through two steps: (1)
     // collapse every run of whitespace (including newlines and tabs) into
-    // a single space, (2) trim leading/trailing whitespace, (3) truncate
-    // to a trailing U+2026 ellipsis once step (2)'s result exceeds either
-    // of two caps, 80 Characters or 240 unicode scalars -- for plain ASCII
-    // only the Character cap can bite, so 80 stays intact and 81 becomes
-    // its first 79 plus the ellipsis. An empty compactTarget after steps
-    // (1)-(2) omits the trailing colon entirely, rendering displayToolName
-    // alone. RAW, unescaped -- same caveat as displayToolName/
-    // displayPayload themselves (ControlCharacterDisplay escaping is the
-    // view layer's job, applied later, not here).
+    // a single space, (2) trim leading/trailing whitespace. Its length is
+    // deliberately not capped by a character count: the finished menu row
+    // is bounded in points, and elided in its middle, by
+    // ApprovalBannerView.fittedToMenuWidth(_:). An empty compactTarget
+    // after steps (1)-(2) omits the trailing colon entirely, rendering
+    // displayToolName alone. RAW, unescaped -- same caveat as
+    // displayToolName/displayPayload themselves (ControlCharacterDisplay
+    // escaping is the view layer's job, applied later, not here).
 
     func test_previewLine_agentHookBash_combinesDisplayToolNameAndCommand() throws {
         let request = try agentHookRequest(["command": "npm test"], toolName: "Bash")
@@ -1077,20 +1076,20 @@ final class ApprovalBannerModelTests: XCTestCase {
                        "every run of whitespace, including newlines and tabs, must collapse to exactly one space")
     }
 
-    func test_previewLine_boundaryAt80Characters_notTruncated() {
-        let target = String(repeating: "a", count: 80)
+    func test_previewLine_longTarget_notTruncatedByCharacterCount() {
+        let target = String(repeating: "a", count: 400)
         let request = makeRequest(targetSurfaceID: nil, payload: target)
 
-        XCTAssertEqual(request.previewLine, "pane_run: " + target, "a target of exactly 80 characters must not be truncated")
+        XCTAssertEqual(request.previewLine, "pane_run: " + target,
+                       "previewLine must leave its target's length alone: how long a menu row may be is bounded in points by ApprovalBannerView.fittedToMenuWidth(_:), not by a character count here")
     }
 
-    func test_previewLine_above80Characters_truncatedTo79CharsPlusEllipsis() {
-        let target = String(repeating: "a", count: 81)
-        let expectedTarget = String(repeating: "a", count: 79) + "…"
+    func test_previewLine_longTarget_carriesNoEllipsis() {
+        let target = String(repeating: "a", count: 400)
         let request = makeRequest(targetSurfaceID: nil, payload: target)
 
-        XCTAssertEqual(request.previewLine, "pane_run: " + expectedTarget,
-                       "a target over 80 characters must truncate to its first 79 characters plus a single U+2026 ellipsis")
+        XCTAssertFalse(request.previewLine.contains("…"),
+                       "previewLine must not append an ellipsis of its own: the view elides the row's MIDDLE, and a trailing ellipsis here would be what survives that as the row's tail")
     }
 
     func test_previewLine_emptyTarget_omitsTrailingColon() {
