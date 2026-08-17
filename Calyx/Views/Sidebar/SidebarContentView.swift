@@ -553,7 +553,7 @@ private struct TabRowItemView: View {
     }
 
     private var visibleTitle: String {
-        tab.titleOverride ?? tab.title
+        tab.displayTitle
     }
 
     var body: some View {

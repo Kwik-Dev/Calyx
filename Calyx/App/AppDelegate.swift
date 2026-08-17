@@ -130,14 +130,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let attacher = HerdrNativeTabAttacherLive(
             tabsProvider: { [weak self] in
                 guard let self else { return [] }
-                // Mirrors `focusWindowForExistingSession`'s own
-                // `!controller.isClosingForShutdown` guard: a mid-teardown
-                // window's tabs are about to be torn down or preserved
-                // into a snapshot, never a valid focus target.
-                return self.windowControllers
-                    .filter { !$0.isClosingForShutdown }
-                    .flatMap { $0.windowSession.groups }
-                    .flatMap { $0.tabs }
+                return self.nonClosingWindowGroups.flatMap { $0.group.tabs }
             },
             attachHook: { [weak self] tab in self?.attachHerdrNativeTab(tab) ?? false },
             focusHook: { [weak self] tabID in self?.focusHerdrNativeTab(tabID) },
@@ -736,7 +729,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// leafA:leafB:direction:ratio:)`.
     private func applyHerdrNativeRatioMutation(leafA: UUID, leafB: UUID, direction: SplitDirection, ratio: Double) {
         guard let wc = windowControllers.first(where: { wc in
-            wc.windowSession.groups.contains { $0.tabs.contains { $0.registry.contains(leafA) } }
+            wc.windowSession.groups.tabAndGroup(owningSurface: leafA) != nil
         }) else {
             return
         }
@@ -749,7 +742,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// existing pane-close path for that surface.
     private func closeHerdrNativeLeaf(_ surfaceID: UUID) {
         guard let wc = windowControllers.first(where: { wc in
-            wc.windowSession.groups.contains { $0.tabs.contains { $0.registry.contains(surfaceID) } }
+            wc.windowSession.groups.tabAndGroup(owningSurface: surfaceID) != nil
         }) else {
             return
         }
@@ -1416,6 +1409,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var _focusWindowForExistingSessionShowHookForTesting: ((CalyxWindowController) -> Void)?
     #endif
 
+    /// Every tab group of every window controller that is not mid-teardown
+    /// (`isClosingForShutdown`), each paired with its owning controller. A
+    /// closing window's tabs and surfaces are about to be torn down or
+    /// preserved into a snapshot, so they are never a valid target for
+    /// focus or tab adoption.
+    private var nonClosingWindowGroups: [(controller: CalyxWindowController, group: TabGroup)] {
+        windowControllers
+            .filter { !$0.isClosingForShutdown }
+            .flatMap { controller in controller.windowSession.groups.map { (controller: controller, group: $0) } }
+    }
+
     /// Brings the window already hosting `sessionID`'s live surface
     /// to the front, instead of `attachWindow` creating a second one for
     /// the same session. Returns `true` once a live controller was found
@@ -1435,17 +1439,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// reimplementing containment) before showing the
     /// window, so a session living in a background tab is actually
     /// visible, not just the window with whatever tab happened to
-    /// already be active. Skips any controller mid-teardown
-    /// (`isClosingForShutdown`), since that window's surfaces are about
-    /// to be torn down or preserved into a snapshot, not a valid focus
-    /// target.
+    /// already be active. Searches only `nonClosingWindowGroups`, whose
+    /// own doc comment explains why a mid-teardown controller is never a
+    /// valid focus target.
     private func focusWindowForExistingSession(sessionID: String) -> Bool {
         guard let surfaceID = SessionSurfaceMap.shared.surfaceID(for: sessionID) else { return false }
-        guard let wc = windowControllers.first(where: { controller in
-            !controller.isClosingForShutdown && controller.windowSession.groups.contains { group in
-                group.tabs.contains { $0.registry.contains(surfaceID) }
-            }
-        }) else {
+        guard let wc = nonClosingWindowGroups.first(where: { $0.group.tab(owningSurface: surfaceID) != nil })?.controller else {
             SessionSurfaceMap.shared.unregister(sessionID: sessionID)
             return false
         }

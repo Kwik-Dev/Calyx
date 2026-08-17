@@ -101,4 +101,24 @@ class TabGroup: Identifiable {
         let target = ((fromIndex + amount) % count + count) % count
         moveTab(fromIndex: fromIndex, toIndex: target)
     }
+
+    /// The tab in this group whose `SurfaceRegistry` owns `surfaceID`, or
+    /// `nil` if none of this group's tabs do.
+    func tab(owningSurface surfaceID: UUID) -> Tab? {
+        tabs.first { $0.registry.contains(surfaceID) }
+    }
+}
+
+extension Array where Element == TabGroup {
+    /// The tab (and its owning group) among these groups whose
+    /// `SurfaceRegistry` owns `surfaceID`, or `nil` if none of them do.
+    @MainActor
+    func tabAndGroup(owningSurface surfaceID: UUID) -> (tab: Tab, group: TabGroup)? {
+        for group in self {
+            if let tab = group.tab(owningSurface: surfaceID) {
+                return (tab, group)
+            }
+        }
+        return nil
+    }
 }
