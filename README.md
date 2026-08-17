@@ -50,15 +50,15 @@ Calyx exposes panes, commands, captured output, browser tabs, language servers, 
 
 ### Agent supervision
 
-- **Agents Sidebar** -- live status for Claude Code, Codex, OpenCode, Hermes, Grok, and pi, with unread badges, last-seen timestamps, and click-to-focus navigation
-- **Approval Inbox** -- one opt-in queue across every pane for Claude Code and Codex permission prompts, for the tool calls of always-approve Grok sessions, and for every pi tool call, with Allow, Deny, and per-pane or global session-scoped approval; Claude Code and Codex fall back to the agent's own prompt, while an unanswered Grok or pi request is denied
-- **Approval Queue Navigation** -- inspect and decide pending requests in any order, with automatic navigation to the nearest remaining request
+- **Agents Sidebar** -- live status for Claude Code, Codex, OpenCode, Hermes, Grok, and pi, with every row named after its own pane (title, working directory, agent), unread badges, last-seen timestamps, and click-to-focus navigation
+- **Approval Inbox** -- one opt-in queue across every pane for Claude Code and Codex permission prompts, for the tool calls of always-approve Grok sessions, and for every pi tool call, with Allow, Deny, and per-pane or global session-scoped approval; Claude Code and Codex queue a request only where the CLI would have prompted you itself and fall back to the agent's own prompt, while an unanswered Grok or pi request is denied
+- **Approval Queue Navigation** -- inspect and decide pending requests in any order, with a preview menu on the position label for jumping straight to one, and automatic navigation to the nearest remaining request
 - **Agent Cockpit** -- MCP tools for listing, creating, and splitting panes; commands and keystrokes remain approval-gated unless auto-approve is enabled
 - **Command Log** -- structured commands, working directories, exit status, and captured output exposed to agents through MCP; known secret patterns are redacted before exposure
 
 ### Code review and agent coordination
 
-- **Git Source Control** -- working changes, staging state, commit graph, branch visualization, and inline diffs in the sidebar
+- **Git Source Control** -- working changes, staging state, commit graph, branch visualization, and inline diffs in the sidebar, as one collapsible section per repository the window can reach, including linked worktrees and checked-out submodules
 - **Diff Review Comments** -- comment on individual lines and submit a complete review directly to an agent pane ([demo video](https://www.youtube.com/watch?v=_O2Lr4oFf4c))
 - **AI Agent IPC** -- built-in MCP messaging lets agents discover and communicate with peers across tabs and panes ([demo video](https://www.youtube.com/watch?v=Xty0ad9gGcM))
 - **LSP Proxy MCP** -- hover, definition, references, rename, diagnostics, and other language-server features for agents; missing servers can be installed from Settings
@@ -69,7 +69,7 @@ Calyx exposes panes, commands, captured output, browser tabs, language servers, 
 - **Remote Sessions** -- deploy `calyx-session` once to an SSH host from `~/.ssh/config`, then browse and reattach to remote persistent sessions
 - **Agent Resume** -- offer to resume the agent CLI conversation associated with a reattached session
 - **Layout Restore** -- restore tabs, splits, and working directories on launch
-- **herdr Integration** -- browse and manage herdr workspaces as native split-pane tabs; herdr-hosted agents also appear in the Agents Sidebar
+- **herdr Integration** -- browse and manage herdr workspaces as native split-pane tabs; herdr-hosted agents also appear in the Agents Sidebar, and a row bridged into a Calyx tab focuses that pane on click
 
 ### Terminal workspace
 
@@ -80,7 +80,7 @@ Calyx exposes panes, commands, captured output, browser tabs, language servers, 
 - **Search and Navigation** -- highlighted scrollback search, native overlay scrollbar, smooth trackpad and mouse-wheel scrolling, and prompt-line cursor click-to-move
 - **Input Tools** -- shell-escaped drag and drop, multiline Compose Overlay, clipboard safety confirmation, and Secure Keyboard Entry
 - **Quick Terminal and Notifications** -- a system-wide drop-down terminal plus OSC 9/99/777 desktop notifications
-- **Liquid Glass Appearance** -- macOS 26-native glass UI, eight theme presets, custom colors, and adaptive text color ([demo video](https://www.youtube.com/watch?v=cUYc7yzI_eM))
+- **Liquid Glass Appearance** -- macOS 26-native glass UI drawn as one seamless sheet of window chrome, eight theme presets, custom colors, adaptive text color, and a fully opaque window under Reduce Transparency ([demo video](https://www.youtube.com/watch?v=cUYc7yzI_eM))
 
 ### Browser automation
 
@@ -163,7 +163,7 @@ Config is auto-written to `~/.claude.json`, `~/.codex/config.toml`, `~/.config/o
 
 pi has no MCP client configuration file at all, so it reaches Calyx through a single TypeScript extension written to `~/.pi/agent/extensions/calyx.ts`, which pi auto-loads. It carries the whole integration: the sidebar row, the approval gate, and a `calyx` tool that bridges the MCP tools above (call it with `{"tool": "list"}` to enumerate them). A pi started outside Calyx, or inside a herdr pane, registers nothing.
 
-Known limitation: on a machine where pi is the only supported agent, **Enable AI Agent IPC** stops before the extension is written. It configures the MCP client files first, and none of the tools above own one for pi, so nothing succeeds there and the flow returns early with "No agent configs found". Installing any other supported agent, or writing `~/.pi/agent/extensions/calyx.ts` by hand, works around it.
+Known limitation: on a machine where pi is the only supported agent, **Enable AI Agent IPC** stops before the extension is written. It configures the MCP client files first, and none of the tools above own one for pi, so nothing succeeds there and the flow stops the MCP server and returns early with "No agent configs found". Writing `~/.pi/agent/extensions/calyx.ts` by hand does not work around it, because the extension needs a running server to reach; installing any other supported agent does.
 
 Available MCP tools: `register_peer`, `list_peers`, `send_message`, `broadcast`, `receive_messages`, `get_peer_status`. `receive_messages` deletes each message from the inbox as it returns it, so a message is only ever delivered once.
 
