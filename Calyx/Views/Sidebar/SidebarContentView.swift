@@ -28,6 +28,7 @@ struct SidebarContentView: View {
     var onToggleGitRepoSection: ((String) -> Void)?
     var onRetryGitRepoSection: ((String) -> Void)?
     var onMoveTab: ((UUID, Int, Int) -> Void)?
+    var paneTitle: (UUID) -> String?
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.controlActiveState) private var controlActiveState
@@ -201,7 +202,7 @@ struct SidebarContentView: View {
                 .padding(.top, 10)
 
             case .agents:
-                AgentStatusView()
+                AgentStatusView(paneTitle: paneTitle)
                     .padding(.top, 10)
             }
         }
