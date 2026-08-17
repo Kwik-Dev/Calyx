@@ -14,15 +14,14 @@
 //    trimming of decoration glyphs or bracketed prefixes an agent CLI
 //    writes into a pane title; falls back to "N/A" for a nil, empty, or
 //    whitespace-only title
-//  - cwdLabel: returns AgentRegistry.basename(cwd) unchanged, including
-//    its empty-string result for a nil or empty cwd
+//  - cwdLabel: returns AgentRegistry.basename(cwd) unchanged for a
+//    non-empty basename; falls back to "N/A" for a nil or empty cwd,
+//    matching primaryLabel's own fallback
 //  - subtitle: kind label per agent kind, plus a " via herdr" suffix
 //    for an .external source
-//  - tooltip: title/cwdLabel/subtitle newline-joined in that order when
-//    all three are present; an empty cwdLabel is omitted entirely (no
-//    blank line), not left as a blank line; every string is passed
-//    through verbatim, including non-ASCII characters and the " via
-//    herdr" suffix
+//  - tooltip: title/cwdLabel/subtitle newline-joined in that order,
+//    always three lines; every string is passed through verbatim,
+//    including non-ASCII characters and the " via herdr" suffix
 //  - unreadAccessibilityValue: empty string for a non-positive count,
 //    mirroring the `entry.unreadCount > 0` guard the row wraps
 //    UnreadCountBadge in; "N unread" for 1...99; capped at "99+ unread"
@@ -86,12 +85,25 @@ final class AgentRowDisplayTests: XCTestCase {
         XCTAssertEqual(AgentRowDisplay.cwdLabel(cwd: "/Users/dev/repo-a"), "repo-a")
     }
 
-    func test_cwdLabel_nilCwd_returnsEmptyString() {
-        XCTAssertEqual(AgentRowDisplay.cwdLabel(cwd: nil), "")
+    func test_cwdLabel_nilCwd_returnsNA() {
+        XCTAssertEqual(AgentRowDisplay.cwdLabel(cwd: nil), "N/A")
     }
 
-    func test_cwdLabel_emptyCwd_returnsEmptyString() {
-        XCTAssertEqual(AgentRowDisplay.cwdLabel(cwd: ""), "")
+    func test_cwdLabel_emptyCwd_returnsNA() {
+        XCTAssertEqual(AgentRowDisplay.cwdLabel(cwd: ""), "N/A")
+    }
+
+    /// Pins that `cwdLabel` and `primaryLabel` share the exact same
+    /// fallback string for their respective unresolvable inputs, so the
+    /// two rules cannot silently diverge into two different "missing
+    /// value" spellings.
+    func test_cwdLabel_and_primaryLabel_shareTheSameFallbackString() {
+        let cwdFallback = AgentRowDisplay.cwdLabel(cwd: nil)
+        let titleFallback = AgentRowDisplay.primaryLabel(title: nil)
+
+        XCTAssertEqual(cwdFallback, "N/A")
+        XCTAssertEqual(titleFallback, "N/A")
+        XCTAssertEqual(cwdFallback, titleFallback)
     }
 
     // MARK: - subtitle
@@ -150,15 +162,16 @@ final class AgentRowDisplayTests: XCTestCase {
     }
 
     /// Asserts on the exact composed string, not just the line count --
-    /// a stray blank line between title and subtitle (e.g. an
-    /// unconditional cwd line joined as an empty string) would still
-    /// produce two visible lines of TEXT but a third, blank line in the
-    /// string, which a line-count-only assertion would miss.
-    func test_tooltip_emptyCwdLabel_omitsCwdLineWithNoBlankLine() {
+    /// `tooltip` joins whatever `cwdLabel` string it's given
+    /// unconditionally, with no emptiness special-casing of its own, so
+    /// an empty `cwdLabel` still produces three newline-joined lines
+    /// with a blank middle line, not two lines with the cwd line
+    /// dropped.
+    func test_tooltip_emptyCwdLabel_stillJoinsThreeLines() {
         let result = AgentRowDisplay.tooltip(title: "Refactor billing service", cwdLabel: "", subtitle: "Claude Code")
 
-        XCTAssertEqual(result, "Refactor billing service\nClaude Code",
-                       "an empty cwdLabel must be omitted entirely, not joined in as a blank line between title and subtitle")
+        XCTAssertEqual(result, "Refactor billing service\n\nClaude Code",
+                       "an empty cwdLabel must still be joined as the middle line, not dropped -- tooltip performs no emptiness check of its own")
     }
 
     /// Reuses the same non-ASCII title as

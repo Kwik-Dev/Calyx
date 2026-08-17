@@ -460,17 +460,10 @@ private struct AgentRowView: View {
                 Text(title)
                     .font(.system(size: 12.5, weight: .semibold, design: .rounded))
                     .lineLimit(1)
-                // Omitted entirely for an empty cwd (`.titleHeuristic`
-                // and fresh `.mcpConnection` rows routinely have
-                // `cwd: nil`) rather than rendered as a blank `Text` --
-                // an empty string still reserves its line's full height,
-                // which would leave a blank gap mid-row.
-                if !cwdLabel.isEmpty {
-                    Text(cwdLabel)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+                Text(cwdLabel)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 Text(subtitle)
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
@@ -569,9 +562,12 @@ enum AgentRowDisplay {
     /// The Agents sidebar row's second line: the pane's working
     /// directory basename. Reuses `AgentRegistry.basename` rather than
     /// re-deriving it, so the basename logic exists in exactly one
-    /// place.
+    /// place. `"N/A"` for a `nil` or empty `cwd` (an empty basename),
+    /// matching `primaryLabel(title:)`'s own fallback.
     static func cwdLabel(cwd: String?) -> String {
-        AgentRegistry.basename(cwd)
+        let basename = AgentRegistry.basename(cwd)
+        guard !basename.isEmpty else { return "N/A" }
+        return basename
     }
 
     /// The Agents sidebar row's third line: `AgentEntry
@@ -592,18 +588,13 @@ enum AgentRowDisplay {
     }
 
     /// The Agents sidebar row's tooltip and accessibility-label text:
-    /// `title`, `cwdLabel`, and `subtitle` newline-joined, omitting the
-    /// `cwdLabel` line when it's empty. This conditional must stay
-    /// mirrored with `AgentRowView.rowContent`'s own conditional cwd
-    /// `Text` -- both `AgentRowView`'s `.help` tooltip and its
-    /// `.accessibilityLabel` are built from this function's result, so a
-    /// row's tooltip/label would otherwise claim a cwd line the row
-    /// itself never renders, or drop one it does.
+    /// `title`, `cwdLabel`, and `subtitle` newline-joined, always three
+    /// lines. Both `AgentRowView`'s `.help` tooltip and its
+    /// `.accessibilityLabel` are built from this function's result, and
+    /// `AgentRowView.rowContent` renders the same three lines
+    /// unconditionally, so the two always stay in agreement.
     static func tooltip(title: String, cwdLabel: String, subtitle: String) -> String {
-        var lines = [title]
-        if !cwdLabel.isEmpty { lines.append(cwdLabel) }
-        lines.append(subtitle)
-        return lines.joined(separator: "\n")
+        [title, cwdLabel, subtitle].joined(separator: "\n")
     }
 
     /// The Agents sidebar row's `.accessibilityValue`: the unread count
