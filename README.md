@@ -159,7 +159,7 @@ AI agent instances (Claude Code, Codex CLI, OpenCode, Hermes, Grok, pi) running 
 2. Start agents (Claude Code, Codex, OpenCode, Hermes, Grok, or pi) in two or more terminal panes
 3. Each instance automatically registers as a peer and can send/receive messages
 
-Config is auto-written to `~/.claude.json`, `~/.codex/config.toml`, `~/.config/opencode/{opencode.json,AGENTS.md}`, `~/.hermes/config.yaml`, and `~/.grok/config.toml` when the respective tool is installed. Restart running agent instances to pick up the new MCP server. If you install a supported agent later, run **Enable AI Agent IPC** again to write its config and hooks. It never restarts a server that is already running, so agents already connected keep working.
+Config is auto-written to `~/.claude.json`, `~/.codex/config.toml`, `~/.config/opencode/{opencode.json,AGENTS.md}`, `~/.hermes/config.yaml`, and `~/.grok/config.toml` when the respective tool is installed. Restart running agent instances to pick up the new MCP server. If you install a supported agent later, run **Reconfigure AI Agent IPC** to write its config and hooks. It never restarts a server that is already running, so agents already connected keep working.
 
 pi has no MCP client configuration file at all, so it reaches Calyx through a single TypeScript extension written to `~/.pi/agent/extensions/calyx.ts`, which pi auto-loads. It carries the whole integration: the sidebar row, the approval gate, and a `calyx` tool that bridges the MCP tools above (call it with `{"tool": "list"}` to enumerate them). A pi started outside Calyx, or inside a herdr pane, registers nothing.
 
