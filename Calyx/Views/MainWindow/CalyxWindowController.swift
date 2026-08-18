@@ -698,7 +698,14 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         commandRegistry.register(PaletteCommand(id: "git.refresh", title: "Refresh Git Changes", category: "Git") { [weak self] in
             self?.refreshGitSidebar(trigger: .manualRefresh)
         })
-        commandRegistry.register(PaletteCommand(id: "ipc.enable", title: "Enable AI Agent IPC", category: "IPC") { [weak self] in
+        commandRegistry.register(PaletteCommand(id: "ipc.enable", title: "Enable AI Agent IPC", category: "IPC", isAvailable: {
+            !CalyxMCPServer.shared.isRunning
+        }) { [weak self] in
+            self?.enableIPC()
+        })
+        commandRegistry.register(PaletteCommand(id: "ipc.reconfigure", title: "Reconfigure AI Agent IPC", category: "IPC", isAvailable: {
+            CalyxMCPServer.shared.isRunning
+        }) { [weak self] in
             self?.enableIPC()
         })
         commandRegistry.register(PaletteCommand(id: "ipc.disable", title: "Disable AI Agent IPC", category: "IPC", isAvailable: {
