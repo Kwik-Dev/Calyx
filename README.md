@@ -159,11 +159,9 @@ AI agent instances (Claude Code, Codex CLI, OpenCode, Hermes, Grok, pi) running 
 2. Start agents (Claude Code, Codex, OpenCode, Hermes, Grok, or pi) in two or more terminal panes
 3. Each instance automatically registers as a peer and can send/receive messages
 
-Config is auto-written to `~/.claude.json`, `~/.codex/config.toml`, `~/.config/opencode/{opencode.json,AGENTS.md}`, `~/.hermes/config.yaml`, and `~/.grok/config.toml` when the respective tool is installed. Restart running agent instances to pick up the new MCP server.
+Config is auto-written to `~/.claude.json`, `~/.codex/config.toml`, `~/.config/opencode/{opencode.json,AGENTS.md}`, `~/.hermes/config.yaml`, and `~/.grok/config.toml` when the respective tool is installed. Restart running agent instances to pick up the new MCP server. If you install a supported agent later, run **Enable AI Agent IPC** again to write its config and hooks. It never restarts a server that is already running, so agents already connected keep working.
 
 pi has no MCP client configuration file at all, so it reaches Calyx through a single TypeScript extension written to `~/.pi/agent/extensions/calyx.ts`, which pi auto-loads. It carries the whole integration: the sidebar row, the approval gate, and a `calyx` tool that bridges the MCP tools above (call it with `{"tool": "list"}` to enumerate them). A pi started outside Calyx, or inside a herdr pane, registers nothing.
-
-Known limitation: on a machine where pi is the only supported agent, **Enable AI Agent IPC** stops before the extension is written. It configures the MCP client files first, and none of the tools above own one for pi, so nothing succeeds there and the flow stops the MCP server and returns early with "No agent configs found". Writing `~/.pi/agent/extensions/calyx.ts` by hand does not work around it, because the extension needs a running server to reach; installing any other supported agent does.
 
 Available MCP tools: `register_peer`, `list_peers`, `send_message`, `broadcast`, `receive_messages`, `get_peer_status`. `receive_messages` deletes each message from the inbox as it returns it, so a message is only ever delivered once.
 

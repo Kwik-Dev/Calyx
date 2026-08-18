@@ -351,11 +351,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// synchronous I/O running before the first window ever draws.
     ///
     /// Any resulting failure is surfaced the same way
-    /// `CalyxWindowController.enableIPC` already does for a manual
+    /// `IPCActivationCoordinator.enable()` already does for a manual
     /// install: a persistent `AgentRegistry.hooksIssues` sidebar banner
     /// via `AgentHooksResult.issueMessages`, never a modal alert -- this
     /// runs unattended at launch, with no window guaranteed to exist yet
-    /// to present one against.
+    /// to present one against. Never touches `configIssues`: this path
+    /// only ever re-syncs hooks, so a config-write failure a manual
+    /// enable already surfaced stays visible across it.
     private func resyncAgentHooksIfInstalled() {
         guard !ProcessInfo.processInfo.arguments.contains("--uitesting") else { return }
         Task {

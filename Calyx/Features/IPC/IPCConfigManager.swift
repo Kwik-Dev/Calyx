@@ -24,13 +24,35 @@ struct IPCConfigResult: Sendable {
     let hermes: ConfigStatus
     let grok: ConfigStatus
 
+    /// Every axis paired with the label the alert renders for it, in
+    /// print order. `anySucceeded` and `issueMessages` both derive from
+    /// this, and so does `IPCActivationPresenter`'s rendering of this
+    /// result -- a newly supported agent CLI is added here once, not
+    /// separately in each of those.
+    var axes: [(name: String, status: ConfigStatus)] {
+        [
+            ("Claude Code config", claudeCode),
+            ("Codex config", codex),
+            ("OpenCode config", openCode),
+            ("Hermes config", hermes),
+            ("Grok config", grok),
+        ]
+    }
+
     var anySucceeded: Bool {
-        if case .success = claudeCode { return true }
-        if case .success = codex { return true }
-        if case .success = openCode { return true }
-        if case .success = hermes { return true }
-        if case .success = grok { return true }
+        for axis in axes {
+            if case .success = axis.status { return true }
+        }
         return false
+    }
+
+    /// One `"<name>: <localizedDescription>"` line per `.failed` axis.
+    /// `[]` when no axis failed. Mirrors `AgentHooksResult.issueMessages`.
+    var issueMessages: [String] {
+        axes.compactMap { name, status in
+            guard case .failed(let error) = status else { return nil }
+            return "\(name): \(error.localizedDescription)"
+        }
     }
 }
 

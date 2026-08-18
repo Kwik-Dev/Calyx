@@ -69,10 +69,10 @@ struct AgentStatusView: View {
                 disabledPlaceholder
             } else {
                 let entries = AgentRegistry.shared.sortedEntries
-                let hooksIssues = AgentRegistry.shared.hooksIssues
+                let integrationIssues = AgentRegistry.shared.integrationIssues
                 VStack(spacing: 0) {
-                    if !hooksIssues.isEmpty {
-                        hooksIssuesBanner(hooksIssues)
+                    if !integrationIssues.isEmpty {
+                        hooksIssuesBanner(integrationIssues)
                     }
                     if entries.isEmpty {
                         emptyPlaceholder
@@ -129,19 +129,21 @@ struct AgentStatusView: View {
 
     // MARK: - Hooks Issues Banner
 
-    /// Persistent warning banner surfacing hook-install failures
-    /// (`AgentRegistry.hooksIssues`, set by `CalyxWindowController.
-    /// enableIPC`), so a symlink/permissions failure that used to degrade
-    /// the sidebar silently (only a one-shot alert at enable time) is
-    /// visible for as long as it remains unresolved. Rendered as plain,
-    /// quiet text -- no icon, no background -- matching
-    /// `disabledPlaceholder` / `emptyPlaceholder` below rather than a
-    /// designed warning box, so nothing opaque paints over
+    /// Persistent warning banner surfacing agent integration failures
+    /// (`AgentRegistry.integrationIssues`, the union of `configIssues`
+    /// and `hooksIssues`, set by `IPCActivationCoordinator` and by
+    /// `AppDelegate`'s launch-time hooks re-sync), so a symlink/
+    /// permissions failure that used to degrade the sidebar silently
+    /// (only a one-shot alert at enable time) is visible for as long as
+    /// it remains unresolved.
+    /// Rendered as plain, quiet text -- no icon, no background --
+    /// matching `disabledPlaceholder` / `emptyPlaceholder` below rather
+    /// than a designed warning box, so nothing opaque paints over
     /// `MainContentView`'s single root glass sheet showing through the
     /// sidebar.
     private func hooksIssuesBanner(_ issues: [String]) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Some agent hooks failed to install")
+            Text("Some agent integrations failed to install")
                 .font(.system(size: 11.5, weight: .medium, design: .rounded))
                 .foregroundStyle(.secondary)
             ForEach(issues, id: \.self) { issue in

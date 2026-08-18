@@ -66,11 +66,26 @@ final class AgentRegistry {
     /// sidebar display -- see that property's doc comment.
     private(set) var externalEntries: [UUID: AgentEntry] = [:]
 
-    /// Human-readable descriptions of hooks the app failed to install,
-    /// surfaced as a persistent warning banner instead of the one-shot
-    /// enable-time alert. Set wholesale by `setHooksIssues` (called by
-    /// `CalyxWindowController.enableIPC`), cleared by `reset()`.
+    /// Human-readable descriptions of agent CLI config write failures,
+    /// one domain of the persistent warning banner `integrationIssues`
+    /// combines. Set wholesale by `setConfigIssues` (called by
+    /// `IPCActivationCoordinator`), cleared by `reset()`.
+    private(set) var configIssues: [String] = []
+
+    /// Human-readable descriptions of agent hook/plugin/extension
+    /// install failures, the other domain `integrationIssues` combines.
+    /// Set wholesale by `setHooksIssues` (called by
+    /// `IPCActivationCoordinator` and by `AppDelegate`'s launch-time
+    /// hooks re-sync), cleared by `reset()`.
     private(set) var hooksIssues: [String] = []
+
+    /// `configIssues` and `hooksIssues` combined, config first, for the
+    /// single warning banner `AgentStatusView` renders. Kept as two
+    /// separate stored properties rather than one shared array so
+    /// `IPCActivationCoordinator`'s config-write report and
+    /// `AppDelegate`'s hooks-only launch-time re-sync can each replace
+    /// their own domain wholesale without erasing the other's.
+    var integrationIssues: [String] { configIssues + hooksIssues }
 
     /// Surface → peer ID bindings learned from a `PreToolUse`/
     /// `PostToolUse` hook event carrying `AgentEvent.ipcSelfPeerID` (see
@@ -197,6 +212,7 @@ final class AgentRegistry {
         surfaceToPeer.removeAll()
         peerToSurface.removeAll()
         heuristicMissStreaks.removeAll()
+        configIssues = []
         hooksIssues = []
         isServerRunning = false
         sweepTask?.cancel()
@@ -598,11 +614,21 @@ final class AgentRegistry {
         )
     }
 
+    /// Replaces `configIssues` wholesale. Called by
+    /// `IPCActivationCoordinator` with `config.issueMessages`, or `[]`
+    /// when every agent config write succeeded (or IPC was disabled).
+    /// `AgentStatusView` renders a warning banner whenever
+    /// `integrationIssues` is non-empty.
+    func setConfigIssues(_ issues: [String]) {
+        configIssues = issues
+    }
+
     /// Replaces `hooksIssues` wholesale. Called by
-    /// `CalyxWindowController.enableIPC` with one formatted entry per
-    /// failed `AgentHooksResult`, or `[]` when every hook installed
-    /// cleanly (or IPC was disabled) — `AgentStatusView` renders a
-    /// warning banner whenever this is non-empty.
+    /// `IPCActivationCoordinator` with `hooks.issueMessages`, and by
+    /// `AppDelegate`'s unattended launch-time hooks re-sync with the
+    /// same shape, or `[]` when every hook install succeeded (or IPC was
+    /// disabled). `AgentStatusView` renders a warning banner whenever
+    /// `integrationIssues` is non-empty.
     func setHooksIssues(_ issues: [String]) {
         hooksIssues = issues
     }
