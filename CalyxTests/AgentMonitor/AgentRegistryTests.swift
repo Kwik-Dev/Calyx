@@ -956,6 +956,39 @@ final class AgentRegistryTests: XCTestCase {
         XCTAssertTrue(registry.hooksIssues.isEmpty, "reset() must clear hooksIssues")
     }
 
+    // MARK: - configIssues and integrationIssues
+
+    func test_setConfigIssues_reflectsValue_andResetClears() {
+        let registry = AgentRegistry()
+        XCTAssertTrue(registry.configIssues.isEmpty, "Precondition: a fresh registry has no config issues")
+
+        registry.setConfigIssues(["Claude Code config: permission denied"])
+
+        XCTAssertEqual(registry.configIssues, ["Claude Code config: permission denied"],
+                       "setConfigIssues must update the observable configIssues array")
+
+        registry.reset()
+
+        XCTAssertTrue(registry.configIssues.isEmpty, "reset() must clear configIssues")
+    }
+
+    func test_integrationIssues_combinesConfigAndHooksIndependently() {
+        let registry = AgentRegistry()
+
+        registry.setConfigIssues(["Claude Code config: permission denied"])
+        registry.setHooksIssues(["Grok hooks: permission denied"])
+
+        XCTAssertEqual(registry.integrationIssues, ["Claude Code config: permission denied", "Grok hooks: permission denied"],
+                       "integrationIssues must union both domains, config first, with neither producer's write erasing the other's")
+
+        registry.setHooksIssues([])
+
+        XCTAssertEqual(registry.integrationIssues, ["Claude Code config: permission denied"],
+                       "Clearing one domain must not erase the other domain's still-standing issues")
+
+        registry.reset()
+    }
+
     // MARK: - Round 3: unread message badges (peer binding + updateInbox)
 
     func test_handleHookEvent_preToolUseWithIpcSelfPeerID_learnsBindingReflectedViaUpdateInbox() {

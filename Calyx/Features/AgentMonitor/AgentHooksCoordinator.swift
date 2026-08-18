@@ -24,26 +24,45 @@ struct AgentHooksResult: Sendable {
     /// integration, and `IPCConfigResult` has no pi counterpart.
     let pi: ConfigStatus
 
-    /// One `"<name>: <localizedDescription>"` line per `.failed` tool,
-    /// for `AgentRegistry.hooksIssues`'s persistent sidebar banner. `[]`
-    /// when every tool installed successfully (or was skipped) --
-    /// `AgentStatusView` only renders the banner when this is non-empty.
-    /// Shared by every `AgentHooksCoordinator.install()`/`.remove()`/
-    /// `.resyncInstalled()` caller that feeds
-    /// `AgentRegistry.shared.setHooksIssues(_:)`
-    /// (`CalyxWindowController.enableIPC` and `AppDelegate`'s own
-    /// launch-time re-sync, respectively), rather than each recomputing it.
-    var issueMessages: [String] {
+    /// Every axis paired with the label the alert renders for it, in
+    /// print order. `anySucceeded` and `issueMessages` both derive from
+    /// this, and so does `IPCActivationPresenter`'s rendering of this
+    /// result -- a newly supported agent CLI is added here once, not
+    /// separately in each of those.
+    var axes: [(name: String, status: ConfigStatus)] {
         [
             ("Claude Code hooks", claudeCode),
             ("Codex hooks", codex),
             ("OpenCode plugin", openCode),
             ("Grok hooks", grok),
             ("pi extension", pi),
-        ].compactMap { name, status in
+        ]
+    }
+
+    /// One `"<name>: <localizedDescription>"` line per `.failed` tool,
+    /// for `AgentRegistry.hooksIssues`'s persistent sidebar banner. `[]`
+    /// when every tool installed successfully (or was skipped) --
+    /// `AgentStatusView` only renders the banner when
+    /// `AgentRegistry.integrationIssues` is non-empty. Shared by every
+    /// `AgentHooksCoordinator.install()`/`.remove()`/`.resyncInstalled()`
+    /// caller that feeds `AgentRegistry.shared.setHooksIssues(_:)`
+    /// (`IPCActivationCoordinator` and `AppDelegate`'s own launch-time
+    /// re-sync), rather than each recomputing it.
+    var issueMessages: [String] {
+        axes.compactMap { name, status in
             guard case .failed(let error) = status else { return nil }
             return "\(name): \(error.localizedDescription)"
         }
+    }
+
+    /// True when at least one of the five axes, pi included, is
+    /// `.success`. pi has no `IPCConfigResult` counterpart, so this is
+    /// the only signal that a pi-only machine counts as wired.
+    var anySucceeded: Bool {
+        for axis in axes {
+            if case .success = axis.status { return true }
+        }
+        return false
     }
 }
 

@@ -2,7 +2,6 @@ import AppKit
 import SwiftUI
 import GhosttyKit
 import OSLog
-import Security
 
 private let logger = Logger(
     subsystem: Bundle.main.bundleIdentifier ?? "com.calyx.terminal",
@@ -699,9 +698,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         commandRegistry.register(PaletteCommand(id: "git.refresh", title: "Refresh Git Changes", category: "Git") { [weak self] in
             self?.refreshGitSidebar(trigger: .manualRefresh)
         })
-        commandRegistry.register(PaletteCommand(id: "ipc.enable", title: "Enable AI Agent IPC", category: "IPC", isAvailable: {
-            !CalyxMCPServer.shared.isRunning
-        }) { [weak self] in
+        commandRegistry.register(PaletteCommand(id: "ipc.enable", title: "Enable AI Agent IPC", category: "IPC") { [weak self] in
             self?.enableIPC()
         })
         commandRegistry.register(PaletteCommand(id: "ipc.disable", title: "Disable AI Agent IPC", category: "IPC", isAvailable: {
@@ -5629,113 +5626,15 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - IPC
 
     private func enableIPC() {
-        do {
-            // Generate token: 32 random bytes as hex
-            var bytes = [UInt8](repeating: 0, count: 32)
-            let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
-            guard status == errSecSuccess else {
-                showIPCAlert(title: "IPC Error", message: "Failed to generate secure token.")
-                return
-            }
-            let token = bytes.map { String(format: "%02x", $0) }.joined()
-
-            // Start server first to get the port
-            try CalyxMCPServer.shared.start(token: token)
-            let port = CalyxMCPServer.shared.port
-
-            // Write config to all available agent tools
-            let result = IPCConfigManager.enableIPC(port: port, token: token)
-
-            if !result.anySucceeded {
-                CalyxMCPServer.shared.stop()
-                showIPCAlert(
-                    title: "IPC Error",
-                    message: "MCP server running on port \(port).\nNo agent configs found. Configure manually if needed."
-                )
-                return
-            }
-
-            // Install the calyx-agent-hook script and wire each agent CLI's
-            // own hook/plugin configuration to it so panes report lifecycle
-            // state to the Agents sidebar. Same collect-independently shape
-            // as IPCConfigManager.enableIPC above: an agent-hooks failure
-            // degrades the sidebar rather than the whole "Enable AI Agent
-            // IPC" flow, since the MCP server is already running.
-            let hooksResult = AgentHooksCoordinator.install()
-
-            // Persist any hook-install failure as a standing sidebar
-            // banner (AgentStatusView) rather than only the one-shot
-            // alert below — a symlink/permissions failure here otherwise
-            // degrades the Agents sidebar silently for the rest of the
-            // session. `[]` when every tool installed cleanly, clearing
-            // any banner left over from a prior enable attempt.
-            AgentRegistry.shared.setHooksIssues(hooksResult.issueMessages)
-
-            showIPCAlert(
-                title: "IPC Enabled",
-                message: "MCP server running on port \(port).\n\(configStatusMessage(result))\n" +
-                    "\(agentHooksStatusMessage(hooksResult, mode: .install))\nRestart agent instances to connect."
-            )
-        } catch {
-            showIPCAlert(title: "IPC Error", message: error.localizedDescription)
-        }
+        let outcome = IPCActivationCoordinator().enable()
+        let alert = IPCActivationPresenter.enableAlert(for: outcome)
+        showIPCAlert(title: alert.title, message: alert.message)
     }
 
     private func disableIPC() {
-        CalyxMCPServer.shared.stop()
-        let result = IPCConfigManager.disableIPC()
-        let hooksResult = AgentHooksCoordinator.remove()
-
-        showIPCAlert(
-            title: "IPC Disabled",
-            message: "MCP server stopped.\n\(configStatusMessage(result))\n" +
-                "\(agentHooksStatusMessage(hooksResult, mode: .remove))"
-        )
-    }
-
-    /// Whether an `AgentHooksResult` reflects `AgentHooksCoordinator.install()`
-    /// or `.remove()` — determines the verb `configStatusLabel` reports for
-    /// `.success`, since "configured" reads wrong after a removal.
-    private enum AgentHooksMode {
-        case install
-        case remove
-    }
-
-    /// Formats one tool's `ConfigStatus` as a single status line: `name: verb`
-    /// on success, `name: reason (skipped)` on skip, `name: error - ...` on
-    /// failure. Shared by `configStatusMessage` (always "configured", since
-    /// `IPCConfigManager` has no separate disable-wording need) and
-    /// `agentHooksStatusMessage` (whose verb depends on `AgentHooksMode`).
-    private func configStatusLabel(_ status: ConfigStatus, name: String, verb: String) -> String {
-        switch status {
-        case .success:
-            return "\(name): \(verb)"
-        case .skipped(let reason):
-            return "\(name): \(reason) (skipped)"
-        case .failed(let error):
-            return "\(name): error - \(error.localizedDescription)"
-        }
-    }
-
-    private func configStatusMessage(_ result: IPCConfigResult) -> String {
-        [
-            configStatusLabel(result.claudeCode, name: "Claude Code", verb: "configured"),
-            configStatusLabel(result.codex, name: "Codex", verb: "configured"),
-            configStatusLabel(result.openCode, name: "OpenCode", verb: "configured"),
-            configStatusLabel(result.hermes, name: "Hermes", verb: "configured"),
-            configStatusLabel(result.grok, name: "Grok", verb: "configured"),
-        ].joined(separator: "\n")
-    }
-
-    private func agentHooksStatusMessage(_ result: AgentHooksResult, mode: AgentHooksMode) -> String {
-        let verb = mode == .install ? "configured" : "removed"
-        return [
-            configStatusLabel(result.claudeCode, name: "Claude Code hooks", verb: verb),
-            configStatusLabel(result.codex, name: "Codex hooks", verb: verb),
-            configStatusLabel(result.openCode, name: "OpenCode plugin", verb: verb),
-            configStatusLabel(result.grok, name: "Grok hooks", verb: verb),
-            configStatusLabel(result.pi, name: "pi extension", verb: verb),
-        ].joined(separator: "\n")
+        let report = IPCActivationCoordinator().disable()
+        let alert = IPCActivationPresenter.disableAlert(for: report)
+        showIPCAlert(title: alert.title, message: alert.message)
     }
 
     // MARK: - AI Agent Tab Detection
