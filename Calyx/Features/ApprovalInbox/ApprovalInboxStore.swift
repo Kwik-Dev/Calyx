@@ -237,8 +237,14 @@ final class ApprovalInboxStore {
     /// for a decision nobody can ever make. Called from
     /// `SurfaceRegistry.destroySurface(_:)`, mirroring that method's own
     /// `orphanCommandsIfNotPersistent(surfaceID:)` cleanup for
-    /// `CommandLogStore`. A request with a nil `targetSurfaceID`
-    /// (window-agnostic) is never targeted by this and is unaffected.
+    /// `CommandLogStore`. Also called from
+    /// `CalyxMCPServer.routeCommandEvent`, for the opposite case: the
+    /// pane itself stays alive but its agent process died (confirmed by
+    /// `AgentRegistry.handlePaneCommandFinished` actually settling that
+    /// surface's row), which leaves a request the now-dead agent asked
+    /// for just as undecidable as one whose whole pane is gone. A request
+    /// with a nil `targetSurfaceID` (window-agnostic) is never targeted
+    /// by this and is unaffected.
     func expireForSurface(_ surfaceID: UUID) {
         let targeted = pending.filter { $0.targetSurfaceID == surfaceID }
         guard !targeted.isEmpty else { return }

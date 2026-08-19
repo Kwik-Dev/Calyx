@@ -239,11 +239,26 @@ final class ShellIntegrationInstallerTests: XCTestCase {
     }
 
     /// `/usr/bin/which <name>`, matching SystemCommandRunner.locate's own
-    /// mechanism for finding an optionally-installed tool.
+    /// mechanism for finding an optionally-installed tool -- except PATH
+    /// is widened first with `/opt/homebrew/bin` and `/usr/local/bin`
+    /// ahead of the inherited PATH (same ordering
+    /// `SystemCommandRunner.augmentedPATH()` uses for its own safety-net
+    /// entries), since Xcode runs the XCTest host with a sanitized
+    /// `/usr/bin:/bin:/usr/sbin:/sbin` that omits both, making a
+    /// Homebrew- or /usr/local-installed `fish` invisible to a plain
+    /// `which` otherwise. Every other inherited environment variable
+    /// passes through unchanged; only PATH is overridden.
     private func locateExecutable(named name: String) throws -> String? {
+        let inheritedPath = ProcessInfo.processInfo.environment["PATH"] ?? ""
+        let widenedPath = (["/opt/homebrew/bin", "/usr/local/bin"] + inheritedPath.split(separator: ":").map(String.init))
+            .joined(separator: ":")
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = widenedPath
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/which")
         process.arguments = [name]
+        process.environment = env
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
@@ -675,5 +690,250 @@ final class ShellIntegrationInstallerTests: XCTestCase {
 
         let lines = await waitForCurlLogLines(minCount: 1, timeout: 0.5)
         XCTAssertTrue(lines.isEmpty, "a whitespace-only $argv[1] must never post an event -- found \(lines)")
+    }
+
+    // MARK: - fish postexec: stopped-job detection posts a separate suspended flag
+    //
+    // fish's own $status inside fish_postexec keeps the PREVIOUS real
+    // command's value across a Ctrl-Z suspend (measured on a real pty,
+    // /opt/homebrew/bin/fish -i --no-config: a fresh shell reports 0, a
+    // shell with a prior failure reports that prior code) -- unlike
+    // zsh, whose native $? already becomes 128 + signal after a
+    // suspend, which AgentRegistry.handlePaneCommandFinished recognizes
+    // directly as a stop-signal exit_code. That method also accepts an
+    // explicit suspended flag as its other route to the same exclusion,
+    // and that is the route fish uses: since $status never reflects a
+    // suspend on its own, _calyx_postexec must detect a stopped job
+    // itself and add that flag, leaving exit_code to keep carrying
+    // fish's real $status unmodified -- otherwise a suspended pane
+    // settles to .done and its still-pending approval request expires
+    // out from under the agent.
+    //
+    // fish has no `jobs --stopped` filter, but `jobs` prints a State
+    // column (`running` / `stopped`) and omits its header inside a
+    // command substitution -- verified directly against the installed
+    // fish binary. A background job SIGSTOP'd with no controlling
+    // terminal still shows up as `stopped` in that output (job
+    // bookkeeping is fish's own, not terminal-driven; only the
+    // interactive keypress that would SEND SIGTSTP needs a pty, not the
+    // resulting process state), so the execution tests below drive this
+    // with a real backgrounded-then-SIGSTOP'd `sleep`, no pty required
+    // -- reusing this file's own established pty-free `emit` technique
+    // for firing fish_preexec/fish_postexec.
+
+    /// Extracts the body of `function _calyx_postexec --on-event
+    /// fish_postexec ... end` from `fishIntegrationBody`. Anchored on
+    /// the exact signature line, capturing non-greedily up to the next
+    /// bare `end` line -- safe because `_calyx_postexec` is the last
+    /// construct in the body and its own statements contain no nested
+    /// `if`/`for` block, so no nested `end` could be mistaken for its
+    /// own closing line. Matches against the string's own runtime
+    /// value, where Swift's multi-line-literal indentation stripping
+    /// has already put `function`/`end` at column 0 -- not the 4-space
+    /// indentation the same text has inside this source file.
+    private func fishPostexecFunctionBody() throws -> String {
+        let body = ShellIntegrationInstaller.fishIntegrationBody
+        let pattern = #"function _calyx_postexec --on-event fish_postexec\n(.*?)\nend"#
+        let regex = try NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators])
+        let range = NSRange(body.startIndex..., in: body)
+        let match = try XCTUnwrap(
+            regex.firstMatch(in: body, range: range),
+            "fishIntegrationBody must define `function _calyx_postexec --on-event fish_postexec ... end`"
+        )
+        let bodyRange = try XCTUnwrap(Range(match.range(at: 1), in: body))
+        return String(body[bodyRange])
+    }
+
+    /// Extracts the body of `_calyx_precmd() { ... }` from
+    /// `calyxZshBody`, the zsh counterpart to
+    /// `fishPostexecFunctionBody()` above -- same non-greedy, anchored
+    /// extraction, safe for the same reason (no nested `{`/`}` inside
+    /// `_calyx_precmd`'s own statements).
+    private func zshPrecmdFunctionBody() throws -> String {
+        let body = ShellIntegrationInstaller.calyxZshBody
+        let pattern = #"_calyx_precmd\(\) \{\n(.*?)\n\}"#
+        let regex = try NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators])
+        let range = NSRange(body.startIndex..., in: body)
+        let match = try XCTUnwrap(
+            regex.firstMatch(in: body, range: range),
+            "calyxZshBody must define `_calyx_precmd() { ... }`"
+        )
+        let bodyRange = try XCTUnwrap(Range(match.range(at: 1), in: body))
+        return String(body[bodyRange])
+    }
+
+    func test_fishIntegrationBody_postexec_consultsJobsForAStoppedState() throws {
+        let postexecBody = try fishPostexecFunctionBody()
+
+        XCTAssertTrue(
+            postexecBody.contains("jobs"),
+            "_calyx_postexec must consult fish's own `jobs` builtin to detect a merely-suspended " +
+            "(not exited) job -- fish has no --stopped filter, so jobs' own output must be inspected directly"
+        )
+        XCTAssertTrue(
+            postexecBody.contains("stopped"),
+            "_calyx_postexec must check jobs' own State column for its literal `stopped` value -- " +
+            "the only value that distinguishes a suspended job from a running or absent one"
+        )
+    }
+
+    func test_fishIntegrationBody_postexec_postsSuspendedFlagAndNeverOverwritesStatus() throws {
+        let postexecBody = try fishPostexecFunctionBody()
+
+        XCTAssertTrue(
+            postexecBody.contains("suspended"),
+            "_calyx_postexec must post a separate suspended flag when a stopped job is detected -- fish's own " +
+            "$status cannot itself distinguish a suspend from the previous command's real exit code"
+        )
+        XCTAssertFalse(
+            postexecBody.contains("146"),
+            "_calyx_postexec must never substitute a stop-signal number into exit_code -- the real $status is " +
+            "always posted as-is, with a suspend reported separately"
+        )
+    }
+
+    func test_calyxZshBody_precmd_keepsRelayingRawStatusWithNoRedundantJobStateCheck() throws {
+        let precmdBody = try zshPrecmdFunctionBody()
+
+        XCTAssertTrue(
+            precmdBody.contains("local code=$?"),
+            "_calyx_precmd must keep relaying the shell's own raw $? unconditionally -- zsh already " +
+            "reports 128 + signal natively for a suspended job (measured on a real pty), so it needs " +
+            "no job-state check of its own"
+        )
+        XCTAssertFalse(
+            precmdBody.contains("jobs"),
+            "_calyx_precmd must not grow fish's own stopped-job detection -- that would duplicate " +
+            "zsh's native 128+signal reporting for no benefit"
+        )
+    }
+
+    // MARK: - fish postexec: real stopped-job classification (no pty)
+
+    /// Sources the real fishIntegrationBody, fires fish_preexec (so
+    /// _calyx_cmd_active/_calyx_cmd_id are set exactly as a real
+    /// command would leave them), backgrounds a long-lived `sleep` --
+    /// SIGSTOP'd first when `stopJob` is true -- then fires
+    /// fish_postexec, mirroring `runFishDirectPreexec`'s own `emit`-
+    /// based technique. `emit` resets $status to 0 for the handler it
+    /// invokes (verified directly: a deliberate `false` immediately
+    /// before `emit` still reads $status as 0 inside the handler), so
+    /// both scenarios below post exit_code 0 -- the discriminator
+    /// between them is the separate suspended flag, present only when
+    /// `stopJob` is true, never the exit code itself. The trailing
+    /// `sleep 1` and final `kill -9` mirror `runFishDirectPreexec`'s own
+    /// rationale and cleanup; SIGKILL was verified to terminate a
+    /// SIGSTOP'd process immediately, without needing SIGCONT first.
+    @discardableResult
+    private func runFishPostexecWithBackgroundJob(
+        fishPath: String, stopJob: Bool, extraEnv: [String: String]
+    ) throws -> (stdout: String, stderr: String) {
+        _ = try ShellIntegrationInstaller.install(toDirectory: installRoot)
+        let stubBinDir = try installStubCurl()
+        let inheritedPath = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin:/usr/local/bin"
+        let fishIntegrationFile = ShellIntegrationInstaller.fishIntegrationPath(in: installRoot)
+
+        let stopStep = stopJob ? "kill -STOP $_calyx_test_job_pid" : "true"
+        let script = """
+        source \(fishIntegrationFile.path)
+        emit fish_preexec "sleep 300"
+        sleep 300 &
+        set -g _calyx_test_job_pid $last_pid
+        sleep 0.2
+        \(stopStep)
+        sleep 0.2
+        emit fish_postexec "sleep 300"
+        sleep 1
+        kill -9 $_calyx_test_job_pid 2>/dev/null
+        """
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: fishPath)
+        process.arguments = ["-i", "-c", script]
+        var env: [String: String] = [
+            "HOME": tempDir.path,
+            "PATH": "\(stubBinDir.path):\(inheritedPath)",
+        ]
+        for (key, value) in extraEnv { env[key] = value }
+        process.environment = env
+        process.standardInput = FileHandle.nullDevice
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        try process.run()
+        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        return (
+            String(data: stdoutData, encoding: .utf8) ?? "",
+            String(data: stderrData, encoding: .utf8) ?? ""
+        )
+    }
+
+    func test_realFishSession_postexecWithStoppedJob_postsSuspendedFlagAndRawStatus() async throws {
+        guard let fishPath = try locateExecutable(named: "fish") else {
+            throw XCTSkip("fish is not installed on this host")
+        }
+        try writeFixtureEndpoint(port: Int.random(in: 49_152...65_000), token: "unused-token")
+
+        let (_, stderr) = try runFishPostexecWithBackgroundJob(
+            fishPath: fishPath, stopJob: true, extraEnv: ["CALYX_SESSION_ID": UUID().uuidString]
+        )
+        XCTAssertFalse(
+            stderr.contains("Unknown command"), "stderr must not show a broken harness script -- stderr: \(stderr)"
+        )
+
+        let lines = await waitForCurlLogLines(minCount: 2)
+        let endLine = try XCTUnwrap(
+            lines.first { $0.contains("\"phase\":\"end\"") },
+            "a stopped-job postexec must still post an end event -- curl log: \(lines)"
+        )
+        let endBody = try XCTUnwrap(jsonBody(fromCurlLogLine: endLine), "end POST body must be valid JSON")
+        let exitCode = try XCTUnwrap(endBody["exit_code"] as? Int)
+        XCTAssertEqual(
+            exitCode, 0,
+            "a stopped job must post the RAW $status (0, per emit's own reset -- see " +
+            "runFishPostexecWithBackgroundJob's own doc comment), never a substituted stop-signal number"
+        )
+        XCTAssertEqual(
+            endBody["suspended"] as? Bool, true,
+            "a stopped (not exited) job must post a separate suspended:true flag -- fish's own $status cannot " +
+            "itself distinguish a suspend from the previous command's real exit code"
+        )
+    }
+
+    func test_realFishSession_postexecWithRunningJobOnly_postsRawExitCode() async throws {
+        guard let fishPath = try locateExecutable(named: "fish") else {
+            throw XCTSkip("fish is not installed on this host")
+        }
+        try writeFixtureEndpoint(port: Int.random(in: 49_152...65_000), token: "unused-token")
+
+        let (_, stderr) = try runFishPostexecWithBackgroundJob(
+            fishPath: fishPath, stopJob: false, extraEnv: ["CALYX_SESSION_ID": UUID().uuidString]
+        )
+        XCTAssertFalse(
+            stderr.contains("Unknown command"), "stderr must not show a broken harness script -- stderr: \(stderr)"
+        )
+
+        let lines = await waitForCurlLogLines(minCount: 2)
+        let endLine = try XCTUnwrap(
+            lines.first { $0.contains("\"phase\":\"end\"") },
+            "postexec must post an end event -- curl log: \(lines)"
+        )
+        let endBody = try XCTUnwrap(jsonBody(fromCurlLogLine: endLine), "end POST body must be valid JSON")
+        let exitCode = try XCTUnwrap(endBody["exit_code"] as? Int)
+        XCTAssertEqual(
+            exitCode, 0,
+            "a merely-backgrounded but still-RUNNING (never stopped) job must not trip the stop-signal " +
+            "override -- only jobs' own `stopped` State should, not the mere presence of a background job"
+        )
+        XCTAssertNil(
+            endBody["suspended"],
+            "the suspended flag must be omitted entirely when nothing is stopped, not merely false -- only " +
+            "jobs' own `stopped` State should ever add it"
+        )
     }
 }

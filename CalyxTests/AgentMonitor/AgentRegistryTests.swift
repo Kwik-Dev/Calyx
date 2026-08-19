@@ -1745,4 +1745,511 @@ final class AgentRegistryTests: XCTestCase {
         XCTAssertTrue(registry.isSurfaceBound(surfaceID),
                       "A surface bound via a hook-derived ipcSelfPeerID must report true")
     }
+
+    // MARK: - handlePaneCommandFinished (shell integration pane-exit signal)
+
+    // A pane's shell integration sends /command-event with phase: end
+    // when the pane's foreground command finishes and the prompt
+    // returns. This is the only exit signal available for a CLI that
+    // cannot self-report its own process exit (OpenCode's plugin event
+    // vocabulary has no process-exit event; Hermes has no hooks at all),
+    // and is also the backstop for a CLI whose hooks were never trusted
+    // to run, or one that exits via SIGKILL/crash before a hook fires.
+
+    func test_handlePaneCommandFinished_hooksEntry_becomesDone() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("UserPromptSubmit", sessionID: "session-a"), surfaceID: surfaceID)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .working, "Precondition: a live hooks-sourced row")
+
+        registry.handlePaneCommandFinished(surfaceID: surfaceID)
+
+        let entry = registry.entries[surfaceID]
+        XCTAssertEqual(entry?.state, .done,
+                       "The pane's foreground command finishing must settle a live hooks row to done")
+        XCTAssertEqual(entry?.source, .hooks)
+    }
+
+    func test_handlePaneCommandFinished_mcpConnectionEntry_hermesKind_becomesDone() {
+        // Hermes has no hooks at all; its row comes solely from MCP
+        // initialize, so this pane signal is the only path that can ever
+        // move it off idle/working.
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.hermesKind)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle, "Precondition")
+
+        registry.handlePaneCommandFinished(surfaceID: surfaceID)
+
+        let entry = registry.entries[surfaceID]
+        XCTAssertEqual(entry?.state, .done)
+        XCTAssertEqual(entry?.source, .mcpConnection)
+        XCTAssertEqual(entry?.kind, AgentEntry.hermesKind)
+    }
+
+    func test_handlePaneCommandFinished_mcpConnectionEntry_openCodeKind_becomesDone() {
+        // OpenCode's plugin event vocabulary (session.created / updated /
+        // idle / compacted / error / deleted) has no process-exit event
+        // either, so the same MCP-connection-only row shape applies.
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.openCodeKind)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle, "Precondition")
+
+        registry.handlePaneCommandFinished(surfaceID: surfaceID)
+
+        let entry = registry.entries[surfaceID]
+        XCTAssertEqual(entry?.state, .done)
+        XCTAssertEqual(entry?.source, .mcpConnection)
+        XCTAssertEqual(entry?.kind, AgentEntry.openCodeKind)
+    }
+
+    func test_handlePaneCommandFinished_titleHeuristicEntry_isLeftUntouched() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleScreenClassification(surfaceID: surfaceID, state: .working)
+        let before = registry.entries[surfaceID]
+        XCTAssertEqual(before?.source, .titleHeuristic, "Precondition")
+
+        registry.handlePaneCommandFinished(surfaceID: surfaceID)
+
+        XCTAssertEqual(registry.entries[surfaceID], before,
+                       "A titleHeuristic row retires itself through its own miss-streak bookkeeping and " +
+                       "must not be settled by the pane command signal")
+    }
+
+    func test_handlePaneCommandFinished_alreadyDoneEntry_isUntouched() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("SessionEnd", sessionID: "session-a"), surfaceID: surfaceID)
+        let before = registry.entries[surfaceID]
+        XCTAssertEqual(before?.state, .done, "Precondition: the session already ended")
+
+        registry.handlePaneCommandFinished(surfaceID: surfaceID)
+
+        XCTAssertEqual(registry.entries[surfaceID], before,
+                       "A row already done must not be rewritten -- including no lastEventAt churn, " +
+                       "checked here by comparing the entire entry rather than state alone")
+    }
+
+    func test_handlePaneCommandFinished_unregisteredSurface_neverCreatesARow() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+
+        registry.handlePaneCommandFinished(surfaceID: surfaceID)
+
+        XCTAssertNil(registry.entries[surfaceID])
+        XCTAssertTrue(registry.entries.isEmpty, "A surface with no row must stay with no row")
+    }
+
+    func test_handlePaneCommandFinished_externalEntry_isNeverTouched() {
+        let registry = AgentRegistry()
+        let id = UUID()
+        let seeded = AgentEntry(
+            surfaceID: id, sessionID: nil, source: .external, state: .working,
+            cwd: "/Users/dev/herdr-project", kind: AgentEntry.claudeCodeKind, lastEventAt: Date()
+        )
+        registry.upsertExternalEntry(seeded)
+
+        registry.handlePaneCommandFinished(surfaceID: id)
+
+        XCTAssertEqual(registry.externalEntries[id], seeded,
+                       "A herdr-sourced external row must never be settled by this native pane signal")
+        XCTAssertTrue(registry.entries.isEmpty,
+                      "handlePaneCommandFinished must not create a native row for an externalEntries id either")
+    }
+
+    // MARK: - handlePaneCommandFinished: suspend vs. exit (stop-signal exit code)
+
+    // A `phase: end` command event also fires when the pane's foreground
+    // job is merely SUSPENDED, not exited: pressing Ctrl-Z on a running
+    // process fires the shell's precmd with an exit code of 128 plus the
+    // stop signal that suspended it (SIGSTOP 17, SIGTSTP 18, SIGTTIN 21,
+    // SIGTTOU 22 on macOS) while the process is still alive, about to be
+    // resumed with `fg`. A process can only be stopped by a stop signal,
+    // never terminated by one, but that evidence is not certain: a
+    // process that genuinely exits with status 145/146/149/150 is
+    // indistinguishable from a suspend by this check alone. The mistake
+    // is deliberately one-directional -- these tests pin that a matching
+    // exit code only ever leaves a row live rather than settling it,
+    // never the reverse of wrongly settling a row (and expiring its
+    // pending approvals) out from under an agent that is actually still
+    // running.
+
+    func test_handlePaneCommandFinished_sigtstpExitCode146_leavesWorkingRowUntouched() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("UserPromptSubmit", sessionID: "session-a"), surfaceID: surfaceID)
+        let before = registry.entries[surfaceID]
+        XCTAssertEqual(before?.state, .working, "Precondition: a live working row")
+
+        // 146 = 128 + SIGTSTP (18) -- Ctrl-Z on a running command.
+        let settled = registry.handlePaneCommandFinished(surfaceID: surfaceID, exitCode: 146)
+
+        XCTAssertFalse(settled, "A stop-signal exit code must not report the row as settled")
+        XCTAssertEqual(registry.entries[surfaceID], before,
+                       "A stop-signal exit code means the command was suspended, not exited -- the row must " +
+                       "stay exactly as it was, including no lastEventAt churn")
+    }
+
+    func test_handlePaneCommandFinished_otherStopSignalExitCodes_leaveWorkingRowUntouched() {
+        // 145 = 128 + SIGSTOP (17), 149 = 128 + SIGTTIN (21), 150 = 128 +
+        // SIGTTOU (22).
+        let stopSignalExitCodes: [Int32] = [145, 149, 150]
+        for exitCode in stopSignalExitCodes {
+            let registry = AgentRegistry()
+            let surfaceID = UUID()
+            registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+            registry.handleHookEvent(event("UserPromptSubmit", sessionID: "session-a"), surfaceID: surfaceID)
+            let before = registry.entries[surfaceID]
+
+            registry.handlePaneCommandFinished(surfaceID: surfaceID, exitCode: exitCode)
+
+            XCTAssertEqual(registry.entries[surfaceID], before,
+                           "Exit code \(exitCode) is a stop signal -- the row must stay untouched")
+        }
+    }
+
+    func test_handlePaneCommandFinished_stopSignalExitCodes_leaveBlockedRowUntouched() {
+        let stopSignalExitCodes: [Int32] = [145, 146, 149, 150]
+        for exitCode in stopSignalExitCodes {
+            let registry = AgentRegistry()
+            let surfaceID = UUID()
+            registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+            registry.handleHookEvent(event("PermissionRequest", sessionID: "session-a"), surfaceID: surfaceID)
+            let before = registry.entries[surfaceID]
+            XCTAssertEqual(before?.state, .blocked, "Precondition: a blocked row")
+
+            registry.handlePaneCommandFinished(surfaceID: surfaceID, exitCode: exitCode)
+
+            XCTAssertEqual(registry.entries[surfaceID], before,
+                           "A suspended foreground job (exit code \(exitCode)) must not settle a blocked row " +
+                           "either -- the approval prompt it's blocked on is still live")
+        }
+    }
+
+    func test_handlePaneCommandFinished_blockedRow_realTermination_settlesToDone() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("PermissionRequest", sessionID: "session-a"), surfaceID: surfaceID)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .blocked, "Precondition: a blocked row")
+
+        // 130 = 128 + SIGINT: a real termination signal (Ctrl-C), not a
+        // stop signal.
+        registry.handlePaneCommandFinished(surfaceID: surfaceID, exitCode: 130)
+
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .done,
+                       "A genuine termination while blocked is a real death, not a suspend -- the row must " +
+                       "settle even though it was blocked, same as any other live state")
+    }
+
+    func test_handlePaneCommandFinished_exitCodeZero_settlesToDone() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("UserPromptSubmit", sessionID: "session-a"), surfaceID: surfaceID)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .working, "Precondition")
+
+        let settled = registry.handlePaneCommandFinished(surfaceID: surfaceID, exitCode: 0)
+
+        XCTAssertTrue(settled, "A clean exit (0) must report the row as settled")
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .done, "A clean exit (0) must settle the row")
+    }
+
+    func test_handlePaneCommandFinished_ordinaryNonZeroExitCodes_settleToDone() {
+        // 1: an ordinary command failure. 130 = 128 + SIGINT (Ctrl-C): a
+        // real termination signal, deliberately in the same 128+n
+        // numeric family as the stop-signal codes above, so this also
+        // pins that the implementation distinguishes the SPECIFIC stop
+        // signals rather than treating every exit code over 128 as
+        // "still alive."
+        let ordinaryExitCodes: [Int32] = [1, 130]
+        for exitCode in ordinaryExitCodes {
+            let registry = AgentRegistry()
+            let surfaceID = UUID()
+            registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+            registry.handleHookEvent(event("UserPromptSubmit", sessionID: "session-a"), surfaceID: surfaceID)
+
+            registry.handlePaneCommandFinished(surfaceID: surfaceID, exitCode: exitCode)
+
+            XCTAssertEqual(registry.entries[surfaceID]?.state, .done,
+                           "Exit code \(exitCode) is a real termination, not a stop signal -- the row must settle")
+        }
+    }
+
+    func test_handlePaneCommandFinished_nilExitCode_settlesToDone() {
+        // A nil exit code means the shell integration reported no $? at
+        // all, or CommandEvent.decode couldn't parse it as an Int32 --
+        // there is no positive evidence of a stop signal either way:
+        // stop-signal detection can only ever recognize specific known
+        // values, never infer one it wasn't given. Settling is the safe
+        // default: a row stuck at .working/.blocked forever because a
+        // process that genuinely exited failed to report its code is a
+        // worse failure than the reverse, and .done is not permanently
+        // stuck either -- a later resumed session's own SessionStart or
+        // MCP initialize still revives it.
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("UserPromptSubmit", sessionID: "session-a"), surfaceID: surfaceID)
+
+        registry.handlePaneCommandFinished(surfaceID: surfaceID, exitCode: nil)
+
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .done, "A nil exit code must settle the row")
+    }
+
+    // MARK: - Readers after a pane-signaled done (must not undo the settle)
+
+    // handlePaneCommandFinished makes .done reachable for an
+    // .mcpConnection row for the first time (previously only a .hooks
+    // SessionEnd could produce it), so both readers that already treat
+    // .mcpConnection specially need pinning against reverting that.
+
+    func test_handleScreenClassification_nilOnDoneMCPConnectionEntry_leavesItDone() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.hermesKind)
+        registry.handlePaneCommandFinished(surfaceID: surfaceID)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .done, "Precondition: the pane signal settled the row")
+        XCTAssertEqual(registry.entries[surfaceID]?.source, .mcpConnection, "Precondition")
+
+        registry.handleScreenClassification(surfaceID: surfaceID, state: nil)
+
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .done,
+                       "A nil screen classification must not roll a pane-settled done row back to idle -- " +
+                       "the Agents sidebar polls screen classification every two seconds")
+    }
+
+    func test_handleMCPConnection_doneMCPConnectionEntrySameKind_becomesLiveIdleEntryPreservingCwd() {
+        // Companion to test_handleMCPConnection_doneHooksEntrySameKind_becomesLiveIdleEntryPreservingCwd,
+        // for a row that reached .mcpConnection + .done through the pane
+        // signal rather than through a .hooks SessionEnd.
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(
+            event("SessionStart", sessionID: "codex-session", cwd: "/Users/dev/repo"),
+            surfaceID: surfaceID,
+            kind: AgentEntry.codexKind
+        )
+        registry.handleHookEvent(
+            event("SessionEnd", sessionID: "codex-session"),
+            surfaceID: surfaceID,
+            kind: AgentEntry.codexKind
+        )
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.codexKind)
+        registry.handlePaneCommandFinished(surfaceID: surfaceID)
+        let precondition = registry.entries[surfaceID]
+        XCTAssertEqual(precondition?.state, .done, "Precondition: the pane signal settled the row")
+        XCTAssertEqual(precondition?.source, .mcpConnection, "Precondition")
+        XCTAssertEqual(precondition?.cwd, "/Users/dev/repo", "Precondition")
+
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.codexKind)
+
+        let entry = registry.entries[surfaceID]
+        XCTAssertEqual(entry?.state, .idle,
+                       "A same-kind MCP initialize must move a done row off done -- a fresh initialize is " +
+                       "evidence the agent is live again, not stranded behind the finished pane command")
+        XCTAssertEqual(entry?.source, .mcpConnection)
+        XCTAssertEqual(entry?.cwd, "/Users/dev/repo",
+                       "cwd must carry over from the replaced entry, exactly as the existing hooks+done case requires")
+    }
+
+    // MARK: - handleHookEvent: a done .mcpConnection row is never wholesale-replaced
+
+    // The non-SessionStart path below replaces any entry that isn't
+    // .hooks-sourced (`existing.source == .hooks` is the only guard
+    // letting a call fall through to the same-session update path
+    // instead) so a not-yet-.hooks .mcpConnection row can be promoted
+    // the moment a real hook event arrives -- see
+    // test_hookEventPromotesMCPConnectionEntryToAuthoritativeHooksEntry.
+    // That guard doesn't special-case .done, so a .done .mcpConnection
+    // row -- exactly what handlePaneCommandFinished produces for
+    // OpenCode and Hermes, which have no hooks of their own (or none
+    // Calyx trusts) -- must not be wholesale-replaced by a stray hook
+    // event the same way a not-yet-.hooks row is promoted: doing so
+    // would silently undo the settle through a path meant only to
+    // promote a live row, not resurrect a finished one.
+
+    func test_handleHookEvent_doneMCPConnectionEntry_stragglingStop_staysDone() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.hermesKind)
+        registry.handlePaneCommandFinished(surfaceID: surfaceID)
+        let before = registry.entries[surfaceID]
+        XCTAssertEqual(before?.state, .done, "Precondition: the pane signal settled the row")
+        XCTAssertEqual(before?.source, .mcpConnection, "Precondition")
+
+        registry.handleHookEvent(event("Stop", sessionID: "session-a"), surfaceID: surfaceID)
+
+        XCTAssertEqual(registry.entries[surfaceID], before,
+                       "A straggling Stop must not wholesale-replace a done mcpConnection row -- including no " +
+                       "lastEventAt churn, checked here by comparing the entire entry rather than state alone")
+    }
+
+    func test_handleHookEvent_doneMCPConnectionEntry_postToolUse_staysDone() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.openCodeKind)
+        registry.handlePaneCommandFinished(surfaceID: surfaceID)
+        let before = registry.entries[surfaceID]
+        XCTAssertEqual(before?.state, .done, "Precondition: the pane signal settled the row")
+        XCTAssertEqual(before?.source, .mcpConnection, "Precondition")
+
+        registry.handleHookEvent(event("PostToolUse", sessionID: "session-a"), surfaceID: surfaceID)
+
+        XCTAssertEqual(registry.entries[surfaceID], before,
+                       "A PostToolUse must not wholesale-replace a done mcpConnection row either -- including no " +
+                       "lastEventAt churn, checked here by comparing the entire entry rather than state alone")
+    }
+
+    // MARK: - handleHookEvent: a done row is absolutely terminal
+
+    // handlePaneCommandFinished excludes a stop-signal exit code (a
+    // suspended, still-alive foreground job -- see the "suspend vs.
+    // exit" tests above), so a .done row -- however it was produced, a
+    // real SessionEnd or handlePaneCommandFinished's own pane-exit
+    // signal -- is unambiguous evidence the session genuinely ended. The
+    // same-session guard in handleHookEvent therefore refuses every
+    // event once a row is .done, with no exception: each hook is an
+    // independent fire-and-forget POST, so an event that raced its own
+    // session's exit and lost is indistinguishable, at this guard, from
+    // a genuinely resumed session's fresh activity.
+
+    func test_handleHookEvent_sameSessionPreToolUseAfterSessionEnd_leavesRowDone() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("SessionEnd", sessionID: "session-a"), surfaceID: surfaceID)
+        let before = registry.entries[surfaceID]
+        XCTAssertEqual(before?.state, .done, "Precondition: the session ended")
+
+        registry.handleHookEvent(event("PreToolUse", sessionID: "session-a"), surfaceID: surfaceID)
+
+        XCTAssertEqual(registry.entries[surfaceID], before,
+                       "A same-session PreToolUse after SessionEnd must not revive a done row -- including no " +
+                       "lastEventAt churn, checked here by comparing the entire entry rather than state alone")
+    }
+
+    func test_handleHookEvent_sameSessionUserPromptSubmitAfterSessionEnd_leavesRowDone() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("SessionEnd", sessionID: "session-a"), surfaceID: surfaceID)
+        let before = registry.entries[surfaceID]
+        XCTAssertEqual(before?.state, .done, "Precondition: the session ended")
+
+        registry.handleHookEvent(event("UserPromptSubmit", sessionID: "session-a"), surfaceID: surfaceID)
+
+        XCTAssertEqual(registry.entries[surfaceID], before,
+                       "A same-session UserPromptSubmit after SessionEnd must not revive a done row -- including " +
+                       "no lastEventAt churn, checked here by comparing the entire entry rather than state alone")
+    }
+
+    func test_handleHookEvent_sameSessionPermissionRequestAfterSessionEnd_leavesRowDone() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("SessionEnd", sessionID: "session-a"), surfaceID: surfaceID)
+        let before = registry.entries[surfaceID]
+        XCTAssertEqual(before?.state, .done, "Precondition: the session ended")
+
+        registry.handleHookEvent(event("PermissionRequest", sessionID: "session-a"), surfaceID: surfaceID)
+
+        XCTAssertEqual(registry.entries[surfaceID], before,
+                       "A same-session PermissionRequest after SessionEnd must not revive a done row -- including " +
+                       "no lastEventAt churn, checked here by comparing the entire entry rather than state alone")
+    }
+
+    func test_handleHookEvent_sameSessionPostToolUseAfterSessionEnd_leavesRowDone() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("SessionEnd", sessionID: "session-a"), surfaceID: surfaceID)
+        let before = registry.entries[surfaceID]
+        XCTAssertEqual(before?.state, .done, "Precondition: the session ended")
+
+        registry.handleHookEvent(event("PostToolUse", sessionID: "session-a"), surfaceID: surfaceID)
+
+        XCTAssertEqual(registry.entries[surfaceID], before,
+                       "A same-session PostToolUse after SessionEnd must not revive a done row -- including no " +
+                       "lastEventAt churn, checked here by comparing the entire entry rather than state alone")
+    }
+
+    func test_handleHookEvent_sameSessionBlockedNotificationAfterSessionEnd_leavesRowDone() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("SessionEnd", sessionID: "session-a"), surfaceID: surfaceID)
+        let before = registry.entries[surfaceID]
+        XCTAssertEqual(before?.state, .done, "Precondition: the session ended")
+
+        registry.handleHookEvent(
+            event("Notification", sessionID: "session-a", message: "needs your permission"),
+            surfaceID: surfaceID
+        )
+
+        XCTAssertEqual(registry.entries[surfaceID], before,
+                       "A same-session blocked-matching Notification after SessionEnd must not revive a done row " +
+                       "-- including no lastEventAt churn, checked here by comparing the entire entry rather than " +
+                       "state alone")
+    }
+
+    func test_handleHookEvent_sameSessionNilMessageNotificationAfterSessionEnd_leavesRowDone() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("SessionEnd", sessionID: "session-a"), surfaceID: surfaceID)
+        let before = registry.entries[surfaceID]
+        XCTAssertEqual(before?.state, .done, "Precondition: the session ended")
+
+        registry.handleHookEvent(
+            event("Notification", sessionID: "session-a", message: nil),
+            surfaceID: surfaceID
+        )
+
+        XCTAssertEqual(registry.entries[surfaceID], before,
+                       "A same-session nil-message Notification after SessionEnd must not revive a done row -- " +
+                       "including no lastEventAt churn, checked here by comparing the entire entry rather than " +
+                       "state alone")
+    }
+
+    func test_handleHookEvent_sameSessionNonMatchingNotificationAfterSessionEnd_leavesRowDone() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("SessionEnd", sessionID: "session-a"), surfaceID: surfaceID)
+        let before = registry.entries[surfaceID]
+        XCTAssertEqual(before?.state, .done, "Precondition: the session ended")
+
+        registry.handleHookEvent(
+            event("Notification", sessionID: "session-a", message: "Unrelated notification text"),
+            surfaceID: surfaceID
+        )
+
+        XCTAssertEqual(registry.entries[surfaceID], before,
+                       "A Notification whose message doesn't match blockedNotificationPatterns resolves to nil and " +
+                       "returns before the done-row guard is ever reached, so it must not touch an already-done row " +
+                       "-- including no lastEventAt churn, checked here by comparing the entire entry rather than " +
+                       "state alone")
+    }
+
+    func test_handleHookEvent_sameSessionSessionEndAfterSessionEnd_leavesRowDone() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("SessionEnd", sessionID: "session-a"), surfaceID: surfaceID)
+        let before = registry.entries[surfaceID]
+        XCTAssertEqual(before?.state, .done, "Precondition: the session ended")
+
+        registry.handleHookEvent(event("SessionEnd", sessionID: "session-a"), surfaceID: surfaceID)
+
+        XCTAssertEqual(registry.entries[surfaceID], before,
+                       "SessionEnd resolves to .done, not a raising state, so a repeat same-session SessionEnd " +
+                       "must not rewrite an already-done row -- including no lastEventAt churn, checked here by " +
+                       "comparing the entire entry rather than state alone")
+    }
 }

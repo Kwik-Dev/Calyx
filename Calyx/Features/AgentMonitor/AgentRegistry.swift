@@ -4,6 +4,7 @@
 // Source of truth for AI agent state in the Agents sidebar. One surface
 // (pane) maps to at most one AgentEntry.
 
+import Darwin
 import Foundation
 
 @MainActor
@@ -254,18 +255,22 @@ final class AgentRegistry {
     /// event arrives, and for a pane whose hook entries its CLI has not
     /// been trusted to run.
     ///
-    /// A same-kind `.hooks` entry remains authoritative, with one
-    /// exception: `.done`. A pane already holding a finished `.hooks` row
-    /// that starts a fresh agent session whose hook entries have not
-    /// fired yet reports that new session through this `initialize` call
-    /// alone, so a `.done` `.hooks` entry falls through to the replace
-    /// branch below instead of returning early -- becoming a live
-    /// `.idle` `.mcpConnection` entry with `cwd` preserved, rather than
-    /// stranding the live session behind the finished one's row. A later
-    /// real hook event promotes an `.mcpConnection` entry through
-    /// `handleHookEvent`'s existing non-hooks replacement path. Repeated
-    /// initialize requests for the same kind only refresh presence and
-    /// preserve the current screen-classified state.
+    /// A same-kind `.hooks` or `.mcpConnection` entry remains
+    /// authoritative, with one exception: `.done`. A pane already
+    /// holding a finished row -- a `.hooks` entry settled by a real
+    /// `SessionEnd`, or either source settled by
+    /// `handlePaneCommandFinished`'s pane-exit signal -- that starts a
+    /// fresh agent session whose hook entries have not fired yet (or,
+    /// for a kind with no hooks at all, e.g. Hermes, never will) reports
+    /// that new session through this `initialize` call alone, so a
+    /// `.done` entry falls through to the replace branch below instead
+    /// of returning early -- becoming a live `.idle` `.mcpConnection`
+    /// entry with `cwd` preserved, rather than stranding the live
+    /// session behind the finished one's row. A later real hook event
+    /// promotes an `.mcpConnection` entry through `handleHookEvent`'s
+    /// existing non-hooks replacement path. Repeated initialize requests
+    /// for the same kind and not already `.done` only refresh presence
+    /// and preserve the current screen-classified state.
     func handleMCPConnection(surfaceID: UUID, kind: String, now: Date = Date()) {
         heuristicMissStreaks.removeValue(forKey: surfaceID)
 
@@ -273,7 +278,7 @@ final class AgentRegistry {
             if existing.source == .hooks, existing.kind == kind, existing.state != .done {
                 return
             }
-            if existing.source == .mcpConnection, existing.kind == kind {
+            if existing.source == .mcpConnection, existing.kind == kind, existing.state != .done {
                 existing.lastEventAt = now
                 entries[surfaceID] = existing
                 return
@@ -327,15 +332,26 @@ final class AgentRegistry {
     ///   is an independent fire-and-forget POST, so a turn's own `Stop`
     ///   can be delivered after the exit path's `SessionEnd` already
     ///   settled the row (the same out-of-order delivery risk the
-    ///   `PreToolUse` guard below protects `.blocked` against). Only that
-    ///   `SessionStart` re-send or a session mismatch (below) can move a
-    ///   `.done` row again.
+    ///   `PreToolUse` guard below protects `.blocked` against). `.done`
+    ///   is reachable not only from a real `SessionEnd` here but from
+    ///   `handlePaneCommandFinished`'s pane-exit signal too, which
+    ///   excludes a stop-signal exit code (a suspended, still-alive
+    ///   foreground job) -- so however a row reached `.done`, that's
+    ///   unambiguous evidence the session genuinely ended, and this guard
+    ///   refuses every same-session event with no exception: an event
+    ///   that raced its own session's exit and lost is indistinguishable,
+    ///   at this point, from a genuinely resumed session's fresh
+    ///   activity. Only that `SessionStart` re-send or a session mismatch
+    ///   (below) can move a `.done` row again.
     /// - Every other recognized event only applies when the surface is
-    ///   unregistered (or still `.titleHeuristic`-sourced, promoting it to
-    ///   `.hooks`) or its `sessionID` matches the entry's. A session
-    ///   mismatch replaces the entry when the existing one is `.done` (a
-    ///   stale session that has already ended) or the incoming event is
-    ///   forward-moving (`UserPromptSubmit` / `PreToolUse` / `PostToolUse`
+    ///   unregistered, or still `.titleHeuristic`- or `.mcpConnection`-
+    ///   sourced and not already `.done` (promoting it to `.hooks`), or
+    ///   its `sessionID` matches the entry's. A `.done` `.titleHeuristic`/
+    ///   `.mcpConnection` row is left untouched by this branch instead of
+    ///   wholesale-replaced -- see the guard's own comment below for why.
+    ///   A session mismatch replaces the entry when the existing one is
+    ///   `.done` (a stale session that has already ended) or the incoming
+    ///   event is forward-moving (`UserPromptSubmit` / `PreToolUse` / `PostToolUse`
     ///   — a new session already under way that Calyx never saw a
     ///   `SessionStart` for, e.g. because IPC was enabled mid-session).
     ///   Otherwise — a mismatched `Stop` / `SessionEnd` / `Notification` —
@@ -418,6 +434,14 @@ final class AgentRegistry {
         guard let newState = Self.resultingState(for: event) else { return }
 
         guard let existing = entries[surfaceID], existing.source == .hooks else {
+            // A `.done` row is never wholesale-replaced here, regardless
+            // of its source: `handlePaneCommandFinished`'s pane-exit
+            // signal makes `.done` reachable for an `.mcpConnection` entry
+            // too (OpenCode, Hermes), and replacing it the moment a stray
+            // resolved event arrives would silently undo that settle --
+            // see this method's doc comment. Only `handleMCPConnection`'s
+            // own fresh initialize moves such a row off `.done`.
+            guard entries[surfaceID]?.state != .done else { return }
             // Unregistered surface, or a `.titleHeuristic` entry not yet
             // promoted: register/promote using this event's session/cwd.
             entries[surfaceID] = makeEntry(state: newState)
@@ -433,9 +457,9 @@ final class AgentRegistry {
             return
         }
 
-        // SessionEnd is terminal within a session -- see this method's
-        // doc comment for why a late same-session event must not move a
-        // `.done` row again.
+        // A `.done` row is terminal within a session -- see this method's
+        // doc comment for why a late same-session event must not move it
+        // again.
         guard existing.state != .done else { return }
 
         // Round 4 review: `calyx-agent-hook`'s command entries all run
@@ -529,6 +553,108 @@ final class AgentRegistry {
         default:
             return nil
         }
+    }
+
+    // MARK: - Pane Command Lifecycle (Shell Integration)
+
+    /// POSIX signals that can only stop (suspend) a process, never
+    /// terminate it -- unlike every other signal, delivering one of these
+    /// leaves the process alive, waiting to be resumed (e.g. `fg` after a
+    /// shell reports it stopped). A shell reports `128 + signal` as its
+    /// exit status for a job a signal stopped or killed, so `128 + <one
+    /// of these>` is treated as evidence the pane's foreground process is
+    /// still alive -- see `handlePaneCommandFinished`. That evidence is
+    /// not certain: a process that genuinely exits with status 146 (or
+    /// 145/149/150) is indistinguishable from a suspend by this check
+    /// alone. The mistake is deliberately one-directional -- a false
+    /// "still alive" only leaves a `.hooks`/`.mcpConnection` row live
+    /// rather than settling it, never the reverse of wrongly settling a
+    /// row (and expiring its pending approvals) out from under an agent
+    /// that is actually still running.
+    private static let stopSignals: Set<Int32> = [SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU]
+
+    /// Whether `exitCode` is a shell's `128 + signal` report for one of
+    /// `stopSignals` -- i.e. positive evidence the pane's foreground job
+    /// was merely suspended, not exited. `exitCode > 128` is checked
+    /// before subtracting so an adversarial `exitCode` near `Int32.min`
+    /// (accepted as-is by `CommandEvent.decode`) can never underflow the
+    /// subtraction and trap; it also doubles as the only arithmetically
+    /// possible range for a `128 + signal` report to begin with. `nil`
+    /// (no exit code reported) is never treated as a stop signal: this
+    /// check can only recognize a SPECIFIC known value, never infer one
+    /// it wasn't given -- see `handlePaneCommandFinished`'s doc comment
+    /// for why a `nil` code settles rather than being treated
+    /// conservatively.
+    private static func isStopSignalExitCode(_ exitCode: Int32?) -> Bool {
+        guard let exitCode, exitCode > 128 else { return false }
+        return stopSignals.contains(exitCode - 128)
+    }
+
+    /// Settles `surfaceID`'s entry to `.done` in response to the pane's
+    /// shell integration reporting a `/command-event` with `phase: end`:
+    /// zsh's `precmd` / fish's `fish_postexec` firing means the pane's
+    /// foreground command finished and the prompt returned. Both shell
+    /// integration bodies `ShellIntegrationInstaller` installs are
+    /// interactive-only (`[[ -o interactive ]]` for zsh, `status
+    /// --is-interactive` for fish), so a non-interactive shell an agent
+    /// spawns for its own tool calls never emits this signal -- making it
+    /// a trustworthy proxy for "the pane's foreground agent process
+    /// exited" even for a CLI kind with no way to self-report its own
+    /// exit (OpenCode's plugin event vocabulary has no process-exit
+    /// event; Hermes has no hooks at all), and a backstop for a CLI whose
+    /// hooks were never trusted to run, or one that exits via
+    /// SIGKILL/crash before a hook fires.
+    ///
+    /// `phase: end` also fires when the foreground job is merely
+    /// SUSPENDED (e.g. Ctrl-Z), not exited. This registry recognizes that
+    /// case through two routes: the shell reporting `exitCode` as
+    /// `128 + <stop signal>` (`isStopSignalExitCode`) -- a convention
+    /// zsh's own `$?` satisfies natively -- or the caller passing
+    /// `suspended: true`. The latter exists because fish's own `$status`
+    /// inside `fish_postexec` does not change on a suspend (it keeps the
+    /// PREVIOUS command's real exit code instead), so
+    /// `ShellIntegrationInstaller.fishIntegrationBody`'s `_calyx_postexec`
+    /// cannot signal a suspend through `exitCode` at all -- it detects a
+    /// lingering stopped job via `jobs` and reports that through this
+    /// separate flag instead, leaving `exitCode` free to carry fish's
+    /// real (if occasionally stale for the suspended command's own
+    /// record -- see that method's own doc comment) `$status`. Either
+    /// route excludes the event from settling the row -- the job is
+    /// still alive, about to be resumed with `fg`. Every other case,
+    /// including `exitCode` of `nil` with `suspended` false (no code
+    /// reported at all, so there is no positive evidence of a suspend to
+    /// exclude), settles it.
+    ///
+    /// Settles only a `.hooks` or `.mcpConnection` entry not already
+    /// `.done`. A `.titleHeuristic` row is left alone -- it retires
+    /// itself through its own miss-streak bookkeeping
+    /// (`heuristicMissStreaks`) instead. An already-`.done` row is left
+    /// alone too (no `lastEventAt` churn), an unregistered surface stays
+    /// unregistered (this never creates a row), and `externalEntries`
+    /// (herdr rows, not keyed by a `SurfaceRegistry` UUID) is never
+    /// touched.
+    ///
+    /// Returns whether this call actually transitioned the row to
+    /// `.done` -- `false` for every guard above, `.hooks`-source-mismatch
+    /// case, and suspend exclusion (either route) included.
+    /// `CalyxMCPServer.routeCommandEvent` consults this to decide whether
+    /// to also expire that surface's pending approvals
+    /// (`ApprovalInboxStore.expireForSurface`): a suspend, or any other
+    /// reason this call didn't settle anything, must not cancel an
+    /// approval request the still-alive agent is waiting on.
+    @discardableResult
+    func handlePaneCommandFinished(
+        surfaceID: UUID, exitCode: Int32? = nil, suspended: Bool = false, now: Date = Date()
+    ) -> Bool {
+        guard var existing = entries[surfaceID] else { return false }
+        guard existing.source == .hooks || existing.source == .mcpConnection else { return false }
+        guard existing.state != .done else { return false }
+        guard !suspended, !Self.isStopSignalExitCode(exitCode) else { return false }
+
+        existing.state = .done
+        existing.lastEventAt = now
+        entries[surfaceID] = existing
+        return true
     }
 
     // MARK: - Heuristic Signal Arbitration
@@ -668,7 +794,12 @@ final class AgentRegistry {
     /// self-report is authoritative). An `.mcpConnection` entry uses the
     /// screen result for state while retaining the row on `nil`: the MCP
     /// initialize is independent evidence that the pane hosts an agent, so
-    /// an unrecognized idle screen must not retire it. An existing
+    /// an unrecognized idle screen must not retire it. A `.done`
+    /// `.mcpConnection` entry -- settled by `handlePaneCommandFinished`'s
+    /// pane-exit signal -- is left untouched rather than folded into that
+    /// `nil`-retains-the-row handling: the Agents sidebar polls screen
+    /// classification every two seconds, so without this guard a settled
+    /// row would revert off `.done` almost immediately. An existing
     /// `.titleHeuristic` entry is updated as an *authoritative* signal
     /// (`applyHeuristicState`) —
     /// `.blocked` / `.working` reflected as-is (and resetting the
@@ -695,6 +826,7 @@ final class AgentRegistry {
             return
         }
         if existing.source == .mcpConnection {
+            guard existing.state != .done else { return }
             let newState = state ?? .idle
             guard existing.state != newState else { return }
             var updated = existing

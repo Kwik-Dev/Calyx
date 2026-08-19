@@ -37,6 +37,17 @@ enum OpenCodePluginManager: Sendable {
 
     import { stat } from "node:fs/promises";
 
+    // opencode 1.18.18's plugin event vocabulary has no process-exit
+    // event, so a plugin cannot report one. Exiting the process leaves
+    // the session undeleted, so `session.deleted` (and the
+    // `SessionEnd` it maps to below) fires only on an actual session
+    // deletion, not on process exit. The pane's own exit signal
+    // (AgentRegistry.handlePaneCommandFinished, fed by
+    // `/command-event`) is what settles the row once the process is
+    // gone -- but only once Command Tracking is enabled
+    // (CommandTrackingSettings.trackingEnabled) and the pane is running
+    // an interactive zsh or fish, the only two shells
+    // ShellIntegrationInstaller installs into.
     const EVENT_MAP = {
       "session.created": "SessionStart",
       "tool.execute.before": "PreToolUse",

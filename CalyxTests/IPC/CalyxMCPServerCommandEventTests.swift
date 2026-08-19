@@ -63,16 +63,26 @@ final class CalyxMCPServerCommandEventTests: XCTestCase {
         Data(string.utf8).base64EncodedString()
     }
 
-    private func commandStartBody(cmdID: String, command: String = "ls -la", cwd: String = "/tmp") -> Data {
-        Data("""
-        {"phase":"start","cmd_id":"\(cmdID)","command_b64":"\(b64(command))","cwd_b64":"\(b64(cwd))"}
+    /// `ts` (epoch milliseconds) is included only when non-nil, so every
+    /// existing call site that doesn't pass it keeps decoding exactly as
+    /// before (CommandEvent.decode falls back to CommandLogStore.now()).
+    private func commandStartBody(cmdID: String, command: String = "ls -la", cwd: String = "/tmp", ts: Date? = nil) -> Data {
+        let tsField = ts.map { ",\"ts\":\(Int($0.timeIntervalSince1970 * 1000))" } ?? ""
+        return Data("""
+        {"phase":"start","cmd_id":"\(cmdID)","command_b64":"\(b64(command))","cwd_b64":"\(b64(cwd))"\(tsField)}
         """.utf8)
     }
 
-    private func commandEndBody(cmdID: String, exitCode: Int32?) -> Data {
+    /// `suspended` (a boolean flag distinct from exit_code -- see
+    /// ShellIntegrationInstaller.fishIntegrationBody's own doc comment
+    /// for why fish must report a suspend this way) is likewise included
+    /// only when non-nil.
+    private func commandEndBody(cmdID: String, exitCode: Int32?, ts: Date? = nil, suspended: Bool? = nil) -> Data {
         let exitCodeJSON = exitCode.map(String.init) ?? "null"
+        let tsField = ts.map { ",\"ts\":\(Int($0.timeIntervalSince1970 * 1000))" } ?? ""
+        let suspendedField = suspended.map { ",\"suspended\":\($0)" } ?? ""
         return Data("""
-        {"phase":"end","cmd_id":"\(cmdID)","exit_code":\(exitCodeJSON)}
+        {"phase":"end","cmd_id":"\(cmdID)","exit_code":\(exitCodeJSON)\(tsField)\(suspendedField)}
         """.utf8)
     }
 
@@ -265,5 +275,368 @@ final class CalyxMCPServerCommandEventTests: XCTestCase {
         let record = try XCTUnwrap(records.first)
         XCTAssertEqual(record.state, .finished)
         XCTAssertEqual(record.exitCode, 42)
+    }
+
+    // MARK: - AgentRegistry settle on phase: end (pane-level exit signal)
+
+    // OpenCode and Hermes are the two kinds with no way to report their
+    // own process exit: OpenCode's plugin event vocabulary has no
+    // process-exit event, and Hermes has no hooks at all. phase: end --
+    // the pane's foreground command finishing and the prompt returning --
+    // is the signal that settles their row instead.
+
+    func test_routeCommandEvent_phaseEnd_settlesAgentRegistryRowToDone() async throws {
+        let store = CommandLogStore()
+        server.commandLogStore = store
+        let registry = AgentRegistry()
+        server.agentRegistry = registry
+        let surfaceID = UUID()
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.hermesKind)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle, "Precondition")
+
+        let startResponse = await server.route(request: commandEventRequest(
+            token: testToken, surfaceIDHeader: surfaceID.uuidString,
+            body: commandStartBody(cmdID: "cmd-exit", command: "make build", cwd: "/Users/dev/repo")
+        ))
+        XCTAssertEqual(startResponse.statusCode, 204)
+
+        let endResponse = await server.route(request: commandEventRequest(
+            token: testToken, surfaceIDHeader: surfaceID.uuidString,
+            body: commandEndBody(cmdID: "cmd-exit", exitCode: 0)
+        ))
+
+        XCTAssertEqual(endResponse.statusCode, 204)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .done,
+                       "A phase: end command event is the pane's foreground command finishing -- it must " +
+                       "settle the surface's Agents row for a CLI kind with no exit hook of its own")
+
+        let records = store.records(surfaceID: surfaceID, limit: nil, state: nil)
+        XCTAssertEqual(records.count, 1, "The existing commandLogStore ingest behavior must be unchanged")
+        let record = try XCTUnwrap(records.first)
+        XCTAssertEqual(record.state, .finished)
+        XCTAssertEqual(record.exitCode, 0)
+    }
+
+    func test_routeCommandEvent_phaseStart_doesNotSettleAgentRegistryRow() async throws {
+        let store = CommandLogStore()
+        server.commandLogStore = store
+        let registry = AgentRegistry()
+        server.agentRegistry = registry
+        let surfaceID = UUID()
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.openCodeKind)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle, "Precondition")
+
+        let response = await server.route(request: commandEventRequest(
+            token: testToken, surfaceIDHeader: surfaceID.uuidString,
+            body: commandStartBody(cmdID: "cmd-start-only", command: "ls -la", cwd: "/tmp")
+        ))
+
+        XCTAssertEqual(response.statusCode, 204)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle,
+                       "A phase: start command event is the pane's foreground command STARTING, not " +
+                       "finishing, and must not settle the Agents row")
+        XCTAssertEqual(registry.entries[surfaceID]?.source, .mcpConnection)
+
+        let records = store.records(surfaceID: surfaceID, limit: nil, state: nil)
+        XCTAssertEqual(records.count, 1, "The existing commandLogStore ingest behavior must be unchanged")
+        XCTAssertEqual(records.first?.state, .running)
+    }
+
+    // MARK: - AgentRegistry settle also expires pending approvals (pane exit)
+
+    // ApprovalRequest.targetSurfaceID scopes a pending Cockpit approval
+    // to one surface; ApprovalInboxStore.expireForSurface(_:) is
+    // otherwise wired only to SurfaceRegistry's own pane teardown. When
+    // only the agent process dies and the pane itself stays open,
+    // nothing expires a request still waiting on that dead agent's
+    // behalf -- its banner, and its MCP caller's long-poll, would both
+    // outlive the process that asked, for up to
+    // approvalRequestTimeoutMs. A suspend must not expire anything: the
+    // process that asked is still alive, about to resume.
+
+    func test_routeCommandEvent_phaseEndSettlesRow_alsoExpiresPendingApprovalsForThatSurface() async throws {
+        let store = CommandLogStore()
+        server.commandLogStore = store
+        let registry = AgentRegistry()
+        server.agentRegistry = registry
+        let inbox = ApprovalInboxStore()
+        server.approvalInbox = inbox
+        let surfaceID = UUID()
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.hermesKind)
+        let request = ApprovalRequest(
+            id: UUID(), source: .mcpTool(name: "pane_run"), targetSurfaceID: surfaceID,
+            payload: "ls", createdAt: Date()
+        )
+        inbox.submit(request)
+        XCTAssertEqual(inbox.pending.map(\.id), [request.id], "Precondition")
+
+        let startResponse = await server.route(request: commandEventRequest(
+            token: testToken, surfaceIDHeader: surfaceID.uuidString,
+            body: commandStartBody(cmdID: "cmd-approval-exit", command: "make build", cwd: "/Users/dev/repo")
+        ))
+        XCTAssertEqual(startResponse.statusCode, 204)
+
+        let endResponse = await server.route(request: commandEventRequest(
+            token: testToken, surfaceIDHeader: surfaceID.uuidString,
+            body: commandEndBody(cmdID: "cmd-approval-exit", exitCode: 0)
+        ))
+
+        XCTAssertEqual(endResponse.statusCode, 204)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .done, "Precondition: the pane signal settled the row")
+        XCTAssertTrue(inbox.pending.isEmpty,
+                      "A phase: end that settles the agent row must also expire that surface's pending approvals")
+        let decision = await inbox.awaitDecision(id: request.id, timeoutMs: 250)
+        XCTAssertEqual(decision, .expired,
+                       "The MCP caller's own long-poll must resolve .expired rather than outlive the dead agent")
+    }
+
+    func test_routeCommandEvent_phaseEndSuspend_doesNotExpirePendingApprovals() async throws {
+        let store = CommandLogStore()
+        server.commandLogStore = store
+        let registry = AgentRegistry()
+        server.agentRegistry = registry
+        let inbox = ApprovalInboxStore()
+        server.approvalInbox = inbox
+        let surfaceID = UUID()
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.hermesKind)
+        let request = ApprovalRequest(
+            id: UUID(), source: .mcpTool(name: "pane_run"), targetSurfaceID: surfaceID,
+            payload: "ls", createdAt: Date()
+        )
+        inbox.submit(request)
+
+        let startResponse = await server.route(request: commandEventRequest(
+            token: testToken, surfaceIDHeader: surfaceID.uuidString,
+            body: commandStartBody(cmdID: "cmd-approval-suspend", command: "make build", cwd: "/Users/dev/repo")
+        ))
+        XCTAssertEqual(startResponse.statusCode, 204)
+
+        // 146 = 128 + SIGTSTP: Ctrl-Z suspended the command, the process
+        // is still alive.
+        let endResponse = await server.route(request: commandEventRequest(
+            token: testToken, surfaceIDHeader: surfaceID.uuidString,
+            body: commandEndBody(cmdID: "cmd-approval-suspend", exitCode: 146)
+        ))
+
+        XCTAssertEqual(endResponse.statusCode, 204)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle,
+                       "A suspend must not settle the row (see the handlePaneCommandFinished suspend-vs-exit tests)")
+        XCTAssertEqual(inbox.pending.map(\.id), [request.id],
+                       "A suspend must not expire pending approvals -- the agent that asked is still alive")
+    }
+
+    // MARK: - AgentRegistry settle: fish's suspend flag (separate from exit_code)
+
+    // fish's own $status inside fish_postexec cannot itself distinguish a
+    // Ctrl-Z suspend from the previous command's real exit code (see
+    // ShellIntegrationInstaller.fishIntegrationBody's own doc comment),
+    // so the shell integration reports a suspend through a separate
+    // "suspended" flag instead of overloading exit_code. These tests
+    // drive that flag over the wire, through CommandEvent's own
+    // suspended property, into the settle decision -- a suspend test
+    // should reach for that property rather than hand-parsing the body
+    // or adding a second plumbing path. An ordinary exit code (0, 1)
+    // alongside "suspended":true is the realistic case: while any job
+    // stays stopped in the pane, EVERY later command's own end event
+    // carries that same ordinary exit code plus the flag, and it must
+    // be excluded from settling exactly like zsh's native stop-signal
+    // exit code already is, with the real exit code still recorded in
+    // the command log.
+
+    func test_routeCommandEvent_phaseEndSuspendedTrue_ordinaryExitCode0_doesNotSettleOrExpireApprovals() async throws {
+        let store = CommandLogStore()
+        server.commandLogStore = store
+        let registry = AgentRegistry()
+        server.agentRegistry = registry
+        let inbox = ApprovalInboxStore()
+        server.approvalInbox = inbox
+        let surfaceID = UUID()
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.hermesKind)
+        let request = ApprovalRequest(
+            id: UUID(), source: .mcpTool(name: "pane_run"), targetSurfaceID: surfaceID,
+            payload: "ls", createdAt: Date()
+        )
+        inbox.submit(request)
+
+        let startResponse = await server.route(request: commandEventRequest(
+            token: testToken, surfaceIDHeader: surfaceID.uuidString,
+            body: commandStartBody(cmdID: "cmd-fish-suspend-0", command: "sleep 300", cwd: "/Users/dev/repo")
+        ))
+        XCTAssertEqual(startResponse.statusCode, 204)
+
+        let endResponse = await server.route(request: commandEventRequest(
+            token: testToken, surfaceIDHeader: surfaceID.uuidString,
+            body: commandEndBody(cmdID: "cmd-fish-suspend-0", exitCode: 0, suspended: true)
+        ))
+
+        XCTAssertEqual(endResponse.statusCode, 204)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle,
+                       "suspended:true with an ordinary exit code must not settle the row -- the pane's " +
+                       "foreground job is still alive, merely stopped")
+        XCTAssertEqual(inbox.pending.map(\.id), [request.id],
+                       "a suspend must not expire pending approvals -- the agent that asked is still alive")
+
+        let record = try XCTUnwrap(store.records(surfaceID: surfaceID, limit: nil, state: nil).first)
+        XCTAssertEqual(record.state, .finished)
+        XCTAssertEqual(record.exitCode, 0,
+                       "the command log must record the real exit code carried on the wire -- never a value " +
+                       "derived from the suspended flag, which is the finding this test pins directly")
+    }
+
+    func test_routeCommandEvent_phaseEndSuspendedTrue_ordinaryExitCode1_doesNotSettleOrExpireApprovals() async throws {
+        let store = CommandLogStore()
+        server.commandLogStore = store
+        let registry = AgentRegistry()
+        server.agentRegistry = registry
+        let inbox = ApprovalInboxStore()
+        server.approvalInbox = inbox
+        let surfaceID = UUID()
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.hermesKind)
+        let request = ApprovalRequest(
+            id: UUID(), source: .mcpTool(name: "pane_run"), targetSurfaceID: surfaceID,
+            payload: "ls", createdAt: Date()
+        )
+        inbox.submit(request)
+
+        let startResponse = await server.route(request: commandEventRequest(
+            token: testToken, surfaceIDHeader: surfaceID.uuidString,
+            body: commandStartBody(cmdID: "cmd-fish-suspend-1", command: "npm test", cwd: "/Users/dev/repo")
+        ))
+        XCTAssertEqual(startResponse.statusCode, 204)
+
+        let endResponse = await server.route(request: commandEventRequest(
+            token: testToken, surfaceIDHeader: surfaceID.uuidString,
+            body: commandEndBody(cmdID: "cmd-fish-suspend-1", exitCode: 1, suspended: true)
+        ))
+
+        XCTAssertEqual(endResponse.statusCode, 204)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle,
+                       "suspended:true must exclude the row from settling regardless of which ordinary exit " +
+                       "code accompanies it")
+        XCTAssertEqual(inbox.pending.map(\.id), [request.id],
+                       "a suspend must not expire pending approvals -- the agent that asked is still alive")
+
+        let record = try XCTUnwrap(store.records(surfaceID: surfaceID, limit: nil, state: nil).first)
+        XCTAssertEqual(record.state, .finished)
+        XCTAssertEqual(record.exitCode, 1, "the real exit code must be recorded, never a value derived from the flag")
+    }
+
+    func test_routeCommandEvent_phaseEndSuspendedFalseExplicit_ordinaryExitCode_settles() async throws {
+        let store = CommandLogStore()
+        server.commandLogStore = store
+        let registry = AgentRegistry()
+        server.agentRegistry = registry
+        let surfaceID = UUID()
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.hermesKind)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle, "Precondition")
+
+        let startResponse = await server.route(request: commandEventRequest(
+            token: testToken, surfaceIDHeader: surfaceID.uuidString,
+            body: commandStartBody(cmdID: "cmd-suspended-false", command: "make build", cwd: "/Users/dev/repo")
+        ))
+        XCTAssertEqual(startResponse.statusCode, 204)
+
+        let endResponse = await server.route(request: commandEventRequest(
+            token: testToken, surfaceIDHeader: surfaceID.uuidString,
+            body: commandEndBody(cmdID: "cmd-suspended-false", exitCode: 0, suspended: false)
+        ))
+
+        XCTAssertEqual(endResponse.statusCode, 204)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .done,
+                       "an explicit suspended:false must settle exactly like the key being absent -- the " +
+                       "exclusion must key on the flag's value, not merely its presence in the payload")
+    }
+
+    // MARK: - AgentRegistry settle must not fire for an end CommandLogStore rejects
+
+    // CommandLogStore.ingestEnd silently drops an end event that is not
+    // a genuine match for the currently running record: one whose ts
+    // predates it (a stale end from a previous, already-orphaned
+    // instance of a recycled cmd_id), or a duplicate/late end for a
+    // cmd_id that's already finalized. The agent-row settle must fire
+    // only when the command log itself accepted the end event -- a
+    // duplicate or late end the command log drops must not settle a
+    // live row either, so a retried curl POST (or any other duplicate/
+    // late end) can never kill a live agent row while the command log
+    // correctly records nothing.
+
+    func test_routeCommandEvent_endTsPredatesRunningRecord_rejectedByCommandLog_doesNotSettleRow() async throws {
+        let store = CommandLogStore()
+        server.commandLogStore = store
+        let registry = AgentRegistry()
+        server.agentRegistry = registry
+        let surfaceID = UUID()
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.openCodeKind)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle, "Precondition")
+
+        let runningStartedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let staleEndTs = Date(timeIntervalSince1970: 1_699_999_000) // Before runningStartedAt.
+
+        let startResponse = await server.route(request: commandEventRequest(
+            token: testToken, surfaceIDHeader: surfaceID.uuidString,
+            body: commandStartBody(cmdID: "cmd-stale-ts", command: "make build", cwd: "/tmp", ts: runningStartedAt)
+        ))
+        XCTAssertEqual(startResponse.statusCode, 204)
+
+        let endResponse = await server.route(request: commandEventRequest(
+            token: testToken, surfaceIDHeader: surfaceID.uuidString,
+            body: commandEndBody(cmdID: "cmd-stale-ts", exitCode: 0, ts: staleEndTs)
+        ))
+
+        XCTAssertEqual(endResponse.statusCode, 204)
+        let records = store.records(surfaceID: surfaceID, limit: nil, state: nil)
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records.first?.state, .running,
+                       "Precondition check: CommandLogStore must have actually rejected this end -- the record " +
+                       "must still be running, with no exit code recorded")
+        XCTAssertNil(records.first?.exitCode)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle,
+                       "An end event the command log itself rejected must not settle the agent row either")
+    }
+
+    func test_routeCommandEvent_duplicateEndForAlreadyFinalizedCmdID_rejectedByCommandLog_doesNotSettleRow() async throws {
+        let store = CommandLogStore()
+        server.commandLogStore = store
+        let registry = AgentRegistry()
+        server.agentRegistry = registry
+        let surfaceID = UUID()
+
+        // No agent row exists yet -- this first start+end pair finalizes
+        // the command log entirely independently of the agent registry.
+        let startResponse = await server.route(request: commandEventRequest(
+            token: testToken, surfaceIDHeader: surfaceID.uuidString,
+            body: commandStartBody(cmdID: "cmd-dup-end", command: "make build", cwd: "/tmp")
+        ))
+        XCTAssertEqual(startResponse.statusCode, 204)
+        let firstEndResponse = await server.route(request: commandEventRequest(
+            token: testToken, surfaceIDHeader: surfaceID.uuidString,
+            body: commandEndBody(cmdID: "cmd-dup-end", exitCode: 0)
+        ))
+        XCTAssertEqual(firstEndResponse.statusCode, 204)
+        XCTAssertEqual(store.records(surfaceID: surfaceID, limit: nil, state: nil).first?.state, .finished,
+                       "Precondition: the command log finalized this cmd_id")
+
+        // The agent row registers only now, after the command log
+        // already finalized cmd-dup-end -- so a settle below could only
+        // come from this surface's NEXT end event, not from that first
+        // one.
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.openCodeKind)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle, "Precondition")
+
+        // A retried/duplicate end for the same cmd_id, now already
+        // finalized -- CommandLogStore.ingestEnd drops this silently
+        // rather than re-finalizing or buffering it.
+        let duplicateEndResponse = await server.route(request: commandEventRequest(
+            token: testToken, surfaceIDHeader: surfaceID.uuidString,
+            body: commandEndBody(cmdID: "cmd-dup-end", exitCode: 1)
+        ))
+
+        XCTAssertEqual(duplicateEndResponse.statusCode, 204)
+        let records = store.records(surfaceID: surfaceID, limit: nil, state: nil)
+        XCTAssertEqual(records.count, 1,
+                       "Precondition check: the duplicate end must not have created or altered any record")
+        XCTAssertEqual(records.first?.exitCode, 0, "The original exit code must be unchanged by the duplicate end")
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle,
+                       "A duplicate end for an already-finalized cmd_id must not settle the agent row")
     }
 }

@@ -350,6 +350,33 @@ final class CommandLogStoreTests: XCTestCase {
         XCTAssertEqual(record.startedAt, firstStartedAt)
     }
 
+    func test_ingestEnd_suspendedFlagOnWirePayload_isIgnored_recordsRealExitCode() throws {
+        // Constructed via CommandEvent.decode(from:), not the endEvent(...)
+        // helper above: "suspended" arrives over the wire as JSON, and
+        // ingestion must ignore it regardless of whether CommandEvent
+        // itself surfaces it as a stored field -- exit_code alone
+        // determines the recorded value, exactly as for any other event.
+        let store = CommandLogStore()
+        let surfaceID = UUID()
+        let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        store.ingest(startEvent(cmdID: "cmd-suspend-wire", ts: startedAt), surfaceID: surfaceID)
+
+        let endJSON = Data("""
+        { "phase": "end", "cmd_id": "cmd-suspend-wire", "exit_code": 0, "suspended": true }
+        """.utf8)
+        let decodedEndEvent = try XCTUnwrap(CommandEvent.decode(from: endJSON))
+
+        store.ingest(decodedEndEvent, surfaceID: surfaceID)
+
+        let records = store.records(surfaceID: surfaceID, limit: nil, state: nil)
+        XCTAssertEqual(records.count, 1)
+        let record = try XCTUnwrap(records.first)
+        XCTAssertEqual(record.state, .finished)
+        XCTAssertEqual(record.exitCode, 0,
+                       "the suspended flag must never influence the recorded exit code -- 0 must be stored, " +
+                       "never a value derived from the flag")
+    }
+
     // MARK: - Ring capacity
 
     func test_ringOverflow_201FinishedCommands_evictsOldestKeepingCapacity() {

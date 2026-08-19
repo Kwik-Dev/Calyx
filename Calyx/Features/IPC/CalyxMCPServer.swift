@@ -414,9 +414,20 @@ final class CalyxMCPServer {
     /// can't resolve (an unknown calyx-session ID -- a detached
     /// persistent session that keeps emitting after its pane closed,
     /// normal steady-state) is a silent 204 drop, NOT a 400 -> resolved,
-    /// `commandLogStore.ingest(event, surfaceID:)` -> 204. Unlike
-    /// `routeAgentEvent`, ingestion is NOT gated on
-    /// `CommandTrackingSettings.trackingEnabled` -- the endpoint stays
+    /// `commandLogStore.ingest(event, surfaceID:)`. A `phase: end` event
+    /// `ingest` actually accepted (its own return value -- NOT a
+    /// duplicate/late end `CommandLogStore` silently drops, see that
+    /// method's doc comment) additionally calls
+    /// `agentRegistry.handlePaneCommandFinished(surfaceID:exitCode:suspended:)`
+    /// (settling the surface's Agents row -- see that method's doc
+    /// comment for why `phase: end` is trustworthy evidence of that, and
+    /// why a stop-signal `exitCode` is excluded). Only when THAT call
+    /// reports an actual settle does this also expire the surface's
+    /// pending approvals (`approvalInbox.expireForSurface`): a suspend,
+    /// an already-settled row, or an end this store rejected must not
+    /// cancel an approval request the still-alive agent is waiting on ->
+    /// 204 either way. Unlike `routeAgentEvent`, ingestion is NOT gated
+    /// on `CommandTrackingSettings.trackingEnabled` -- the endpoint stays
     /// live regardless; the shell-integration env injection is the only
     /// gate on whether events ever arrive here at all.
     private func routeCommandEvent(request: HTTPRequest) async -> HTTPResponse {
@@ -447,7 +458,13 @@ final class CalyxMCPServer {
             return HTTPParser.response(statusCode: 204, body: nil)
         }
 
-        commandLogStore.ingest(event, surfaceID: surfaceID)
+        let accepted = commandLogStore.ingest(event, surfaceID: surfaceID)
+        if event.phase == .end, accepted,
+           agentRegistry.handlePaneCommandFinished(
+               surfaceID: surfaceID, exitCode: event.exitCode, suspended: event.suspended
+           ) {
+            approvalInbox.expireForSurface(surfaceID)
+        }
         return HTTPParser.response(statusCode: 204, body: nil)
     }
 
