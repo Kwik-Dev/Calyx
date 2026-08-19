@@ -194,6 +194,44 @@ enum ShellIntegrationInstaller {
     /// sub-second precision for fish-tracked commands specifically --
     /// acceptable since nothing downstream needs sub-second resolution
     /// on duration.
+    ///
+    /// A second tradeoff, in `_calyx_postexec`: unlike zsh, whose native
+    /// `$?` already reports `128 + signal` after a Ctrl-Z suspend,
+    /// fish's own `$status` inside `fish_postexec` keeps the PREVIOUS
+    /// real command's exit code across a suspend (measured directly
+    /// against the installed fish binary -- a fresh shell reports 0, a
+    /// shell with a prior failure keeps reporting that prior code).
+    /// `_calyx_postexec` therefore consults fish's own `jobs` builtin --
+    /// no `--stopped` filter exists, so its `State` column
+    /// (`running`/`stopped`, header omitted inside a command
+    /// substitution, columns tab-separated -- verified against the
+    /// installed fish binary) is matched directly -- and, whenever any
+    /// job is stopped, adds a separate `"suspended":true` field to the
+    /// posted JSON body rather than touching `$status`. `exit_code`
+    /// therefore always carries fish's own real value, and
+    /// `AgentRegistry.handlePaneCommandFinished` excludes the event from
+    /// settling the row through this flag rather than through
+    /// `exitCode` (see that method's own doc comment for both routes).
+    /// That "any job" scope is deliberate, not an oversight: fish
+    /// exposes no way to attribute a stopped job to the specific command
+    /// that just finished, so while any stopped job lingers in the pane,
+    /// a later, unrelated command's own end event carries the flag too.
+    /// The resulting failure mode is that later command's row staying
+    /// live rather than settling to `.done` -- the same safe direction
+    /// `AgentRegistry.stopSignals`' own doc comment describes, never the
+    /// reverse. Because `exit_code` is never touched by this branch,
+    /// that later command's own `CommandLogStore` record still logs its
+    /// own real exit code -- the command log is no longer a second
+    /// consequence of this cross-command scope, only the Agents row is.
+    ///
+    /// One case this cannot fix: for the SUSPENDED command's own end
+    /// event, `$status` is still whatever fish last held before that
+    /// command ran, since the command hasn't exited, only stopped --
+    /// there is no real exit code yet for `_calyx_postexec` to report.
+    /// That single record logs a code that does not describe it. This
+    /// is fish's own semantics, not a choice this design makes: nothing
+    /// available to `_calyx_postexec` can recover a value fish itself
+    /// never computed.
     static let fishIntegrationBody = """
     status --is-interactive; or return 0
 
@@ -240,8 +278,13 @@ enum ShellIntegrationInstaller {
         set -l code $status
         set -q _calyx_cmd_active; or return 0
         set -e _calyx_cmd_active
+        set -l suspended_field ""
+        # Any job left stopped right now matches here, not only one
+        # this command itself started -- see fishIntegrationBody's own
+        # doc comment for why that cross-command scope is deliberate.
+        string match -qr '\\tstopped\\t' -- (jobs 2>/dev/null); and set suspended_field ",\\"suspended\\":true"
         set -l ts (math (date +%s) "*" 1000)
-        _calyx_post "{\\"phase\\":\\"end\\",\\"cmd_id\\":\\"$_calyx_cmd_id\\",\\"exit_code\\":$code,\\"ts\\":$ts}"
+        _calyx_post "{\\"phase\\":\\"end\\",\\"cmd_id\\":\\"$_calyx_cmd_id\\",\\"exit_code\\":$code,\\"ts\\":$ts$suspended_field}"
     end
     """
 

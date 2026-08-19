@@ -97,21 +97,38 @@ final class CommandLogStore {
 
     // MARK: - Ingest
 
-    func ingest(_ event: CommandEvent, surfaceID: UUID) {
+    /// Returns whether `event` was genuinely accepted rather than
+    /// silently dropped -- consulted by `CalyxMCPServer.routeCommandEvent`
+    /// to decide whether a `phase: end` event may also settle the
+    /// surface's Agents row (`AgentRegistry.handlePaneCommandFinished`):
+    /// a duplicate or late end this store correctly ignores must not be
+    /// allowed to kill a live agent row just because a retried POST
+    /// reached the server twice. See `ingestStart`/`ingestEnd` for what
+    /// "accepted" means for each phase; a `.start` event's return value
+    /// is not consulted by that caller (only `.end` gates the settle),
+    /// but reads honestly the same way: `true` unless this call dropped
+    /// the event outright.
+    @discardableResult
+    func ingest(_ event: CommandEvent, surfaceID: UUID) -> Bool {
         sweepExpiredPendingEnds(surfaceID: surfaceID)
         switch event.phase {
         case .start:
-            ingestStart(event, surfaceID: surfaceID)
+            return ingestStart(event, surfaceID: surfaceID)
         case .end:
-            ingestEnd(event, surfaceID: surfaceID)
+            return ingestEnd(event, surfaceID: surfaceID)
         }
     }
 
-    private func ingestStart(_ event: CommandEvent, surfaceID: UUID) {
+    /// Returns `false` for the two paths that drop the event outright
+    /// (no `command_b64` to decode -- a malformed hand-built event only a
+    /// test can produce; a duplicate `.start` for a `cmdID` already
+    /// `.running` on this surface), `true` once a fresh record is
+    /// actually appended.
+    private func ingestStart(_ event: CommandEvent, surfaceID: UUID) -> Bool {
         // decode(from:) guarantees command_b64 was present on a .start
         // event; a hand-built CommandEvent (as tests construct) that
         // violates that invariant is simply dropped rather than crashing.
-        guard let rawCommand = event.command else { return }
+        guard let rawCommand = event.command else { return false }
         let command = SecretRedactor.redact(rawCommand)
         let cwd = event.cwd ?? ""
         let startedAt = event.ts ?? now()
@@ -126,7 +143,7 @@ final class CommandLogStore {
         let alreadyRunning = recordsBySurface[surfaceID]?.contains {
             $0.cmdID == event.cmdID && $0.state == .running && !finalizingRecordIDs.contains($0.id)
         } ?? false
-        if alreadyRunning { return }
+        if alreadyRunning { return false }
 
         let record = CommandRecord(
             id: UUID(),
@@ -147,9 +164,16 @@ final class CommandLogStore {
         if let pending = takePendingEnd(surfaceID: surfaceID, cmdID: event.cmdID) {
             finalize(surfaceID: surfaceID, recordID: record.id, scriptExitCode: pending.exitCode, endedAt: pending.ts ?? now())
         }
+        return true
     }
 
-    private func ingestEnd(_ event: CommandEvent, surfaceID: UUID) {
+    /// Returns `false` only for the two silent-drop paths below (a
+    /// duplicate/late end for an already-finalized `cmdID`; a stale end
+    /// whose `ts` predates the current running record's own start).
+    /// `true` for a genuine finalize AND for buffering an end that
+    /// arrived before its matching start -- that's a real event, just
+    /// early, not one this store is rejecting.
+    private func ingestEnd(_ event: CommandEvent, surfaceID: UUID) -> Bool {
         guard let running = runningRecord(surfaceID: surfaceID, cmdID: event.cmdID) else {
             // A duplicate/late end for a cmd_id that's already finalized
             // on this surface must NOT be buffered: buffering it would
@@ -163,9 +187,9 @@ final class CommandLogStore {
             // it, and `hasNonRunningRecord` below still counts it as
             // ended, so a duplicate end arriving during that gap is
             // dropped exactly the same way, not buffered or re-finalized.
-            guard !hasNonRunningRecord(surfaceID: surfaceID, cmdID: event.cmdID) else { return }
+            guard !hasNonRunningRecord(surfaceID: surfaceID, cmdID: event.cmdID) else { return false }
             bufferPendingEnd(event, surfaceID: surfaceID)
-            return
+            return true
         }
         // A stale end generated before the CURRENT running record even
         // started -- e.g. the previous instance of this cmd_id was
@@ -173,8 +197,9 @@ final class CommandLogStore {
         // the same cmd_id for a fresh command -- must not finalize the
         // new one. Same clock domain: both startedAt and event.ts derive
         // from the shell integration's own hook ts.
-        if let ts = event.ts, ts < running.startedAt { return }
+        if let ts = event.ts, ts < running.startedAt { return false }
         finalize(surfaceID: surfaceID, recordID: running.id, scriptExitCode: event.exitCode, endedAt: event.ts ?? now())
+        return true
     }
 
     /// Ceiling on `finalize`'s derived `durationNanos`, in seconds

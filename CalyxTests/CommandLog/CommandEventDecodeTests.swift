@@ -310,4 +310,157 @@ final class CommandEventDecodeTests: XCTestCase {
 
         XCTAssertNil(event.ts, "A string ts must not be coerced -- it decodes as absent")
     }
+
+    // MARK: - suspended flag (pane-exit suspend signal)
+    //
+    // fish's own $status inside fish_postexec cannot distinguish a
+    // Ctrl-Z suspend from the previous command's real exit code, so the
+    // shell integration reports a suspend through this separate boolean
+    // instead of overloading exit_code. The tests below pin the decoded
+    // value of `suspended` itself, in addition to confirming its
+    // presence never disturbs an unrelated field's own decode. The
+    // flag's behavioral effect -- how AgentRegistry's settle decision
+    // treats it -- is pinned separately in CalyxMCPServerCommandEventTests.
+    //
+    // Plain JSON booleans are already pinned by
+    // test_decode_end_suspendedTrue_doesNotDisturbExistingFields (true)
+    // and test_decode_end_suspendedFalseAndSuspendedOmitted_bothDecodeFalse
+    // (false); the tests below cover the remaining wrong-type and
+    // edge-value shapes those two don't.
+
+    func test_decode_end_suspendedTrue_doesNotDisturbExistingFields() throws {
+        let data = json("""
+        { "phase": "end", "cmd_id": "abc-123", "exit_code": 0, "suspended": true }
+        """)
+
+        let event = try XCTUnwrap(CommandEvent.decode(from: data))
+
+        XCTAssertEqual(event.phase, .end)
+        XCTAssertEqual(event.cmdID, "abc-123")
+        XCTAssertEqual(event.exitCode, 0, "suspended's presence must not alter an unrelated field's own decode")
+        XCTAssertEqual(event.suspended, true, "An explicit suspended:true must decode to true")
+    }
+
+    func test_decode_end_suspendedFalseAndSuspendedOmitted_bothDecodeFalse() throws {
+        // The production fish integration should OMIT this key entirely
+        // when nothing is stopped, appending it only inside the branch
+        // that already detects a stopped job -- mirroring cwd_b64's and
+        // ts's own optional-field shape in this same decoder, and
+        // simpler for the shell script to construct than an
+        // unconditional field carrying a default value. Decode must
+        // tolerate an explicit "suspended": false regardless: a lenient
+        // decoder must not depend on which of the two shapes the sender
+        // chose.
+        let omittedData = json("""
+        { "phase": "end", "cmd_id": "abc-123", "exit_code": 0 }
+        """)
+        let falseData = json("""
+        { "phase": "end", "cmd_id": "abc-123", "exit_code": 0, "suspended": false }
+        """)
+
+        let omittedEvent = try XCTUnwrap(CommandEvent.decode(from: omittedData))
+        let falseEvent = try XCTUnwrap(CommandEvent.decode(from: falseData))
+
+        XCTAssertEqual(omittedEvent.suspended, false, "An absent suspended key must decode to false")
+        XCTAssertEqual(falseEvent.suspended, false, "An explicit suspended:false must decode to false")
+        XCTAssertEqual(omittedEvent.exitCode, 0)
+        XCTAssertEqual(falseEvent.exitCode, 0)
+    }
+
+    func test_decode_suspendedNumeric_zeroAndOneBridgeToBool_otherNumbersDecodeFalse() throws {
+        // JSONSerialization represents a JSON number as NSNumber, and
+        // Foundation's `NSNumber as? Bool` cast succeeds only when the
+        // number's value is exactly 0 or 1, bridging to false and true
+        // respectively; any other number fails that cast and falls
+        // through to the decoder's own `?? false` fallback -- the same
+        // fallback a wrong-typed string exercises (see
+        // test_decode_suspendedString_decodesFalseRatherThanFailing
+        // below). This {0, 1} window is Foundation's own NSNumber
+        // bridging behavior, not something CommandEvent.decode itself
+        // implements: decode makes no distinction between 1 and 2 of
+        // its own; only the cast's own success or failure does.
+        let oneData = json("""
+        { "phase": "end", "cmd_id": "abc-123", "exit_code": 0, "suspended": 1 }
+        """)
+        let zeroData = json("""
+        { "phase": "end", "cmd_id": "abc-123", "exit_code": 0, "suspended": 0 }
+        """)
+        let twoData = json("""
+        { "phase": "end", "cmd_id": "abc-123", "exit_code": 0, "suspended": 2 }
+        """)
+
+        let oneEvent = try XCTUnwrap(CommandEvent.decode(from: oneData),
+                                     "suspended is optional -- a numeric value must not fail the whole decode")
+        let zeroEvent = try XCTUnwrap(CommandEvent.decode(from: zeroData),
+                                      "suspended is optional -- a numeric value must not fail the whole decode")
+        let twoEvent = try XCTUnwrap(CommandEvent.decode(from: twoData),
+                                     "suspended is optional -- a numeric value must not fail the whole decode")
+
+        XCTAssertEqual(oneEvent.suspended, true, "A numeric 1 bridges to Bool true via NSNumber")
+        XCTAssertEqual(zeroEvent.suspended, false, "A numeric 0 bridges to Bool false via NSNumber")
+        XCTAssertEqual(twoEvent.suspended, false, "A number outside the {0, 1} bridging window decodes as false")
+
+        XCTAssertEqual(oneEvent.exitCode, 0, "suspended's presence must not alter an unrelated field's own decode")
+        XCTAssertEqual(zeroEvent.exitCode, 0, "suspended's presence must not alter an unrelated field's own decode")
+        XCTAssertEqual(twoEvent.exitCode, 0, "suspended's presence must not alter an unrelated field's own decode")
+    }
+
+    func test_decode_suspendedString_decodesFalseRatherThanFailing() throws {
+        // A JSON string has no NSNumber-to-Bool bridge to fall into
+        // (contrast the numeric cases in
+        // test_decode_suspendedNumeric_zeroAndOneBridgeToBool_otherNumbersDecodeFalse
+        // above), so it exercises the decoder's own wrong-type
+        // fallback directly -- the same `?? false` fallback exit_code
+        // uses for its own wrong-typed value (see
+        // test_decode_exitCodeAsString_decodesWithExitCodeAbsent
+        // above).
+        let data = json("""
+        { "phase": "end", "cmd_id": "abc-123", "exit_code": 0, "suspended": "true" }
+        """)
+
+        let event = try XCTUnwrap(CommandEvent.decode(from: data),
+                                  "suspended is optional -- a wrong-typed value must not fail the whole decode")
+
+        XCTAssertEqual(event.suspended, false, "A string suspended must not be coerced -- it decodes as false")
+        XCTAssertEqual(event.exitCode, 0, "suspended's presence must not alter an unrelated field's own decode")
+    }
+
+    func test_decode_suspendedTrue_alongsideUnrelatedUnknownField_stillTolerated() throws {
+        let data = json("""
+        {
+            "phase": "end",
+            "cmd_id": "abc-123",
+            "exit_code": 0,
+            "suspended": true,
+            "an_unknown_future_field": {"nested": [1, 2, 3]}
+        }
+        """)
+
+        let event = try XCTUnwrap(CommandEvent.decode(from: data))
+
+        XCTAssertEqual(event.cmdID, "abc-123")
+        XCTAssertEqual(event.exitCode, 0)
+        XCTAssertEqual(event.suspended, true)
+    }
+
+    func test_decode_startPhase_suspendedKeyStillDecodesRegardlessOfPhase() throws {
+        // decode computes `suspended` unconditionally -- it applies no
+        // phase check of its own -- so a start payload carrying the key
+        // decodes it exactly as an end payload would. Pinned as
+        // observed, not as a phase restriction the code does not
+        // implement.
+        let data = json("""
+        {
+            "phase": "start",
+            "cmd_id": "abc-123",
+            "command_b64": "\(b64("ls"))",
+            "suspended": true
+        }
+        """)
+
+        let event = try XCTUnwrap(CommandEvent.decode(from: data))
+
+        XCTAssertEqual(event.phase, .start)
+        XCTAssertEqual(event.suspended, true)
+    }
 }

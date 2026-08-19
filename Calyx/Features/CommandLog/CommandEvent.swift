@@ -24,6 +24,30 @@ struct CommandEvent: Sendable {
     let exitCode: Int32?
     /// JSON key `ts`, epoch milliseconds.
     let ts: Date?
+    /// JSON key `suspended` -- `true` only when the shell detected the
+    /// pane's foreground job was merely stopped (e.g. Ctrl-Z), not
+    /// exited; distinct from `exitCode`, which some shells cannot
+    /// repurpose to report the same thing (see
+    /// `ShellIntegrationInstaller.fishIntegrationBody`'s doc comment).
+    /// A JSON boolean decodes as itself; a numeric `0` or `1` decodes
+    /// through Foundation's `NSNumber`-to-`Bool` bridge; any other type
+    /// or number decodes as `false`. No shape fails the whole decode.
+    let suspended: Bool
+
+    /// A `let` property with an inline default is excluded from the
+    /// compiler's synthesized memberwise initializer entirely (it is
+    /// already initialized), so `suspended`'s default is provided here
+    /// instead, keeping every other parameter's existing required
+    /// shape and order for direct construction (as tests do).
+    init(phase: Phase, cmdID: String, command: String?, cwd: String?, exitCode: Int32?, ts: Date?, suspended: Bool = false) {
+        self.phase = phase
+        self.cmdID = cmdID
+        self.command = command
+        self.cwd = cwd
+        self.exitCode = exitCode
+        self.ts = ts
+        self.suspended = suspended
+    }
 
     /// Decodes a shell integration's stdin/socket JSON payload.
     /// `phase` and `cmd_id` are mandatory; a `.start` event additionally
@@ -61,6 +85,10 @@ struct CommandEvent: Sendable {
             exitCode = Int32(exactly: rawExitCode)
         }
 
+        // See `suspended`'s doc comment for which JSON shapes decode
+        // as `true` vs `false`.
+        let suspended = (object["suspended"] as? Bool) ?? false
+
         // JSON numbers arrive as either Int or Double depending on how
         // JSONSerialization bridged the literal (same dual-cast as
         // LSPSession's request-id decode).
@@ -71,7 +99,7 @@ struct CommandEvent: Sendable {
             ts = Date(timeIntervalSince1970: tsMillis / 1000)
         }
 
-        return CommandEvent(phase: phase, cmdID: cmdID, command: command, cwd: cwd, exitCode: exitCode, ts: ts)
+        return CommandEvent(phase: phase, cmdID: cmdID, command: command, cwd: cwd, exitCode: exitCode, ts: ts, suspended: suspended)
     }
 
     /// A `ts` below this (1e11 epoch-millisecond) threshold is

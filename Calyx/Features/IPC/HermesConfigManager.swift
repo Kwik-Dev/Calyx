@@ -12,6 +12,17 @@
 //   - Case B: file already has a top-level `mcp_servers:` key — only the
 //     `calyx-ipc:` child entry is inserted under it, with comment markers
 //     and the entry indented to the learned child indent.
+//
+// Hermes registers no hooks: a Hermes Agents row is
+// `.mcpConnection`-sourced only, never through anything Hermes itself
+// reports. Its blocked/working/idle state instead comes from
+// AgentRegistry.handleScreenClassification polling the pane's on-screen
+// text (Herdr Layer 2), same as every other `.mcpConnection` row; the
+// pane's own exit signal (AgentRegistry.handlePaneCommandFinished) only
+// ever writes `.done`, and only once Command Tracking is enabled
+// (CommandTrackingSettings.trackingEnabled) and the pane is running an
+// interactive zsh or fish, the only two shells ShellIntegrationInstaller
+// installs into.
 
 import Foundation
 
