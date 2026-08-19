@@ -25,6 +25,12 @@
 //    the registry
 //  - A missing agent-endpoint.json (server not running / not yet
 //    started) exits 0 and never reaches the registry
+//  - SessionStart then Stop settle a codex-kind row at .idle, then a
+//    SessionEnd payload for the same session/surface, through the real
+//    installed script, settles it to .done -- the receiving side of
+//    AgentRegistry's existing SessionEnd -> .done mapping. Whether Codex
+//    itself is configured to fire a SessionEnd event at all is pinned
+//    separately by CodexHooksConfigManagerTests
 //
 
 import XCTest
@@ -84,15 +90,23 @@ final class AgentHookPipelineIntegrationTests: XCTestCase {
     // MARK: - Helpers
 
     /// Runs the installed `calyx-agent-hook` script as a real child
-    /// process (`/bin/sh <script>`), piping `stdinJSON` to its stdin.
-    /// `surfaceID` is set as `CALYX_SURFACE_ID` when non-nil; when nil
-    /// the variable is left entirely unset, matching a plain
-    /// (non-Calyx) terminal invocation.
+    /// process (`/bin/sh <script> [kindArgument]`), piping `stdinJSON` to
+    /// its stdin. `surfaceID` is set as `CALYX_SURFACE_ID` when non-nil;
+    /// when nil the variable is left entirely unset, matching a plain
+    /// (non-Calyx) terminal invocation. `kindArgument`, when non-nil, is
+    /// passed as the script's `$1` (e.g. `"codex"`) -- nil matches Claude
+    /// Code's own installed hook entry, which invokes the script with no
+    /// arguments at all. Mirrors `ApprovalHookPipelineIntegrationTests
+    /// .runHookScript`'s identical `kindArgument` parameter.
     @discardableResult
-    private func runHookScript(stdinJSON: String, surfaceID: UUID?) throws -> Int32 {
+    private func runHookScript(stdinJSON: String, surfaceID: UUID?, kindArgument: String? = nil) throws -> Int32 {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = [scriptPath]
+        var arguments: [String] = [scriptPath]
+        if let kindArgument {
+            arguments.append(kindArgument)
+        }
+        process.arguments = arguments
 
         // Inherit the current process's own PATH (falling back to a
         // minimal stock-macOS one only if it's somehow unset) rather than
@@ -118,18 +132,35 @@ final class AgentHookPipelineIntegrationTests: XCTestCase {
         return process.terminationStatus
     }
 
-    /// Polls `registry.entries[surfaceID]` for up to `timeout` seconds.
-    /// The script's own `curl` call is a real network round-trip through
-    /// a real `NWListener`, so the registry update can land a few
-    /// milliseconds after the child process itself has already exited —
-    /// asserting immediately after `waitUntilExit()` would be flaky.
-    private func waitForEntry(surfaceID: UUID, timeout: TimeInterval = 2.0) async -> AgentEntry? {
+    /// Polls `registry.entries[surfaceID]` for up to `timeout` seconds
+    /// until it exists and satisfies `predicate` (defaulting to
+    /// always-true, i.e. wait only for the entry to exist). The script's
+    /// own `curl` call is a real network round-trip through a real
+    /// `NWListener`, so the registry update can land a few milliseconds
+    /// after the child process itself has already exited: asserting
+    /// immediately after `waitUntilExit()` would be flaky. A non-default
+    /// `predicate` is needed whenever a later event in a multi-event
+    /// sequence updates an entry that already exists from an earlier
+    /// step, since waiting for mere existence would then return
+    /// immediately on that earlier step's own state, before the later
+    /// event has had any chance to land.
+    ///
+    /// Returns nil both when no entry ever appears and when an entry
+    /// exists but never satisfies `predicate` within `timeout`, so a
+    /// caller cannot mistake a stale, non-matching entry left over from
+    /// an earlier step for an actual match.
+    private func waitForEntry(
+        surfaceID: UUID,
+        timeout: TimeInterval = 2.0,
+        matching predicate: @escaping (AgentEntry) -> Bool = { _ in true }
+    ) async -> AgentEntry? {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if let entry = registry.entries[surfaceID] { return entry }
+            if let entry = registry.entries[surfaceID], predicate(entry) { return entry }
             try? await Task.sleep(for: .milliseconds(50))
         }
-        return registry.entries[surfaceID]
+        if let entry = registry.entries[surfaceID], predicate(entry) { return entry }
+        return nil
     }
 
     // MARK: - Happy path
@@ -188,5 +219,82 @@ final class AgentHookPipelineIntegrationTests: XCTestCase {
         XCTAssertEqual(exitCode, 0, "A missing agent-endpoint.json must still exit 0 (never break the hook chain)")
         let entry = await waitForEntry(surfaceID: surfaceID, timeout: 0.5)
         XCTAssertNil(entry, "With no agent-endpoint.json to read, the script must never reach the registry")
+    }
+
+    // MARK: - Codex SessionEnd settles an idle row to done
+
+    /// Pins the receiving end of AgentRegistry.resultingState's SessionEnd
+    /// -> .done mapping for a codex-kind row, end to end through the real
+    /// installed script: SessionStart then Stop settle the row at .idle,
+    /// then a SessionEnd payload shaped like Codex's real hook JSON
+    /// (session_id/cwd/hook_event_name/reason) is posted through the real
+    /// installed script with the "codex" $1 argument
+    /// CodexHooksConfigManager's installed command entries pass, exactly
+    /// as ApprovalHookPipelineIntegrationTests' codex-kind coverage
+    /// already does for the approval pipeline. Whether Codex's own hook
+    /// config is actually written with a SessionEnd entry to fire this
+    /// event in the first place is pinned separately by
+    /// CodexHooksConfigManagerTests; this test only covers what happens
+    /// once that event arrives here.
+    func test_realHookScript_codexSessionEnd_settlesIdleRowToDone() async throws {
+        let surfaceID = UUID()
+        let sessionID = "pipeline-codex-session"
+        let cwd = "/Users/dev/pipeline-codex-repo"
+
+        let sessionStartStdin = """
+        {"session_id":"\(sessionID)","cwd":"\(cwd)","hook_event_name":"SessionStart"}
+        """
+        let stopStdin = """
+        {"session_id":"\(sessionID)","cwd":"\(cwd)","hook_event_name":"Stop"}
+        """
+        // Codex's SessionEnd payload carries session_id, transcript_path,
+        // cwd, hook_event_name, and reason. transcript_path is null here
+        // because Codex 0.148.0's embedded schema requires the key but
+        // declares its value nullable, so a real payload always includes
+        // the key even with no transcript file to point at. reason is
+        // present and simply ignored, since AgentEvent.decode models no
+        // such field.
+        let sessionEndStdin = """
+        {"session_id":"\(sessionID)","cwd":"\(cwd)","hook_event_name":"SessionEnd","reason":"other","transcript_path":null}
+        """
+
+        let startExitCode = try runHookScript(stdinJSON: sessionStartStdin, surfaceID: surfaceID, kindArgument: "codex")
+        XCTAssertEqual(startExitCode, 0, "the hook script must always exit 0")
+        let afterStart = await waitForEntry(surfaceID: surfaceID)
+        XCTAssertEqual(afterStart?.state, .idle, "Precondition: SessionStart must register the row as idle")
+        XCTAssertEqual(afterStart?.kind, AgentEntry.codexKind,
+                       "Precondition: the codex $1 argument must attribute the row to codex, not claude-code")
+
+        let stopExitCode = try runHookScript(stdinJSON: stopStdin, surfaceID: surfaceID, kindArgument: "codex")
+        XCTAssertEqual(stopExitCode, 0, "the hook script must always exit 0")
+        // waitForEntry with the default predicate would return immediately
+        // here -- the entry already exists (and is already .idle) from the
+        // SessionStart step above -- so this instead waits for
+        // lastEventAt to advance past that step's own timestamp. Because
+        // waitForEntry only returns non-nil once the Stop event has
+        // actually landed and advanced lastEventAt, XCTUnwrap below fails
+        // the test outright if this Stop POST never lands, rather than
+        // silently passing on the SessionStart entry's own unchanged
+        // idle state.
+        let startLastEventAt = try XCTUnwrap(afterStart?.lastEventAt)
+        let stopMatch = await waitForEntry(surfaceID: surfaceID) { $0.lastEventAt > startLastEventAt }
+        let afterStop = try XCTUnwrap(
+            stopMatch,
+            "The Stop POST must land and advance lastEventAt before the SessionEnd step below fires"
+        )
+        XCTAssertEqual(afterStop.state, .idle,
+                       "Precondition: Stop settles the row at idle, matching AgentRegistry.resultingState's " +
+                       "Stop -> .idle mapping; only a subsequent SessionEnd event moves it to .done")
+
+        let endExitCode = try runHookScript(stdinJSON: sessionEndStdin, surfaceID: surfaceID, kindArgument: "codex")
+
+        XCTAssertEqual(endExitCode, 0, "the hook script must always exit 0")
+        let afterEnd = await waitForEntry(surfaceID: surfaceID) { $0.state == .done }
+        XCTAssertEqual(afterEnd?.state, .done,
+                       "A SessionEnd event for the same session on the same surface must settle an idle " +
+                       "Codex row to done, exactly like AgentRegistry's existing SessionEnd -> .done mapping " +
+                       "already does for any other kind")
+        XCTAssertEqual(afterEnd?.sessionID, sessionID)
+        XCTAssertEqual(afterEnd?.kind, AgentEntry.codexKind, "the settled .done row must still be the codex row")
     }
 }

@@ -143,6 +143,29 @@ final class AgentEventTests: XCTestCase {
         XCTAssertEqual(event.sessionID, "abc-123")
     }
 
+    func test_decode_sessionEnd_codexMinimalRequiredPayload_populatesFieldsAndToleratesUnmodelledFields() throws {
+        // Codex 0.148.0's embedded schema for session-end.command.input
+        // requires exactly: cwd, hook_event_name, reason, session_id,
+        // transcript_path, with additionalProperties: false and reason
+        // fixed to the const "other". This payload carries only those
+        // five fields, the minimal one the schema allows Codex to send.
+        let data = json("""
+        {
+            "cwd": "/Users/dev/repo",
+            "hook_event_name": "SessionEnd",
+            "reason": "other",
+            "session_id": "codex-session-1",
+            "transcript_path": "/Users/dev/.codex/sessions/codex-session-1.jsonl"
+        }
+        """)
+
+        let event = try XCTUnwrap(AgentEvent.decode(from: data))
+
+        XCTAssertEqual(event.hookEventName, "SessionEnd")
+        XCTAssertEqual(event.sessionID, "codex-session-1")
+        XCTAssertEqual(event.cwd, "/Users/dev/repo")
+    }
+
     func test_decode_subagentStop_populatesFields() throws {
         let data = json("""
         {

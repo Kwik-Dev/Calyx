@@ -6,7 +6,7 @@
 // calyx-agent-hook script — Codex's equivalent of
 // ClaudeHooksConfigManager's `"hooks"` section in settings.json. Unlike
 // Codex's `[mcp_servers.calyx-ipc]` section (a single upserted table,
-// managed by `CodexConfigManager`), the 6 hook events each need their own
+// managed by `CodexConfigManager`), the 7 hook events each need their own
 // `[[hooks.X]]` + `[[hooks.X.hooks]]` array-of-tables pair, and TOML has
 // no syntax for replacing "our" entries within a user's own array without
 // risking corruption of entries we don't own — so, like
@@ -44,13 +44,13 @@ struct CodexHooksConfigManager: Sendable {
 
     // MARK: - Constants
 
-    /// The 6 Codex hook events Calyx installs a `[[hooks.X]]` entry for.
-    /// Codex has no `SessionEnd` hook (see the Phase 2 plan's "risks"
-    /// section), so a Codex session ending only reaches `.idle` (via
-    /// `Stop`), never `.done`.
+    /// The 7 Codex hook events Calyx installs a `[[hooks.X]]` entry for.
+    /// SessionEnd is what settles an ended Codex session to `.done`;
+    /// without it, a session's last event is `Stop`, which only reaches
+    /// `.idle`.
     private static let targetEvents = [
         "SessionStart", "UserPromptSubmit", "PreToolUse",
-        "PostToolUse", "PermissionRequest", "Stop",
+        "PostToolUse", "PermissionRequest", "Stop", "SessionEnd",
     ]
 
     static let beginLine = "# BEGIN CALYX AGENT HOOKS (managed by Calyx, do not edit)"
@@ -59,7 +59,7 @@ struct CodexHooksConfigManager: Sendable {
     // MARK: - Public API
 
     /// Replaces Calyx's managed block in `configPath` with a freshly built
-    /// one for `scriptPath`'s 6 target events plus `approvalScriptPath`'s
+    /// one for `scriptPath`'s 7 target events plus `approvalScriptPath`'s
     /// extra synchronous `PermissionRequest` pair, preserving everything
     /// else in the file verbatim. Idempotent: re-running strips the prior
     /// managed block (wherever it is) before appending the new one at

@@ -102,6 +102,66 @@ final class AgentRegistryTests: XCTestCase {
         XCTAssertEqual(registry.entries[surfaceID]?.sessionID, "codex-session")
     }
 
+    func test_handleMCPConnection_doneHooksEntrySameKind_becomesLiveIdleEntryPreservingCwd() {
+        // A `.hooks` entry can be `.done`: a pane holding a finished row
+        // that starts a fresh agent whose hook entries have not run yet
+        // reports only through this MCP `initialize` call, so
+        // `handleMCPConnection`'s early return must not strand that live
+        // agent at `.done`.
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(
+            event("SessionStart", sessionID: "codex-session", cwd: "/Users/dev/repo"),
+            surfaceID: surfaceID,
+            kind: AgentEntry.codexKind
+        )
+        registry.handleHookEvent(
+            event("SessionEnd", sessionID: "codex-session"),
+            surfaceID: surfaceID,
+            kind: AgentEntry.codexKind
+        )
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .done, "Precondition: the session ended")
+
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.codexKind)
+
+        let entry = registry.entries[surfaceID]
+        XCTAssertEqual(entry?.state, .idle,
+                       "A same-kind MCP initialize must move a done row off done, not leave a live " +
+                       "agent showing a finished session")
+        XCTAssertEqual(entry?.source, .mcpConnection)
+        XCTAssertEqual(entry?.cwd, "/Users/dev/repo",
+                       "cwd must carry over from the replaced entry (a fresh insert would set it nil), " +
+                       "which is what distinguishes this from losing the pane's directory")
+    }
+
+    func test_handleMCPConnection_workingHooksEntrySameKind_isLeftUntouched() {
+        // Companion to the done case above: a same-kind hooks entry that
+        // is still genuinely active must keep the early-return protection
+        // this method was written for.
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(
+            event("SessionStart", sessionID: "codex-session", cwd: "/Users/dev/repo"),
+            surfaceID: surfaceID,
+            kind: AgentEntry.codexKind
+        )
+        registry.handleHookEvent(
+            event("UserPromptSubmit", sessionID: "codex-session"),
+            surfaceID: surfaceID,
+            kind: AgentEntry.codexKind
+        )
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .working, "Precondition")
+
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.codexKind)
+
+        let entry = registry.entries[surfaceID]
+        XCTAssertEqual(entry?.source, .hooks,
+                       "A same-kind hooks entry that is not done must remain authoritative over a " +
+                       "repeated MCP initialize")
+        XCTAssertEqual(entry?.state, .working)
+        XCTAssertEqual(entry?.sessionID, "codex-session")
+    }
+
     // MARK: - SessionStart
 
     func test_sessionStart_newSurface_registersIdleWithSessionAndCwd() {
@@ -160,6 +220,66 @@ final class AgentRegistryTests: XCTestCase {
                        "A same-session SessionStart (compact/resume) must not reset state to idle")
         XCTAssertEqual(entry?.sessionID, "session-a")
         XCTAssertEqual(registry.entries.count, 1)
+    }
+
+    func test_sessionStart_sameSurfaceSameSession_doneEntryRevivesToIdle() {
+        // A Codex session that ended (SessionEnd -> .done) can be resumed
+        // in the same pane (`codex resume --last`), which re-sends
+        // SessionStart carrying the same session_id. A resumed session is
+        // live again, so unlike working/blocked this same-session branch
+        // must not preserve .done.
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("SessionEnd", sessionID: "session-a"), surfaceID: surfaceID)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .done, "Precondition: the session ended")
+
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a", cwd: "/Users/dev/repo-a"), surfaceID: surfaceID)
+
+        let entry = registry.entries[surfaceID]
+        XCTAssertEqual(entry?.state, .idle,
+                       "A same-session SessionStart after SessionEnd is a resumed, live session and " +
+                       "must not stay done")
+        XCTAssertEqual(entry?.sessionID, "session-a")
+        XCTAssertEqual(entry?.cwd, "/Users/dev/repo-a")
+        XCTAssertEqual(registry.entries.count, 1)
+    }
+
+    func test_sessionStart_sameSurfaceSameSession_workingEntryKeepsWorking() {
+        // Companion to the done-revival case above: pins that giving
+        // done its own handling does not touch the protection this
+        // branch exists for. See
+        // test_sessionStart_sameSurfaceSameSession_preservesStateAndRefreshesCwd.
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("UserPromptSubmit", sessionID: "session-a"), surfaceID: surfaceID)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .working, "Precondition")
+
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a", cwd: "/Users/dev/repo-a"), surfaceID: surfaceID)
+
+        let entry = registry.entries[surfaceID]
+        XCTAssertEqual(entry?.state, .working,
+                       "A same-session SessionStart must still preserve a working entry's state")
+        XCTAssertEqual(entry?.cwd, "/Users/dev/repo-a")
+    }
+
+    func test_sessionStart_sameSurfaceSameSession_blockedEntryKeepsBlocked() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(
+            event("Notification", sessionID: "session-a", message: "needs your permission"),
+            surfaceID: surfaceID
+        )
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .blocked, "Precondition")
+
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a", cwd: "/Users/dev/repo-a"), surfaceID: surfaceID)
+
+        let entry = registry.entries[surfaceID]
+        XCTAssertEqual(entry?.state, .blocked,
+                       "A same-session SessionStart must still preserve a blocked entry's state")
+        XCTAssertEqual(entry?.cwd, "/Users/dev/repo-a")
     }
 
     // MARK: - Working transitions
@@ -272,6 +392,32 @@ final class AgentRegistryTests: XCTestCase {
 
         XCTAssertEqual(registry.entries.count, 1, "SessionEnd must not remove the entry")
         XCTAssertEqual(registry.entries[surfaceID]?.state, .done)
+    }
+
+    func test_handleHookEvent_sameSessionStopAfterSessionEnd_leavesRowDone() {
+        // calyx-agent-hook's command entries run "async": true, so a
+        // turn's own Stop can land at the server after the exit path's
+        // SessionEnd already arrived (the same out-of-order delivery the
+        // 1.5s PreToolUse race guard in handleHookEvent protects .blocked
+        // against). The unconditional `updated.state = newState` this
+        // same-session path ends in must not let that late Stop roll a
+        // done row back to idle: that is the stuck-green symptom
+        // SessionEnd -> .done exists to fix. A same-session SessionStart
+        // still revives a done row (see
+        // test_sessionStart_sameSurfaceSameSession_doneEntryRevivesToIdle)
+        // and a session mismatch still replaces one (see
+        // test_sessionMismatch_entryDone_replacesEntry); neither is
+        // affected by this guard.
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("SessionEnd", sessionID: "session-a"), surfaceID: surfaceID)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .done, "Precondition: the session ended")
+
+        registry.handleHookEvent(event("Stop", sessionID: "session-a"), surfaceID: surfaceID)
+
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .done,
+                       "A same-session Stop arriving after SessionEnd must not roll a done row back to idle")
     }
 
     // MARK: - SubagentStop ignored
@@ -566,7 +712,7 @@ final class AgentRegistryTests: XCTestCase {
         registry.reset()
     }
 
-    // MARK: - PermissionRequest (Phase 2: Codex)
+    // MARK: - PermissionRequest (Codex)
 
     func test_permissionRequest_registeredSameSession_setsBlocked() {
         let registry = AgentRegistry()
@@ -622,11 +768,10 @@ final class AgentRegistryTests: XCTestCase {
         XCTAssertEqual(registry.entries[surfaceID]?.state, .blocked)
     }
 
-    // MARK: - PermissionRequest session-mismatch rescue (Phase 2: Codex has no SessionEnd)
+    // MARK: - PermissionRequest session-mismatch rescue (missed SessionStart)
 
     func test_permissionRequest_sessionMismatch_entryIdle_replacesEntryAsBlocked() {
-        // Regression: Codex has no SessionEnd hook, so a missed
-        // SessionStart for a new session (IPC enabled mid-session, or
+        // Regression: a missed SessionStart (IPC enabled mid-session or
         // Calyx restarted) can leave a stale-but-idle entry sitting on a
         // pane. A mismatched PermissionRequest for the real new session
         // must rescue (replace) an idle entry rather than being discarded
@@ -698,7 +843,7 @@ final class AgentRegistryTests: XCTestCase {
                        "cwd must remain unchanged too, confirming the entry was untouched, not just its state")
     }
 
-    // MARK: - Agent kind (Phase 2: Codex / OpenCode)
+    // MARK: - Agent kind (Codex / OpenCode)
 
     func test_handleHookEvent_kindParameter_appliesToNewEntry() {
         let registry = AgentRegistry()

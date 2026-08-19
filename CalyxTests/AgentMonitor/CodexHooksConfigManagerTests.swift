@@ -10,14 +10,19 @@
 //  the BEGIN/END managed-block conventions of HermesConfigManagerTests.
 //
 //  Coverage:
-//  - installHooks on an empty/new file writes all 6 target events, each as
+//  - installHooks on an empty/new file writes all 7 target events, each as
 //    a `[[hooks.X]]` + `[[hooks.X.hooks]]` pair with type="command",
 //    command = '"<scriptPath>" codex', timeout = 5, wrapped in BEGIN/END
-//    markers
+//    markers -- SessionEnd included, so a Codex session ending reaches
+//    AgentRegistry's existing SessionEnd -> .done mapping instead of
+//    leaving the sidebar row stuck at .idle forever
 //  - installHooks preserves the user's existing root keys, an unrelated
 //    [mcp_servers.other] section, and the user's own [[hooks.SessionStart]]
 //    block verbatim; the managed block is appended at the end
 //  - Re-installing is idempotent (exactly one BEGIN marker)
+//  - Re-installing over an older, well-formed six-event managed block
+//    (the shape `preSessionEndEvents` models) adds SessionEnd exactly
+//    once, without duplicating any of the other six events
 //  - Codex-owned [hooks.state] trust/disable records and any other foreign
 //    TOML tables injected inside the comment-delimited Calyx block survive
 //    remove -> reinstall
@@ -48,7 +53,7 @@ final class CodexHooksConfigManagerTests: XCTestCase {
 
     private static let expectedEvents = [
         "SessionStart", "UserPromptSubmit", "PreToolUse",
-        "PostToolUse", "PermissionRequest", "Stop",
+        "PostToolUse", "PermissionRequest", "Stop", "SessionEnd",
     ]
 
     private static let beginLine = "# BEGIN CALYX AGENT HOOKS (managed by Calyx, do not edit)"
@@ -102,7 +107,7 @@ final class CodexHooksConfigManagerTests: XCTestCase {
 
     // MARK: - installHooks: fresh file
 
-    func test_installHooks_newFile_writesAllSixEventPairsWithCommandEntry() throws {
+    func test_installHooks_newFile_writesAllSevenEventPairsWithCommandEntry() throws {
         try CodexHooksConfigManager.installHooks(scriptPath: scriptPath, approvalScriptPath: approvalScriptPath, configPath: configPath)
 
         let content = readConfig()
@@ -117,11 +122,11 @@ final class CodexHooksConfigManagerTests: XCTestCase {
         }
 
         XCTAssertEqual(occurrences(of: expectedCommandLine, in: content), Self.expectedEvents.count,
-                       "Each of the 6 events must still get its own exact monitor command entry")
+                       "Each of the 7 events must still get its own exact monitor command entry")
         XCTAssertEqual(occurrences(of: "type = \"command\"", in: content), Self.expectedEvents.count + 1,
-                       "6 monitor entries plus PermissionRequest's extra synchronous approval entry")
+                       "7 monitor entries plus PermissionRequest's extra synchronous approval entry")
         XCTAssertEqual(occurrences(of: "timeout = 5", in: content), Self.expectedEvents.count,
-                       "Only the 6 monitor entries use timeout = 5")
+                       "Only the 7 monitor entries use timeout = 5")
 
         // PermissionRequest alone gets a second [[hooks.PermissionRequest]]
         // pair for the new synchronous approval entry; PreToolUse keeps
@@ -177,6 +182,28 @@ final class CodexHooksConfigManagerTests: XCTestCase {
             XCTAssertNotNil(content.range(of: pattern, options: .regularExpression),
                             "\(eventName)'s table header must be immediately followed by its .hooks table header")
         }
+    }
+
+    // SessionEnd is what lets a Codex session ending reach
+    // AgentRegistry's existing SessionEnd -> .done mapping instead of
+    // leaving the sidebar row stuck at .idle forever (Codex has no other
+    // hook that fires on session exit). This pins its exact contiguous
+    // TOML block to the identical shape every other monitor event gets,
+    // not merely that its pieces appear somewhere in the file.
+    func test_installHooks_sessionEndEntry_matchesExactCommandShapeOfOtherEvents() throws {
+        try CodexHooksConfigManager.installHooks(scriptPath: scriptPath, approvalScriptPath: approvalScriptPath, configPath: configPath)
+        let content = readConfig()
+
+        let expectedSessionEndBlock = """
+        [[hooks.SessionEnd]]
+        [[hooks.SessionEnd.hooks]]
+        type = "command"
+        \(expectedCommandLine)
+        timeout = 5
+        """
+        XCTAssertTrue(content.contains(expectedSessionEndBlock),
+                      "SessionEnd's exact contiguous TOML block must match the other monitor events' shape: " +
+                      "type = \"command\", the same command = '\"<scriptPath>\" codex' entry, and timeout = 5")
     }
 
     // MARK: - installHooks: preserves existing content
@@ -362,6 +389,16 @@ final class CodexHooksConfigManagerTests: XCTestCase {
 
     // MARK: - Migration: approval entry moves from PreToolUse to PermissionRequest
 
+    /// The event list a pre-SessionEnd install wrote to its config.
+    /// Pinned independently of `expectedEvents` (production's current
+    /// target event list) so the migration fixtures below keep
+    /// representing a real older file regardless of how `expectedEvents`
+    /// changes.
+    private static let preSessionEndEvents = [
+        "SessionStart", "UserPromptSubmit", "PreToolUse",
+        "PostToolUse", "PermissionRequest", "Stop",
+    ]
+
     /// One event's `[[hooks.X]]` + `[[hooks.X.hooks]]` pair using
     /// `scriptPath`, hand-built to match `CodexHooksConfigManager`'s own
     /// private `hookEntry(eventName:scriptPath:)` shape -- reproduced
@@ -398,7 +435,7 @@ final class CodexHooksConfigManagerTests: XCTestCase {
     /// nested under `[[hooks.PreToolUse]]`.
     private var preMigrationConfig: String {
         (["profile = \"default\"", Self.beginLine]
-            + Self.expectedEvents.map { monitorEntry(eventName: $0) }
+            + Self.preSessionEndEvents.map { monitorEntry(eventName: $0) }
             + [preMigrationApprovalEntryUnderPreToolUse, Self.endLine]).joined(separator: "\n")
     }
 
@@ -472,6 +509,64 @@ final class CodexHooksConfigManagerTests: XCTestCase {
                        "The pre-migration PreToolUse-nested approval entry must be removed too, not " +
                        "preserved as foreign TOML outside the markers")
         XCTAssertFalse(content.contains("[[hooks.PreToolUse]]"))
+    }
+
+    // MARK: - Upgrade: adds SessionEnd to an older six-event managed block
+
+    /// The approval entry's current, correctly-migrated shape -- nested
+    /// under `[[hooks.PermissionRequest]]`, unlike
+    /// `preMigrationApprovalEntryUnderPreToolUse` above. Used (together
+    /// with `preSessionEndEvents`) to build a fixture representing a
+    /// well-formed six-event managed block that already has the approval
+    /// entry in the right place, just missing SessionEnd.
+    private var approvalEntryUnderPermissionRequest: String {
+        """
+        [[hooks.PermissionRequest]]
+        [[hooks.PermissionRequest.hooks]]
+        type = "command"
+        \(expectedApprovalCommandLine)
+        timeout = 600
+        """
+    }
+
+    /// A full, well-formed (BEGIN...END, no orphan) config with the 6
+    /// `preSessionEndEvents` monitor entries plus the approval entry
+    /// already correctly nested under `[[hooks.PermissionRequest]]`, and
+    /// no SessionEnd entry.
+    private var olderSixEventManagedBlock: String {
+        (["profile = \"default\"", Self.beginLine]
+            + Self.preSessionEndEvents.map { monitorEntry(eventName: $0) }
+            + [approvalEntryUnderPermissionRequest, Self.endLine]).joined(separator: "\n")
+    }
+
+    /// Guards the ordinary block-replacement path (a matched BEGIN...END
+    /// pair, not the orphan self-heal path covered separately below):
+    /// reinstalling over a well-formed six-event managed block (the
+    /// `olderSixEventManagedBlock` shape) must add SessionEnd exactly
+    /// once, without duplicating any of the other six events or the
+    /// approval entry.
+    func test_installHooks_reinstallOverOlderSixEventManagedBlock_addsSessionEndWithoutDuplicating() throws {
+        writeConfig(olderSixEventManagedBlock)
+
+        try CodexHooksConfigManager.installHooks(scriptPath: scriptPath, approvalScriptPath: approvalScriptPath, configPath: configPath)
+
+        let content = readConfig()
+        XCTAssertTrue(content.contains("profile = \"default\""), "The user's own root key must survive the upgrade")
+        XCTAssertEqual(occurrences(of: Self.beginLine, in: content), 1,
+                       "Reinstalling over an older six-event managed block must leave exactly one managed block")
+        XCTAssertEqual(occurrences(of: Self.endLine, in: content), 1)
+        XCTAssertEqual(occurrences(of: "[[hooks.SessionEnd]]", in: content), 1,
+                       "SessionEnd must be added exactly once, not left missing or duplicated")
+        XCTAssertEqual(occurrences(of: "[[hooks.SessionEnd.hooks]]", in: content), 1)
+        for eventName in Self.expectedEvents {
+            XCTAssertTrue(content.contains("[[hooks.\(eventName)]]"),
+                          "\(eventName) must be present after upgrading an older six-event managed block")
+        }
+        XCTAssertEqual(occurrences(of: expectedCommandLine, in: content), Self.expectedEvents.count,
+                       "All seven events, including the newly added SessionEnd, must get exactly one " +
+                       "monitor command entry -- none of the original six may be duplicated either")
+        XCTAssertEqual(occurrences(of: expectedApprovalCommandLine, in: content), 1,
+                       "Reinstalling must not duplicate the approval entry")
     }
 
     // MARK: - removeHooks
