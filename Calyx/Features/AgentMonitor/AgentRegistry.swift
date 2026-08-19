@@ -250,21 +250,27 @@ final class AgentRegistry {
     // MARK: - MCP Connection Presence
 
     /// Records explicit agent-presence evidence from a surface-bound MCP
-    /// `initialize` request. Codex uses this path because its hook runner
-    /// sanitizes Calyx's surface environment variables before launching a
-    /// command hook, while its MCP client can forward the same variable via
-    /// `env_http_headers`.
+    /// `initialize` request: presence evidence before a pane's first hook
+    /// event arrives, and for a pane whose hook entries its CLI has not
+    /// been trusted to run.
     ///
-    /// A same-kind `.hooks` entry remains authoritative. A later real hook
-    /// event promotes an `.mcpConnection` entry through `handleHookEvent`'s
-    /// existing non-hooks replacement path. Repeated initialize requests for
-    /// the same kind only refresh presence and preserve the current screen-
-    /// classified state.
+    /// A same-kind `.hooks` entry remains authoritative, with one
+    /// exception: `.done`. A pane already holding a finished `.hooks` row
+    /// that starts a fresh agent session whose hook entries have not
+    /// fired yet reports that new session through this `initialize` call
+    /// alone, so a `.done` `.hooks` entry falls through to the replace
+    /// branch below instead of returning early -- becoming a live
+    /// `.idle` `.mcpConnection` entry with `cwd` preserved, rather than
+    /// stranding the live session behind the finished one's row. A later
+    /// real hook event promotes an `.mcpConnection` entry through
+    /// `handleHookEvent`'s existing non-hooks replacement path. Repeated
+    /// initialize requests for the same kind only refresh presence and
+    /// preserve the current screen-classified state.
     func handleMCPConnection(surfaceID: UUID, kind: String, now: Date = Date()) {
         heuristicMissStreaks.removeValue(forKey: surfaceID)
 
         if var existing = entries[surfaceID] {
-            if existing.source == .hooks, existing.kind == kind {
+            if existing.source == .hooks, existing.kind == kind, existing.state != .done {
                 return
             }
             if existing.source == .mcpConnection, existing.kind == kind {
@@ -304,14 +310,26 @@ final class AgentRegistry {
     /// transition table in the AgentMonitor design doc:
     /// - `SessionStart` for a surface with no existing `.hooks` entry, or
     ///   one from a different session, unconditionally upserts (state
-    ///   resets to `.idle`). `SessionStart` for the *same* session
-    ///   (compact/resume re-sends it without an intervening `SessionEnd`)
-    ///   preserves the existing state and only refreshes `cwd` /
-    ///   `lastEventAt` — otherwise a mid-session compact would visibly
-    ///   flash a `.working`/`.blocked` row back to idle.
+    ///   resets to `.idle`). `SessionStart` for the *same* session -- a
+    ///   resumed session re-sending `SessionStart` with the same
+    ///   `session_id` (e.g. `codex resume --last`) -- preserves the
+    ///   existing state and only refreshes `cwd` / `lastEventAt`, so a
+    ///   mid-session compact does not visibly flash a `.working`/
+    ///   `.blocked` row back to idle. `.done` is the one state this does
+    ///   not preserve: a same-session re-send there is a session that had
+    ///   already ended and is now live again, so it resets state to
+    ///   `.idle` instead.
     /// - `SubagentStop` (and any event name this registry does not
     ///   recognize) is fully ignored: it never registers a surface and
     ///   never changes an existing entry's state.
+    /// - Within a matching session, `.done` is otherwise left alone by
+    ///   every event except the `SessionStart` re-send above: each hook
+    ///   is an independent fire-and-forget POST, so a turn's own `Stop`
+    ///   can be delivered after the exit path's `SessionEnd` already
+    ///   settled the row (the same out-of-order delivery risk the
+    ///   `PreToolUse` guard below protects `.blocked` against). Only that
+    ///   `SessionStart` re-send or a session mismatch (below) can move a
+    ///   `.done` row again.
     /// - Every other recognized event only applies when the surface is
     ///   unregistered (or still `.titleHeuristic`-sourced, promoting it to
     ///   `.hooks`) or its `sessionID` matches the entry's. A session
@@ -327,13 +345,13 @@ final class AgentRegistry {
     ///   genuine new session. A mismatched `PermissionRequest` gets one more
     ///   rescue: it also replaces an `.idle` (not just `.done`) existing
     ///   entry — see `resultingState`'s doc comment for why `PermissionRequest`
-    ///   isn't simply added to `forwardMovingEventNames` instead. Codex has
-    ///   no `SessionEnd` hook, so a missed `SessionStart` (IPC enabled
-    ///   mid-session, or Calyx restarted) can leave a stale-but-idle entry
-    ///   on a pane; without this rescue a subsequent approval prompt for the
-    ///   real new session is discarded and the sidebar never shows it as
-    ///   blocked. `.working` and `.blocked` entries remain protected from a
-    ///   mismatched `PermissionRequest`, exactly as before.
+    ///   isn't simply added to `forwardMovingEventNames` instead. A missed
+    ///   `SessionStart` (IPC enabled mid-session or Calyx restarted) can
+    ///   leave a stale-but-idle entry on a pane; without this rescue a
+    ///   subsequent approval prompt for the real new session is discarded
+    ///   and the sidebar never shows it as blocked. `.working` and
+    ///   `.blocked` entries remain protected from a mismatched
+    ///   `PermissionRequest`, exactly as before.
     /// - Parameter kind: The agent CLI this event came from (Phase 2:
     ///   Codex / OpenCode alongside the default Claude Code), forwarded by
     ///   `CalyxMCPServer.routeAgentEvent`'s `X-Calyx-Agent-Kind` header.
@@ -385,6 +403,11 @@ final class AgentRegistry {
                 var updated = existing
                 updated.cwd = event.cwd
                 updated.lastEventAt = now
+                // A resumed session is live again, not the same finished
+                // one -- see this method's doc comment.
+                if existing.state == .done {
+                    updated.state = .idle
+                }
                 entries[surfaceID] = updated
             } else {
                 entries[surfaceID] = makeEntry(state: .idle)
@@ -409,6 +432,11 @@ final class AgentRegistry {
             entries[surfaceID] = makeEntry(state: newState)
             return
         }
+
+        // SessionEnd is terminal within a session -- see this method's
+        // doc comment for why a late same-session event must not move a
+        // `.done` row again.
+        guard existing.state != .done else { return }
 
         // Round 4 review: `calyx-agent-hook`'s command entries all run
         // `"async": true`, so the script's POST to the server never blocks
