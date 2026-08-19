@@ -451,6 +451,10 @@ pub(crate) fn spawn_session(
     // After spec.env on purpose: later `env` calls win for the same
     // key, and the session id must not be spoofable via spec.env.
     cmd.env("CALYX_SESSION_ID", &spec.id);
+    // CALYX_SURFACE_ID names a pane; the daemon only knows the stale
+    // value inherited from whichever client first started it, and a
+    // session can be reattached to a different pane, so drop it here.
+    cmd.env_remove("CALYX_SURFACE_ID");
     let stdin_fd = pty.slave.try_clone().map_err(|e| e.to_string())?;
     let stdout_fd = pty.slave.try_clone().map_err(|e| e.to_string())?;
     cmd.stdin(Stdio::from(stdin_fd));

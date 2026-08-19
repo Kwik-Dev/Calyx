@@ -14,6 +14,11 @@
 //  - Registering a second surface under the same sessionID overwrites
 //    the first (last write wins), and the first surface's reverse
 //    lookup no longer resolves
+//  - Registering a sessionID onto a surfaceID already occupied by a
+//    different session clears that other session's forward entry too
+//    (the same overwrite convention enforced in the other direction)
+//  - replaceSurface(old:new:) onto a surfaceID already occupied by a
+//    different session clears that other session's forward entry too
 //  - Unknown ids resolve to nil on both directions
 //
 
@@ -83,6 +88,28 @@ final class SessionSurfaceMapTests: XCTestCase {
                      "The old surface's reverse entry must be cleared once replaced — it no longer exists")
     }
 
+    func test_replaceSurfaceOntoSurfaceIDOccupiedByAnotherSession_clearsThatSessionsForwardEntry() {
+        let movingSessionID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        let displacedSessionID = "01BXZ3NDEKTSV4RRFFQ69G5FAV"
+        let oldSurfaceID = UUID()
+        let newSurfaceID = UUID()
+        map.register(sessionID: movingSessionID, surfaceID: oldSurfaceID)
+        map.register(sessionID: displacedSessionID, surfaceID: newSurfaceID)
+
+        map.replaceSurface(old: oldSurfaceID, new: newSurfaceID)
+
+        XCTAssertNil(map.surfaceID(for: displacedSessionID),
+                     "The displaced session's forward entry must not survive replaceSurface handing " +
+                     "its surface to a different session, or it would keep resolving to a surface it " +
+                     "no longer owns")
+        XCTAssertEqual(map.surfaceID(for: movingSessionID), newSurfaceID,
+                       "The moving session must resolve forward to the new surface")
+        XCTAssertEqual(map.sessionID(for: newSurfaceID), movingSessionID,
+                       "The new surface must resolve back to the moving session, not the session it displaced")
+        XCTAssertNil(map.sessionID(for: oldSurfaceID),
+                     "The old surface's reverse entry must still be cleared once replaced")
+    }
+
     // MARK: - double registration overwrite convention
 
     func test_registerSameSessionIDTwice_overwritesPreviousSurface_oldSurfaceNoLongerResolves() {
@@ -98,6 +125,24 @@ final class SessionSurfaceMapTests: XCTestCase {
         XCTAssertNil(map.sessionID(for: firstSurfaceID),
                      "The first surface's reverse entry must not survive being superseded by the second registration")
         XCTAssertEqual(map.sessionID(for: secondSurfaceID), sessionID)
+    }
+
+    func test_registerDifferentSessionIDOntoOccupiedSurfaceID_clearsPriorSessionsForwardEntry() {
+        let firstSessionID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        let secondSessionID = "01BXZ3NDEKTSV4RRFFQ69G5FAV"
+        let surfaceID = UUID()
+
+        map.register(sessionID: firstSessionID, surfaceID: surfaceID)
+        map.register(sessionID: secondSessionID, surfaceID: surfaceID)
+
+        XCTAssertNil(map.surfaceID(for: firstSessionID),
+                     "The first session's forward entry must not survive being displaced from its " +
+                     "surface by the second registration, or a request carrying the first session's " +
+                     "id would resolve to a surface that now belongs to the second session")
+        XCTAssertEqual(map.sessionID(for: surfaceID), secondSessionID,
+                       "The surface must resolve back to the second (displacing) session")
+        XCTAssertEqual(map.surfaceID(for: secondSessionID), surfaceID,
+                       "The second session must resolve forward to the surface it just claimed")
     }
 
     // MARK: - unknown ids

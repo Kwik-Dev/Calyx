@@ -47,12 +47,25 @@ struct CodexConfigManager: Sendable {
         // Remove existing calyx-ipc sections, normalize line endings
         let cleaned = removeSections(from: content)
 
-        // Build the new section
+        // Build the new section.
+        //
+        // `env_http_headers` tells Codex to read each header's value from
+        // its own process environment rather than send a literal string.
+        // Inside a persistent calyx-session pane, CALYX_SURFACE_ID does not
+        // identify the pane (absent with a current session daemon, stale
+        // with an older one still running), so `X-Calyx-Session-ID` carries
+        // the identity that has to be sent instead; see
+        // `CalyxMCPServer.resolveSurfaceID`'s doc comment for how the two
+        // headers are resolved. Measured against real codex 0.148.0: when
+        // CALYX_SESSION_ID is unset (an ordinary, non-persistent pane),
+        // Codex omits that header entirely rather than sending an empty
+        // value, so the surface header alone still resolves exactly as
+        // before.
         let section = """
         [mcp_servers.calyx-ipc]
         url = "http://127.0.0.1:\(port)/mcp"
         http_headers = { "Authorization" = "Bearer \(token)", "X-Calyx-Agent-Kind" = "\(AgentEntry.codexKind)" }
-        env_http_headers = { "X-Calyx-Surface-ID" = "CALYX_SURFACE_ID" }
+        env_http_headers = { "X-Calyx-Surface-ID" = "CALYX_SURFACE_ID", "X-Calyx-Session-ID" = "CALYX_SESSION_ID" }
         """
 
         // Append with proper spacing

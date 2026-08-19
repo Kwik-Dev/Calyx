@@ -230,8 +230,9 @@ final class ClaudeConfigManagerTests: XCTestCase {
         // Given/When
         try ClaudeConfigManager.enableIPC(port: 41830, token: "abc123", configPath: configPath)
 
-        // Then: headers contain exactly Authorization and X-Calyx-Surface-ID,
-        // the latter as the literal `${CALYX_SURFACE_ID:-}` expansion string.
+        // Then: headers contain exactly Authorization, X-Calyx-Surface-ID, and
+        // X-Calyx-Session-ID, the latter two as literal `${VAR:-}` expansion
+        // strings that Claude Code's own env expansion fills in per pane.
         let dict = try readConfigDict()
         let mcpServers = dict["mcpServers"] as? [String: Any]
         let calyxIPC = mcpServers?["calyx-ipc"] as? [String: Any]
@@ -242,8 +243,14 @@ final class ClaudeConfigManagerTests: XCTestCase {
                        "X-Calyx-Surface-ID must be the literal ${CALYX_SURFACE_ID:-} placeholder " +
                        "(empty default) so Claude Code's own env expansion fills it per-pane, and an " +
                        "external terminal with no CALYX_SURFACE_ID env still parses the config")
-        XCTAssertEqual(headers?.count, 2,
-                       "headers must contain exactly Authorization and X-Calyx-Surface-ID, no more")
+        XCTAssertEqual(headers?["X-Calyx-Session-ID"], "${CALYX_SESSION_ID:-}",
+                       "X-Calyx-Session-ID must be present too: a persistent calyx-session daemon " +
+                       "leaks a stale CALYX_SURFACE_ID to every session shell it spawns, so " +
+                       "CalyxMCPServer needs the stable session ID to tell concurrent Claude Code " +
+                       "panes apart")
+        XCTAssertEqual(headers?.count, 3,
+                       "headers must contain exactly Authorization, X-Calyx-Surface-ID, and " +
+                       "X-Calyx-Session-ID, no more")
     }
 
     func test_enableIPC_updatesExistingEntry_headersIncludeSurfaceIDPlaceholder() throws {
@@ -276,6 +283,9 @@ final class ClaudeConfigManagerTests: XCTestCase {
         XCTAssertEqual(headers?["X-Calyx-Surface-ID"], "${CALYX_SURFACE_ID:-}",
                        "Re-running enableIPC on a pre-Round-4 entry must add X-Calyx-Surface-ID, " +
                        "not just refresh Authorization")
+        XCTAssertEqual(headers?["X-Calyx-Session-ID"], "${CALYX_SESSION_ID:-}",
+                       "Re-running enableIPC on an entry written before X-Calyx-Session-ID existed must " +
+                       "add it too, not just X-Calyx-Surface-ID")
     }
 
     // MARK: - disableIPC
