@@ -66,6 +66,12 @@ final class CalyxMCPServerSessionRoutingTests: XCTestCase {
         """.utf8)
     }
 
+    private func sessionEndBody(sessionID: String) -> Data {
+        Data("""
+        {"hook_event_name":"SessionEnd","session_id":"\(sessionID)"}
+        """.utf8)
+    }
+
     private func agentEventRequest(token: String?, surfaceIDHeader: String?, body: Data?) -> HTTPRequest {
         var headers: [String: String] = [:]
         if let token { headers["Authorization"] = "Bearer \(token)" }
@@ -205,5 +211,107 @@ final class CalyxMCPServerSessionRoutingTests: XCTestCase {
 
         XCTAssertEqual(response.statusCode, 200)
         XCTAssertEqual(server.agentRegistry.entries[surfaceID]?.kind, AgentEntry.hermesKind)
+    }
+
+    // MARK: - Regression: one daemon-leaked stale surface header shared by multiple panes
+
+    /// A persistent calyx-session daemon spawns every session shell as its
+    /// own child process, so a CALYX_SURFACE_ID inherited from whichever
+    /// pane first started the daemon leaks into every session it spawns
+    /// afterward, across Calyx restarts, giving unrelated panes the
+    /// daemon's own stale surface UUID. Reproduces that leak with two
+    /// concurrent sessions: both initialize requests carry the identical
+    /// stale surface header, but each pane's own distinct session header
+    /// must still resolve to its own surface, keeping the two Agents rows
+    /// separate rather than collapsing into one.
+    func test_routeMCP_twoConcurrentSessionsSharingOneStaleSurfaceHeader_registryGetsTwoDistinctEntries() async {
+        let staleSurfaceID = UUID()
+        let sessionA = "01SESSION-A-CONCURRENT-CODEX-TEST"
+        let sessionB = "01SESSION-B-CONCURRENT-CODEX-TEST"
+        let surfaceA = UUID()
+        let surfaceB = UUID()
+        server.sessionSurfaceMap.register(sessionID: sessionA, surfaceID: surfaceA)
+        server.sessionSurfaceMap.register(sessionID: sessionB, surfaceID: surfaceB)
+
+        let responseA = await server.route(request: mcpRequest(
+            token: testToken,
+            surfaceIDHeader: staleSurfaceID.uuidString,
+            sessionIDHeader: sessionA,
+            agentKind: AgentEntry.codexKind,
+            body: initializeRequestBody(id: 1)
+        ))
+        let responseB = await server.route(request: mcpRequest(
+            token: testToken,
+            surfaceIDHeader: staleSurfaceID.uuidString,
+            sessionIDHeader: sessionB,
+            agentKind: AgentEntry.codexKind,
+            body: initializeRequestBody(id: 2)
+        ))
+
+        XCTAssertEqual(responseA.statusCode, 200)
+        XCTAssertEqual(responseB.statusCode, 200)
+        XCTAssertEqual(server.agentRegistry.entries.count, 2,
+                       "Two distinct calyx-session IDs sharing one stale, daemon-leaked surface header " +
+                       "must produce two distinct Agents rows, not collapse into one")
+        XCTAssertEqual(server.agentRegistry.entries[surfaceA]?.kind, AgentEntry.codexKind)
+        XCTAssertEqual(server.agentRegistry.entries[surfaceB]?.kind, AgentEntry.codexKind)
+        XCTAssertNil(server.agentRegistry.entries[staleSurfaceID],
+                     "The stale, daemon-leaked surface UUID must never itself get a registry entry")
+    }
+
+    /// A persistent-session pane's Claude Code process ends (SessionEnd)
+    /// and Codex starts in the same tab afterward, so the resolved surface
+    /// already holds a done Claude Code row when Codex's initialize
+    /// request arrives, carrying an unrelated, daemon-leaked stale surface
+    /// header. Pins that the occupying entry is replaced in place: kind,
+    /// source, and state all change, and cwd carries over from the row it
+    /// replaced rather than being reset, which is what shows a replace
+    /// happened rather than a fresh insert. Does not pin anything
+    /// `.done`-specific: `AgentRegistry.handleMCPConnection` replaces a
+    /// different-kind `.hooks` entry regardless of its prior state, so a
+    /// still-active row would be replaced identically.
+    func test_routeMCP_codexInitializeReplacesDoneClaudeCodeEntryOnSameResolvedSurface() async {
+        let calyxSessionID = "01SESSION-REPLACEMENT-CODEX-TEST"
+        let surfaceA = UUID()
+        let unrelatedStaleSurfaceID = UUID()
+        server.sessionSurfaceMap.register(sessionID: calyxSessionID, surfaceID: surfaceA)
+
+        // Seed a done Claude Code row on surfaceA through the registry's
+        // own hook-event API (SessionStart then SessionEnd), the same path
+        // a real Claude Code pane drives it through.
+        let seedSessionID = "claude-session-being-replaced"
+        let startResponse = await server.route(request: agentEventRequest(
+            token: testToken, surfaceIDHeader: surfaceA.uuidString,
+            body: validAgentEventBody(sessionID: seedSessionID)
+        ))
+        XCTAssertEqual(startResponse.statusCode, 204)
+        let endResponse = await server.route(request: agentEventRequest(
+            token: testToken, surfaceIDHeader: surfaceA.uuidString,
+            body: sessionEndBody(sessionID: seedSessionID)
+        ))
+        XCTAssertEqual(endResponse.statusCode, 204)
+        XCTAssertEqual(server.agentRegistry.entries[surfaceA]?.kind, AgentEntry.claudeCodeKind)
+        XCTAssertEqual(server.agentRegistry.entries[surfaceA]?.state, .done)
+
+        let response = await server.route(request: mcpRequest(
+            token: testToken,
+            surfaceIDHeader: unrelatedStaleSurfaceID.uuidString,
+            sessionIDHeader: calyxSessionID,
+            agentKind: AgentEntry.codexKind,
+            body: initializeRequestBody(id: 1)
+        ))
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(server.agentRegistry.entries[surfaceA]?.kind, AgentEntry.codexKind,
+                       "The surviving entry must be Codex's, not the old done Claude Code one")
+        XCTAssertEqual(server.agentRegistry.entries[surfaceA]?.source, .mcpConnection,
+                       "The surviving entry must no longer carry the seeded row's .hooks source")
+        XCTAssertEqual(server.agentRegistry.entries[surfaceA]?.state, .idle,
+                       "The replacement resets state; it is not gated on the seeded row having been .done")
+        XCTAssertEqual(server.agentRegistry.entries[surfaceA]?.cwd, "/Users/dev/repo",
+                       "The surviving entry must carry over the cwd of the row it replaced, proving a " +
+                       "replace happened rather than a fresh insert")
+        XCTAssertNil(server.agentRegistry.entries[unrelatedStaleSurfaceID],
+                     "The unrelated stale surface header must never itself get a registry entry")
     }
 }

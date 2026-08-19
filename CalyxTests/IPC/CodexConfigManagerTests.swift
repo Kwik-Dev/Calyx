@@ -58,8 +58,14 @@ final class CodexConfigManagerTests: XCTestCase {
             "Codex's MCP connection must identify itself so initialize can create the Agents row"
         )
         XCTAssertTrue(
-            content.contains("env_http_headers = { \"X-Calyx-Surface-ID\" = \"CALYX_SURFACE_ID\" }"),
-            "Codex must read the surface ID from its own environment; hook child processes sanitize it"
+            content.contains(
+                "env_http_headers = { \"X-Calyx-Surface-ID\" = \"CALYX_SURFACE_ID\", " +
+                "\"X-Calyx-Session-ID\" = \"CALYX_SESSION_ID\" }"
+            ),
+            "Codex must read both the surface ID and the stable session ID from its own " +
+            "environment; a persistent calyx-session daemon leaks a stale CALYX_SURFACE_ID to " +
+            "every session shell it spawns, so CalyxMCPServer needs CALYX_SESSION_ID to tell " +
+            "concurrent Codex panes apart"
         )
     }
 
@@ -103,6 +109,38 @@ final class CodexConfigManagerTests: XCTestCase {
         // Old values removed
         XCTAssertFalse(content.contains("http://localhost:40000/mcp"))
         XCTAssertFalse(content.contains("Bearer old-token"))
+    }
+
+    func test_enableIPC_upgradesPreExistingSingleHeaderSection_exactlyOneSectionWithBothHeaders() throws {
+        // Given: file already has a calyx-ipc section written before
+        // CALYX_SESSION_ID existed -- the old single-header form.
+        let existing = """
+        [mcp_servers.calyx-ipc]
+        url = "http://localhost:40000/mcp"
+        http_headers = { "Authorization" = "Bearer old-token" }
+        env_http_headers = { "X-Calyx-Surface-ID" = "CALYX_SURFACE_ID" }
+        """
+        writeConfig(existing)
+
+        // When
+        try CodexConfigManager.enableIPC(port: 41830, token: "new-token", configPath: configPath)
+
+        // Then: exactly one calyx-ipc section, carrying both headers
+        let content = readConfig()
+        let headerCount = content.components(separatedBy: "[mcp_servers.calyx-ipc]").count - 1
+        XCTAssertEqual(headerCount, 1,
+                       "removeSections must not leave the pre-existing section behind alongside the new one")
+        XCTAssertTrue(
+            content.contains(
+                "env_http_headers = { \"X-Calyx-Surface-ID\" = \"CALYX_SURFACE_ID\", " +
+                "\"X-Calyx-Session-ID\" = \"CALYX_SESSION_ID\" }"
+            ),
+            "The regenerated section must carry both headers, not just the pre-existing single one"
+        )
+        XCTAssertFalse(
+            content.contains("env_http_headers = { \"X-Calyx-Surface-ID\" = \"CALYX_SURFACE_ID\" }"),
+            "The old single-header line must not survive alongside the new two-header line"
+        )
     }
 
     // MARK: - Preservation Tests

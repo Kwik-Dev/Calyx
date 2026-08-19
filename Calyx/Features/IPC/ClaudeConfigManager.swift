@@ -24,22 +24,27 @@ struct ClaudeConfigManager: Sendable {
 
         // Add/update calyx-ipc entry.
         //
-        // `X-Calyx-Surface-ID` (Round 4) carries the pane's surface ID via
-        // Claude Code's own `${VAR}` header env-expansion, so
-        // `CalyxMCPServer` can bind surface -> peer at MCP `initialize`
-        // time even for a passive recipient that never calls a calyx-ipc
-        // tool. Must be the `${CALYX_SURFACE_ID:-}` empty-default form: an
-        // undefined variable with no default fails Claude Code's config
-        // parse entirely, which would break every *other* terminal (one
-        // with no `CALYX_SURFACE_ID` env, e.g. outside Calyx) too. An
-        // empty header value is treated as "no binding" server-side, so
-        // the empty default is always safe.
+        // Claude Code expands `${VAR}` header values from its own process
+        // environment. Inside a persistent calyx-session pane,
+        // CALYX_SURFACE_ID does not identify the pane (absent with a
+        // current session daemon, stale with an older one still running),
+        // so `X-Calyx-Session-ID` carries the identity that has to be sent
+        // instead; see `CalyxMCPServer.resolveSurfaceID`'s doc comment for
+        // how the two headers are resolved.
+        //
+        // Both must be the `${VAR:-}` empty-default form: an undefined
+        // variable with no default fails Claude Code's config parse
+        // entirely, which would break every *other* terminal (one with no
+        // such env var, e.g. outside Calyx) too. An empty header value is
+        // treated as "no binding" server-side, so the empty default is
+        // always safe.
         let calyxEntry: [String: Any] = [
             "type": "http",
             "url": "http://127.0.0.1:\(port)/mcp",
             "headers": [
                 "Authorization": "Bearer \(token)",
-                "X-Calyx-Surface-ID": "${CALYX_SURFACE_ID:-}"
+                "X-Calyx-Surface-ID": "${CALYX_SURFACE_ID:-}",
+                "X-Calyx-Session-ID": "${CALYX_SESSION_ID:-}"
             ]
         ]
         mcpServers[calyxIPCKey] = calyxEntry
