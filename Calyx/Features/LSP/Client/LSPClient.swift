@@ -9,8 +9,9 @@
 //    - Frame outbound JSON-RPC messages with Content-Length headers.
 //    - Parse inbound bytes using an incremental Content-Length parser
 //      (handles back-to-back and fragmented messages, enforces a 64 MiB
-//      cap on body size, and treats any malformed Content-Length as
-//      unrecoverable).
+//      cap on body size, recovers from a non-numeric Content-Length by
+//      discarding just that header, and treats a negative, oversized, or
+//      overflowing Content-Length as unrecoverable).
 //    - Auto-assign integer ids for requests and correlate responses to
 //      pending continuations. String ids round-trip through the
 //      `LSPRequestID` enum so servers that echo ids as strings are
@@ -704,13 +705,20 @@ actor LSPClient {
     /// Junk bytes ahead of it (e.g. leftovers from a malformed earlier
     /// message) are discarded.
     ///
-    /// Any invalid Content-Length (non-integer, negative, larger than
-    /// `maxContentLength`, or causing arithmetic overflow when
-    /// computing the body end) is treated as a fatal framing failure:
-    /// every pending request fails with `.malformedFraming`, the
-    /// transport is closed, and the loop exits. We deliberately do not
-    /// attempt resync — once framing is broken there is no safe way to
-    /// find the next message boundary.
+    /// A non-numeric Content-Length is recoverable: the header block
+    /// itself is structurally complete (its `\r\n\r\n` terminator was
+    /// already found), so we discard just that header and let the next
+    /// iteration search forward for the next `Content-Length:` marker,
+    /// same as junk bytes ahead of a header.
+    ///
+    /// A negative Content-Length, one larger than `maxContentLength`, or
+    /// one causing arithmetic overflow when computing the body end is
+    /// treated as a fatal framing failure: every pending request fails
+    /// with `.malformedFraming`, the transport is closed, and the loop
+    /// exits. These carry a real risk of an attacker- or corruption-
+    /// chosen byte count driving unbounded allocation or an indefinite
+    /// wait for bytes that will never arrive, so we deliberately do not
+    /// attempt resync for them.
     private func drain() async {
         let headerTerminator = Data("\r\n\r\n".utf8)
         let headerMarker = Data("Content-Length:".utf8)
@@ -753,11 +761,24 @@ actor LSPClient {
                 await failFatal(reason: "Content-Length header missing")
                 return
             }
-            guard let length = Int(rawLength),
-                  length >= 0,
-                  length <= Self.maxContentLength else {
+            guard let length = Int(rawLength) else {
+                // The header block is structurally complete (we already
+                // found its `\r\n\r\n` terminator) but the declared length
+                // is not a number, so we don't know how many bytes this
+                // message's body occupies. Unlike a negative or
+                // oversized length, a non-numeric value carries no risk
+                // of tricking us into allocating or waiting for an
+                // attacker-chosen byte count, so it's safe to discard just
+                // this header and let the next loop iteration search
+                // forward for the next `Content-Length:` marker, treating
+                // whatever sits in between as junk — the same recovery
+                // already applied to bytes preceding the first marker.
+                receiveBuffer.removeSubrange(receiveBuffer.startIndex..<headerEnd.upperBound)
+                continue
+            }
+            guard length >= 0, length <= Self.maxContentLength else {
                 await failFatal(
-                    reason: "Content-Length \(rawLength) is invalid or exceeds the \(Self.maxContentLength)-byte cap"
+                    reason: "Content-Length \(length) is invalid or exceeds the \(Self.maxContentLength)-byte cap"
                 )
                 return
             }
