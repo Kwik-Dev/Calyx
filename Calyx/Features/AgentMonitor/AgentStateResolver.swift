@@ -17,13 +17,19 @@ import Foundation
 /// One fact `AgentRegistry` learned about a surface, in the vocabulary
 /// `AgentStateResolver.resolve` consumes. Each case names its own
 /// evidence source (a hook POST, an MCP `initialize`, a pane-exit signal,
-/// a screen poll, a title change, an OSC 9;4 progress report, or the
-/// periodic staleness sweep) so `resolve` can apply that source's own
-/// precedence rules against the surface's current row.
+/// a shell-integration report, a screen poll, a title change, an OSC 9;4
+/// progress report, or the periodic staleness sweep) so `resolve` can
+/// apply that source's own precedence rules against the surface's
+/// current row.
 enum AgentSignal: Sendable {
     case hook(AgentEvent, kind: String)
     case mcpConnection(kind: String)
     case paneCommandFinished(exitCode: Int32?, suspended: Bool, origin: PaneCommandOrigin)
+    /// Calyx's own shell integration reported something for the surface,
+    /// either phase. Carries no row effect of its own: it exists so the
+    /// resolver, not the registry, owns when an outstanding ghostty
+    /// deferral is answered.
+    case calyxShellIntegrationReported
     case screen(AgentState?)
     /// Pre-classified: `AgentRegistry.handleTitleChange` constructs this
     /// only when `ClaudeTitleHeuristic.classify` returns non-nil, so a
@@ -55,8 +61,10 @@ enum PaneCommandOrigin: Sendable, Equatable {
 /// count of consecutive `nil` screen classifications a
 /// `.titleHeuristic` row has seen since its last positive heuristic
 /// signal (a `.blocked`/`.working` screen classification, a `.working`
-/// title classification, or an `isActive == true` progress report), and
-/// when the row entered `.blocked`.
+/// title classification, or an `isActive == true` progress report),
+/// when the row entered `.blocked`, and the two timestamps that decide
+/// whether a ghostty pane-exit signal deferred to Calyx's own shell
+/// integration is still waiting for an answer.
 struct AgentEvidence: Sendable, Equatable {
     var screenMissStreak: Int = 0
 
@@ -75,7 +83,28 @@ struct AgentEvidence: Sendable, Equatable {
     /// very next `PreToolUse` through.
     var blockedSince: Date? = nil
 
-    var isEmpty: Bool { screenMissStreak == 0 && blockedSince == nil }
+    /// When ghostty's own pane-exit signal was deferred to Calyx's
+    /// shell integration and Calyx has not answered it yet. Nil once
+    /// Calyx reports anything for the surface, and nil whenever no
+    /// deferral is outstanding. The staleness sweep settles a row whose
+    /// deferred signal has gone unanswered: ghostty and Calyx describe
+    /// the same command completing and arrive milliseconds apart, so an
+    /// unanswered deferral means Calyx's report was lost, and without
+    /// this the row could never settle by either route.
+    var deferredGhosttyFinishAt: Date? = nil
+
+    /// When Calyx's own shell integration last reported anything for
+    /// the surface, start or end. Read only to decide whether a ghostty
+    /// deferral arriving right now is worth recording: a suspend that
+    /// Calyx just reported is answered already, and recording a
+    /// deferral for it would let the sweep settle a job that is merely
+    /// stopped.
+    var lastCalyxReportAt: Date? = nil
+
+    var isEmpty: Bool {
+        screenMissStreak == 0 && blockedSince == nil
+            && deferredGhosttyFinishAt == nil && lastCalyxReportAt == nil
+    }
 
     /// The evidence after a positive heuristic signal: a
     /// `.blocked`/`.working` screen classification, a `.working` title
@@ -95,6 +124,19 @@ struct AgentEvidence: Sendable, Equatable {
     func incrementingScreenMissStreak() -> AgentEvidence {
         var copy = self
         copy.screenMissStreak += 1
+        return copy
+    }
+
+    /// The evidence after an agent reports its own presence, through a
+    /// hook event or an MCP connection. Both supersede what Calyx
+    /// inferred by watching the pane: any heuristic miss streak is
+    /// stale, and so is a ghostty pane-exit signal still waiting for an
+    /// answer. What Calyx's own shell integration last reported is
+    /// untouched, because neither kind of event says anything about it.
+    func clearingInferredEvidence() -> AgentEvidence {
+        var copy = self
+        copy.screenMissStreak = 0
+        copy.deferredGhosttyFinishAt = nil
         return copy
     }
 }
@@ -275,6 +317,24 @@ enum AgentStateResolver {
     /// `isStopSignalExitCode`.
     private static let stopSignals: Set<Int32> = [SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU]
 
+    /// How recently Calyx's own shell integration must have reported for
+    /// a ghostty deferral arriving now to count as already answered, and
+    /// so not be recorded at all. The two signals for one command arrive
+    /// within milliseconds of each other in either order, and it is the
+    /// order where Calyx reports FIRST that needs this: without it a
+    /// suspend Calyx already answered would record a deferral nothing
+    /// can ever clear, and `resolveStaleSweep` would retire a job that is
+    /// merely stopped.
+    private static let calyxReportGraceWindow: TimeInterval = 2
+
+    /// How long a deferred ghostty pane-exit signal may go unanswered by
+    /// Calyx's own shell integration before `resolveStaleSweep` settles
+    /// the row on it. Well past the milliseconds the two signals for one
+    /// command are actually separated by, so only a Calyx report that
+    /// was genuinely lost reaches it. The sweep runs once a minute, so a
+    /// lost report costs a stale row for at most this plus that interval.
+    private static let deferredGhosttySettleDelay: TimeInterval = 30
+
     // MARK: Entry Point
 
     static func resolve(
@@ -290,17 +350,21 @@ enum AgentStateResolver {
         case .hook(let event, let kind):
             resolution = resolveHook(
                 event, kind: kind, surfaceID: surfaceID, current: current,
-                blockedSince: evidence.blockedSince, now: now
+                evidence: evidence, blockedSince: evidence.blockedSince, now: now
             )
         case .staleSweep:
             resolution = resolveStaleSweep(current: current, evidence: evidence, now: now)
         case .mcpConnection(let kind):
-            resolution = resolveMCPConnection(kind: kind, surfaceID: surfaceID, current: current, now: now)
+            resolution = resolveMCPConnection(
+                kind: kind, surfaceID: surfaceID, current: current, evidence: evidence, now: now
+            )
         case .paneCommandFinished(let exitCode, let suspended, let origin):
             resolution = resolvePaneCommandFinished(
                 exitCode: exitCode, suspended: suspended, origin: origin,
                 current: current, evidence: evidence, context: context, now: now
             )
+        case .calyxShellIntegrationReported:
+            resolution = resolveCalyxShellIntegrationReported(evidence: evidence, now: now)
         case .screen(let state):
             resolution = resolveScreen(
                 state, surfaceID: surfaceID, current: current, evidence: evidence, now: now
@@ -320,24 +384,47 @@ enum AgentStateResolver {
         )
     }
 
-    /// Downgrades a `.working` row whose last event is older than
-    /// `staleWorkingThreshold` to `.idle`, guarding against an agent
-    /// process that exits non-gracefully (crash, `kill -9`, terminal
-    /// force-close) and so never sends its own terminal hook: without
-    /// this the row would stay frozen at `.working` forever.
+    /// Two independent reasons to correct a self-reported row
+    /// (`AgentSource.isSelfReported`) nothing else is going to correct.
+    /// An inferred row is never swept at all: it retires itself through
+    /// its own miss-streak bookkeeping instead.
     ///
-    /// Only a self-reported row is aged out at all, per `AgentSource
-    /// .isSelfReported`.
+    /// First, a ghostty pane-exit signal `resolvePaneCommandFinished`
+    /// deferred to Calyx's own shell integration and Calyx never
+    /// answered (`AgentEvidence.deferredGhosttyFinishAt` older than
+    /// `deferredGhosttySettleDelay`) settles the row to `.done` and
+    /// clears the deferral. The two signals for one command arrive
+    /// within milliseconds of each other, so a deferral still
+    /// outstanding this long means Calyx's own report was lost -- the
+    /// shell integration body swallows a failed POST -- and nothing else
+    /// will ever settle this row: Calyx never reports the end, and
+    /// ghostty already deferred to the report that never came. This
+    /// reason runs ahead of the staleness check below because it applies
+    /// to a row in ANY live state, `.blocked` very much included: the
+    /// user-visible symptom is a finished agent's row stuck red.
     ///
-    /// `.blocked` rows are excluded too: a permission prompt left
-    /// unanswered for a long time is a legitimate wait, not staleness.
+    /// Second, a `.working` row whose last event is older than
+    /// `staleWorkingThreshold` is downgraded to `.idle`, guarding
+    /// against an agent process that exits non-gracefully (crash,
+    /// `kill -9`, terminal force-close) and so never sends its own
+    /// terminal hook: without this the row would stay frozen at
+    /// `.working` forever. `.blocked` rows are excluded from THIS
+    /// reason: a permission prompt left unanswered for a long time is a
+    /// legitimate wait, not staleness.
     ///
-    /// This is the one state change in the registry that deliberately
-    /// does NOT stamp `lastEventAt`. The row's timestamp still means
-    /// "when this agent last reported", and the sweep is Calyx's own
-    /// inference rather than a report from the agent, so advancing it
-    /// would both lie to the sidebar's relative-time label and reset
-    /// the very staleness window that triggered the downgrade.
+    /// Neither write stamps `lastEventAt`, alone in the registry. The
+    /// row's timestamp still means "when this agent last reported", and
+    /// the sweep is Calyx's own inference rather than a report from the
+    /// agent, so advancing it would both lie to the sidebar's
+    /// relative-time label and reset the very window that triggered the
+    /// correction.
+    ///
+    /// Neither write settles in the `AgentResolution.settled` sense
+    /// either: both go out through `.write`, so `didSettle` stays
+    /// `false`. That is load-bearing for the first reason, whose
+    /// evidence is ghostty's signal, and a ghostty-sourced settle never
+    /// expires a surface's pending approvals -- only a Calyx-sourced one
+    /// over `/command-event` does (`CalyxMCPServer.routeCommandEvent`).
     private static func resolveStaleSweep(
         current: AgentEntry?,
         evidence: AgentEvidence,
@@ -349,6 +436,17 @@ enum AgentStateResolver {
         guard existing.source.isSelfReported else {
             return .keep(evidence: evidence)
         }
+
+        if existing.state != .done,
+           let deferredAt = evidence.deferredGhosttyFinishAt,
+           now.timeIntervalSince(deferredAt) > deferredGhosttySettleDelay {
+            var updated = existing
+            updated.state = .done
+            var answered = evidence
+            answered.deferredGhosttyFinishAt = nil
+            return .write(updated, evidence: answered)
+        }
+
         guard existing.state == .working else {
             return .keep(evidence: evidence)
         }
@@ -359,6 +457,23 @@ enum AgentStateResolver {
         var updated = existing
         updated.state = .idle
         return .write(updated, evidence: evidence)
+    }
+
+    // MARK: Calyx Shell Integration Report Signal
+
+    /// Records that Calyx's own shell integration reported for the
+    /// surface, and answers any outstanding ghostty deferral in the same
+    /// step. Touches no row: the report's phase alone says nothing about
+    /// whether the pane's foreground job exited, which is what
+    /// `.paneCommandFinished` decides.
+    private static func resolveCalyxShellIntegrationReported(
+        evidence: AgentEvidence,
+        now: Date
+    ) -> AgentResolution {
+        var updated = evidence
+        updated.lastCalyxReportAt = now
+        updated.deferredGhosttyFinishAt = nil
+        return .keep(evidence: updated)
     }
 
     /// Records explicit agent-presence evidence from a surface-bound MCP
@@ -394,9 +509,10 @@ enum AgentStateResolver {
         kind: String,
         surfaceID: UUID,
         current: AgentEntry?,
+        evidence: AgentEvidence,
         now: Date
     ) -> AgentResolution {
-        let clearedEvidence = AgentEvidence()
+        let clearedEvidence = evidence.clearingInferredEvidence()
 
         guard let existing = current else {
             let entry = AgentEntry(
@@ -450,12 +566,13 @@ enum AgentStateResolver {
         kind: String,
         surfaceID: UUID,
         current: AgentEntry?,
+        evidence: AgentEvidence,
         blockedSince: Date?,
         now: Date
     ) -> AgentResolution {
         return resolveHookRow(
             event, kind: kind, surfaceID: surfaceID, current: current,
-            blockedSince: blockedSince, now: now
+            evidence: evidence, blockedSince: blockedSince, now: now
         )
         .withLearnedPeerID(event.ipcSelfPeerID.flatMap(UUID.init(uuidString:)))
     }
@@ -500,10 +617,11 @@ enum AgentStateResolver {
         kind: String,
         surfaceID: UUID,
         current: AgentEntry?,
+        evidence: AgentEvidence,
         blockedSince: Date?,
         now: Date
     ) -> AgentResolution {
-        let clearedEvidence = AgentEvidence()
+        let clearedEvidence = evidence.clearingInferredEvidence()
 
         func makeEntry(state: AgentState) -> AgentEntry {
             AgentEntry(
@@ -619,6 +737,20 @@ enum AgentStateResolver {
     /// is evidence the signal already carries directly, needing no
     /// deferral to itself.
     ///
+    /// A deferral is not a discard, though. It is recorded on the
+    /// surface's evidence (`AgentEvidence.deferredGhosttyFinishAt`) so
+    /// `resolveStaleSweep` can settle the row if Calyx never answers it
+    /// -- see that clause and the field's own doc comment. The one case
+    /// that records nothing is a deferral arriving within
+    /// `calyxReportGraceWindow` of Calyx's own last report: Calyx has
+    /// already spoken for this command, and on a fish Ctrl-Z it can
+    /// speak FIRST, so recording here would leave a deferral behind that
+    /// the report meant to clear it already went past.
+    ///
+    /// Every path with `origin == .calyxShellIntegration` clears the
+    /// deferral instead, settling or not: this signal is the answer a
+    /// deferral was waiting for either way.
+    ///
     /// `didSettle` is `false` for every guard, including the two that
     /// return before ever inspecting `current` -- `CalyxMCPServer
     /// .routeCommandEvent` gates `ApprovalInboxStore.expireForSurface`
@@ -635,25 +767,39 @@ enum AgentStateResolver {
         now: Date
     ) -> AgentResolution {
         if origin == .ghostty, context.calyxShellIntegrationSeen {
-            return .keep(evidence: evidence)
+            var updated = evidence
+            let calyxJustReported = evidence.lastCalyxReportAt.map {
+                now.timeIntervalSince($0) < calyxReportGraceWindow
+            } ?? false
+            if !calyxJustReported {
+                updated.deferredGhosttyFinishAt = now
+            }
+            return .keep(evidence: updated)
         }
+
+        // Calyx has now answered for this surface, on every path below:
+        // this signal IS the report a deferral was waiting for, whether
+        // or not it settles anything.
+        var answered = evidence
+        answered.deferredGhosttyFinishAt = nil
+
         guard let existing = current else {
-            return .keep(evidence: evidence)
+            return .keep(evidence: answered)
         }
         guard existing.source.isSelfReported else {
-            return .keep(evidence: evidence)
+            return .keep(evidence: answered)
         }
         guard existing.state != .done else {
-            return .keep(evidence: evidence)
+            return .keep(evidence: answered)
         }
         guard !suspended, !isStopSignalExitCode(exitCode) else {
-            return .keep(evidence: evidence)
+            return .keep(evidence: answered)
         }
 
         var updated = existing
         updated.state = .done
         updated.lastEventAt = now
-        return .settled(updated, evidence: evidence)
+        return .settled(updated, evidence: answered)
     }
 
     // MARK: Screen Classification Signal

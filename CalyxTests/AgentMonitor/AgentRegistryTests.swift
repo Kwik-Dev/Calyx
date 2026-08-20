@@ -2286,6 +2286,198 @@ final class AgentRegistryTests: XCTestCase {
         XCTAssertEqual(registry.entries[surfaceID]?.state, .done)
     }
 
+    // MARK: - sweepStaleEntries: an unanswered ghostty deferral
+
+    // The deferral above is only safe while Calyx's own shell
+    // integration actually answers it. Its phase: end POST can be lost
+    // (the shell body swallows a failed POST), and then nothing settles
+    // the row at all: Calyx never reports the end, and ghostty's own
+    // signal already deferred to the report that never came. The row
+    // sits at whatever it was, red included, until the pane is
+    // destroyed.
+    //
+    // ghostty's signal and Calyx's phase: end describe the same command
+    // completing and so arrive within milliseconds of each other, which
+    // makes a deferral Calyx never answered evidence that Calyx's report
+    // was lost. The sweep settles on that evidence.
+
+    func test_sweepStaleEntries_unansweredGhosttyDeferral_settlesTheRowToDone() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        let started = Date()
+        // A long-running foreground command: Calyx's integration reported
+        // its phase: start five minutes before the command finished.
+        let finished = started.addingTimeInterval(5 * 60)
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID, now: started)
+        registry.handleHookEvent(event("UserPromptSubmit", sessionID: "session-a"), surfaceID: surfaceID, now: started)
+        registry.recordCalyxShellIntegrationReported(surfaceID: surfaceID, now: started)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .working, "Precondition: a live hooks row")
+
+        let ghosttySettled = registry.handleGhosttyCommandFinished(surfaceID: surfaceID, exitCode: 0, now: finished)
+
+        XCTAssertFalse(ghosttySettled,
+                       "Precondition: ghostty still defers to Calyx's own integration for this surface")
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .working,
+                       "Precondition: the deferred signal itself must leave the row alone")
+        XCTAssertEqual(registry.entries[surfaceID]?.lastEventAt, started,
+                       "Precondition: the deferred signal must not stamp the row either")
+
+        // Calyx's matching phase: end never arrives.
+        registry.sweepStaleEntries(now: finished.addingTimeInterval(90))
+
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .done,
+                       "A ghostty deferral Calyx never answered means Calyx's own end report was lost, so " +
+                       "the sweep must settle the row -- without this nothing settles it by either route " +
+                       "and the row stays stuck until the pane is destroyed")
+        XCTAssertEqual(registry.entries[surfaceID]?.lastEventAt, started,
+                       "The sweep never stamps lastEventAt: the timestamp still means when the agent last " +
+                       "reported, and this settle is Calyx's own inference, not a report")
+    }
+
+    // The ordering trap. On a fish Ctrl-Z, Calyx's own suspend report and
+    // ghostty's pane-exit signal race, and Calyx's can land FIRST. A
+    // deferral recorded after Calyx already answered would then have
+    // nothing left to clear it, and the sweep would retire a job that is
+    // merely stopped. The grace window on how recently Calyx reported is
+    // what makes the dangerous ordering safe.
+
+    func test_sweepStaleEntries_calyxSuspendReportBeforeGhosttySignal_neverSettlesTheSuspendedRow() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        let base = Date()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID, now: base)
+        registry.handleHookEvent(event("UserPromptSubmit", sessionID: "session-a"), surfaceID: surfaceID, now: base)
+        // fish's own $status cannot signal a suspend, so its integration
+        // reports one through the separate suspended flag instead.
+        let calyxSettled = registry.handlePaneCommandFinished(
+            surfaceID: surfaceID, exitCode: 0, suspended: true, now: base
+        )
+        XCTAssertFalse(calyxSettled, "Precondition: fish's suspended flag must not settle the row")
+        let before = registry.entries[surfaceID]
+        XCTAssertEqual(before?.state, .working, "Precondition: still working after the suspend report")
+
+        // ghostty's signal for the same Ctrl-Z lands a moment later.
+        let ghosttySettled = registry.handleGhosttyCommandFinished(
+            surfaceID: surfaceID, exitCode: 0, now: base.addingTimeInterval(1)
+        )
+        XCTAssertFalse(ghosttySettled, "Precondition: ghostty defers, as it always has for this surface")
+        XCTAssertEqual(registry.entries[surfaceID], before, "Precondition: the deferred signal changes nothing")
+
+        registry.sweepStaleEntries(now: base.addingTimeInterval(90))
+
+        XCTAssertNotEqual(registry.entries[surfaceID]?.state, .done,
+                          "Calyx answered this command already, milliseconds before ghostty's signal for it " +
+                          "arrived -- treating that signal as unanswered would retire a job the user merely " +
+                          "suspended and is about to resume with fg")
+        XCTAssertEqual(registry.entries[surfaceID], before,
+                       "The suspended row must come through the sweep exactly as it went in")
+    }
+
+    // The same ordering trap with a hook event in the middle. A hook
+    // event and Calyx's own report are two independent POSTs describing
+    // one moment, and the hook one says nothing about whether Calyx's
+    // shell integration spoke. Losing that memory here would let the
+    // ghostty signal right behind it be recorded as a deferral nothing
+    // can ever answer, and the sweep would settle a row on it.
+
+    func test_sweepStaleEntries_hookEventBetweenCalyxReportAndGhosttySignal_neverSettlesTheRow() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        let base = Date()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID, now: base)
+        // Calyx's own integration reports for the pane, and the agent's
+        // own hook event lands milliseconds behind it.
+        registry.recordCalyxShellIntegrationReported(surfaceID: surfaceID, now: base)
+        registry.handleHookEvent(
+            event("UserPromptSubmit", sessionID: "session-a"),
+            surfaceID: surfaceID, now: base.addingTimeInterval(0.05)
+        )
+        let before = registry.entries[surfaceID]
+        XCTAssertEqual(before?.state, .working, "Precondition: a live hooks row")
+
+        // ghostty's own signal for the same moment arrives last.
+        let ghosttySettled = registry.handleGhosttyCommandFinished(
+            surfaceID: surfaceID, exitCode: 0, now: base.addingTimeInterval(0.1)
+        )
+        XCTAssertFalse(ghosttySettled, "Precondition: ghostty defers for a surface Calyx has reported on")
+        XCTAssertEqual(registry.entries[surfaceID], before, "Precondition: the deferred signal changes nothing")
+
+        registry.sweepStaleEntries(now: base.addingTimeInterval(90))
+
+        XCTAssertNotEqual(registry.entries[surfaceID]?.state, .done,
+                          "Calyx spoke moments before ghostty's signal, so that signal is answered already " +
+                          "and must never be recorded as a deferral -- a hook event arriving in between " +
+                          "says nothing about when Calyx last reported and must not wipe it")
+        XCTAssertEqual(registry.entries[surfaceID], before,
+                       "The live row must come through the sweep exactly as it went in")
+    }
+
+    func test_sweepStaleEntries_calyxAnsweredTheGhosttyDeferral_doesNotReSettleOrChurnTheRow() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        let started = Date()
+        let finished = started.addingTimeInterval(5 * 60)
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID, now: started)
+        registry.handleHookEvent(event("UserPromptSubmit", sessionID: "session-a"), surfaceID: surfaceID, now: started)
+        registry.recordCalyxShellIntegrationReported(surfaceID: surfaceID, now: started)
+        XCTAssertFalse(registry.handleGhosttyCommandFinished(surfaceID: surfaceID, exitCode: 0, now: finished),
+                       "Precondition: ghostty defers")
+
+        // Calyx's own phase: end lands right behind it and is the one
+        // that settles the row, exactly as it does today.
+        let calyxSettled = registry.handlePaneCommandFinished(
+            surfaceID: surfaceID, exitCode: 0, now: finished.addingTimeInterval(0.05)
+        )
+        XCTAssertTrue(calyxSettled, "Precondition: Calyx's own end report settles the row")
+        let before = registry.entries[surfaceID]
+        XCTAssertEqual(before?.state, .done, "Precondition")
+
+        registry.sweepStaleEntries(now: finished.addingTimeInterval(90))
+
+        XCTAssertEqual(registry.entries[surfaceID], before,
+                       "Calyx answered the deferral, so the sweep has nothing left to act on -- it must not " +
+                       "re-settle the row or churn its timestamp")
+    }
+
+    func test_sweepStaleEntries_settlingAnUnansweredDeferral_leavesPendingApprovalsAlone() {
+        // Only a Calyx-sourced settle over /command-event expires a
+        // surface's pending approvals, and only because it can tell a
+        // suspend apart from a real exit. This settle is ghostty-sourced,
+        // so it must stay bound to the row's colour and never cancel an
+        // approval request an agent may still be waiting on.
+        let registry = AgentRegistry()
+        let inbox = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let started = Date()
+        let finished = started.addingTimeInterval(5 * 60)
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID, now: started)
+        registry.handleHookEvent(
+            event("Notification", sessionID: "session-a",
+                  message: "Claude needs your permission to run this command"),
+            surfaceID: surfaceID, now: started
+        )
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .blocked,
+                       "Precondition: the stuck-red row this fix exists for, which the sweep's own " +
+                       "working-only staleness clause would never reach")
+        let request = ApprovalRequest(
+            id: UUID(), source: .mcpTool(name: "pane_run"), targetSurfaceID: surfaceID,
+            payload: "ls", createdAt: started
+        )
+        inbox.submit(request)
+        XCTAssertEqual(inbox.pending.map(\.id), [request.id], "Precondition")
+
+        registry.recordCalyxShellIntegrationReported(surfaceID: surfaceID, now: started)
+        XCTAssertFalse(registry.handleGhosttyCommandFinished(surfaceID: surfaceID, exitCode: 0, now: finished),
+                       "Precondition: ghostty defers")
+
+        registry.sweepStaleEntries(now: finished.addingTimeInterval(90))
+
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .done,
+                       "Precondition: the unanswered deferral settles even a blocked row")
+        XCTAssertEqual(inbox.pending.map(\.id), [request.id],
+                       "A ghostty-sourced settle must never expire a pending approval")
+    }
+
     // MARK: - Readers after a pane-signaled done (must not undo the settle)
 
     // handlePaneCommandFinished makes .done reachable for an

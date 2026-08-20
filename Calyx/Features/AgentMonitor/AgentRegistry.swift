@@ -75,18 +75,19 @@ final class AgentRegistry {
     private var peerToSurface: [UUID: UUID] = [:]
 
     /// Per-surface accumulated evidence a row itself cannot carry -- see
-    /// `AgentEvidence`. Sparse (only a surface with at least one
-    /// consecutive screen-classification miss has a key):
-    /// `apply(_:surfaceID:)` drops a surface's key the moment its
-    /// evidence goes back to `.isEmpty`. Reaching
-    /// `AgentStateResolver.heuristicMissRetirementThreshold` removes the
-    /// row entirely — without this, a `.titleHeuristic` row for a pane
-    /// whose Claude Code process has long since exited (title reverted,
-    /// no more on-screen patterns) would sit at `.idle` in the sidebar
-    /// forever. Cleared per-surface on `handleSurfaceDestroyed` and
-    /// whenever a hook event or MCP connection is processed for the
-    /// surface (a `.hooks`- or `.mcpConnection`-sourced entry doesn't use
-    /// this bookkeeping at all), and wholesale on `reset()`.
+    /// `AgentEvidence`. Sparse (only a surface some clause has actually
+    /// recorded something for has a key): `apply(_:surfaceID:)` drops a
+    /// surface's key the moment its evidence goes back to `.isEmpty`.
+    /// Reaching `AgentStateResolver.heuristicMissRetirementThreshold`
+    /// removes the row entirely — without this, a `.titleHeuristic` row
+    /// for a pane whose Claude Code process has long since exited (title
+    /// reverted, no more on-screen patterns) would sit at `.idle` in the
+    /// sidebar forever. Cleared per-surface on `handleSurfaceDestroyed`,
+    /// and wholesale on `reset()`. A hook event or MCP connection also
+    /// clears what Calyx merely inferred for the surface, as fresh
+    /// self-reported presence supersedes it, while leaving what Calyx's
+    /// own shell integration reported alone
+    /// (`AgentEvidence.clearingInferredEvidence`).
     private var evidence: [UUID: AgentEvidence] = [:]
 
     /// Whether `CalyxMCPServer` currently has its IPC listener running.
@@ -315,7 +316,8 @@ final class AgentRegistry {
     /// unpopulated at the exact moment such a race needs it populated.
     ///
     /// `handleGhosttyCommandFinished` defers entirely (returns `false`
-    /// without touching the row) once a surface is in this set: only
+    /// without touching the row, recording the deferral on the surface's
+    /// evidence instead) once a surface is in this set: only
     /// Calyx's own zsh/fish shell integration can tell a suspend apart
     /// from a real exit for that surface (zsh's `128 + signal`
     /// convention, or fish's own separate lingering-job check), so
@@ -353,8 +355,28 @@ final class AgentRegistry {
     /// duplicate event still proves Calyx's integration is live in that
     /// pane. See `calyxShellIntegrationReportedSurfaces`'s own doc
     /// comment for why recording on `.start` as well as `.end` matters.
-    func recordCalyxShellIntegrationReported(surfaceID: UUID) {
+    ///
+    /// Also routes the report through the resolver, which stamps
+    /// `AgentEvidence.lastCalyxReportAt` and answers any outstanding
+    /// ghostty deferral for the surface. That half is per-surface
+    /// evidence with a lifetime of one command, so it lives in
+    /// `evidence` rather than in the permanent set above, and the
+    /// resolver owns when it is set and cleared.
+    ///
+    /// - Parameter now: Injectable for tests (defaults to `Date()`).
+    func recordCalyxShellIntegrationReported(surfaceID: UUID, now: Date = Date()) {
         calyxShellIntegrationReportedSurfaces.insert(surfaceID)
+        apply(
+            AgentStateResolver.resolve(
+                .calyxShellIntegrationReported,
+                surfaceID: surfaceID,
+                current: entries[surfaceID],
+                evidence: evidence[surfaceID] ?? AgentEvidence(),
+                context: context(for: surfaceID),
+                now: now
+            ),
+            surfaceID: surfaceID
+        )
     }
 
     /// Settles `surfaceID`'s entry to `.done` in response to the pane's
@@ -422,7 +444,7 @@ final class AgentRegistry {
     func handlePaneCommandFinished(
         surfaceID: UUID, exitCode: Int32? = nil, suspended: Bool = false, now: Date = Date()
     ) -> Bool {
-        recordCalyxShellIntegrationReported(surfaceID: surfaceID)
+        recordCalyxShellIntegrationReported(surfaceID: surfaceID, now: now)
         let resolution = AgentStateResolver.resolve(
             .paneCommandFinished(exitCode: exitCode, suspended: suspended, origin: .calyxShellIntegration),
             surfaceID: surfaceID,
@@ -463,6 +485,13 @@ final class AgentRegistry {
     /// "still alive" from this method only leaves a row live, whereas a
     /// false settle from a source blind to suspends would wrongly expire
     /// a live agent's pending approvals.
+    ///
+    /// The deferred signal is remembered rather than discarded
+    /// (`AgentEvidence.deferredGhosttyFinishAt`), so `sweepStaleEntries`
+    /// can settle the row when Calyx's own `/command-event` never
+    /// answers it: the shell integration body swallows a failed POST, and
+    /// without the memory a lost `phase: end` would leave the row stuck
+    /// forever, since ghostty deferred to a report that never came.
     ///
     /// Returns whether this call actually transitioned the row to
     /// `.done`. Never consulted to expire pending approvals -- that
@@ -765,8 +794,15 @@ final class AgentRegistry {
 
     // MARK: - Staleness Sweep
 
-    /// Applies the staleness sweep to every native row, per the rules in
-    /// `AgentStateResolver.resolveStaleSweep`.
+    /// Applies the sweep to every native row, per the rules in
+    /// `AgentStateResolver.resolveStaleSweep`: a `.working` row idle past
+    /// the staleness threshold is downgraded to `.idle`, and a row
+    /// holding a ghostty pane-exit signal Calyx's own shell integration
+    /// never answered is settled to `.done`. Neither can expire a
+    /// surface's pending approvals: that wiring lives in
+    /// `CalyxMCPServer.routeCommandEvent`, gated on
+    /// `handlePaneCommandFinished`'s return value, and this method
+    /// reports nothing to it.
     func sweepStaleEntries(now: Date = Date()) {
         for (surfaceID, entry) in entries {
             apply(
