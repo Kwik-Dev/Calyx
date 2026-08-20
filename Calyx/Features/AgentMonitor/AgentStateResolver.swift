@@ -51,14 +51,31 @@ enum PaneCommandOrigin: Sendable, Equatable {
 
 // MARK: - Evidence & Context
 
-/// Per-surface accumulated evidence a row itself cannot carry -- today,
-/// only the count of consecutive `nil` screen classifications a
+/// Per-surface accumulated evidence a row itself cannot carry: the
+/// count of consecutive `nil` screen classifications a
 /// `.titleHeuristic` row has seen since its last positive heuristic
 /// signal (a `.blocked`/`.working` screen classification, a `.working`
-/// title classification, or an `isActive == true` progress report).
+/// title classification, or an `isActive == true` progress report), and
+/// when the row entered `.blocked`.
 struct AgentEvidence: Sendable, Equatable {
     var screenMissStreak: Int = 0
-    var isEmpty: Bool { screenMissStreak == 0 }
+
+    /// When the row entered `.blocked` -- `nil` whenever the row is not
+    /// `.blocked`. `resolveHookRow`'s `PreToolUse` race guard measures
+    /// its window from here rather than from the row's `lastEventAt`,
+    /// which is the time of the last ACCEPTED write: a repeated blocking
+    /// `Notification` re-stamps that timestamp without the row ever
+    /// leaving `.blocked`, sliding the window forward and swallowing a
+    /// `PreToolUse` that is genuinely outside it.
+    ///
+    /// No clause sets this. `resolve` derives it once at its tail, from
+    /// the row's state before and after the signal, because every hook
+    /// path returns a fresh `AgentEvidence` -- `.keep` included -- so a
+    /// clause that forgot to carry it would wipe the anchor and let the
+    /// very next `PreToolUse` through.
+    var blockedSince: Date? = nil
+
+    var isEmpty: Bool { screenMissStreak == 0 && blockedSince == nil }
 
     /// The evidence after a positive heuristic signal: a
     /// `.blocked`/`.working` screen classification, a `.working` title
@@ -175,6 +192,29 @@ struct AgentResolution: Sendable {
     func withLearnedPeerID(_ peerID: UUID?) -> AgentResolution {
         AgentResolution(row: row, evidence: evidence, didSettle: didSettle, learnedPeerID: peerID)
     }
+
+    /// Re-derives when the row entered `.blocked`. `resolve` calls this
+    /// once on the way out, so no clause has to remember to maintain it
+    /// and none can wipe it by returning fresh evidence.
+    func trackingBlockedSince(
+        previousState: AgentState?,
+        incomingBlockedSince: Date?,
+        now: Date
+    ) -> AgentResolution {
+        let finalState: AgentState?
+        switch row {
+        case .keep: finalState = previousState
+        case .write(let entry): finalState = entry.state
+        case .remove: finalState = nil
+        }
+        var updated = evidence
+        if finalState == .blocked {
+            updated.blockedSince = previousState == .blocked ? incomingBlockedSince : now
+        } else {
+            updated.blockedSince = nil
+        }
+        return AgentResolution(row: row, evidence: updated, didSettle: didSettle, learnedPeerID: learnedPeerID)
+    }
 }
 
 // MARK: - Resolver
@@ -245,28 +285,39 @@ enum AgentStateResolver {
         context: ResolverContext,
         now: Date
     ) -> AgentResolution {
+        let resolution: AgentResolution
         switch signal {
         case .hook(let event, let kind):
-            return resolveHook(event, kind: kind, surfaceID: surfaceID, current: current, now: now)
+            resolution = resolveHook(
+                event, kind: kind, surfaceID: surfaceID, current: current,
+                blockedSince: evidence.blockedSince, now: now
+            )
         case .staleSweep:
-            return resolveStaleSweep(current: current, evidence: evidence, now: now)
+            resolution = resolveStaleSweep(current: current, evidence: evidence, now: now)
         case .mcpConnection(let kind):
-            return resolveMCPConnection(kind: kind, surfaceID: surfaceID, current: current, now: now)
+            resolution = resolveMCPConnection(kind: kind, surfaceID: surfaceID, current: current, now: now)
         case .paneCommandFinished(let exitCode, let suspended, let origin):
-            return resolvePaneCommandFinished(
+            resolution = resolvePaneCommandFinished(
                 exitCode: exitCode, suspended: suspended, origin: origin,
                 current: current, evidence: evidence, context: context, now: now
             )
         case .screen(let state):
-            return resolveScreen(state, surfaceID: surfaceID, current: current, evidence: evidence, now: now)
+            resolution = resolveScreen(
+                state, surfaceID: surfaceID, current: current, evidence: evidence, now: now
+            )
         case .title(let classified):
-            return resolveTitle(
+            resolution = resolveTitle(
                 classified, surfaceID: surfaceID, current: current,
                 evidence: evidence, context: context, now: now
             )
         case .progress(let isActive):
-            return resolveProgress(isActive, current: current, evidence: evidence, now: now)
+            resolution = resolveProgress(isActive, current: current, evidence: evidence, now: now)
         }
+        return resolution.trackingBlockedSince(
+            previousState: current?.state,
+            incomingBlockedSince: evidence.blockedSince,
+            now: now
+        )
     }
 
     /// Downgrades a `.working` row whose last event is older than
@@ -399,10 +450,14 @@ enum AgentStateResolver {
         kind: String,
         surfaceID: UUID,
         current: AgentEntry?,
+        blockedSince: Date?,
         now: Date
     ) -> AgentResolution {
-        return resolveHookRow(event, kind: kind, surfaceID: surfaceID, current: current, now: now)
-            .withLearnedPeerID(event.ipcSelfPeerID.flatMap(UUID.init(uuidString:)))
+        return resolveHookRow(
+            event, kind: kind, surfaceID: surfaceID, current: current,
+            blockedSince: blockedSince, now: now
+        )
+        .withLearnedPeerID(event.ipcSelfPeerID.flatMap(UUID.init(uuidString:)))
     }
 
     /// Applies a CLI hook event, the strongest evidence the registry
@@ -445,6 +500,7 @@ enum AgentStateResolver {
         kind: String,
         surfaceID: UUID,
         current: AgentEntry?,
+        blockedSince: Date?,
         now: Date
     ) -> AgentResolution {
         let clearedEvidence = AgentEvidence()
@@ -503,10 +559,15 @@ enum AgentStateResolver {
         // moments apart in the real event order (a tool call's own
         // `PreToolUse`, then a DIFFERENT tool call's permission dialog
         // appearing) can land here out of that order. A `PreToolUse`
-        // arriving within this window of the row's last accepted event
-        // is treated as that stale delivery race rather than genuine
-        // forward progress, so the row does not flash back to `.working`
-        // while the dialog the user actually sees is still up.
+        // arriving within this window of the moment the row ENTERED
+        // `.blocked` is treated as that stale delivery race rather than
+        // genuine forward progress, so the row does not flash back to
+        // `.working` while the dialog the user actually sees is still
+        // up. The anchor is `blockedSince`, never the row's
+        // `lastEventAt`: a repeated blocking `Notification` re-stamps
+        // that timestamp without the row ever leaving `.blocked`, which
+        // would slide the window forward for as long as the prompt keeps
+        // being reported.
         // `PostToolUse`, `Stop` and `UserPromptSubmit` are deliberately
         // not covered: each fires only once the prompt was actually
         // resolved, so they must keep clearing `.blocked` immediately.
@@ -518,7 +579,8 @@ enum AgentStateResolver {
         // guard covers corrects it.
         if existing.state == .blocked,
            event.hookEventName == "PreToolUse",
-           now.timeIntervalSince(existing.lastEventAt) < preToolUseRaceWindow {
+           let blockedSince,
+           now.timeIntervalSince(blockedSince) < preToolUseRaceWindow {
             return .keep(evidence: clearedEvidence)
         }
 

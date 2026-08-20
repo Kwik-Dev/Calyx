@@ -1728,6 +1728,38 @@ final class AgentRegistryTests: XCTestCase {
                        "Stop must still clear blocked to idle immediately, unlike PreToolUse")
     }
 
+    // The window is anchored to the moment the row entered .blocked, not
+    // to the row's last accepted write. A second blocking Notification
+    // re-stamps lastEventAt while leaving the row blocked, and anchoring
+    // there would slide the window forward and swallow a PreToolUse that
+    // is genuinely outside it.
+    func test_handleHookEvent_repeatedBlockingNotification_doesNotSlideTheRaceWindow() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        let base = Date()
+
+        registry.handleHookEvent(event("SessionStart"), surfaceID: surfaceID, now: base)
+        registry.handleHookEvent(
+            event("Notification", message: "needs your permission"), surfaceID: surfaceID, now: base
+        )
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .blocked)
+
+        // The same permission prompt reported again while the row is
+        // already blocked. It changes no state, only lastEventAt.
+        registry.handleHookEvent(
+            event("Notification", message: "needs your permission"),
+            surfaceID: surfaceID, now: base.addingTimeInterval(1.0)
+        )
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .blocked)
+
+        registry.handleHookEvent(event("PreToolUse"), surfaceID: surfaceID, now: base.addingTimeInterval(2.0))
+
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .working,
+                       "2.0s have elapsed since the row entered blocked, outside the 1.5s window, so this " +
+                       "PreToolUse is genuine forward progress and must clear blocked no matter how many " +
+                       "blocking Notifications re-stamped lastEventAt in between")
+    }
+
     // MARK: - isSurfaceBound
 
     func test_isSurfaceBound_reflectsBindingState() {

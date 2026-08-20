@@ -273,7 +273,8 @@ final class AgentRegistry {
     /// - Parameter now: Injectable for tests (defaults to `Date()`).
     ///   Notably used by the same-session update path's PreToolUse race
     ///   guard in `AgentStateResolver.resolveHook`, which compares `now`
-    ///   against `existing.lastEventAt`.
+    ///   against the moment the row entered `.blocked`
+    ///   (`AgentEvidence.blockedSince`).
     func handleHookEvent(
         _ event: AgentEvent,
         surfaceID: UUID,
