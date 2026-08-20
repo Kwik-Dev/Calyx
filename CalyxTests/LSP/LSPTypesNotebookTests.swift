@@ -22,9 +22,7 @@
 //
 //  Spec: https://microsoft.github.io/language-server-protocol/specifications/lsp/3.18/specification/#notebookDocument
 //
-//  TDD phase: RED. None of these types exist yet. This file is expected to
-//  fail to compile until the swift-specialist implements the notebook types
-//  under `Calyx/Features/LSP/LSPTypes/NotebookDocument.swift`.
+//  The notebook types under test live under `Calyx/Features/LSP/LSPTypes/NotebookDocument.swift`.
 //
 
 import XCTest

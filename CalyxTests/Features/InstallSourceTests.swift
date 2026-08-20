@@ -2,7 +2,7 @@
 //  InstallSourceTests.swift
 //  CalyxTests
 //
-//  TDD red-phase tests for InstallSource.
+//  Tests for InstallSource.
 //  InstallSource determines whether the app was installed via
 //  Homebrew Cask or direct download by resolving symlinks and
 //  checking path components for /Caskroom/calyx/.

@@ -2,9 +2,8 @@
 //  AppDelegateSpawnRemoteSessionTabWindowLookupTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (latent-bug finding from the session-browser attach-as-
-//  tab investigation, CONFIRMED and put in scope for this cycle's Green
-//  phase -- not a follow-up ticket): `AppDelegate.spawnRemoteSessionTab
+//  A latent bug found during the session-browser attach-as-
+//  tab investigation: `AppDelegate.spawnRemoteSessionTab
 //  (host:)` (AppDelegate.swift ~440) looks for a "key" window controller
 //  via `windowControllers.first(where: { $0.window?.isKeyWindow == true })`,
 //  and opens a brand-new window whenever none matches. But every REAL
@@ -28,10 +27,10 @@
 //  windowControllers.first` -- prefer the actually-key window if one
 //  exists, but fall back to any available controller instead of dead-
 //  ending on the Session Browser panel holding key status. NOT applied
-//  in this RED phase; `spawnRemoteSessionTab`'s own logic is unchanged,
-//  only two new DEBUG observation seams were added around it (see their
-//  doc comments in AppDelegate.swift) so today's actual (buggy) behavior
-//  is observable without hanging the test process.
+//  here; `spawnRemoteSessionTab`'s own logic is unchanged, and two DEBUG
+//  observation seams sit around it (see their doc comments in
+//  AppDelegate.swift) so the behavior is observable without hanging the
+//  test process.
 //
 //  SAFETY: `createNewTab` itself guards on `GhosttyAppController.shared.app`,
 //  which is `nil` in this test host (confirmed via
@@ -47,11 +46,11 @@
 //  - One available (not key -- this test host cannot simulate a real
 //    isKeyWindow == true without hanging, matching every other test in
 //    this suite) window controller: must add a tab to it, never open a
-//    new window. Genuine RED: today's code finds no "key" match and
-//    always falls through to openNewWindow.
+//    new window. Before the fix, the code found no "key" match and
+//    always fell through to openNewWindow.
 //  - Two available controllers, neither key: must fall back to the
 //    FIRST one specifically (not .last or any other arbitrary pick).
-//    Also genuine RED for the same reason.
+//    Failed the same way before the fix, for the same reason.
 //  - No window controller at all: still opens a new window (sanity/
 //    regression companion, passes both before and after the fix, same
 //    convention as AppDelegateAttachWindowTests' own regression

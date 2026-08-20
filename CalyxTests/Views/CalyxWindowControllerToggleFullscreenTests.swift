@@ -2,7 +2,7 @@
 //  CalyxWindowControllerToggleFullscreenTests.swift
 //  CalyxTests
 //
-//  TDD RED phase, missing-observer investigation: `GhosttyActionRouter
+//  Missing observer: `GhosttyActionRouter
 //  .handleToggleFullscreen` (GhosttyAction.swift) posts
 //  `.ghosttyToggleFullscreen` for every `GHOSTTY_ACTION_TOGGLE_FULLSCREEN`
 //  action, but no observer has ever been registered for it — ghostty's
@@ -18,11 +18,11 @@
 //
 //  As in `CalyxWindowControllerCloseWindowTests` (see that file's header
 //  for the full reasoning), the "own surface" tests below are
-//  RED-proving (fail today: no observer exists), and the "other window"
+//  the ones that pin the fix (without it no observer exists), and the "other window"
 //  test is a regression guard (passes vacuously today, guards a future
 //  over-broad implementation). `shouldUseNativeFullscreen(for:)`'s tests
-//  are fully RED-proving: the stub unconditionally returns `false`, so
-//  every case (expecting `true`) fails for a real reason.
+//  fully pin the fix: the pre-fix stub unconditionally returned
+//  `false`, so every case (expecting `true`) failed for a real reason.
 //
 //  Fixture mirrors `CalyxWindowControllerCloseWindowTests
 //  .makeSurfaceOwningFixture()` (itself mirroring
@@ -62,7 +62,7 @@ final class CalyxWindowControllerToggleFullscreenTests: XCTestCase {
         return SurfaceOwningFixture(controller: controller, surfaceView: surfaceView)
     }
 
-    // MARK: - Direct call (unit-level RED)
+    // MARK: - Direct call (unit level)
 
     /// `processToggleFullscreen(mode:)`, called directly, must invoke the
     /// fullscreen hook. Against the current empty stub body, the hook is
@@ -103,7 +103,7 @@ final class CalyxWindowControllerToggleFullscreenTests: XCTestCase {
         )
     }
 
-    /// Regression guard (NOT RED-proving — see file header): posting
+    /// Regression guard (see file header): posting
     /// `.ghosttyToggleFullscreen` for a surface owned by a DIFFERENT
     /// window must never invoke THIS window's fullscreen hook.
     func test_ghosttyToggleFullscreen_postedForOtherWindowsSurface_doesNotInvokeFullscreenHook() {

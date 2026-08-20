@@ -2,27 +2,25 @@
 //  SessionBrowserModelRefreshCancellationGuardTests.swift
 //  CalyxTests
 //
-//  TDD Red phase, round 14 (r14-fix-spec.md SWEEP ADDENDA item 1, "RED-F"
-//  per the team-lead's round-14 addendum message): SessionBrowserModel
-//  .refresh() awaits `daemonClient.listAllBounded()` and then
-//  unconditionally overwrites `rows` with whatever it returns -- there
-//  is no `Task.isCancelled` guard before that assignment (mirroring the
-//  guard AppDelegate.listAllSessionsBounded already has, R12-A item 4).
+//  SessionBrowserModel.refresh() awaits `daemonClient.listAllBounded()`
+//  and then unconditionally overwrites `rows` with whatever it returns
+//  -- there is no `Task.isCancelled` guard before that assignment
+//  (mirroring the guard AppDelegate.listAllSessionsBounded already has).
 //  A closed-window poll cancellation racing a still-in-flight daemon
 //  round-trip therefore wipes the SHARED model's rows with a stale
 //  result the instant that round-trip eventually resolves -- an empty
-//  flash on reopen. This reproduces TODAY, independent of whether R14-A
-//  has landed yet: cooperative cancellation never stops an async
-//  function's execution by itself, so once the fake's listAll() call
-//  resolves (here, via this test's own explicit resume -- the exact
+//  flash on reopen. This reproduces regardless of how cancellation
+//  propagates into `bounded()`: cooperative cancellation never stops an
+//  async function's execution by itself, so once the fake's listAll()
+//  call resolves (here, via this test's own explicit resume -- the exact
 //  mechanism `bounded()`'s internal race already uses to let the winning
 //  arm complete regardless of what the OUTER caller's Task does), a
 //  cancelled refresh() keeps running to completion and reaches the
 //  unconditional `rows = ...` assignment exactly as if it had never been
-//  cancelled. R14-A's propagation (once landed) only changes how SOON a
-//  cancelled refresh's daemon round-trip resolves, not whether the
-//  missing guard here lets a late one still land -- so this guard is
-//  needed regardless of R14-A's landing order.
+//  cancelled. That propagation only changes how SOON a cancelled
+//  refresh's daemon round-trip resolves, not whether the missing guard
+//  here lets a late one still land -- so this guard is needed either
+//  way.
 //
 //  Populates `rows` with a real, distinguishable baseline via a first,
 //  fully-resolved refresh() call, starts a SECOND refresh() whose Task
@@ -34,7 +32,7 @@
 //
 //  Coverage:
 //  - A cancelled refresh() must not overwrite rows with a result that
-//    arrives after cancellation (RED today: rows is wiped to [] anyway)
+//    arrives after cancellation (before the fix, rows was wiped to [] anyway)
 //
 
 import XCTest
@@ -97,7 +95,7 @@ final class SessionBrowserModelRefreshCancellationGuardTests: XCTestCase {
         )
     }
 
-    /// RED (R14-A sweep addendum item 1 / "RED-F"): a refresh() whose
+    /// A refresh() whose
     /// Task is cancelled while its daemon round-trip is still in flight
     /// must not let that round-trip's eventual result overwrite rows --
     /// today it does, because refresh() never checks Task.isCancelled

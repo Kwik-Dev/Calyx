@@ -224,7 +224,7 @@
 // superseding path already uses -- EXPLICIT TRANSPORT TEARDOWN below)
 // and `isAccumulatingReplayBurst` itself (flipped by whichever path acts
 // first). One narrow, deliberately accepted gap remains, mirroring this
-// file's own existing A2 race (CONNECT SEQUENCE above): a genuinely
+// file's own existing handshake race (CONNECT SEQUENCE above): a genuinely
 // external transport EOF/failure landing in the vanishingly small
 // scheduling window after a same-generation settle task has already
 // passed both its cancellation and generation checks, but before this
@@ -236,7 +236,7 @@
 // the connection's fate either way; nothing is silently dropped, only
 // handled by whichever side won.
 //
-// HANDSHAKE DEADLINE (A2) -- now PER STEP, not one combined window:
+// HANDSHAKE DEADLINE -- now PER STEP, not one combined window:
 // each of the two steps above (the snapshot request, the subscribe ack)
 // independently races `handshakeTimeout` via `runWithDeadline(transport:
 // operation:)`, mirroring `SessionDaemonClient.bounded()`'s own
@@ -333,7 +333,7 @@
 // injected delay primitive (defaults to real `Task.sleep`, overridden
 // in tests to drive it deterministically).
 //
-// LIFETIME RECONNECT BUDGET (A5): `reconnectDelays` alone bounds only
+// LIFETIME RECONNECT BUDGET: `reconnectDelays` alone bounds only
 // ONE disconnect-to-give-up cycle -- a server that repeatedly accepts a
 // connection and then immediately drops it again starts a FRESH cycle
 // every time, so bounding each cycle in isolation still allows
@@ -404,10 +404,10 @@ final class HerdrIntegrationCoordinator {
     /// Default bounded backoff schedule for DISCONNECT HANDLING's
     /// reconnect attempts -- its `count` is the max attempt count PER
     /// CYCLE; see `maxLifetimeReconnectAttempts` for the cross-cycle
-    /// bound (A5).
+    /// bound.
     static let defaultReconnectDelays: [Duration] = [.seconds(1), .seconds(2), .seconds(4)]
 
-    /// Default HANDSHAKE DEADLINE (A2) -- applied independently to EACH
+    /// Default HANDSHAKE DEADLINE -- applied independently to EACH
     /// of the snapshot step and the subscribe step (see this file's
     /// header). Generous enough that a merely slow (not hung) real herdr
     /// server is never mistaken for a stalled one, while still bounding
@@ -415,7 +415,7 @@ final class HerdrIntegrationCoordinator {
     /// server would impose.
     static let defaultHandshakeTimeout: Duration = .seconds(10)
 
-    /// Default LIFETIME RECONNECT BUDGET (A5) -- see this file's header.
+    /// Default LIFETIME RECONNECT BUDGET -- see this file's header.
     /// Deliberately larger than any single cycle's own `reconnectDelays
     /// .count` so ordinary transient blips (which settle and prove
     /// HEALTHY well before this total is reached) are never affected.
@@ -503,7 +503,7 @@ final class HerdrIntegrationCoordinator {
     /// `totalReconnectAttempts` below.
     private var consecutiveRebuildsWithoutProgress = 0
 
-    /// LIFETIME RECONNECT BUDGET (A5) -- see this file's header. Counts
+    /// LIFETIME RECONNECT BUDGET -- see this file's header. Counts
     /// every `reconnectLoop`-driven attempt across every disconnect
     /// cycle for as long as this instance exists; deliberately NOT
     /// touched by `resetToIdle()`. Only earning a connection HEALTHY
@@ -633,7 +633,7 @@ final class HerdrIntegrationCoordinator {
     /// connection carrying the six structure events plus one
     /// `.agentStatusChanged(paneID:)` per pane the snapshot just
     /// revealed. Each of the two steps is independently bounded by
-    /// `runWithDeadline(transport:operation:)` (A2). Returns `true` once
+    /// `runWithDeadline(transport:operation:)`. Returns `true` once
     /// `currentEventStreamTransport` is live and the event-consuming task
     /// (`consumeEvents`) has been started, `false` if either step fails
     /// or times out (nothing left half-set in that case -- the caller
@@ -710,7 +710,7 @@ final class HerdrIntegrationCoordinator {
 
     /// Races ONE async `operation` -- which internally owns exactly one
     /// `transport`, created by the caller just before this is invoked --
-    /// against `handshakeTimeout` (A2); see this file's header for why
+    /// against `handshakeTimeout`; see this file's header for why
     /// `withTaskGroup` cannot be used here. `nil` on either a thrown
     /// error or expiry -- callers do not need to distinguish the two.
     ///
@@ -800,7 +800,7 @@ final class HerdrIntegrationCoordinator {
     /// header) -- during the accumulating phase, `pane.created` is
     /// instead added to `pendingBurstPaneIDs` (REPLAY BURST
     /// RECONCILIATION). The FIRST event this call ever reads also earns
-    /// back the LIFETIME RECONNECT BUDGET (A5) -- see this file's header
+    /// back the LIFETIME RECONNECT BUDGET -- see this file's header
     /// "LIFETIME RECONNECT BUDGET". The stream ending -- normally (a
     /// clean EOF) or by throwing (a transport failure) -- is DISCONNECT
     /// HANDLING, shared with a failed reconnect attempt via
@@ -817,7 +817,7 @@ final class HerdrIntegrationCoordinator {
             for try await event in stream {
                 if !hasEarnedHealthyReset {
                     hasEarnedHealthyReset = true
-                    // HEALTHY (A5): this connection has delivered at
+                    // HEALTHY: this connection has delivered at
                     // least one event after its own subscribe ack
                     // completed -- see this file's header for the known,
                     // accepted limitation this bar has (the subscribe-time
@@ -1007,7 +1007,7 @@ final class HerdrIntegrationCoordinator {
     /// `discovery.isAlive(socketPath:)`, checked before AND after its
     /// own backoff delay -- the delay itself is exactly the window in
     /// which the socket could disappear -- AND by the LIFETIME RECONNECT
-    /// BUDGET (A5, `totalReconnectAttempts` vs
+    /// BUDGET (`totalReconnectAttempts` vs
     /// `maxLifetimeReconnectAttempts`) -- see this file's header for
     /// both. Stops (no further retry, no state left "active") the
     /// moment the socket no longer probes alive, once `reconnectDelays`
@@ -1038,7 +1038,7 @@ final class HerdrIntegrationCoordinator {
 
     /// Full give-up: resets every piece of per-connection state so a
     /// LATER `start()` call behaves exactly like this instance's very
-    /// first one -- EXCEPT `totalReconnectAttempts` (A5's LIFETIME
+    /// first one -- EXCEPT `totalReconnectAttempts` (the LIFETIME
     /// RECONNECT BUDGET), deliberately left untouched: see this file's
     /// header for why a later `start()` must stay bound by the SAME
     /// lifetime total rather than being re-armed with a fresh one.

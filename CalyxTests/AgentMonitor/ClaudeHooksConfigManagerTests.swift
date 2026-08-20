@@ -2,7 +2,7 @@
 //  ClaudeHooksConfigManagerTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for ClaudeHooksConfigManager: writes the "hooks" section of
+//  Covers ClaudeHooksConfigManager: writes the "hooks" section of
 //  ~/.claude/settings.json for the calyx-agent-hook script, following the
 //  same file-safety guarantees as ClaudeConfigManager (see
 //  ClaudeConfigManagerTests.swift): symlink rejection, .bak backup, and
@@ -11,7 +11,7 @@
 //  Coverage:
 //  - installHooks on an empty/new file writes all 8 target events, each
 //    with a command entry (type=command, timeout, async=true)
-//  - PreToolUse / PostToolUse / PermissionRequest (Round 4) use matcher
+//  - PreToolUse / PostToolUse / PermissionRequest use matcher
 //    "*"; Notification uses matcher "permission_prompt"
 //  - installHooks preserves the user's own existing hook entries and
 //    unrelated top-level keys
@@ -36,7 +36,7 @@ final class ClaudeHooksConfigManagerTests: XCTestCase {
     private var scriptPath: String!
     private var approvalScriptPath: String!
 
-    // Round 4: PermissionRequest fires in sync with the permission dialog
+    // PermissionRequest fires in sync with the permission dialog
     // appearing, unlike Notification(permission_prompt) which can lag
     // behind it by several seconds — subscribing to it too lets the
     // sidebar flip to blocked immediately instead of waiting for the
@@ -46,7 +46,7 @@ final class ClaudeHooksConfigManagerTests: XCTestCase {
         "Notification", "Stop", "SessionEnd", "PermissionRequest",
     ]
 
-    // Round 4 review: PermissionRequest's matcher was unified with
+    // PermissionRequest's matcher is unified with
     // PreToolUse/PostToolUse's "*" (previously omitted entirely) — see
     // ClaudeHooksConfigManager.targetEvents' doc comment.
     private static let expectedMatcherByEvent: [String: String] = [
@@ -582,7 +582,7 @@ final class ClaudeHooksConfigManagerTests: XCTestCase {
 
     // MARK: - Security
 
-    // Contract changed (Round 3): ~/.claude/settings.json is commonly a
+    // Contract: ~/.claude/settings.json is commonly a
     // dotfiles-managed symlink, and blanket symlink rejection is exactly
     // the bug that silently broke hooks installation end-to-end in that
     // setup (see the dotfiles-fixture tests below for the full
@@ -721,7 +721,7 @@ final class ClaudeHooksConfigManagerTests: XCTestCase {
                       "After installHooks, hooks must be reported as installed")
     }
 
-    // MARK: - Round 3: dotfiles symlink real-environment reproduction
+    // MARK: - dotfiles symlink real-environment reproduction
     //
     // This reproduces the exact layout that broke hooks in production:
     // `~/dotfiles/.claude/settings.json` holding the real, user-managed
@@ -843,7 +843,7 @@ final class ClaudeHooksConfigManagerTests: XCTestCase {
                        "The now-resolved symlink must remain a symlink, not become a regular file")
     }
 
-    // Round 3 fix: resolveConfigPath now follows a multi-hop *dangling*
+    // resolveConfigPath follows a multi-hop *dangling*
     // symlink chain (link -> link -> not-yet-existing file) all the way
     // to its final destination, rather than stopping at the first
     // intermediate link. Same shared ConfigFileUtils primitive as every

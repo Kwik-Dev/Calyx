@@ -67,7 +67,7 @@ struct OpenCodeConfigManager: Sendable {
     /// once-only sentence is interpolated from `MCPRouter.
     /// receiveMessagesOnceNotice` rather than duplicated here verbatim,
     /// so this block and `MCPRouter`'s own instructions text can't drift
-    /// out of sync (Round 7 review).
+    /// out of sync.
     private static let managedBlockBody = """
     ## Calyx IPC
 

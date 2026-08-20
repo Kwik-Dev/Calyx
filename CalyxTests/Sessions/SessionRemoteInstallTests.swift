@@ -2,8 +2,8 @@
 //  SessionRemoteInstallTests.swift
 //  CalyxTests
 //
-//  TDD Red phase, P5 (remote sessions), RED5 cycle (remote UI wiring),
-//  contract R3: remote-install invocation plumbing on the Swift side --
+//  Remote sessions, remote UI wiring: remote-install invocation
+//  plumbing on the Swift side --
 //  turning (host, bundled resource paths) into the calyx-session CLI's
 //  own `remote-install` argv (calyx-session/crates/cli/src/commands/remote_install.rs,
 //  already green: positional host, --payload-x86-64/--payload-aarch64/
@@ -26,19 +26,16 @@
 //      convention, matching the CLI's own REMOTE_TERMINFO_DIR
 //      "$HOME/.terminfo/x" layout)
 //
-//  Held-out compile-RED file per this codebase's established convention:
-//  RemoteInstallArgvBuilder, SessionRemotePayloadResolverProtocol,
+//  Under test: RemoteInstallArgvBuilder, SessionRemotePayloadResolverProtocol,
 //  SessionDaemonClientProtocol.installRemote(host:), and
-//  SessionBrowserModel.installRemote(host:) do not exist anywhere in
-//  the codebase yet. Expected to FAIL TO COMPILE until the Green phase
-//  adds them.
+//  SessionBrowserModel.installRemote(host:).
 //
 //  DESIGN NOTE on SessionDaemonClientProtocol.installRemote(host:): this
 //  is a NEW protocol requirement. Every existing SessionDaemonClientProtocol
 //  fake across the suite (SessionReconnectCoordinatorTests,
 //  SessionDaemonClientBoundedCancellationTests, etc.) must keep
-//  compiling untouched, so the Green phase must add a default protocol
-//  extension (returning nil) alongside the requirement -- mirroring
+//  compiling untouched, so a default protocol
+//  extension (returning nil) sits alongside the requirement -- mirroring
 //  LSPCommandRunner's own default installRun-forwards-to-run precedent
 //  (LSPInstaller.swift) -- rather than a bare protocol requirement that
 //  would force every existing fake in the suite to grow a new override.
@@ -62,7 +59,7 @@
 //  - SessionBrowserModel.installRemote(host:) forwards to its injected
 //    daemonClient's own installRemote(host:) and returns its result --
 //    mirrors kill(_:)'s existing injectable-client pattern
-//    (SessionBrowserModelTests, P4)
+//    (SessionBrowserModelTests)
 //
 
 import XCTest

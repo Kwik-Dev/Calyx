@@ -2,7 +2,7 @@
 //  ApprovalRequestDisplayTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for ApprovalRequest's display helpers
+//  Covers ApprovalRequest's display helpers
 //  (displayToolName / displayPayload): the single place both the MCP-tool
 //  and agent-hook approval sources reduce down to the two strings
 //  ApprovalBannerView renders, so the view itself no longer needs to

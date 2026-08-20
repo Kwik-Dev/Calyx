@@ -78,9 +78,8 @@ final class SurfaceRegistry {
 
     var count: Int { entries.count }
 
-    /// P4 round-6 fix (R6-D, r6-fix-spec.md): also includes
-    /// `_testInsert`-only entries under `#if DEBUG`. `closeTab`/
-    /// `closeAllTabsInGroup`/`closeActiveGroup`, and (as of round 6)
+    /// Also includes `_testInsert`-only entries under `#if DEBUG`.
+    /// `closeTab`/`closeAllTabsInGroup`/`closeActiveGroup`, and
     /// `CalyxWindowController.windowWillClose`, iterate `allIDs` to
     /// decide which surfaces to run kill/detach close-policy handling on
     /// before destroying them. A `_testInsert`-only fixture (this
@@ -180,8 +179,8 @@ final class SurfaceRegistry {
     func destroySurface(_ id: UUID) {
         guard var entry = entries[id] else {
             #if DEBUG
-            // Symmetric with `contains(_:)`'s injected-ID fallback
-            // (review finding): a `_testInsert`-only entry has no live
+            // Symmetric with `contains(_:)`'s injected-ID fallback:
+            // a `_testInsert`-only entry has no live
             // ghostty surface to tear down, but it must still be
             // dropped from test-only storage so `contains(_:)` (and
             // `view(for:)`/`id(for:)`) correctly stop resolving it
@@ -199,7 +198,7 @@ final class SurfaceRegistry {
             orphanCommandsIfNotPersistent(surfaceID: id)
             approvalInboxStore.expireForSurface(id)
             agentHookApprovalMemory.clearPaneEntries(surfaceID: id)
-            // P3 review (F4): symmetric with the main destroy path below
+            // Symmetric with the main destroy path below
             // -- unregisterView + the .calyxSurfaceDestroyed post must
             // ALSO run here so SurfacePropertyStore prunes a
             // _testInsert-only surface's recorded title/cwd on destroy,
@@ -342,7 +341,7 @@ final class SurfaceRegistry {
     /// which need `findTab(surfaceID:)`/`findTabAndGroup(surfaceID:)`
     /// (both gated on `contains(_:)`) to find a `_testInsert`-only tab
     /// without a live ghostty app. `destroySurface(_:)` is ALSO extended
-    /// to remove an injected entry (review finding: it used to leave
+    /// to remove an injected entry (it used to leave
     /// `_testViewsByID` untouched, so `contains(_:)` kept reporting
     /// `true` for an ID that had just been torn down — an asymmetry
     /// with the production-entry path, where `destroySurface` always

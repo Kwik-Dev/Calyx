@@ -2,7 +2,7 @@
 //  CockpitAppAccessSeamTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for the CalyxWindowController seams Cockpit's
+//  Covers the CalyxWindowController seams Cockpit's
 //  LiveCockpitAppAccess (Calyx/Features/Cockpit/CockpitAppAccess.swift)
 //  will call: performSplit(surfaceID:direction:app:) (extracted from
 //  handleNewSplitNotification) and
@@ -11,7 +11,7 @@
 //  spawnCwdOverride parameter). LiveCockpitAppAccess itself is untested
 //  here -- see CockpitAppAccess.swift's header for why.
 //
-//  DEVIATIONS FROM THE ORIGINAL P3 SPEC (forced by this test host's
+//  DEVIATIONS FROM THE ORIGINAL SPEC (forced by this test host's
 //  existing constraints, already documented in
 //  CalyxWindowControllerCreateManagedSurfaceRemoteHostTests'/
 //  AppDelegateSpawnRemoteSessionTabWindowLookupTests' own headers --
@@ -56,19 +56,18 @@
 //  - CalyxWindowController.normalizedCwdOverride(_:): a non-nil,
 //    non-blank override returns the trimmed-and-tilde-expanded path;
 //    `nil`, an empty string, a whitespace-only string, and a
-//    newline-only string all return `nil` (P3 review F5; P3 final gate
-//    W2 for the newline case) -- NOT the active tab's own pwd any more,
+//    newline-only string all return `nil` -- NOT the active tab's own pwd any more,
 //    since this helper is `static` and reads no instance state. The
 //    pre-fix "with no override, the active tab's own pwd must still be
 //    used" pin no longer lives here: it moved to
 //    `CockpitTabCreateCwdWiringTests` (cases b and e), which drives the
 //    actual fallback (`sessionFallbackCwd`/`livePaneCwd`) at the
 //    `createManagedSurface` level instead.
-//  - cockpitExecutePaletteCommand(id:) (P3 review F1): an unavailable
+//  - cockpitExecutePaletteCommand(id:): an unavailable
 //    command is found but not executed (handler never called); an
 //    available command is executed and its handler called exactly
 //    once; an unknown id returns nil
-//  - cockpitSendCommand/cockpitSendKeys (P3 final gate Warning 1):
+//  - cockpitSendCommand/cockpitSendKeys:
 //    both agree with ownsSplitLeaf on tab resolution -- a split-tree
 //    leaf with no registry entry and a genuinely-foreign id both
 //    return false without crashing
@@ -163,7 +162,7 @@ final class CockpitAppAccessSeamTests: XCTestCase {
         XCTAssertEqual(CalyxWindowController.normalizedCwdOverride("/Users/dev/custom-cwd"), "/Users/dev/custom-cwd",
                        "an explicit Cockpit-supplied cwd override must be returned unchanged")
 
-        // P3 review (F5): an empty or whitespace-only override must fall
+        // An empty or whitespace-only override must fall
         // back to nil exactly like a nil override -- an MCP caller
         // passing "" almost certainly means "no override", not "spawn
         // at the empty path".
@@ -172,7 +171,7 @@ final class CockpitAppAccessSeamTests: XCTestCase {
         XCTAssertNil(CalyxWindowController.normalizedCwdOverride("   "),
                      "a whitespace-only override must be treated the same as no override")
 
-        // P3 final gate (W2): .whitespaces alone doesn't cover newlines
+        // .whitespaces alone doesn't cover newlines
         // -- a newline-only override must ALSO fall back, and a
         // leading/trailing-whitespace-or-newline override (plausible
         // from an agent-constructed payload built from raw shell
@@ -186,7 +185,7 @@ final class CockpitAppAccessSeamTests: XCTestCase {
 
     // MARK: - cockpitSendCommand / cockpitSendKeys
 
-    /// P3 final gate (Warning 1): `cockpitSendCommand`/`cockpitSendKeys`
+    /// `cockpitSendCommand`/`cockpitSendKeys`
     /// must resolve their tab the SAME way `ownsSplitLeaf`/`performSplit`
     /// do (split-tree leaf membership), not the registry-based
     /// `findTab(surfaceID:)` -- otherwise `LiveCockpitAppAccess
@@ -221,7 +220,7 @@ final class CockpitAppAccessSeamTests: XCTestCase {
 
     // MARK: - cockpitExecutePaletteCommand
 
-    /// P3 review (F1): an MCP caller can name any command id directly,
+    /// An MCP caller can name any command id directly,
     /// with no upstream filter like `CommandPaletteView`'s own
     /// `search(query:)` (which excludes unavailable commands before the
     /// user could ever select one) -- this seam must gate on

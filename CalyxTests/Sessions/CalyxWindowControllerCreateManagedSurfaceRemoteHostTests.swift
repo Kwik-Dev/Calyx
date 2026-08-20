@@ -2,8 +2,8 @@
 //  CalyxWindowControllerCreateManagedSurfaceRemoteHostTests.swift
 //  CalyxTests
 //
-//  P5 (remote sessions) RED phase, BUG 3 (five-angle convergence review
-//  finding), contract 3b (controller level): CalyxWindowController
+//  Remote sessions, controller level. THE DEFECT:
+//  CalyxWindowController
 //  .createManagedSurface (~647-669) builds its SessionSpawnContext with
 //  no `host` at all, and its `.persistent` branch always constructs
 //  `SessionRef(sessionID: sessionID)` -- host always nil, regardless of
@@ -40,8 +40,8 @@
 //  AppDelegateRestoreRemoteSessionTests drives restoreTabSurfaces.
 //
 //  THE MISSING OBSERVATION/SAFETY SEAM: unlike restoreTabSurfaces/
-//  performReconnect (which already have their own hook seams from prior
-//  P5 rounds), createManagedSurface has NONE -- it calls
+//  performReconnect (which already have their own hook seams),
+//  createManagedSurface has NONE -- it calls
 //  tab.registry.createSurface(...) (real ghostty FFI, confirmed unsafe to
 //  construct in this test host, see AppDelegateAttachWindowTests' header)
 //  directly and unconditionally. This file adds a new DEBUG-only hook,
@@ -59,14 +59,9 @@
 //  step around this call, including the sessionRefs/SessionSurfaceMap
 //  bookkeeping under test here, remains real, unmodified production code.
 //
-//  Held-out compile-RED file per this codebase's established convention:
-//  neither `createManagedSurface`'s `host` parameter, its un-privated
-//  visibility, nor `_createManagedSurfaceHookForTesting` exist yet --
-//  and it depends on contract 3a's `SpawnPlan.persistent` host element
-//  too. Expected to FAIL TO COMPILE until the Green phase adds all of
-//  the above. That compile failure IS this file's RED evidence. Must be
-//  excluded from the build while running the rest of the round's RED
-//  suite and verified separately for its own specific compiler errors.
+//  Under test: `createManagedSurface`'s `host` parameter, its
+//  non-private visibility, and `_createManagedSurfaceHookForTesting`,
+//  on top of `SpawnPlan.persistent`'s host element.
 //
 //  Coverage:
 //  - createManagedSurface(..., host: "devbox.example.com", ...) with a

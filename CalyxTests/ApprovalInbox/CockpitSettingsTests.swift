@@ -2,7 +2,7 @@
 //  CockpitSettingsTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for CockpitSettings: the Cockpit auto-approve feature
+//  Covers CockpitSettings: the Cockpit auto-approve feature
 //  toggle, same shape as CommandTrackingSettings.trackingEnabled but
 //  defaulting OFF.
 //

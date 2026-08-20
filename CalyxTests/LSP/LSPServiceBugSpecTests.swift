@@ -2,7 +2,7 @@
 //  LSPServiceBugSpecTests.swift
 //  Calyx
 //
-//  TDD RED-phase regression tests covering six bugs in `LSPService`:
+//  Regression tests covering six bugs in `LSPService`:
 //
 //    1. `SessionKey` workspaceRoot is not canonicalized, so two callers
 //       reaching for the same workspace under symlink-equivalent spellings

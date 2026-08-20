@@ -2,7 +2,7 @@
 //  ScreenStateClassifierTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for ScreenStateClassifier: Herdr-style "layer 2"
+//  Covers ScreenStateClassifier: Herdr-style "layer 2"
 //  classification of a pane's bottom-of-screen text into .blocked /
 //  .working / nil.
 //
@@ -47,8 +47,8 @@ final class ScreenStateClassifierTests: XCTestCase {
 
     /// apt's own yes/no confirmation prompt — no "❯ N." choice-cursor
     /// marker, so it must NOT classify as `.blocked` despite containing
-    /// "Do you want to continue?", a phrase the pre-Round-3-fix pattern
-    /// set matched generically.
+    /// "Do you want to continue?", a phrase a generic blocked-pattern
+    /// set would match.
     private static let aptConfirmationPromptText = """
     The following NEW packages will be installed:
       curl
@@ -58,8 +58,8 @@ final class ScreenStateClassifierTests: XCTestCase {
 
     /// fzf's footer hint — no "❯ N." choice-cursor marker either, so it
     /// must NOT classify as `.blocked` despite containing "ESC to
-    /// cancel", a phrase the pre-Round-3-fix pattern set also matched
-    /// generically.
+    /// cancel", a phrase a generic blocked-pattern set would also
+    /// match.
     private static let fzfFooterText = """
     > query
       12/34
@@ -124,11 +124,11 @@ final class ScreenStateClassifierTests: XCTestCase {
         )
     }
 
-    // MARK: - Round 3 fix: generic phrases alone must not match
+    // MARK: - Generic phrases alone must not match
 
     func test_classify_aptConfirmationPrompt_returnsNil() {
         // Regression: "do you want to continue" alone (no "❯ N." marker)
-        // used to false-positive as .blocked before the Round 3 fix.
+        // must never classify as .blocked.
         XCTAssertNil(
             ScreenStateClassifier.classify(bottomText: Self.aptConfirmationPromptText, kind: "claude-code"),
             "apt's own yes/no prompt, with no Claude Code choice-cursor marker, must classify as nil"
@@ -136,8 +136,8 @@ final class ScreenStateClassifierTests: XCTestCase {
     }
 
     func test_classify_fzfFooter_returnsNil() {
-        // Regression: "esc to cancel" alone used to false-positive as
-        // .blocked before the Round 3 fix.
+        // Regression: "esc to cancel" alone must never classify as
+        // .blocked.
         XCTAssertNil(
             ScreenStateClassifier.classify(bottomText: Self.fzfFooterText, kind: "claude-code"),
             "fzf's footer hint, with no Claude Code choice-cursor marker, must classify as nil"

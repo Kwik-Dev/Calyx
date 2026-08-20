@@ -3244,7 +3244,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// unhealthy, additionally logs and — if this window can resolve the
     /// surface's owning tab — surfaces a user-facing notification via
     /// `NotificationManager`; pane-level overlay presentation is out of
-    /// scope for this pass.
+    /// scope here.
     func processRendererHealth(surfaceView: SurfaceView, healthy: Bool) {
         surfaceView.isRendererHealthy = healthy
         guard !healthy else { return }
@@ -3797,7 +3797,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// on a daemon that turned out to be merely unreachable rather than
     /// truly gone.
     ///
-    /// CRITICAL ordering (review finding): `SurfaceRegistry
+    /// CRITICAL ordering: `SurfaceRegistry
     /// .destroySurface(_:)` synchronously re-enters ghostty's
     /// `close_surface` callback (`handleCloseSurfaceNotification` ->
     /// `closeSurfaceAndCleanUp`) from inside `requestClose()`, *before*
@@ -3831,7 +3831,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         return tab.registry.createSurface(app: app, config: config, pwd: pwd, command: command)
     }
 
-    /// Round-18 G6: positive-evidence check `performReconnect`'s grace
+    /// Positive-evidence check `performReconnect`'s grace
     /// `Task` consults immediately before `markEstablished`, alongside
     /// (not instead of) the existing surface-identity check -- see that
     /// call site's doc comment for why time and surface identity alone
@@ -3923,7 +3923,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         // later, unrelated disconnect still starts backing off from
         // attempt 1 again (`markEstablished`'s original purpose).
         //
-        // Round-18 finding G6: time alone still proved insufficient -- an
+        // Time alone still proved insufficient -- an
         // attach process that dies SLOWER than the grace window (e.g. a
         // ~2.5s die/respawn cycle against a daemon that keeps answering
         // `.running`/`.unreachable`) got its attempt count reset every
@@ -3951,7 +3951,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         // attempt count, and this stale confirmation must not wrongly
         // reset it out from under an unrelated, still-in-progress retry.
         //
-        // P5 (remote sessions): `reconnectGraceProbe` queries the LOCAL
+        // Remote sessions: `reconnectGraceProbe` queries the LOCAL
         // calyx-session daemon, which can never have a matching
         // SessionInfo for a REMOTE session (its daemon lives entirely on
         // the remote host) -- the probe would forever report
@@ -4566,7 +4566,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     }
     #endif
 
-    /// R12-C (r12-fix-spec.md): delegates TabSnapshot/TabGroupSnapshot
+    /// Delegates TabSnapshot/TabGroupSnapshot
     /// construction to the tested `Tab.snapshot()`/`TabGroup.snapshot()`
     /// extension chain (SessionSnapshot.swift) instead of duplicating a
     /// second, hand-kept-in-sync builder here. Only the live-window-only

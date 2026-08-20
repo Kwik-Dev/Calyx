@@ -2,9 +2,9 @@
 //  SessionPersistenceActorTerminationSaveBackupFallbackTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (recovery-feature code review, WARNING F4 --
+//  The defect this file pins:
 //  saveAtTermination doesn't fall back to backupPath, so a corrupt
-//  savePath + teardown race destroys the last good backup too). ROOT
+//  savePath + teardown race destroys the last good backup too. ROOT
 //  CAUSE: saveAtTermination(_:)'s protective guard only inspects
 //  savePath (`if snapshot.windows.isEmpty, let onDisk =
 //  loadFromPath(savePath), !onDisk.windows.isEmpty { ... return }`) --
@@ -29,10 +29,9 @@
 //  and must NOT trigger the backupPath fallback -- only an actual decode
 //  failure of savePath should.
 //
-//  No new API surface: saveAtTermination(_:) already exists (this same
-//  round). This file's RED evidence is therefore an assertion FAILURE at
-//  runtime (the corrupt-savePath-plus-good-backup case currently loses
-//  both copies), not a compile failure.
+//  No new API surface: saveAtTermination(_:) already exists. The
+//  pre-fix behavior this pins against: the corrupt-savePath-plus-good-
+//  backup case lost both copies.
 //
 //  Proposed implementation (SessionPersistenceActor.swift, replacing the
 //  current savePath-only guard):

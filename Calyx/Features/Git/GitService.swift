@@ -339,15 +339,15 @@ enum GitService {
     /// `show`, `rev-parse`) -- there is no write path through here, so
     /// propagating cancellation straight to the subprocess (rather than
     /// the structural-shield treatment `SessionDaemonClient.kill(id:)`
-    /// needs for its WRITE op, R14-C) is safe.
+    /// needs for its WRITE op) is safe.
     private static func run(args: [String], workDir: String) async throws -> String {
         guard FileManager.default.fileExists(atPath: gitPath) else {
             throw GitError.gitNotFound
         }
 
         let cancellationBridge = ProcessCancellationBridge()
-        // R14-E (r14-fix-spec.md): mirrors SystemCommandRunner
-        // .runInternal's R12-A fix -- withTaskCancellationHandler makes
+        // Mirrors SystemCommandRunner
+        // .runInternal -- withTaskCancellationHandler makes
         // a caller's Task cancellation SIGTERM the spawned `git`
         // process promptly instead of leaving it running until it
         // exits naturally or the unrelated 10s watchdog eventually
@@ -383,8 +383,7 @@ enum GitService {
                         // Already cancelled by the time this process
                         // launched; `cancel()` found nothing registered
                         // yet, so terminate it here instead, through the
-                        // same terminate-once lock (R16-1,
-                        // r16-fix-spec.md) rather than a second,
+                        // same terminate-once lock rather than a second,
                         // unsynchronized `process.terminate()` call site.
                         cancellationBridge.terminate()
                     }

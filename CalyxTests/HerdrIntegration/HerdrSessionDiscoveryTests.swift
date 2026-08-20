@@ -2,7 +2,7 @@
 //  HerdrSessionDiscoveryTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for HerdrSessionDiscovery: enumerating candidate herdr
+//  Covers HerdrSessionDiscovery: enumerating candidate herdr
 //  socket locations (discover()) and probing whether each is actually
 //  alive (isAlive(socketPath:)).
 //

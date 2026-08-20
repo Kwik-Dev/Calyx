@@ -2,7 +2,7 @@
 //  MCPLSPBridgeBugSpecGroupBTests.swift
 //  Calyx
 //
-//  TDD red-phase tests for three stubbed AI tools advertised by
+//  Tests for three stubbed AI tools advertised by
 //  `MCPLSPBridge` whose handlers currently fall short of the schema /
 //  description they publish to MCP callers.
 //
@@ -29,7 +29,7 @@
 //           (c) aggregate the resulting locations with a `resolved_in:
 //               <workspace>` annotation per entry.
 //
-//  TDD phase: RED. Every assertion below MUST FAIL against current code:
+//  What each assertion below pins:
 //    - symbol_walk's deeper-than-1 BFS expectations cannot pass while only
 //      one round-trip is issued.
 //    - hover_bundle's non-empty `surrounding_code` expectation cannot pass

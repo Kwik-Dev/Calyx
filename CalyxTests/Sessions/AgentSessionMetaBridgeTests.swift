@@ -2,7 +2,7 @@
 //  AgentSessionMetaBridgeTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for `AgentSessionMetaBridge`: bridges an agent hook
+//  Covers `AgentSessionMetaBridge`: bridges an agent hook
 //  event's self-reported session ID into the calyx-session daemon's
 //  per-session meta map, via a fake `SessionDaemonClientProtocol` and
 //  a real, test-owned `SessionSurfaceMap` instance — no real daemon

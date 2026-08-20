@@ -2,7 +2,7 @@
 //  MCPLSPBridgeURIBugSpecTests.swift
 //  Calyx
 //
-//  RED-phase TDD spec for two MCPLSPBridge URI-handling defects:
+//  Spec for two MCPLSPBridge URI-handling defects:
 //
 //    1. `ensureFileOpen(session:uri:)` hardcodes a `hasPrefix("file://")`
 //       guard and silently no-ops for non-file URI schemes. The spec
@@ -22,8 +22,8 @@
 //       returned `fileURL` is non-nil and the returned `uri` preserves
 //       the host component (percent-encoded).
 //
-//  Both tests are written to fail against current `MCPLSPBridge`
-//  behaviour; the matching GREEN pass belongs to the Swift specialist.
+//  Both tests are written against the fixed `MCPLSPBridge`
+//  behaviour, and fail against the pre-fix behaviour.
 //
 
 import XCTest

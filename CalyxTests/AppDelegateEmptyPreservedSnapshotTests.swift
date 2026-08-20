@@ -2,11 +2,11 @@
 //  AppDelegateEmptyPreservedSnapshotTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (team-lead scope addition, live defect found during the
-//  recovery-bar task: an EMPTY preserved snapshot -- e.g. a 32-byte
+//  A live defect found during the
+//  recovery-bar work: an EMPTY preserved snapshot -- e.g. a 32-byte
 //  `{"windows":[]}` preserved from an already-damaged sessions.json --
 //  is decodable but has NOTHING to recover, yet today's code treats it
-//  as if it were a real preserved session).
+//  as if it were a real preserved session.
 //
 //  ROOT CAUSE #1 (initializeHasPreservedSessionSnapshotFlag(), :1428):
 //
@@ -68,23 +68,19 @@
 //      never shows for one either -- no additional AppDelegate-level
 //      wiring is needed for (c) beyond correctly fixing (a).
 //
-//  Held-out compile-RED, part (a) specifically: `initializeHasPreservedSessionSnapshotFlag()`
-//  is declared `private` today (AppDelegate.swift :1428), so this file
-//  cannot call it at all, even via `@testable import Calyx` (private
-//  members stay private under @testable, unlike internal ones). Proposed
-//  API change: drop `private` from its declaration -- mirrors
+//  Part (a) drives `initializeHasPreservedSessionSnapshotFlag()`
+//  directly, so that method cannot be `private`: a private member stays
+//  private even under `@testable import Calyx`, unlike an internal one.
+//  Dropping `private` mirrors
 //  `finalizeRecoverPreservedSession(restoredAny:)`'s own identical
 //  extraction-for-testability precedent
-//  (AppDelegateRecoverPreservedSessionFinalizeTests.swift). Today this
-//  file fails to compile with "'initializeHasPreservedSessionSnapshotFlag'
-//  is inaccessible due to 'private' protection level" -- that IS this
-//  file's part-(a) RED evidence.
+//  (AppDelegateRecoverPreservedSessionFinalizeTests.swift).
 //
 //  Part (b) needs NO new symbol (recoverPreservedSession() is already
 //  internal and already exercised end-to-end by
 //  AppDelegateRecoverPreservedSessionCorruptSnapshotTests.swift's
-//  identical pattern) -- its RED evidence is a runtime ASSERTION FAILURE
-//  against the current silent-`return` guard, not a compile failure.
+//  identical pattern) -- it asserts against the behavior of the
+//  silent-`return` guard that used to stand there.
 //
 //  WHY THIS IS SAFELY DRIVEABLE (same reachability argument as the
 //  corrupt-snapshot sibling file): both the empty-preserved-file guard

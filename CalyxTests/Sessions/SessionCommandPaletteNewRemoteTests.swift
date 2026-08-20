@@ -2,12 +2,12 @@
 //  SessionCommandPaletteNewRemoteTests.swift
 //  CalyxTests
 //
-//  TDD Red phase, P5 (remote sessions), RED5 cycle (remote UI wiring),
-//  contract R2: a "New Remote Session..." command-palette entry
+//  Remote sessions, remote UI wiring: a "New Remote Session..."
+//  command-palette entry
 //  (`session.newRemote`), registered by
 //  `CalyxWindowController.setupCommandRegistry` alongside
 //  `session.attach`/`session.detach`/`session.kill`
-//  (SessionCommandPaletteTests, P4), plus a directly-testable seam that
+//  (SessionCommandPaletteTests), plus a directly-testable seam that
 //  produces the SessionSpawnContext a chosen remote host must turn
 //  into.
 //
@@ -33,7 +33,7 @@
 //  palette's existing origin taxonomy" means here.
 //
 //  SCOPE: the actual host-PICKER UI (how the user selects a host once
-//  session.newRemote's handler runs) is out of scope this round -- no
+//  session.newRemote's handler runs) is out of scope here -- no
 //  new visual design contract, no XCUITest. In scope: (1) the command
 //  exists and is gated correctly, tested exactly in
 //  SessionCommandPaletteTests' direct-query style; (2) once a host
@@ -43,15 +43,9 @@
 //  SessionSpawnContext the already-green spawn path
 //  (SessionSpawnPlannerRemoteHostTests) consumes.
 //
-//  Held-out compile-RED file per this codebase's established convention:
-//  `remoteSessionSpawnContext(forHost:)` does not exist on
-//  CalyxWindowController yet, and no `session.newRemote` command is
-//  registered. Expected to FAIL TO COMPILE until the Green phase adds
-//  the method (the command-registration/gating tests below would only
-//  runtime-fail via XCTUnwrap on their own, matching
-//  SessionCommandPaletteTests' P4 Red-phase precedent, but sharing this
-//  file with the new-method reference makes the whole file compile-RED
-//  instead).
+//  Under test: CalyxWindowController's
+//  `remoteSessionSpawnContext(forHost:)` and the `session.newRemote`
+//  command registration.
 //
 //  Coverage:
 //  - session.newRemote is registered, category "Sessions"
@@ -82,7 +76,7 @@ final class SessionCommandPaletteNewRemoteTests: XCTestCase {
 
     /// `restoring: true` skips setupTerminalSurface(), which requires a
     /// live Ghostty app instance -- same helper shape as
-    /// SessionCommandPaletteTests.makeController() (P4).
+    /// SessionCommandPaletteTests.makeController().
     private func makeController() -> CalyxWindowController {
         let window = CalyxWindow(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),

@@ -30,15 +30,12 @@
 //       field on `LSPServerDefinition` that the PHP entry uses to
 //       declare its license / trial caveat.
 //
-//  TDD phase: RED. Until the fixes land:
-//    * Bug 1 and Bug 4 reference symbols / members that do not exist
-//      on the current `LSPServerRegistry.swift` (`installationCheck`,
-//      `InstallationProbe`, `note`). Those tests therefore fail to
-//      compile — and compile failure IS the RED signal per the bug
-//      spec for this file.
-//    * Bug 2 and Bug 3 are runtime assertions that would also fail
-//      if the file did compile, because the built-in table still
-//      ships the broken brew commands.
+//  How each bug is pinned:
+//    * Bug 1 and Bug 4 reference `installationCheck`,
+//      `InstallationProbe`, and `note` on `LSPServerRegistry.swift`,
+//      so a registry missing them fails to compile.
+//    * Bug 2 and Bug 3 are runtime assertions against the built-in
+//      table's brew commands.
 //
 //  This file MUST fail (compile or runtime) against the current
 //  production `LSPServerRegistry.swift`. Do not soften any assertion
@@ -105,8 +102,8 @@ final class LSPServerRegistryBugSpecTests: XCTestCase {
     /// Asserts the Swift entry's `installationCheck` field equals the
     /// expected `.command(...)` probe (the new, intended shape). This
     /// test currently fails to compile because neither `installationCheck`
-    /// nor `InstallationProbe` exists on the production types — compile
-    /// failure IS the RED signal here.
+    /// nor `InstallationProbe` exists on the production types, the
+    /// compiler itself is the assertion here.
     func test_bug1_swift_installationCheck_isXcrunFindSourceKitLSPCommand() throws {
         let entry = try swiftEntry()
         let expected = InstallationProbe.command(
@@ -236,8 +233,8 @@ final class LSPServerRegistryBugSpecTests: XCTestCase {
 
     /// Pins the existence and content of the new `note` field on the PHP
     /// entry. This test currently fails to compile because
-    /// `LSPServerDefinition` does not yet declare a `note` member —
-    /// compile failure IS the RED signal.
+    /// `LSPServerDefinition` does not yet declare a `note` member, so
+    /// the compiler itself is the assertion.
     func test_bug4_php_note_mentionsLicenseOrTrial() throws {
         let entry = try phpEntry()
         let note = try XCTUnwrap(

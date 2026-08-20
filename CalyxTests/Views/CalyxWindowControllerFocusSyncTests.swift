@@ -11,7 +11,7 @@
 //    `CalyxWindowController.restoreFocus()` reads the stale
 //    `tab.splitTree.focusedLeafID` and focuses the wrong pane.
 //
-//  Fix (not yet implemented — these tests are Red phase):
+//  The fix these tests pin:
 //    • Add `var onActiveLeafChange: ((UUID) -> Void)?` on
 //      `SplitContainerView`.
 //    • Fire it from `surfaceDidBecomeActive(_:)` AFTER the existing
@@ -31,9 +31,8 @@
 //    against a real `Tab` and `SplitContainerView`, and verify the
 //    read/write semantics that `restoreFocus()` depends on.
 //
-//  Red-phase expectation:
-//    All 5 tests in this file FAIL TO COMPILE because
-//    `SplitContainerView.onActiveLeafChange` does not exist yet.
+//  All 5 tests in this file depend on
+//  `SplitContainerView.onActiveLeafChange`.
 //
 
 import AppKit

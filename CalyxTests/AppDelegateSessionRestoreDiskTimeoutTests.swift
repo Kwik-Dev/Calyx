@@ -2,8 +2,8 @@
 //  AppDelegateSessionRestoreDiskTimeoutTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (save-reliability C3 -- timeout vs. legitimately-empty
-//  at the busy-wait sites). ROOT CAUSE: restoreSession() and
+//  A save-reliability defect: timeout vs. legitimately-empty
+//  at the busy-wait sites. ROOT CAUSE: restoreSession() and
 //  preserveDiscardedSessionIfAny() (AppDelegate.swift ~1435-1497) each
 //  spin the calling thread via `RunLoop.current.run(...)` for a fixed
 //  budget (2.0s each) waiting for a `Task` that calls
@@ -40,13 +40,10 @@
 //  actor + the deadline so the timeout branch is genuinely
 //  unit-drivable.
 //
-//  Held-out compile-RED (see SessionCommandSynthesizerRemoteAttachTests's
-//  header for this codebase's convention): SessionRestoreDiskOutcome,
+//  Under test: SessionRestoreDiskOutcome,
 //  AppDelegate.attemptSessionRestoreFromDisk(deadline:),
 //  SessionPreserveDiskOutcome, and
-//  AppDelegate.attemptPreserveDiscardedSessionOnDisk(deadline:) do not
-//  exist yet. This file fails to compile until the Green phase adds all
-//  four. That compile failure IS this file's RED evidence.
+//  AppDelegate.attemptPreserveDiscardedSessionOnDisk(deadline:).
 //
 //  Proposed API (AppDelegate.swift additions, extracted from
 //  restoreSession()'s crash-loop-check + disk-read preamble and
@@ -138,9 +135,9 @@
 //  actually delegate to these methods at their call sites -- both remain
 //  private and reach GhosttyAppController.shared/real window creation
 //  past this preamble (see AppDelegateRecoveryCounterResetTests' own
-//  header for the identical constraint). The Green phase implementer and
-//  code review must verify that call-site wiring by reading the diff; no
-//  test in this file substitutes for that reading.
+//  header for the identical constraint). That call-site wiring must be
+//  verified by reading the code; no test in this file substitutes for
+//  that reading.
 //
 //  Coverage:
 //  - attemptSessionRestoreFromDisk: timedOut (deadline 0) is distinct

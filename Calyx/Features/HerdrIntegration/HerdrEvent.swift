@@ -68,7 +68,7 @@
 //
 //   - `HerdrAgentSessionInfo` (`AgentSessionInfo` in the schema) and
 //     `HerdrPaneScrollInfo` (`PaneScrollInfo`) are new types added by
-//     this pass -- both have EVERY field required, so each has no
+//     this file -- both have EVERY field required, so each has no
 //     optional/nullable split to worry about. `HerdrAgentSessionInfo
 //     .kind` (`AgentSessionRefKind`: "id"/"path" today) follows
 //     `HerdrAgentStatus`'s own established tolerant-decode precedent --
@@ -133,7 +133,7 @@
 //     forgotten: extrapolating a REQUIRED payload shape from a
 //     same-family sibling (e.g. assuming pane_updated carries a full
 //     `pane` object just because pane_created does) would freeze an
-//     unverified guess into this stage's contract.
+//     unverified guess into this decoder's contract.
 //
 //   - B1 rule: "pane_closed" and "pane_exited" both decode to
 //     `.paneClosed(paneID:)` / `.paneExited(paneID:)` respectively,
@@ -607,7 +607,7 @@ struct HerdrPaneAgentStatusChangedEvent: Sendable, Equatable, Decodable {
 /// this type got wrong here). `panes`/`agents`/`workspaces` are strongly
 /// typed (`HerdrPaneRecord`/`HerdrAgentRecord`/`HerdrWorkspaceInfo`);
 /// `tabs`/`layouts` stay `[AnyCodable]` -- see this file's header for why
-/// their element shapes are out of scope for this pass. Only
+/// their element shapes are out of scope. Only
 /// `focusedWorkspaceID`/`focusedTabID`/`focusedPaneID` are optional, and
 /// nullable.
 struct HerdrSessionSnapshot: Sendable, Equatable {
@@ -762,7 +762,7 @@ extension HerdrEvent: Decodable {
     /// B1: best-effort pane id extraction for "pane_closed"/
     /// "pane_exited" -- see this file's header "B1 rule" for the
     /// precedence this implements. NEVER throws: every fallible step is
-    /// `try?`, deliberately -- per this stage's own instructions, a
+    /// `try?`, deliberately: a
     /// missing/malformed pane id here falls back to `.unknown(eventType:)`
     /// at the `init(from:)` call site above, rather than failing the
     /// whole line's decode the way "pane_created"'s own nested `pane`

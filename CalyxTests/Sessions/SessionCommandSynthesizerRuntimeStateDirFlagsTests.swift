@@ -2,14 +2,14 @@
 //  SessionCommandSynthesizerRuntimeStateDirFlagsTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (round 18, G5 flags migration): supersedes the former
+//  Supersedes the former
 //  SessionCommandSynthesizerHomeStampTests, which stamped the resolved
 //  session root as a leading `/usr/bin/env HOME=<root>` word ahead of
 //  the exec'd calyx-session binary. That stamp existed only to make the
 //  attach process's own HOME-derived state-root resolution agree with
 //  whatever SessionDaemonClient resolved for the same rootResolver (see
 //  SessionRootResolver.swift's header) -- but the Rust CLI has carried
-//  its own, more direct answer to the same problem since P2: global
+//  its own, more direct answer to the same problem: global
 //  `--runtime-dir`/`--state-dir` flags (calyx-session/crates/cli/src/cli.rs:15-20,
 //  `global = true`, so every subcommand accepts them, not just `daemon`)
 //  that `attach` both accepts and, when it auto-spawns the daemon,
@@ -21,14 +21,14 @@
 //  needing an env override or an `/usr/bin/env` wrapper at all.
 //
 //  This also RETIRES the entire ghostty-exec-wrapping saga the old
-//  HomeStampTests file fought through three rounds:
-//  - ROUND 1: a bare `HOME=<root>` first word resolved as a cwd-relative
+//  HomeStampTests file fought through, in three steps:
+//  - A bare `HOME=<root>` first word resolves as a cwd-relative
 //    path, field-verified broken as `bash: .../HOME=/tmp/cxpane: No such
 //    file or directory`.
-//  - ROUND 2: a redundant leading `exec` PATH-searched as a literal
+//  - A redundant leading `exec` is PATH-searched as a literal
 //    nonexistent program, field-verified broken as `bash: line 0: exec:
 //    exec: not found`.
-//  - ROUND 3: finally routing through `/usr/bin/env` to make the `HOME=`
+//  - Routing through `/usr/bin/env` finally makes the `HOME=`
 //    word an actual env assignment rather than a literal argv word.
 //  Once the session root travels as ordinary argv words to the binary
 //  itself rather than as an env assignment ahead of it, the command's
@@ -39,7 +39,7 @@
 //  `.shell`-variant command Calyx always produces); its own single
 //  `exec` finds and execs an absolute first word directly, with no
 //  cwd-relative or PATH-search ambiguity, so there is no failure mode
-//  left for this file to guard against the way the old ROUND 1/2/3 tests
+//  left for this file to guard against the way those older tests
 //  did. (This is the canonical copy of this narrative -- other files
 //  that reference this saga, including `SessionCommandSynthesizer.swift`
 //  itself, point back here rather than repeating it.)
@@ -162,7 +162,7 @@ final class SessionCommandSynthesizerRuntimeStateDirFlagsTests: XCTestCase {
     }
 
     /// Asserts `command` contains neither an `/usr/bin/env` wrapper nor
-    /// a `HOME=` word anywhere -- both retired by this round's flags
+    /// a `HOME=` word anywhere -- both retired by the flags
     /// migration (see this file's header for why).
     private func assertContainsNoEnvWrapperOrHomeStamp(
         _ command: String, file: StaticString = #filePath, line: UInt = #line
@@ -174,7 +174,7 @@ final class SessionCommandSynthesizerRuntimeStateDirFlagsTests: XCTestCase {
                        file: file, line: line)
         XCTAssertFalse(command.contains("HOME="),
                        "The synthesized command must never contain a HOME= word anywhere -- stamping HOME " +
-                       "was the old mechanism this round retires in favor of explicit --runtime-dir/--state-dir " +
+                       "was the old mechanism, retired in favor of explicit --runtime-dir/--state-dir " +
                        "flags",
                        file: file, line: line)
     }

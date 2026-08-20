@@ -2,7 +2,7 @@
 //  LSPServiceFileSyncWiringTests.swift
 //  Calyx
 //
-//  TDD red-phase tests for the LSPService <-> FileSyncManager wiring.
+//  Tests for the LSPService <-> FileSyncManager wiring.
 //
 //  The forthcoming change adds a new trailing optional parameter to
 //  `LSPService.init(...)`:
@@ -30,9 +30,7 @@
 //        * The legacy warm-cache, dedup, and shutdown paths must keep
 //          working unchanged (no observable file-sync side effects).
 //
-//  TDD phase: RED. The new parameter does not exist yet on
-//  `LSPService.init(...)`, so this file is expected to fail to compile
-//  until the implementation step is performed.
+//  Under test: that parameter on `LSPService.init(...)`.
 //
 
 import XCTest

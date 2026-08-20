@@ -18,11 +18,10 @@
 //  `SystemCommandRunner.augmentedEnvironment(base: environment)` so
 //  the same PATH augmentation applies in both code paths.
 //
-//  This test MUST FAIL against the current implementation (Red phase)
-//  because the transport spawns the child with the caller-supplied
-//  environment verbatim — without augmenting PATH — so the child
-//  exits 127, the stdin pipe closes, and `send` throws
-//  `transportClosed`. After the fix it will PASS.
+//  Before the fix the transport spawned the child with the
+//  caller-supplied environment verbatim — without augmenting PATH — so
+//  the child exited 127, the stdin pipe closed, and `send` threw
+//  `transportClosed`.
 //
 
 import XCTest
@@ -127,8 +126,8 @@ final class StdioLSPTransportPATHBugSpecTests: XCTestCase {
         // Simulate a Finder/Dock launch: hand the transport the
         // minimal launchd PATH. With the bug, the transport will
         // forward this verbatim to `/usr/bin/env`, which cannot find
-        // `pyright-langserver` and exits 127. After the GREEN fix,
-        // the transport will overlay `augmentedPATH()` and the spawn
+        // `pyright-langserver` and exits 127. With the fix,
+        // the transport overlays `augmentedPATH()` and the spawn
         // succeeds.
         let minimalLaunchdPATH = "/usr/bin:/bin:/usr/sbin:/sbin"
         let env: [String: String] = ["PATH": minimalLaunchdPATH]
@@ -180,7 +179,7 @@ final class StdioLSPTransportPATHBugSpecTests: XCTestCase {
         let stderrSnippet = String(data: stderrTail.prefix(512), encoding: .utf8) ?? ""
 
         // The crux of the spec: NEITHER send should throw
-        // `transportClosed`. After the GREEN fix that routes through
+        // `transportClosed`. With the fix routing through
         // `SystemCommandRunner.augmentedEnvironment(base:)`, the
         // child stays alive and both sends succeed.
         if let err = firstSendError {

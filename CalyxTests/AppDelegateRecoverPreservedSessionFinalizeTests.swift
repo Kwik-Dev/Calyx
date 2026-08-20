@@ -2,9 +2,9 @@
 //  AppDelegateRecoverPreservedSessionFinalizeTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (recovery-feature code review, CRITICAL F1 --
+//  The defect this file pins:
 //  recoverPreservedSession() destroys the preserved backup even when
-//  nothing was actually recovered). ROOT CAUSE: the recovery loop
+//  nothing was actually recovered. ROOT CAUSE: the recovery loop
 //  discards restoreWindow(_:)'s return value (`_ =
 //  restoreWindow(windowSnap)`) and then UNCONDITIONALLY calls
 //  actor.clearPreservedSnapshot() and sets hasPreservedSessionSnapshot =
@@ -40,11 +40,8 @@
 //  AppDelegateRecoveryCounterResetTests already established for
 //  scheduleRecoveryCounterResetAfterStableLaunch(delay:).
 //
-//  Held-out compile-RED (see SessionCommandSynthesizerRemoteAttachTests's
-//  header for this codebase's convention): AppDelegate
-//  .finalizeRecoverPreservedSession(restoredAny:) does not exist yet.
-//  This file fails to compile until the Green phase adds it. That
-//  compile failure IS this file's RED evidence.
+//  Under test: AppDelegate
+//  .finalizeRecoverPreservedSession(restoredAny:).
 //
 //  Proposed API (AppDelegate.swift addition):
 //
@@ -81,9 +78,8 @@
 //  in place of its current inline tail. Both are properties of
 //  recoverPreservedSession()'s own body, which has no safe unit-level
 //  seam to observe against restoreWindow(_:)'s real (hang-prone)
-//  execution. The Green phase implementer and code review must verify
-//  (a)/(b) by reading the diff; no test in this file substitutes for
-//  that reading.
+//  execution. (a)/(b) must be verified by reading the code; no test in
+//  this file substitutes for that reading.
 //
 //  Coverage:
 //  - restoredAny == false: the preserved snapshot is left in place

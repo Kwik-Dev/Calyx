@@ -3,7 +3,6 @@
 //  CalyxTests
 //
 //  Tests for ComposeOverlayView, trusted paste, and WindowSession compose state.
-//  Written before implementation (TDD Red phase) -- all tests must FAIL.
 //
 //  Coverage:
 //  - ComposeOverlayView: Enter sends text via onSend

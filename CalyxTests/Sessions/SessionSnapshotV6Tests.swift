@@ -2,7 +2,7 @@
 //  SessionSnapshotV6Tests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for schema v6: TabSnapshot.sessionRefs.
+//  Covers schema v6: TabSnapshot.sessionRefs.
 //
 //  Coverage:
 //  - A TabSnapshot with sessionRefs round-trips through encode/decode
@@ -11,8 +11,8 @@
 //  - SessionSnapshot.migrate(_:) carries a v5-decoded snapshot to v6
 //    (schemaVersion bump only) without losing any window/tab data
 //
-//  Fix round (review, item 9) removed TabSnapshot.remappingSessionRefs(_:)
-//  and its two tests here: it was a dead, never-called wrapper — restore
+//  TabSnapshot.remappingSessionRefs(_:) and its two tests here were
+//  removed: it was a dead, never-called wrapper — restore
 //  and reconnect both re-key the runtime Tab.sessionRefs dictionary
 //  directly via Dictionary.remappingKeys(_:) (SessionSnapshot.swift),
 //  never by reconstructing a whole TabSnapshot mid-flight.

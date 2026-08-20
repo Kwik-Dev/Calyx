@@ -2,8 +2,7 @@
 //  ConfirmQuitMockAppDelegate.swift
 //  CalyxTests
 //
-//  R6-J (r6-fix-spec.md, round-5 review finding G2): shared base for
-//  the four near-identical `AppDelegate` test doubles in
+//  Shared base for the four near-identical `AppDelegate` test doubles in
 //  `SessionCommandPaletteTests` (MockConfirmQuitAppDelegate,
 //  ClosingTabIDsSpyAppDelegate) and `CalyxWindowControllerCloseArmsTests`
 //  (ConfirmingAppDelegate, ClosingTabIDsWindowCloseSpyAppDelegate), all

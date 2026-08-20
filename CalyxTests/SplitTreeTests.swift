@@ -579,8 +579,7 @@ final class SplitTreeTests: XCTestCase {
     //   • Unknown leaf → returns `self` unchanged.
     //   • Empty tree → returns `self` unchanged (root stays nil).
     //
-    // Red-phase expectation: these tests FAIL TO COMPILE because
-    // `SplitTree.setRatio(...)` does not exist yet.
+    // Under test: `SplitTree.setRatio(...)`.
 
     func test_setRatio_should_set_horizontal_split_to_target_when_leaf_in_first() {
         // Arrange — build a 2-leaf horizontal split with idA in first, idB in second.
@@ -903,8 +902,7 @@ final class SplitTreeTests: XCTestCase {
     // The pre-existing `setRatio(node:to:direction:...)` is preserved as a
     // convenience for tests / callers that don't need the disambiguation.
     //
-    // Red-phase expectation: this test FAILS TO COMPILE against the pre-fix
-    // codebase because the new overload doesn't exist yet.
+    // Under test: the disambiguating `setRatio` overload.
 
     /// Given: a tree V(A, V(B, C)) — outer vertical, inner vertical.
     /// When:  `setRatio` is called targeting specifically the INNER split
@@ -972,17 +970,16 @@ final class SplitTreeTests: XCTestCase {
     // macos/Sources/Features/Terminal/BaseTerminalController.swift,
     // v1.3.1). Calyx previously had no zoom concept at all.
     //
-    // GREEN PHASE: `togglingZoom(at:)`/`clearingZoom()`/`settingFocus(_:)`/
-    // `effectiveZoomedLeafID` now carry their real implementations, and
+    // `togglingZoom(at:)`/`clearingZoom()`/`settingFocus(_:)`/
+    // `effectiveZoomedLeafID` carry their real implementations, and
     // `insert`/`remove`/`equalize`/`resize`/`setRatio`×2/`remapLeafIDs`
     // each explicitly thread `zoomedLeafID` through their own
     // `SplitTree(root:focusedLeafID:zoomedLeafID:)` call per the table in
     // `SplitTree.swift`'s own "MARK: - Zoom" section. The per-test
-    // "REGRESSION GUARD" / "REAL RED FAILURE" labels below are kept as
-    // historical context from the TDD red phase (they still correctly
-    // describe why each test exists and what it guards against) even
-    // though every test in this section now exercises real logic rather
-    // than a stub.
+    // "REGRESSION GUARD" / "PINS THE FIX" labels below still
+    // correctly describe why each test exists and what it guards
+    // against, even though every test in this section exercises real
+    // logic rather than a stub.
 
     // MARK: Zoom Helpers
 
@@ -1100,7 +1097,7 @@ final class SplitTreeTests: XCTestCase {
                     "Removing the zoomed leaf itself must clear zoom")
     }
 
-    /// REAL RED FAILURE (contrast the two REGRESSION GUARDs above):
+    /// PINS THE FIX (contrast the two REGRESSION GUARDs above):
     /// removing a leaf UNRELATED to the zoomed one, while the tree is
     /// STILL split afterward, must PRESERVE zoom. `remove`'s current,
     /// unmodified body doesn't thread `zoomedLeafID` through at all, so
@@ -1177,7 +1174,7 @@ final class SplitTreeTests: XCTestCase {
                     "REMOVED leaf (B) was never the zoomed one (A)")
     }
 
-    /// CORRECTED SPEC (post-review): the original design table had this
+    /// CORRECTED SPEC: the original design table had this
     /// backwards. Upstream ghostty's own `SplitTree.equalized()`
     /// (macos/Sources/Features/Splits/SplitTree.swift:236-240) is
     /// `.init(root: newRoot, zoomed: zoomed)` — the ONE mutating
@@ -1201,7 +1198,7 @@ final class SplitTreeTests: XCTestCase {
                        "matching upstream ghostty's own SplitTree.equalized() and this type's resize/setRatio")
     }
 
-    // MARK: resize / setRatio preserve zoom (REAL RED FAILUREs)
+    // MARK: resize / setRatio preserve zoom (pins the fix)
 
     func test_should_preserve_zoom_when_resizing_a_split() {
         let idA = UUID()
@@ -1249,7 +1246,7 @@ final class SplitTreeTests: XCTestCase {
                        "setRatio(firstChildFirstLeafID:secondChildFirstLeafID:direction:to:bounds:minSize:) must not disturb zoom")
     }
 
-    // MARK: remapLeafIDs re-keys zoom (REAL RED FAILURE)
+    // MARK: remapLeafIDs re-keys zoom (pins the fix)
 
     func test_should_remap_zoomedLeafID_when_its_leaf_is_remapped() {
         let idA = UUID()
@@ -1264,7 +1261,7 @@ final class SplitTreeTests: XCTestCase {
                        "focusedLeafID, so a session restore's remap doesn't silently orphan a persisted zoom")
     }
 
-    // MARK: settingFocus(_:) clears zoom (REAL RED FAILURE)
+    // MARK: settingFocus(_:) clears zoom (pins the fix)
 
     func test_should_clear_zoom_when_focus_moves_to_a_different_leaf() {
         let idA = UUID()
@@ -1283,9 +1280,9 @@ final class SplitTreeTests: XCTestCase {
 
     // MARK: effectiveZoomedLeafID
 
-    /// REAL RED FAILURE: `effectiveZoomedLeafID` is still the `{ nil }`
-    /// stub, so a legitimately zoomed, currently-split tree's own zoom is
-    /// not yet reported.
+    /// PINS THE FIX: with `effectiveZoomedLeafID` still the `{ nil }`
+    /// stub, a legitimately zoomed, currently-split tree's own zoom is
+    /// not reported.
     func test_effectiveZoomedLeafID_should_return_zoomedLeafID_when_it_names_a_real_leaf_of_a_split_tree() {
         let idA = UUID()
         let idB = UUID()

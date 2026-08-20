@@ -98,7 +98,7 @@ enum SessionSpawnPlanner {
     /// (`CalyxWindowController.createManagedSurface`'s
     /// `explicitCwd`/`sessionFallbackCwd`).
     ///
-    /// P5 (remote sessions): `context.host != nil` skips the LOCAL
+    /// Remote sessions: `context.host != nil` skips the LOCAL
     /// binary-resolvability guard entirely -- a remote session's daemon
     /// lives on the remote machine, so the LOCAL calyx-session binary's
     /// presence or absence says nothing about whether a remote spawn can

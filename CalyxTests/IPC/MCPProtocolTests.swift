@@ -103,7 +103,7 @@ final class MCPProtocolTests: XCTestCase {
                      "nil instructions must remain nil after roundtrip")
     }
 
-    // ==================== Round 6: instructions branch on whether a ====================
+    // ==================== instructions branch on whether a ====================
     // ==================== peer was already auto-registered ====================
     //
     // Bug: the old instructions told every connecting client "call
@@ -114,7 +114,7 @@ final class MCPProtocolTests: XCTestCase {
     // same pane (two rows in list_peers; senders addressing the
     // auto-registered id never reached the pane's own inbox).
     //
-    // Fix (Round 6 review): `initialize`'s auto-registration itself is now
+    // Fix: `initialize`'s auto-registration itself is now
     // limited to surface-bound connections (see
     // CalyxMCPServerAgentEventTests' `test_initialize_withoutSurfaceHeader_
     // doesNotAutoRegisterPeer`) — an external client with no
@@ -167,7 +167,7 @@ final class MCPProtocolTests: XCTestCase {
         )
 
         // register_peer must now be framed as returning the SAME peer_id
-        // (a rename) rather than a fresh one — the core Round 6 fix.
+        // (a rename) rather than a fresh one — the core fix.
         XCTAssertNotNil(
             instructions.range(of: "same peer_id", options: .caseInsensitive),
             "instructions must state that calling register_peer returns the SAME peer_id, not a new " +
@@ -200,10 +200,9 @@ final class MCPProtocolTests: XCTestCase {
     func test_toolsListResponse_containsAllTools() throws {
         // Arrange — `tools/list` advertises the combined IPC + LSP +
         // terminal_* + Cockpit surface (6 IPC + 70 LSP + 3 terminal_* +
-        // 6 Cockpit = 85 tools; Round 7 removed ack_messages, P3 added
-        // the terminal_* surface, P4 added the ungated Cockpit tools,
-        // P5 added the 3 gated ones). Each IPC name must be present and
-        // the LSP catalogue must be surfaced alongside.
+        // 6 Cockpit = 85 tools; no ack_messages, and the 6 Cockpit
+        // tools are 3 ungated + 3 gated). Each IPC name must be present
+        // and the LSP catalogue must be surfaced alongside.
         let id = JSONRPCId.int(2)
         let expectedIPCTools: Set<String> = [
             "register_peer", "list_peers", "send_message",
@@ -232,7 +231,7 @@ final class MCPProtocolTests: XCTestCase {
                        "Tools list must contain 6 IPC + 70 LSP + 3 terminal_* + 6 Cockpit = 85 tools")
     }
 
-    // ==================== Round 7: ack_messages removed; receive is ====================
+    // ==================== ack_messages removed; receive is ====================
     // ==================== delete-on-read (at-most-once) ====================
     //
     // Messages are now removed from the recipient's inbox by the same
@@ -573,7 +572,7 @@ final class MCPProtocolTests: XCTestCase {
         // Assert
         XCTAssertEqual(tools.count, 6,
                        "MCPRouter.tools must expose exactly 6 tool definitions " +
-                       "(Round 7 removed ack_messages)")
+                       "(no ack_messages)")
 
         let names = tools.map(\.name)
         // IPC tools
@@ -661,7 +660,7 @@ final class MCPProtocolTests: XCTestCase {
                       "Nil id must serialize as JSON null")
     }
 
-    // ==================== P3: terminal_* tool surface ====================
+    // ==================== terminal_* tool surface ====================
 
     // A single method (rather than separate true/false-only tests):
     // asserting a "must be true" case alongside the "must be false"

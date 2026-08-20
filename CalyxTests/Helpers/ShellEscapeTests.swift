@@ -1,7 +1,7 @@
 // ShellEscapeTests.swift
 // CalyxTests
 //
-// TDD red-phase tests for ShellEscape.
+// Tests for ShellEscape.
 //
 // ShellEscape is a utility enum that escapes shell-sensitive characters
 // by prefixing each with a backslash (matching Ghostty's Shell.swift

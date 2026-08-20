@@ -2,13 +2,13 @@
 //  SessionCommandSynthesizerTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for SessionCommandSynthesizer.attachCommand: the shell
+//  Covers SessionCommandSynthesizer.attachCommand: the shell
 //  command string ghostty runs (via `/bin/sh -c`) for a persistent
 //  session's surface.
 //
 //  Coverage:
 //  - Basic form: `exec <binary> attach <id> --create --cwd <cwd>` (id is
-//    positional, matching the P2 CLI's AttachArgs — see
+//    positional, matching the CLI's AttachArgs — see
 //    calyx-session/crates/cli/src/cli.rs, which has no --id flag)
 //  - cwd containing a space, a single quote, and Japanese characters
 //    survives /bin/sh -c intact
@@ -100,7 +100,7 @@ final class SessionCommandSynthesizerTests: XCTestCase {
         let command = SessionCommandSynthesizer.attachCommand(
             binaryPath: binaryPath, sessionID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", cwd: "/Users/dev/repo"
         )
-        // Round-18 flags migration: the session root travels as the
+        // The session root travels as the
         // Rust CLI's own global --runtime-dir/--state-dir argv flags
         // now (calyx-session/crates/cli/src/cli.rs:15-20), prepended
         // ahead of the attach subcommand, rather than as a leading
@@ -114,7 +114,7 @@ final class SessionCommandSynthesizerTests: XCTestCase {
                        "now travels as --runtime-dir/--state-dir argv words directly to the binary")
         XCTAssertFalse(command.contains("HOME="),
                        "The command must never contain a HOME= word anywhere -- stamping HOME was the old " +
-                       "mechanism the round-18 flags migration retires")
+                       "mechanism the flags migration retires")
 
         let argv = try runAndCaptureArgv(command, outputPath: outputPath)
         let expectedRoot = SessionRootResolver().resolve()
@@ -206,7 +206,7 @@ final class SessionCommandSynthesizerTests: XCTestCase {
                        "fail to find anything, so the dumper script would never run and capture this argv at all")
     }
 
-    // MARK: - sessionID (fix round, item 2)
+    // MARK: - sessionID
 
     func test_attachCommand_sessionIDWithMetaCharacters_survivesShCIntact() throws {
         // Deliberately harmless-if-ever-actually-executed: this test

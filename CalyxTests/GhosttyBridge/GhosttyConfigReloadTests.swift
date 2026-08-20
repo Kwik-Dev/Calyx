@@ -1,7 +1,7 @@
 // GhosttyConfigReloadTests.swift
 // CalyxTests
 //
-// TDD Red-phase tests for config hot-reload fix.
+// Tests for config hot-reload fix.
 //
 // These tests verify the expected behavior of ConfigReloadCoordinator,
 // which does not exist yet in production code. All tests will FAIL

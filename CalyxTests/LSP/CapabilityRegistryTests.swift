@@ -23,8 +23,7 @@
 //    - `currentStaticCapabilities` returns the last-set static caps.
 //    - `reset` returns the registry to its empty initial state.
 //
-//  TDD phase: RED. `CapabilityRegistry` does not exist yet. This file is
-//  expected to fail to compile until the swift-specialist creates
+//  `CapabilityRegistry` lives in
 //  `Calyx/Features/LSP/CapabilityRegistry.swift`.
 //
 

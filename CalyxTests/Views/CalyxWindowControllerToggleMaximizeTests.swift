@@ -2,7 +2,7 @@
 //  CalyxWindowControllerToggleMaximizeTests.swift
 //  CalyxTests
 //
-//  TDD RED phase, second missing-observer investigation:
+//  Missing observer: 
 //  `GhosttyActionRouter.handleAction` still lists
 //  `GHOSTTY_ACTION_TOGGLE_MAXIMIZE` in its "Known but unimplemented" group
 //  (`return false`, GhosttyAction.swift) -- ghostty's default

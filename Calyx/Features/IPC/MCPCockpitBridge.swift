@@ -2,21 +2,21 @@
 // Calyx
 //
 // Bridges CockpitAppAccessing onto the MCP tool surface -- pane_list /
-// pane_split / tab_create (P4, ungated); pane_run / pane_send_keys /
-// palette_execute (P5, gated by the approval flow -- see
+// pane_split / tab_create (ungated); pane_run / pane_send_keys /
+// palette_execute (gated by the approval flow -- see
 // `gate(toolName:targetSurfaceID:payload:)` below). Mirrors
 // MCPCommandLogBridge's shape (nonisolated tools catalogue, typed
 // LocalizedError+Equatable error enum, requireString/optionalString/
 // optionalBool/optionalInt/decodeInt argument helpers, handleToolCall
 // dispatch switch, surface_id two-step resolution via SessionSurfaceMap,
-// [String: Any] + JSONSerialization response building, and (P5) the
+// [String: Any] + JSONSerialization response building, and the
 // static CommandRecord serialization helpers it exposes for pane_run's
 // `await: true` path) -- see that file's own header for the full-size
 // version this one is scaled down from. See
 // CalyxTests/IPC/MCPCockpitBridgeTests.swift for the specced contract
 // this satisfies.
 //
-// P5's approval-gate contract: validate args + resolve surface +
+// The approval-gate contract: validate args + resolve surface +
 // paneExists FIRST (fail fast before bothering the human) -> if
 // ApprovalPolicy.requiresApproval(): build an ApprovalRequest (source:
 // .mcpTool(name:), targetSurfaceID: the pane's surface for
@@ -117,7 +117,7 @@ final class MCPCockpitBridge {
     /// `awaitCompletion(commandID: nil)` -- see `handlePaneRun`'s own
     /// comment for why that distinction matters here.
     private let commandLogStore: CommandLogStore
-    /// P5: the timeout `awaitDecision` is given while a gated call waits
+    /// The timeout `awaitDecision` is given while a gated call waits
     /// on a human's Allow/Deny/Always Allow decision. A settable
     /// initializer parameter (not a hardcoded 55_000) so tests can drive
     /// the timeout path in well under a second rather than actually
@@ -332,8 +332,8 @@ final class MCPCockpitBridge {
             // payload built from raw shell output, e.g. `$(pwd)`) both
             // validates and reaches access.createTab already cleaned --
             // matches CalyxWindowController.normalizedCwdOverride(_:)'s
-            // own normalization on the seam this ultimately reaches
-            // (P3 review W2), rather than rejecting what that seam
+            // own normalization on the seam this ultimately reaches,
+            // rather than rejecting what that seam
             // would accept.
             let trimmed = rawCwd.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else {
@@ -546,7 +546,7 @@ final class MCPCockpitBridge {
         case respond([String: Any])
     }
 
-    /// Shared gate for the 3 P5 tools -- see `GateOutcome` for what each
+    /// Shared gate for the 3 gated tools -- see `GateOutcome` for what each
     /// case means to the caller.
     private func gate(
         toolName: String, targetSurfaceID: UUID?, payload: String

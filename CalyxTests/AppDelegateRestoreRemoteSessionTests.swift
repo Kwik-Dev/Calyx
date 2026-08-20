@@ -2,13 +2,13 @@
 //  AppDelegateRestoreRemoteSessionTests.swift
 //  CalyxTests
 //
-//  P5 (remote sessions) RED phase, contract R2 (COMPILE-RED, HELD-OUT
-//  FILE): AppDelegate.createSurfaceWithPwd (the restore-path surface
+//  Remote sessions. THE DEFECT:
+//  AppDelegate.createSurfaceWithPwd (the restore-path surface
 //  creator, see AppDelegate.swift near :1275) always synthesizes its
 //  attach command via SessionCommandSynthesizer.reattachCommand(_:),
 //  regardless of SessionRef.host. A restored leaf whose SessionRef
 //  carries a non-nil host (a session that was spawned against a remote
-//  ssh host, once P5 spawn lands) must instead synthesize
+//  ssh host) must instead synthesize
 //  SessionCommandSynthesizer.remoteAttachCommand(host:sessionID:cwd:) --
 //  ssh, not the local calyx-session binary, no --runtime-dir/--state-dir
 //  (those flags are meaningless on the remote machine, see
@@ -64,16 +64,8 @@
 //  reattachCommand's nil return exists for; only the local branch keeps
 //  that guard.
 //
-//  NONE of `_createSurfaceWithPwdCommandObserverForTesting` or the
-//  host-branching logic above exist yet -- this file is expected to FAIL
-//  TO COMPILE until the TDD Green phase adds them. That compile failure
-//  IS this contract's RED evidence, following this codebase's
-//  established held-out-file convention (see
-//  SessionReconnectGracePositiveSignalSeamTests's header comment). Must
-//  be excluded from the build while running the rest of the round's RED
-//  suite (a compile failure anywhere fails the whole CalyxTests target,
-//  since Swift compiles a target as one module) and verified separately
-//  for its own specific compiler errors.
+//  Under test: `_createSurfaceWithPwdCommandObserverForTesting` and the
+//  host-branching logic above.
 //
 //  Reuses AppDelegateRestoreTabSurfacesOwnershipTests' exact
 //  drive-the-real-restoreTabSurfaces-with-a-faked-surface-creation-hook

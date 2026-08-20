@@ -1,8 +1,8 @@
 // SSHConfigParser.swift
 // Calyx
 //
-// Read-only ~/.ssh/config candidate extraction for the future remote-host
-// picker UI (not this cycle). Pure function group -- no I/O, no actor
+// Read-only ~/.ssh/config candidate extraction for the remote-host
+// picker UI. Pure function group -- no I/O, no actor
 // isolation required; the parser's only input is an ssh_config-format
 // STRING (never a file path, so no filesystem access is possible from
 // inside it at all).

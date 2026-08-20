@@ -2,8 +2,8 @@
 //  SessionPersistenceActorRecoveryPreservationTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (session-restore fix, Bug 3a -- silent restore-skip must
-//  become recoverable, PRESERVE half). ROOT CAUSE (real user incident):
+//  The PRESERVE half of the session-restore fix: a silent restore-skip
+//  must become recoverable. ROOT CAUSE (real user incident):
 //  when AppDelegate.restoreSession() skips (crash-loop detected) or
 //  fails (no window actually restored) even though a real, non-empty
 //  session WAS on disk, that snapshot is never surfaced to the user AND
@@ -20,13 +20,10 @@
 //  untouched by any of the new run's own saves (which only ever
 //  read/write sessions.json/sessions.json.bak, never the recovery path).
 //
-//  Held-out compile-RED (see SessionCommandSynthesizerRemoteAttachTests's
-//  header for this codebase's convention):
+//  Under test:
 //  SessionPersistenceActor.preserveSnapshotForRecovery() /
 //  hasPreservedSnapshot() / loadPreservedSnapshot() /
-//  clearPreservedSnapshot() do not exist yet. This file fails to compile
-//  until the Green phase adds all four. That compile failure IS this
-//  file's RED evidence.
+//  clearPreservedSnapshot().
 //
 //  Proposed API (SessionPersistenceActor.swift additions, alongside the
 //  existing savePath/backupPath and their same-directory convention):
@@ -66,7 +63,7 @@
 //        try? FileManager.default.removeItem(at: recoverySnapshotPath)
 //    }
 //
-//  WIRE-POINT NOTE for the Green phase (restoreSession(), AppDelegate.swift
+//  WIRE-POINT NOTE (restoreSession(), AppDelegate.swift
 //  ~1059-1112, NOT re-tested here -- see
 //  AppDelegateRecoveryCounterResetTests's own header for why restoreSession()
 //  itself is undriveable): call preserveSnapshotForRecovery() from the

@@ -2,8 +2,8 @@
 //  CalyxWindowControllerRemoteReconnectCommandTests.swift
 //  CalyxTests
 //
-//  P5 (remote sessions) RED phase, contract R3 (COMPILE-RED, HELD-OUT
-//  FILE): CalyxWindowController.performReconnect(oldSurfaceID:sessionID:)
+//  Remote sessions. THE DEFECT:
+//  CalyxWindowController.performReconnect(oldSurfaceID:sessionID:)
 //  (CalyxWindowController.swift near :2378) always synthesizes its
 //  replacement-surface command via
 //  SessionCommandSynthesizer.reattachCommand(sessionID:cwd:), with no
@@ -69,14 +69,8 @@
 //  AppDelegateRestoreRemoteSessionTests's identical note), so only the
 //  local branch keeps the "no binary resolvable" early-return.
 //
-//  NONE of `_performReconnectCommandObserverForTesting` or the
-//  host-branching logic above exist yet -- this file is expected to FAIL
-//  TO COMPILE until the TDD Green phase adds them. That compile failure
-//  IS this contract's RED evidence, following this codebase's
-//  established held-out-file convention (see
-//  SessionReconnectGracePositiveSignalSeamTests's header comment). Must
-//  be excluded from the build while running the rest of the round's RED
-//  suite and verified separately for its own specific compiler errors.
+//  Under test: `_performReconnectCommandObserverForTesting` and the
+//  host-branching logic above.
 //
 //  Reuses SessionReconnectAttemptResetTimingTests' exact fixture/seam
 //  approach (makeReconnectFixture (now with an added, purely additive

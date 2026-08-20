@@ -146,7 +146,7 @@
 // .killHerdrWorkspace(_:)`), so each pane's own `herdr terminal attach`
 // process exits through its normal path instead of racing herdr's
 // connection teardown. Never waits on a `pane.closed` event either way:
-// the Stage 2 event stream is not necessarily subscribed at kill time,
+// the structure event stream is not necessarily subscribed at kill time,
 // so this is the only reliable way the Calyx tab closes and its
 // bookkeeping gets pruned.
 //

@@ -25,9 +25,8 @@
 //      dropped: `status` continues to return `nil` for that token.
 //    - `reset()` returns the broker to its empty initial state.
 //
-//  TDD phase: RED. `ProgressBroker`, `ProgressEntry`, `ProgressStatus`, and
-//  `ProgressSnapshot` do not exist yet. This file is expected to fail to
-//  compile until the swift-specialist creates
+//  `ProgressBroker`, `ProgressEntry`, `ProgressStatus`, and
+//  `ProgressSnapshot` live in
 //  `Calyx/Features/LSP/ProgressBroker.swift`.
 //
 

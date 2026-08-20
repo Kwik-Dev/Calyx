@@ -574,7 +574,7 @@ final class ApprovalHookPipelineIntegrationTests: XCTestCase {
     /// ~9.5-minute production default) so this test's OWN 5s bound below
     /// clearly distinguishes "cleared early because the connection drop
     /// was detected" from "cleared because the 30s timeout coincidentally
-    /// also elapsed" -- and so a RED run (nothing clears it early) fails
+    /// also elapsed" -- and so a failing run (nothing clears it early) fails
     /// in seconds, not after hanging out a long timeout.
     func test_curlKilledMidPoll_clearsPendingRequestPromptly_shExitsZero() async throws {
         CockpitSettings.agentHookApprovalEnabled = true

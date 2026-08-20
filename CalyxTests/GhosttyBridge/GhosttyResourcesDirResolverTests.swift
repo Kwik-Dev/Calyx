@@ -2,7 +2,7 @@
 //  GhosttyResourcesDirResolverTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (persistent-session shell-integration fix). ROOT CAUSE
+//  The persistent-session shell-integration fix. ROOT CAUSE
 //  (architecture.md §3's documented gap): Calyx never sets
 //  GHOSTTY_RESOURCES_DIR, so ghostty's shell-integration scripts are never
 //  forwarded to attached persistent-session panes in a Finder/Dock
@@ -11,17 +11,13 @@
 //  postBuildScript; contains shell-integration/zsh/.zshenv etc.). This
 //  resolver is the pure "does the bundle actually have shell-integration"
 //  check the fix's environment-application half
-//  (GhosttyResourcesDirEnvironment, sibling RED file
+//  (GhosttyResourcesDirEnvironment, covered by sibling file
 //  GhosttyResourcesDirEnvironmentTests.swift) gates on before ever
 //  touching the process environment -- it must never point
 //  GHOSTTY_RESOURCES_DIR at an incomplete or missing bundle layout (e.g.
 //  a Debug build without a prior full resource-copy build).
 //
-//  Held-out compile-RED (see SessionCommandSynthesizerRemoteAttachTests's
-//  header for this codebase's convention): GhosttyResourcesDirResolver
-//  does not exist yet anywhere in the codebase, so this file fails to
-//  compile until the Green phase adds it. That compile failure IS this
-//  file's RED evidence.
+//  Under test: GhosttyResourcesDirResolver.
 //
 //  Proposed API (Calyx/GhosttyBridge/GhosttyResourcesDirResolver.swift),
 //  parameterized on a resources root URL rather than Bundle.main so it is

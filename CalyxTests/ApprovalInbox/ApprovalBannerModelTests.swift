@@ -2,7 +2,7 @@
 //  ApprovalBannerModelTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for ApprovalBannerModel: the per-window view-model
+//  Covers ApprovalBannerModel: the per-window view-model
 //  behind the Cockpit approval banner, deciding which single pending
 //  ApprovalRequest (if any) this window should show, and forwarding
 //  Allow/Deny/Always Allow to ApprovalInboxStore.decide(id:_:) /
@@ -843,7 +843,7 @@ final class ApprovalBannerModelTests: XCTestCase {
         XCTAssertEqual(result, .allowed)
     }
 
-    /// RED reproducer: `advanceCursor(pastDisplayed:)` picks the
+    /// Bug reproducer: `advanceCursor(pastDisplayed:)` picks the
     /// immediate visible neighbor (index + 1, computed from the
     /// PRE-removal `visibleRequests`) as the new cursor before the drain
     /// actually runs -- but the `.agentHook` branch's pane-scoped drain
@@ -900,7 +900,7 @@ final class ApprovalBannerModelTests: XCTestCase {
         XCTAssertEqual(resultC, .allowed)
     }
 
-    /// Same underlying bug as the RED reproducer above, but here the
+    /// Same underlying bug as the reproducer above, but here the
     /// drain sweeps the cursor's clicked request (C) AND its immediate
     /// successor (D) both, leaving NO forward survivor at all. The
     /// correct fallback in that case is the nearest BACKWARD survivor
@@ -910,7 +910,7 @@ final class ApprovalBannerModelTests: XCTestCase {
     /// names (alpha/bravo/charlie/charlie) keep B out of the drain's own
     /// match (only same-toolName "charlie" requests, C and D, are
     /// swept), so B survives purely as the nearest predecessor, never as
-    /// a side effect of the drain's own filtering. This is a second RED
+    /// a side effect of the drain's own filtering. This is a second bug
     /// reproducer, not merely a pinning test: today's code also lands on
     /// A here (stale cursor -> oldest fallback), which is the wrong
     /// answer once a correct nearest-survivor fallback is implemented.

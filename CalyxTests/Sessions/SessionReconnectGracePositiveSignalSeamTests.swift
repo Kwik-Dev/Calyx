@@ -2,8 +2,7 @@
 //  SessionReconnectGracePositiveSignalSeamTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (COMPILE-RED, HELD-OUT FILE) for round-18 finding G6:
-//  the reconnect grace task (`CalyxWindowController.performReconnect`'s
+//  The reconnect grace task (`CalyxWindowController.performReconnect`'s
 //  deferred `markEstablished(sessionID:)` confirmation `Task`, see that
 //  method's own doc comment and `SessionReconnectEstablishGraceSeamTests`
 //  for the grace-period fix this builds on) resets the attempt counter
@@ -82,27 +81,13 @@
 //  degrade-to-`[]`-on-timeout/unreachable all fall through to
 //  `.notEstablished` for free, with no new bound needed.
 //
-//  NONE of `ReconnectGraceProbeResult`, `_reconnectGraceProbeForTesting`,
-//  or `reconnectGraceProbe(sessionID:)` exist yet -- `performReconnect`
-//  today calls `markEstablished` from the surface-identity check alone.
-//  Following this codebase's established convention for new-API RED
-//  tests (see `SessionReconnectEstablishGraceSeamTests`'s header
-//  comment, itself citing `SessionDaemonClientSessionStateBoundTimeoutSeamTests`
-//  and `CalyxWindowControllerFullScreenTests`), this file is expected to
-//  FAIL TO COMPILE until the TDD Green phase adds the seam above. That
-//  compile failure IS this contract's RED evidence.
+//  Under test: `ReconnectGraceProbeResult`,
+//  `_reconnectGraceProbeForTesting`, and
+//  `reconnectGraceProbe(sessionID:)`. Before them, `performReconnect`
+//  called `markEstablished` from the surface-identity check alone.
 //
-//  THIS IS THE "HELD-OUT" FILE for this round: it must be excluded from
-//  the build (e.g. temporarily moved out of `CalyxTests/`) while running
-//  the rest of the round's RED suite, since a compile failure anywhere
-//  in the `CalyxTests` target fails the WHOLE target (Swift compiles a
-//  target as one module) -- otherwise no other test, old or new, could
-//  be verified at all. Verify this file's specific compiler errors with
-//  a separate, standalone attempt once the rest of the suite is
-//  confirmed green/RED as expected.
-//
-//  COORDINATION NOTE for whoever implements Green: once the probe
-//  requirement lands, `SessionReconnectEstablishGraceSeamTests`'s
+//  COORDINATION NOTE: with the probe
+//  requirement in place, `SessionReconnectEstablishGraceSeamTests`'s
 //  existing `test_performReconnect_replacementSurvivesGracePeriod_attemptCountEventuallyResets`
 //  drives a real `performReconnect` with `CALYX_SESSION_BIN=/usr/bin/true`
 //  and never registers `sessionID` with any real or fake daemon ledger.
@@ -123,7 +108,7 @@
 //  shape) -- see those files' own header comments for why each is
 //  necessary/safe. `pumpRunLoop`/`ReconnectFixture`/`makeReconnectFixture`
 //  themselves now live in the shared `CalyxTests/ReconnectFixture.swift`
-//  (round-18 cleanup consolidating what used to be three byte-identical
+//  (consolidating what used to be three byte-identical
 //  per-file copies).
 //
 //  Coverage:
@@ -199,8 +184,6 @@ final class SessionReconnectGracePositiveSignalSeamTests: XCTestCase {
         return fixture
     }
 
-    /// RED (COMPILE-RED per this file's header comment).
-    ///
     /// T1 -- the bug's own direct coverage: the probe reports
     /// `.notEstablished` (e.g. the daemon says the session is
     /// unreachable, or Running with zero attached clients). Surface
@@ -237,8 +220,6 @@ final class SessionReconnectGracePositiveSignalSeamTests: XCTestCase {
         )
     }
 
-    /// RED (COMPILE-RED per this file's header comment).
-    ///
     /// T2 -- the legitimate establishment path must still work under
     /// the fix: the probe reports `.established` (session Running,
     /// attachedClients >= 1), so the attempt count DOES reset, exactly
@@ -271,8 +252,6 @@ final class SessionReconnectGracePositiveSignalSeamTests: XCTestCase {
         )
     }
 
-    /// RED (COMPILE-RED per this file's header comment).
-    ///
     /// T3 -- fail-closed: a probe that throws (daemon query failed, or
     /// stands in for a bounded call timing out) must be treated exactly
     /// like an explicit `.notEstablished` answer, not like success. The

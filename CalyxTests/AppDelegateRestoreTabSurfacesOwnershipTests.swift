@@ -2,9 +2,8 @@
 //  AppDelegateRestoreTabSurfacesOwnershipTests.swift
 //  CalyxTests
 //
-//  TDD Red phase for round-8 fix R8-B (r8-fix-spec.md; CONFIRMED
-//  evidence in r7-verdicts.md R7-V3): restoreTabSurfaces' partial-
-//  failure cleanup loop (AppDelegate.swift, near :1146-1154) unregisters
+//  restoreTabSurfaces' partial-failure cleanup loop
+//  (AppDelegate.swift, near :1146-1154) unregisters
 //  a leaf's SessionSurfaceMap entry by sessionID unconditionally. With
 //  a duplicate sessionID across two tabs (a corrupted/hand-edited
 //  sessions.json, explicitly in this function's own threat model, see
@@ -63,16 +62,15 @@ final class AppDelegateRestoreTabSurfacesOwnershipTests: XCTestCase {
         )
     }
 
-    /// R8-B (r8-fix-spec.md; r7-verdicts.md R7-V3): against the
-    /// CURRENT code, tab B's partial-failure cleanup unregisters
-    /// duplicateSessionID unconditionally (it only checks that tab B's
-    /// own sessionRefs still has an entry for the failed-mapping leaf,
-    /// never whether SessionSurfaceMap's CURRENT registration actually
-    /// still points at THIS restore's surface), ripping tab A's
-    /// already-succeeded, live mapping for the same sessionID out from
-    /// under it. The fix must unregister only when SessionSurfaceMap's
-    /// current mapping actually still belongs to the surface THIS
-    /// (failed) restore created.
+    /// Against the CURRENT code, tab B's partial-failure cleanup
+    /// unregisters duplicateSessionID unconditionally (it only checks
+    /// that tab B's own sessionRefs still has an entry for the
+    /// failed-mapping leaf, never whether SessionSurfaceMap's CURRENT
+    /// registration actually still points at THIS restore's surface),
+    /// ripping tab A's already-succeeded, live mapping for the same
+    /// sessionID out from under it. The fix must unregister only when
+    /// SessionSurfaceMap's current mapping actually still belongs to the
+    /// surface THIS (failed) restore created.
     func test_restoreTabSurfaces_partialFailureCleanup_doesNotUnregisterAnotherTabsLiveMapping() {
         let appDelegate = AppDelegate()
 

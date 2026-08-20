@@ -2,7 +2,7 @@
 //  HerdrAttachBridgeCommandTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for HerdrAttachBridgeCommand: the pure function
+//  Covers HerdrAttachBridgeCommand: the pure function
 //  synthesizing PER-PANE bridge command --
 //  `/usr/bin/env HERDR_SOCKET_PATH=<socketPath> <herdrBin> terminal attach
 //  <terminalID>` -- as opposed to HerdrAttachCommandSynthesizer's

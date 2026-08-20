@@ -1,7 +1,7 @@
 // GhosttyThemeProviderTests.swift
 // CalyxTests
 //
-// TDD Red-phase tests for GhosttyThemeProvider.ghosttyForeground property.
+// Tests for GhosttyThemeProvider.ghosttyForeground property.
 //
 // GhosttyThemeProvider currently exposes only `ghosttyBackground`.
 // These tests verify the existence and behavior of a new

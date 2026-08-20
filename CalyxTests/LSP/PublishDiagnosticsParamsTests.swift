@@ -18,8 +18,7 @@
 //  key and a present integer value. (LSP servers in practice omit the field
 //  rather than send explicit `null`, so we model it as plain optional.)
 //
-//  TDD phase: RED. `PublishDiagnosticsParams` does not exist yet. This file
-//  is expected to fail to compile until the swift-specialist creates
+//  `PublishDiagnosticsParams` lives in
 //  `Calyx/Features/LSP/LSPTypes/PublishDiagnosticsParams.swift`.
 //
 

@@ -2,7 +2,7 @@
 //  AgentHookScriptTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for AgentHookScript / AgentEndpointFile: the
+//  Covers AgentHookScript / AgentEndpointFile: the
 //  calyx-agent-hook script body invariants, its 0755 installation, and the
 //  0600 agent-endpoint.json port/token file it reads on every invocation.
 //

@@ -2,7 +2,7 @@
 //  QuickTerminalControllerRequestHideTests.swift
 //  CalyxTests
 //
-//  TDD Red phase, GitHub issue #45. Full root-cause writeup:
+//  GitHub issue #45. Full root-cause writeup:
 //  `NSWindow+CalyxClose.swift`'s header comment.
 //
 //  `QuickTerminalController.requestHide()` is
@@ -24,15 +24,15 @@
 //  `animateOut()` call, both of which need a real `NSScreen` and drive a
 //  real window animation — unsafe in this test host.
 //
-//  RED ledger (ran 2026-08-07):
-//   - `test_requestHide_whenVisible_invokesHideHook` was RED-proving:
-//     `requestHide()`'s body was an empty stub then, so the hook was
-//     never invoked. It is implemented now and this test passes.
-//   - `test_requestHide_whenNotVisible_isNoOp` is NOT RED-proving
-//     (regression guard only): "no-op when not visible" is behaviorally
+//  What each test pins:
+//   - `test_requestHide_whenVisible_invokesHideHook` pins the fix:
+//     `requestHide()`'s body was an empty stub, so the hook was
+//     never invoked.
+//   - `test_requestHide_whenNotVisible_isNoOp` is a regression
+//     guard: "no-op when not visible" is behaviorally
 //     identical to "does nothing at all", which the empty stub already
-//     satisfied. Kept because it is the literal behavior the task brief
-//     requires, and it still has real teeth against a future
+//     satisfied. Kept because it is the literal required behavior,
+//     and it still has real teeth against a future
 //     implementation that calls the hook (or otherwise acts)
 //     unconditionally, forgetting its own `visible` guard.
 //
@@ -57,7 +57,7 @@ final class QuickTerminalControllerRequestHideTests: XCTestCase {
         XCTAssertFalse(controller.visible, "requestHide() must not flip visible when it was already false")
     }
 
-    // MARK: - Visible: hides (RED-proving)
+    // MARK: - Visible: hides (pins the fix)
 
     func test_requestHide_whenVisible_invokesHideHook() {
         let controller = QuickTerminalController()

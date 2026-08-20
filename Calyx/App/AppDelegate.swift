@@ -426,7 +426,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// .registerNotificationObservers`. `flashTitle`/`flashBorder` are
     /// left as `BellEffectHandlers`' no-op defaults: prepending a bell
     /// emoji to the alerted surface's title and flashing a border around
-    /// it are both out of scope for this pass -- `processRingBell` above
+    /// it are both out of scope here -- `processRingBell` above
     /// still correctly dispatches to them when `features` sets those
     /// bits, only their actual presentation is unimplemented.
     @objc private func handleRingBellNotification(_ notification: Notification) {

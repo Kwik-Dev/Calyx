@@ -2,7 +2,7 @@
 //  MCPLSPBridgeHierarchyToolsTests.swift
 //  Calyx
 //
-//  TDD red-phase tests for the seven additional MCP tools the LSP bridge
+//  Tests for the seven additional MCP tools the LSP bridge
 //  will ship on top of the 21 navigation / symbol / refactor / install
 //  tools already wired through `MCPLSPBridge`.
 //
@@ -21,10 +21,9 @@
 //  `CallHierarchyItem` / `TypeHierarchyItem` returned by the matching
 //  prepare call — and forward it verbatim to the language server.
 //
-//  TDD phase: RED. The bridge currently advertises 21 tools and only
-//  routes those. These tests are expected to fail at runtime — the
-//  catalogue assertion sees 21 names instead of 28, and every
-//  `handleToolCall` for one of the new tools surfaces as
+//  The bridge must advertise 28 tools and route all of them: the
+//  catalogue assertion pins that count, and every
+//  `handleToolCall` for an unrouted tool surfaces as
 //  `MCPLSPBridgeError.unknownTool` (caught implicitly via the
 //  propagating `try`).
 //

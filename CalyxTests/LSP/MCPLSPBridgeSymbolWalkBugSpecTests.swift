@@ -2,7 +2,7 @@
 //  MCPLSPBridgeSymbolWalkBugSpecTests.swift
 //  Calyx
 //
-//  TDD red-phase tests for the `lsp_symbol_walk` MCP tool. The original
+//  Tests for the `lsp_symbol_walk` MCP tool. The original
 //  feature plan
 //  (~/.claude/plans/claude-code-lsp-coding-agent-lsp-ai-nod-streamed-stroustrup.md,
 //  line 98) requires `lsp_symbol_walk` to traverse BOTH the call hierarchy
@@ -26,7 +26,7 @@
 //  issues `callHierarchy/outgoingCalls`, never issues
 //  `textDocument/prepareTypeHierarchy`, never issues
 //  `typeHierarchy/{supertypes,subtypes}`, and never surfaces the deeper
-//  hops the tests expect. Tests 1-3 therefore fail (RED). Test 4 confirms
+//  hops the tests expect. Tests 1-3 therefore fail against it. Test 4 confirms
 //  the existing default behaviour (no `kind`) and is expected to PASS — it
 //  is a regression guard for future implementations that swap `direction`
 //  for `kind`.

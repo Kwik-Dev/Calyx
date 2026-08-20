@@ -2,7 +2,7 @@
 //  AgentHookToolCallTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for AgentHookToolCall.decode(from:): parses a CLI
+//  Covers AgentHookToolCall.decode(from:): parses a CLI
 //  agent's PreToolUse hook stdin JSON (tool_name / tool_input) into the
 //  toolName/payload/summary trio the approval inbox needs to render a
 //  banner for a non-MCP agent hook call -- mirrors AgentEvent.decode's

@@ -2,7 +2,7 @@
 //  GhosttyResourcesDirEnvironmentTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (persistent-session shell-integration fix): the process-
+//  The persistent-session shell-integration fix: the process-
 //  environment application half of the GHOSTTY_RESOURCES_DIR fix (see
 //  GhosttyResourcesDirResolverTests's header for the resolver half this
 //  pairs with, and this codebase's known gap noted in architecture.md
@@ -14,11 +14,7 @@
 //  sessions) rather than deferring to it -- an inherited path may not
 //  match the libghostty version Calyx actually embeds.
 //
-//  Held-out compile-RED (see SessionCommandSynthesizerRemoteAttachTests's
-//  header for this codebase's convention): GhosttyResourcesDirEnvironment
-//  does not exist yet anywhere in the codebase, so this file fails to
-//  compile until the Green phase adds it. That compile failure IS this
-//  file's RED evidence.
+//  Under test: GhosttyResourcesDirEnvironment.
 //
 //  Proposed API (Calyx/GhosttyBridge/GhosttyResourcesDirEnvironment.swift):
 //

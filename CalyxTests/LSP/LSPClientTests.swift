@@ -19,9 +19,8 @@
 //    - InMemoryLSPTransport contract: sentMessages, simulateServerMessage,
 //      incoming stream termination on close
 //
-//  TDD phase: RED. None of `LSPTransport`, `InMemoryLSPTransport`,
-//  `LSPClient`, `LSPClientError` exist yet. This file is expected to
-//  fail to compile until the swift-specialist implements them.
+//  Under test: `LSPTransport`, `InMemoryLSPTransport`,
+//  `LSPClient`, and `LSPClientError`.
 //
 
 import XCTest

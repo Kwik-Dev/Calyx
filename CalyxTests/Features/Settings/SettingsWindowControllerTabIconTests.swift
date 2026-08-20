@@ -2,7 +2,7 @@
 //  SettingsWindowControllerTabIconTests.swift
 //  CalyxTests
 //
-//  TDD Red phase for a user-reported defect (screenshot review): the
+//  Covers a user-reported defect (screenshot review): the
 //  Settings window's toolbar tabStyle (NSTabViewController, tabStyle =
 //  .toolbar, SettingsWindowController.setupContent()) renders a
 //  degenerate fat header with sunk-looking text instead of proper
@@ -33,8 +33,8 @@
 //  first time in this suite, on a genuine singleton this file cannot
 //  tear down between test runs, is exactly the kind of risk this
 //  codebase's established seam precedents (AppDelegateAttachWindowTests'
-//  own header) exist to avoid forcing untested. That half is
-//  review-must-verify per this cycle's handoff instead.
+//  own header) exist to avoid forcing untested. That half must be
+//  verified by reading the code instead.
 //
 
 import XCTest

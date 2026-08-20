@@ -2,9 +2,8 @@
 //  SessionDaemonClientBoundedCancellationTests.swift
 //  CalyxTests
 //
-//  TDD Red phase, round 14 (r14-fix-spec.md, R14-A): `bounded()`
-//  (SessionDaemonClient.swift's shared race helper backing both
-//  `listAllBounded()` and `sessionStateBounded(id:)`) awaits its
+//  `bounded()` (SessionDaemonClient.swift's shared race helper backing
+//  both `listAllBounded()` and `sessionStateBounded(id:)`) awaits its
 //  `withCheckedContinuation` directly, with no `withTaskCancellationHandler`
 //  attached. Cancelling the caller's Task while the race is in flight
 //  therefore does nothing: neither the internal `operationTask` nor
@@ -12,8 +11,7 @@
 //  because the *caller's* Task was) ever observes it, so the call rides
 //  out the full ~5s `daemonQueryBoundTimeoutSeconds` bound regardless --
 //  the exact "quick-toggle overlapping-fetch" gap AppDelegate's
-//  disable-branch comment already describes (R14-A makes that comment
-//  true).
+//  disable-branch comment already describes.
 //
 //  The fix wraps the continuation await in `withTaskCancellationHandler`
 //  whose handler cancels BOTH the operation and timeout arms, resuming
@@ -32,7 +30,7 @@
 //  Coverage:
 //  - Cancelling the Task awaiting listAllBounded() ends promptly (well
 //    under the 5s bound) with the [] sentinel, AND the runner observed
-//    cancellation promptly too (RED today: the call rides out the full
+//    cancellation promptly too (before the fix: the call rides out the full
 //    ~5s bound, and by the time it resolves the runner's cancellation was
 //    already observed via the race's own unrelated internal mechanism --
 //    not promptly, and not because of the caller's early cancel())
@@ -101,7 +99,7 @@ private struct FixedBinaryResolver: SessionBinaryResolverProtocol {
 
 final class SessionDaemonClientBoundedCancellationTests: XCTestCase {
 
-    /// RED (R14-A): cancelling the outer Task awaiting listAllBounded()
+    /// Cancelling the outer Task awaiting listAllBounded()
     /// must end the call promptly and reach the runner promptly too --
     /// today neither happens: the call rides out the internal race's own
     /// ~5s bound, and the runner's cancellation (when it eventually

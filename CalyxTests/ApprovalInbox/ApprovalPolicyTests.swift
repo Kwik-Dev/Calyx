@@ -2,7 +2,7 @@
 //  ApprovalPolicyTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for ApprovalPolicy: whether a gated Cockpit action must
+//  Covers ApprovalPolicy: whether a gated Cockpit action must
 //  round-trip through the approval inbox before proceeding, gated by
 //  CockpitSettings.autoApproveEnabled.
 //

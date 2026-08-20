@@ -2,8 +2,8 @@
 //  AppDelegateNotifyPreviousSessionNotRestoredTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (session-restore fix, Bug 3b -- silent restore-skip must
-//  become recoverable, NOTIFY half). Today when restoreSession() skips
+//  The NOTIFY half of the session-restore fix: a silent restore-skip
+//  must become recoverable. Today when restoreSession() skips
 //  (crash-loop) or fails (nothing actually restored), the user gets
 //  ZERO indication anything went wrong -- the app just quietly opens a
 //  blank new window. Paired with Bug 3a's preservation (the old session
@@ -17,7 +17,7 @@
 //  Its own test, SessionReconnectGiveUpTests
 //  .test_giveUp_notificationText_noLongerClaimsSessionIsLostOrOnlyRecoverableAsNew,
 //  spies on NotificationManager via a subclass overriding
-//  sendNotification and swapping NotificationManager.shared (the R6-F
+//  sendNotification and swapping NotificationManager.shared (the
 //  DEBUG seam, `#if DEBUG static var shared` instead of `static let`,
 //  specifically added so tests can substitute a spy instead of going
 //  through the real UNUserNotificationCenter, which is a no-op under
@@ -31,11 +31,8 @@
 //  rate limiter is keyed per-tabID and this is a once-per-launch event,
 //  so a fresh UUID each call is correct, not a workaround.
 //
-//  Held-out compile-RED (see SessionCommandSynthesizerRemoteAttachTests's
-//  header for this codebase's convention): AppDelegate
-//  .notifyPreviousSessionNotRestored() does not exist yet. This file
-//  fails to compile until the Green phase adds it. That compile failure
-//  IS this file's RED evidence.
+//  Under test: AppDelegate
+//  .notifyPreviousSessionNotRestored().
 //
 //  Proposed API (AppDelegate.swift addition):
 //
@@ -67,9 +64,8 @@
 //  that restoreSession() actually calls this method on its skip/fail
 //  branches -- restoreSession() is private and undriveable from this
 //  test host (see AppDelegateRecoveryCounterResetTests's own header for
-//  why). The Green phase implementer and code review must verify that
-//  wiring by reading the diff; no test in this file substitutes for
-//  that reading.
+//  why). That wiring must be verified by reading the code; no test in
+//  this file substitutes for that reading.
 //
 //  Coverage:
 //  - calls NotificationManager.shared.sendNotification exactly once

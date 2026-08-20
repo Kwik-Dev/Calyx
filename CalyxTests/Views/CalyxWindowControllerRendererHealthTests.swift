@@ -2,7 +2,7 @@
 //  CalyxWindowControllerRendererHealthTests.swift
 //  CalyxTests
 //
-//  TDD RED phase, missing-observer investigation: `GhosttyActionRouter
+//  Missing observer: `GhosttyActionRouter
 //  .handleRendererHealth` (GhosttyAction.swift) posts
 //  `.ghosttyRendererHealth` for every `GHOSTTY_ACTION_RENDERER_HEALTH`
 //  action, but no observer has ever been registered for it — a renderer

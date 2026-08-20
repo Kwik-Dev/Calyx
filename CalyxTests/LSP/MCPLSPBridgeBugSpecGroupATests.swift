@@ -2,13 +2,12 @@
 //  MCPLSPBridgeBugSpecGroupATests.swift
 //  Calyx
 //
-//  RED-phase TDD spec for MCPLSPBridge "Group A" defects:
+//  Spec for MCPLSPBridge "Group A" defects:
 //    URI normalization, argument validation, encoding handling.
 //
 //  This file is intentionally hostile to current behaviour: every test
-//  asserts the BUG-FREE contract, not what the bridge does today. Run as
-//  RED before any fix lands. The matching GREEN pass belongs to the
-//  Swift specialist.
+//  asserts the BUG-FREE contract, not what the bridge did before the
+//  fixes landed.
 //
 //  Bugs covered (see PR description for citations):
 //    1. documentUri(fromPathOrUri:) does not percent-encode file:// URIs

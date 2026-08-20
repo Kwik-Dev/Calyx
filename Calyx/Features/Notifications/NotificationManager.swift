@@ -12,7 +12,7 @@ private let logger = Logger(subsystem: "com.calyx.terminal", category: "Notifica
 @MainActor
 class NotificationManager {
 
-    // `var`, not `let` (P4 round-4 fix RED phase test seam): lets tests
+    // `var`, not `let` (test seam): lets tests
     // swap in a subclass that overrides `sendNotification` to spy on
     // calls instead of going through `UNUserNotificationCenter` (which
     // is a no-op in the test host anyway, `permissionGranted` is never
@@ -21,9 +21,8 @@ class NotificationManager {
     // (see `SessionCommandPaletteTests.withMockAppDelegate`). Restored
     // by every test that swaps it. DO NOT reassign from production code.
     //
-    // R6-F (r6-fix-spec.md, round-5 review finding C2): `#if DEBUG`-
-    // gated, unlike the other three seams' convention, this and `init`
-    // below were not, weakening Release's compile-time singleton
+    // `#if DEBUG`-gated, matching the other three seams' convention:
+    // an ungated `var` would weaken Release's compile-time singleton
     // guarantee. `static let` (Release) still gives every production
     // reader the same `NotificationManager.shared` API.
     #if DEBUG
@@ -38,7 +37,7 @@ class NotificationManager {
 
     // Not `private` in DEBUG (same test seam as `shared` above): a
     // test-only subclass defined outside this file must be able to call
-    // `super.init()`. R6-F: `private` in Release, since no Release
+    // `super.init()`. `private` in Release, since no Release
     // reader needs to construct a second instance.
     #if DEBUG
     init() {
@@ -54,9 +53,9 @@ class NotificationManager {
         // The CalyxTests process is an XCTest host, not a real running
         // app -- requesting notification permission here would either
         // hang the test run on a system permission dialog or spuriously
-        // prompt on a developer's machine every test run (review
-        // finding). Shares `TestEnvironment.isTestHost` (F12,
-        // r4-fix-spec.md) with `AppDelegate.installGlobalEventTap`'s
+        // prompt on a developer's machine every test run.
+        // Shares `TestEnvironment.isTestHost` with
+        // `AppDelegate.installGlobalEventTap`'s
         // equivalent check, this codebase's established convention for
         // skipping side-effecting setup under test. Also skipped under
         // `--uitesting` (mirrors `installGlobalEventTap`'s combined

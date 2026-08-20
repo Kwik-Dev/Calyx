@@ -2,9 +2,9 @@
 //  SessionDaemonClientWriteOpCancellationShieldTests.swift
 //  CalyxTests
 //
-//  TDD Red phase, round 14 (r14-fix-spec.md, R14-C): now that R12-A makes
-//  Task cancellation reach the actual subprocess (SystemCommandRunner's
-//  CancellationBridge), SessionDaemonClient.kill(id:) and setMeta(...) --
+//  Now that Task cancellation reaches the actual subprocess
+//  (SystemCommandRunner's CancellationBridge),
+//  SessionDaemonClient.kill(id:) and setMeta(...) --
 //  both WRITE ops -- have become newly exposed to a caller's ambient Task
 //  cancellation racing an in-flight IPC write: kill(id:) awaits
 //  `commandRunner.run(...)` directly in the same Task as its caller, so
@@ -15,7 +15,7 @@
 //  which explicitly carves kill(id:) out of the bounded-with-cancel
 //  treatment for exactly this reason).
 //
-//  The fix (R14-C) wraps the commandRunner.run call in an inner
+//  The fix wraps the commandRunner.run call in an inner
 //  unstructured Task and awaits its .value -- the same shielding pattern
 //  LSPInstaller.runPrerequisiteDeduped already uses (an unstructured
 //  `Task { ... }` is not automatically cancelled just because its
@@ -35,7 +35,7 @@
 //
 //  Coverage:
 //  - kill(id:) shields commandRunner.run(...) from the caller's ambient
-//    Task cancellation (RED today: cancelling the host Task reaches
+//    Task cancellation (before the fix, cancelling the host Task reached
 //    straight through to the runner's own Task, observed as true, and
 //    the kill never gets the chance to be resumed to completion the way
 //    this test expects)
@@ -132,7 +132,7 @@ final class SessionDaemonClientWriteOpCancellationShieldTests: XCTestCase {
         }
     }
 
-    /// RED (R14-C): cancelling the host Task calling kill(id:) mid-flight
+    /// Cancelling the host Task calling kill(id:) mid-flight
     /// must NOT reach the runner's own Task -- today it does, because
     /// kill(id:) awaits commandRunner.run(...) directly in the caller's
     /// Task instead of an insulated inner one.

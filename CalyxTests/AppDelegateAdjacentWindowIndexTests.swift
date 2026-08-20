@@ -2,8 +2,8 @@
 //  AppDelegateAdjacentWindowIndexTests.swift
 //  CalyxTests
 //
-//  TDD Red phase: GHOSTTY_ACTION_GOTO_WINDOW keybind wiring (app-scoped
-//  action wiring, phase 1). `AppDelegate.adjacentWindowIndex(currentIndex:
+//  Covers GHOSTTY_ACTION_GOTO_WINDOW keybind wiring (app-scoped
+//  action wiring). `AppDelegate.adjacentWindowIndex(currentIndex:
 //  step:count:)` is the pure index-arithmetic core of that action
 //  (`GHOSTTY_GOTO_WINDOW_PREVIOUS`/`GHOSTTY_GOTO_WINDOW_NEXT` map to
 //  `step: -1`/`step: +1` respectively — confirmed against
@@ -16,8 +16,8 @@
 //  (the instance method that resolves real window candidates and calls
 //  `makeKeyAndOrderFront`): that needs real, visible NSWindow instances
 //  to exercise the isVisible/isKeyWindow/isMiniaturized filtering it is
-//  responsible for, which is unsafe to drive in this test host (see this
-//  cycle's own task brief). All of the bug-prone logic — the actual
+//  responsible for, which is unsafe to drive in this test host.
+//  All of the bug-prone logic — the actual
 //  index resolution — lives in `adjacentWindowIndex`, a `nonisolated
 //  static` pure function with no NSWindow/NSApp access, so coverage is
 //  concentrated there instead, mirroring `AppDelegateKeyMonitorTests`'

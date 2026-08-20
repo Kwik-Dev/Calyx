@@ -33,7 +33,7 @@
 //  (`bash: line 0: exec: HERDR_SOCKET_PATH=...: not found`,
 //  confirmed empirically before this function was written this way --
 //  this reproduces SessionCommandSynthesizerRuntimeStateDirFlagsTests'
-//  own documented ROUND 1 HOME-stamp failure verbatim). Routing through
+//  own documented HOME-stamp failure verbatim). Routing through
 //  the hardcoded absolute path `/usr/bin/env` (always present on
 //  Darwin, so no PATH-search ambiguity, and never escaped -- a fixed
 //  constant, never attacker/user-controlled) fixes it: `exec -l` now

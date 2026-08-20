@@ -64,16 +64,16 @@ struct CommandResult: Sendable, Equatable {
 /// real `Process`-backed implementation; tests inject `MockCommandRunner`
 /// so no real `brew` / `npm` / `rustup` is touched.
 ///
-/// R14-F (r14-fix-spec.md): implementations MUST propagate Swift Task
+/// Implementations MUST propagate Swift Task
 /// cancellation to the underlying subprocess's termination (SIGTERM or
 /// equivalent) -- `SystemCommandRunner` (its `withTaskCancellationHandler`
-/// + `ProcessCancellationBridge`, R12-A/R14-D) is the reference implementation.
+/// + `ProcessCancellationBridge`) is the reference implementation.
 /// `SessionDaemonClient`'s bounded-call design
-/// (`SessionDaemonClientProtocol.bounded(...)`, R14-A) depends on this
+/// (`SessionDaemonClientProtocol.bounded(...)`) depends on this
 /// contract: cancelling its race's operation arm only actually ends the
 /// daemon round-trip promptly because the injected `LSPCommandRunner`
 /// honors cancellation this way. A future runner that talks to a
-/// remote daemon over SSH (P5) must uphold the same contract, or
+/// remote daemon over SSH must uphold the same contract, or
 /// `bounded(...)`'s cancellation propagation silently regresses to a
 /// no-op for that transport.
 protocol LSPCommandRunner: Sendable {

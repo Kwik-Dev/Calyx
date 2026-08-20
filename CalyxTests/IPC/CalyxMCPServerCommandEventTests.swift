@@ -2,7 +2,7 @@
 //  CalyxMCPServerCommandEventTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for CalyxMCPServer's new POST /command-event endpoint,
+//  Covers CalyxMCPServer's new POST /command-event endpoint,
 //  mirroring CalyxMCPServerAgentEventTests' structure for /agent-event.
 //
 //  Coverage:

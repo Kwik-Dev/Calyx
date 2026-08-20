@@ -2,7 +2,7 @@
 //  ClaudeTitleHeuristicTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for ClaudeTitleHeuristic.classify(title:): the fallback
+//  Covers ClaudeTitleHeuristic.classify(title:): the fallback
 //  pane-title → AgentState classifier used before any hook event arrives.
 //
 //  Coverage:
@@ -10,7 +10,7 @@
 //  - A title that (trimmed, case-insensitively) equals exactly "claude" or
 //    "claude code" → .idle
 //  - A title merely *containing* "claude" as a substring → nil, not .idle
-//    (contract updated post-review: a bare substring match misclassified
+//    (a bare substring match misclassified
 //    unrelated panes, e.g. a `vim claude_notes.md` tab, as an idle Claude
 //    Code instance)
 //  - Unrelated titles → nil (non-applicable)
@@ -52,7 +52,7 @@ final class ClaudeTitleHeuristicTests: XCTestCase {
     // MARK: - "claude" substring (not exact) → non-applicable
 
     func test_classify_titleContainingClaudeAsSubstring_isNil() {
-        // Contract updated post-review: a bare substring match previously
+        // A bare substring match previously
         // classified this as .idle, misreporting an unrelated pane (a vim
         // session on a file that happens to mention Claude) as an idle
         // Claude Code instance in the sidebar.

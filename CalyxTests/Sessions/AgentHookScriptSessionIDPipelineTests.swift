@@ -2,7 +2,7 @@
 //  AgentHookScriptSessionIDPipelineTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase (fix round, item 5) — mock-less, end-to-end coverage
+//  Mock-less, end-to-end coverage
 //  mirroring AgentHookPipelineIntegrationTests.swift: a real
 //  calyx-agent-hook script, run as a real child Process, POSTing into a
 //  real running CalyxMCPServer. This isolates the one remaining gap in

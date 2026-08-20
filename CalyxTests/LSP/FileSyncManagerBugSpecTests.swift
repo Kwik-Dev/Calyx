@@ -48,10 +48,6 @@
 //       (excessive for unit tests) or a Task.detached read path that
 //       does not yet exist, so this test is marked `XCTSkip`.
 //
-//  TDD phase: GREEN for bugs 2, 3, and 4 (production fixes already
-//  landed); bugs 1 and 5 remain `XCTSkip`-ed pending the test-seam work
-//  described above.
-//
 
 import XCTest
 @testable import Calyx

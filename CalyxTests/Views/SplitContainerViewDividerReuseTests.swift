@@ -38,13 +38,10 @@
 //       context that unit tests cannot reliably construct). This seam is the
 //       only sanctioned way to drive drag math from XCTest.
 //
-//  Red-phase expectation:
-//  ----------------------
-//  This file is expected to FAIL TO COMPILE against the pre-fix codebase
-//  because:
-//    • `SplitContainerView.onTargetRatioChange` does not exist
-//    • `SplitDividerView._testSimulateDrag(toSuperviewPoint:)` does not exist
-//  The compile failure is the RED phase.
+//  Under test:
+//  -----------
+//    • `SplitContainerView.onTargetRatioChange`
+//    • `SplitDividerView._testSimulateDrag(toSuperviewPoint:)`
 //
 
 import AppKit

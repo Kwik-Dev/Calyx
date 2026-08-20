@@ -2,7 +2,7 @@
 //  SessionCloseKillPolicyTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for SessionCloseKillPolicy.shouldKill: the fix-round
+//  Covers SessionCloseKillPolicy.shouldKill: the fix-round
 //  extraction of "should tearing down this surface also kill its
 //  calyx-session" into a single pure decision, after a review found the
 //  kill call reachable from two unsafe reentrant destroySurface paths

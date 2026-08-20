@@ -2,7 +2,7 @@
 //  SurfaceViewKeyWindowMenuValidationTests.swift
 //  CalyxTests
 //
-//  TDD Red phase, GitHub issue #45 follow-up (Focus Split key-window
+//  GitHub issue #45 follow-up (Focus Split key-window
 //  gap). Full root-cause writeup: `CalyxWindowController.swift`'s
 //  `keyWindowGatedActions` doc comment ("Known gap" paragraph, right next
 //  to that Set's declaration) and `NSWindow+CalyxClose.swift`'s header
@@ -35,20 +35,20 @@
 //  `_isKeyWindowOverrideForTesting` at all (the property exists purely as
 //  an unused stub seam), so:
 //
-//  RED ledger (ran 2026-08-07): exactly 4 tests are RED-proving --
+//  Exactly 4 tests pin the gate itself --
 //  `test_validateMenuItem_focusSplit{Left,Right,Up,Down}_
 //  disabledWhenNotKeyWindow_evenWhenSplit`. Each uses a fixture whose
 //  active tab IS split (`isActiveTabSplit == true`, so the PRE-EXISTING
-//  gate alone would already say "enabled"), isolating that a future
+//  gate alone would already say "enabled"), isolating that the
 //  key-window gate -- not `isActiveTabSplit` -- is what must force
 //  `false` here. Every other test in this first batch (through
 //  `findNext:`/`findPrevious:` and the split-action guards) is a
-//  regression guard (NOT RED-proving): it asserts exactly what the
-//  CURRENT, override-blind code already does, and must keep doing once
-//  the gate exists. See the second ledger entry below for a further 4
-//  RED-proving tests added the same day.
+//  regression guard: it asserts exactly what the
+//  override-blind code already did, and must keep doing now that
+//  the gate exists. See the paragraph below for a further 4
+//  gate-pinning tests.
 //
-//  A second RED ledger entry (also ran 2026-08-07, same-day follow-up):
+//  A second group:
 //  `paste(_:)`/`copy(_:)`/`selectAll(_:)`/`pasteAsPlainText(_:)` close
 //  the actual on-device defect this whole gate exists to prevent --
 //  AppDelegate's Edit menu registers "Copy"/"Paste"/"Select All" via
@@ -70,7 +70,7 @@
 //  `validateMenuItem(_:)` has no per-selector branch for any of them
 //  either, so all four currently fall through to the unconditional
 //  `return true` at the bottom of that method -- exactly 4 more tests
-//  below are therefore RED-proving:
+//  below therefore pin the gate:
 //  `test_validateMenuItem_{paste,copy,selectAll,pasteAsPlainText}_
 //  disabledWhenNotKeyWindow`. Their "enabled when key" counterparts are
 //  regression guards, same rationale as the focusSplit ones above,
@@ -91,7 +91,7 @@
 //  synchronous test body without pumping the run loop. This fixture has
 //  no `SurfaceScrollView` at all, so `isSearchBarVisible` is always
 //  `false` here regardless of key-window state; these two tests are
-//  therefore NOT RED-proving today (mirrors
+//  therefore regression guards only (mirrors
 //  `CalyxWindowControllerKeyWindowMenuValidationTests`'s own `findNext`/
 //  `findPrevious` tests, which carry an analogous caveat for a different
 //  underlying reason -- see that file's
@@ -104,7 +104,7 @@
 //  `isActiveTabSplit`'s own `window?.windowController as?
 //  CalyxWindowController` lookup requires this. See that method's doc
 //  comment below, and `test_fixture_surfaceViewWindow_resolvesToOwningController`,
-//  for why this linkage is load-bearing for the RED phase itself.
+//  for why this linkage is load-bearing.
 //
 
 import XCTest
@@ -206,7 +206,7 @@ final class SurfaceViewKeyWindowMenuValidationTests: XCTestCase {
     /// answer `false` UNCONDITIONALLY regardless of `split:` -- which
     /// would make every "disabledWhenNotKeyWindow_evenWhenSplit" test
     /// below pass VACUOUSLY (already `false`, for the wrong reason)
-    /// instead of RED-proving the missing key-window gate. This test
+    /// instead of pinning the key-window gate. This test
     /// pins the fixture's own wiring so a broken linkage fails HERE,
     /// loudly, not silently inside an unrelated assertion (mirrors
     /// `CalyxWindowControllerCloseWindowTests`'s own precondition-
@@ -220,7 +220,7 @@ final class SurfaceViewKeyWindowMenuValidationTests: XCTestCase {
         )
     }
 
-    // MARK: - RED-proving: Focus Split disabled when NOT the key window
+    // MARK: - Focus Split disabled when NOT the key window
 
     func test_validateMenuItem_focusSplitLeft_disabledWhenNotKeyWindow_evenWhenSplit() {
         let fixture = makeFixture(split: true)
@@ -413,7 +413,7 @@ final class SurfaceViewKeyWindowMenuValidationTests: XCTestCase {
         XCTAssertTrue(fixture.surfaceView.validateMenuItem(item), "Split Up must stay enabled while key")
     }
 
-    // MARK: - RED-proving: Paste/Copy/Select All/Paste as Plain Text disabled when NOT key window
+    // MARK: - Paste/Copy/Select All/Paste as Plain Text disabled when NOT key window
     //
     // These four close the actual on-device defect (see file header):
     // AppDelegate's Edit menu registers "Copy"/"Paste"/"Select All" with

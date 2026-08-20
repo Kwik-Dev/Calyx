@@ -2,7 +2,7 @@
 //  HerdrLayoutImporterTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for HerdrLayoutImporter: a pure function converting an
+//  Covers HerdrLayoutImporter: a pure function converting an
 //  already-decoded `layout.export` result (HerdrLayoutExportResult, the
 //  schema-derived wire shape below) into Calyx's own BSP tree
 //  (SplitTree.swift's SplitNode/SplitData), plus a flat list of

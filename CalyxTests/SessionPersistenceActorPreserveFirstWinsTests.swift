@@ -2,9 +2,9 @@
 //  SessionPersistenceActorPreserveFirstWinsTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (recovery-feature code review, WARNING F3 -- a second
+//  The defect this file pins: a second
 //  consecutive bad launch silently discards the still-unrecovered
-//  earlier preserved session). ROOT CAUSE:
+//  earlier preserved session. ROOT CAUSE:
 //  SessionPersistenceActor.preserveSnapshotForRecovery() unconditionally
 //  does `try? FileManager.default.removeItem(at: recoverySnapshotPath)`
 //  before moving the new on-disk file in, with no check for whether a
@@ -33,10 +33,9 @@
 //  behavior changes, not the caller-visible signal.
 //
 //  No new API surface: preserveSnapshotForRecovery() already exists and
-//  already returns Bool (SessionPersistenceActorRecoveryPreservationTests,
-//  this same round). This file's RED evidence is therefore an assertion
-//  FAILURE at runtime (the second preserve currently overwrites the
-//  first), not a compile failure.
+//  already returns Bool (see
+//  SessionPersistenceActorRecoveryPreservationTests). The pre-fix
+//  behavior this pins against: the second preserve overwrote the first.
 //
 //  Proposed implementation (SessionPersistenceActor.swift, replacing the
 //  current unconditional remove-then-move body):

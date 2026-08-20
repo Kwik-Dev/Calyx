@@ -323,7 +323,7 @@ final class OpenCodeConfigManagerTests: XCTestCase {
 
     // MARK: - enableIPC: Security / Errors
 
-    // Contract changed (Round 3): a dotfiles-managed OpenCode config
+    // Contract: a dotfiles-managed OpenCode config
     // root commonly symlinks opencode.json / AGENTS.md elsewhere, and
     // blanket symlink rejection silently broke IPC configuration in that
     // setup. enableIPC now follows the link and writes through to the
@@ -388,7 +388,7 @@ final class OpenCodeConfigManagerTests: XCTestCase {
                        "AGENTS.md must remain a symlink after enableIPC")
     }
 
-    // Round 3 fix: resolveConfigPath now follows a multi-hop *dangling*
+    // resolveConfigPath follows a multi-hop *dangling*
     // symlink chain (link -> link -> not-yet-existing file) all the way
     // to its final destination, rather than stopping at the first
     // intermediate link. Same shared ConfigFileUtils primitive as every
@@ -441,7 +441,7 @@ final class OpenCodeConfigManagerTests: XCTestCase {
     func test_enableIPC_partialFailure_jsonWrittenAgentsFailed() throws {
         // Given: AGENTS.md's path itself is a directory, causing the
         // AGENTS.md write to fail AFTER opencode.json has already been
-        // written. This is a distinct failure mode from the Round 3
+        // written. This is a distinct failure mode from the
         // preflight fix below (`test_enableIPC_agentsMDResolvedParent...`):
         // the preflight only checks each resolved path's PARENT directory
         // exists, not that the path itself is free of a conflicting
@@ -474,7 +474,7 @@ final class OpenCodeConfigManagerTests: XCTestCase {
         XCTAssertNotNil(mcp?["calyx-ipc"], "partial-failure leaves calyx-ipc entry in opencode.json")
     }
 
-    // Round 3 fix: preflight both files' resolved paths for writability
+    // Preflight both files' resolved paths for writability
     // (their parent directory exists) before writing either one, so a
     // predictable failure mode — a not-yet-created parent directory,
     // e.g. behind a dangling symlink — can't leave opencode.json enabled
@@ -734,7 +734,7 @@ final class OpenCodeConfigManagerTests: XCTestCase {
                        "opencode.json should not be created by disableIPC")
     }
 
-    // Contract changed (Round 3): see the enableIPC symlink tests above —
+    // Contract: see the enableIPC symlink tests above —
     // disableIPC now follows the link and removes the entry from the
     // real target file, leaving the link itself intact.
     func test_disableIPC_symlinkFollowedToRealFile() throws {
