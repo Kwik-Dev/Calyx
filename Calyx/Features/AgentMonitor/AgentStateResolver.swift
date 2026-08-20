@@ -77,10 +77,10 @@ struct AgentEvidence: Sendable, Equatable {
     /// `PreToolUse` that is genuinely outside it.
     ///
     /// No clause sets this. `resolve` derives it once at its tail, from
-    /// the row's state before and after the signal, because every hook
-    /// path returns a fresh `AgentEvidence` -- `.keep` included -- so a
-    /// clause that forgot to carry it would wipe the anchor and let the
-    /// very next `PreToolUse` through.
+    /// the row's state before and after the signal, so whatever a clause
+    /// returns for this field is overwritten unconditionally. That is
+    /// what makes the anchor impossible to lose: a clause cannot forget
+    /// to carry it, and cannot wipe it by rebuilding its evidence.
     var blockedSince: Date? = nil
 
     /// When ghostty's own pane-exit signal was deferred to Calyx's
