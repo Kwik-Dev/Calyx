@@ -639,4 +639,151 @@ final class CalyxMCPServerCommandEventTests: XCTestCase {
         XCTAssertEqual(registry.entries[surfaceID]?.state, .idle,
                        "A duplicate end for an already-finalized cmd_id must not settle the agent row")
     }
+
+    // MARK: - phase: start alone must record Calyx's own shell integration
+
+    // A phase: start event proves Calyx's shell integration is live in
+    // this pane just as certainly as a phase: end does. Without
+    // recording on .start too, ghostty's own OSC 133 D can arrive
+    // first for the very same command -- see AgentRegistry
+    // .calyxShellIntegrationReportedSurfaces's own doc comment for the
+    // full race -- and settle the row itself before Calyx's own end
+    // event ever reaches this endpoint.
+
+    func test_routeCommandEvent_phaseStartAlone_recordsShellIntegration_defersGhosttySettle() async throws {
+        let store = CommandLogStore()
+        server.commandLogStore = store
+        let registry = AgentRegistry()
+        server.agentRegistry = registry
+        let surfaceID = UUID()
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.hermesKind)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle, "Precondition")
+
+        let startResponse = await server.route(request: commandEventRequest(
+            token: testToken, surfaceIDHeader: surfaceID.uuidString,
+            body: commandStartBody(cmdID: "cmd-start-alone", command: "make build", cwd: "/Users/dev/repo")
+        ))
+        XCTAssertEqual(startResponse.statusCode, 204)
+
+        let settled = registry.handleGhosttyCommandFinished(surfaceID: surfaceID, exitCode: 0)
+
+        XCTAssertFalse(settled,
+                       "a phase: start event alone must record that Calyx's own shell integration is live " +
+                       "in this pane -- ghostty's fallback signal must defer once that memory exists, even " +
+                       "though the start event itself never touches the Agents row")
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle,
+                       "the row must stay untouched -- neither the start event nor the deferred ghostty " +
+                       "signal may settle it")
+    }
+
+    // MARK: - The ghostty-vs-Calyx same-command race this fix exists for
+
+    // Sequence: phase: start records the memory -> ghostty's own
+    // pane-exit signal for the SAME command arrives first and must
+    // defer -> Calyx's own phase: end then arrives and is the one
+    // that settles the row and expires the pending approval. Without
+    // the .start recording, ghostty would settle the row itself right
+    // here, and the later Calyx end would return false against an
+    // already-.done row (settlePaneCommandFinished's own
+    // not-already-.done guard), so the approval expiry -- gated on
+    // that same return value -- would be silently suppressed.
+
+    func test_routeCommandEvent_phaseStartThenGhosttyRace_phaseEndSettlesRowAndExpiresApproval() async throws {
+        let store = CommandLogStore()
+        server.commandLogStore = store
+        let registry = AgentRegistry()
+        server.agentRegistry = registry
+        let inbox = ApprovalInboxStore()
+        server.approvalInbox = inbox
+        let surfaceID = UUID()
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.hermesKind)
+        let request = ApprovalRequest(
+            id: UUID(), source: .mcpTool(name: "pane_run"), targetSurfaceID: surfaceID,
+            payload: "ls", createdAt: Date()
+        )
+        inbox.submit(request)
+        XCTAssertEqual(inbox.pending.map(\.id), [request.id], "Precondition")
+
+        let startResponse = await server.route(request: commandEventRequest(
+            token: testToken, surfaceIDHeader: surfaceID.uuidString,
+            body: commandStartBody(cmdID: "cmd-ghostty-race", command: "make build", cwd: "/Users/dev/repo")
+        ))
+        XCTAssertEqual(startResponse.statusCode, 204)
+
+        let ghosttySettled = registry.handleGhosttyCommandFinished(surfaceID: surfaceID, exitCode: 0)
+        XCTAssertFalse(ghosttySettled,
+                       "ghostty's own signal must defer once Calyx's shell integration has reported on " +
+                       "this surface via the earlier start event")
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle, "the deferred ghostty signal must not touch the row")
+
+        let endResponse = await server.route(request: commandEventRequest(
+            token: testToken, surfaceIDHeader: surfaceID.uuidString,
+            body: commandEndBody(cmdID: "cmd-ghostty-race", exitCode: 0)
+        ))
+
+        XCTAssertEqual(endResponse.statusCode, 204)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .done,
+                       "Calyx's own phase: end must be the one that settles the row once ghostty's earlier " +
+                       "signal deferred to it")
+        XCTAssertTrue(inbox.pending.isEmpty,
+                      "the settle from Calyx's own phase: end must still expire the surface's pending " +
+                      "approval, even though ghostty's signal arrived first and deferred")
+        let decision = await inbox.awaitDecision(id: request.id, timeoutMs: 250)
+        XCTAssertEqual(decision, .expired,
+                       "the MCP caller's own long-poll must resolve .expired rather than outlive the dead agent")
+    }
+
+    // MARK: - fish's first-command suspend window
+
+    // Same race as above, but the pane's first command is merely
+    // SUSPENDED (Ctrl-Z), not exited. Sequence: phase: start records
+    // the memory -> ghostty's own pane-exit signal arrives first and
+    // must defer, exactly as above -> fish's own phase: end then
+    // arrives carrying suspended: true, which must not settle the row
+    // or expire the pending approval. Without the .start recording,
+    // ghostty would retire a merely-suspended agent's row right at the
+    // deferred-signal step -- handleGhosttyCommandFinished has no
+    // suspended parameter and no way to distinguish a stop from a real
+    // exit on its own (see that method's own doc comment).
+
+    func test_routeCommandEvent_phaseStartThenGhosttyRace_suspendedPhaseEndLeavesRowPending() async throws {
+        let store = CommandLogStore()
+        server.commandLogStore = store
+        let registry = AgentRegistry()
+        server.agentRegistry = registry
+        let inbox = ApprovalInboxStore()
+        server.approvalInbox = inbox
+        let surfaceID = UUID()
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.hermesKind)
+        let request = ApprovalRequest(
+            id: UUID(), source: .mcpTool(name: "pane_run"), targetSurfaceID: surfaceID,
+            payload: "ls", createdAt: Date()
+        )
+        inbox.submit(request)
+
+        let startResponse = await server.route(request: commandEventRequest(
+            token: testToken, surfaceIDHeader: surfaceID.uuidString,
+            body: commandStartBody(cmdID: "cmd-fish-first-suspend", command: "sleep 300", cwd: "/Users/dev/repo")
+        ))
+        XCTAssertEqual(startResponse.statusCode, 204)
+
+        let ghosttySettled = registry.handleGhosttyCommandFinished(surfaceID: surfaceID, exitCode: 0)
+        XCTAssertFalse(ghosttySettled,
+                       "ghostty's own signal must defer once Calyx's shell integration has reported on " +
+                       "this surface via the earlier start event")
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle, "the deferred ghostty signal must not touch the row")
+
+        let endResponse = await server.route(request: commandEventRequest(
+            token: testToken, surfaceIDHeader: surfaceID.uuidString,
+            body: commandEndBody(cmdID: "cmd-fish-first-suspend", exitCode: 0, suspended: true)
+        ))
+
+        XCTAssertEqual(endResponse.statusCode, 204)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle,
+                       "suspended: true must leave the row unsettled -- the pane's foreground job is still " +
+                       "alive, merely stopped, even though ghostty's earlier signal already deferred to " +
+                       "this same event")
+        XCTAssertEqual(inbox.pending.map(\.id), [request.id],
+                       "a suspend must not expire pending approvals -- the agent that asked is still alive")
+    }
 }

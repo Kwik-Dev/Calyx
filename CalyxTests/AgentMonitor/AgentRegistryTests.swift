@@ -2002,6 +2002,258 @@ final class AgentRegistryTests: XCTestCase {
         XCTAssertEqual(registry.entries[surfaceID]?.state, .done, "A nil exit code must settle the row")
     }
 
+    // MARK: - handleGhosttyCommandFinished (ghostty's own OSC 133 pane-exit signal, fallback)
+
+    // The tests below pin the settle contract handleGhosttyCommandFinished
+    // must satisfy, the same way handlePaneCommandFinished's own tests
+    // above pin that method.
+    //
+    // GHOSTTY_ACTION_COMMAND_FINISHED (apprt.action.CommandFinished, from
+    // ghostty's own shell-integration OSC 133 C/D pairing) is a fallback
+    // for the shells Calyx's own /command-event integration does not
+    // cover (bash, elvish, nushell): it must settle a row exactly like
+    // handlePaneCommandFinished, subject to the same stop-signal
+    // exclusion, but never carries a suspended flag of its own -- ghostty
+    // has no way to detect a suspend the way zsh's exit-code convention
+    // or fish's own postexec jobs check can.
+
+    func test_handleGhosttyCommandFinished_hooksEntry_becomesDone() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("UserPromptSubmit", sessionID: "session-a"), surfaceID: surfaceID)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .working, "Precondition: a live hooks-sourced row")
+
+        let settled = registry.handleGhosttyCommandFinished(surfaceID: surfaceID, exitCode: 0)
+
+        XCTAssertTrue(settled)
+        let entry = registry.entries[surfaceID]
+        XCTAssertEqual(entry?.state, .done,
+                       "A ghostty-sourced pane-exit signal must settle a live hooks row to done, same as " +
+                       "Calyx's own shell-integration signal")
+        XCTAssertEqual(entry?.source, .hooks)
+    }
+
+    func test_handleGhosttyCommandFinished_nilExitCode_becomesDone() {
+        // A nil exit code -- how ghostty's own -1 sentinel for "no exit
+        // code reported" arrives at this entry point -- carries no
+        // positive evidence of a suspend: isStopSignalExitCode can only
+        // recognize a specific known value, never infer one it wasn't
+        // given. The row settles rather than being treated
+        // conservatively, the same as handlePaneCommandFinished's own
+        // nil case above.
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("UserPromptSubmit", sessionID: "session-a"), surfaceID: surfaceID)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .working, "Precondition: a live hooks-sourced row")
+
+        let settled = registry.handleGhosttyCommandFinished(surfaceID: surfaceID, exitCode: nil)
+
+        XCTAssertTrue(settled)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .done, "A nil exit code must settle the row")
+    }
+
+    func test_handleGhosttyCommandFinished_mcpConnectionEntry_becomesDone() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.hermesKind)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle, "Precondition")
+
+        let settled = registry.handleGhosttyCommandFinished(surfaceID: surfaceID, exitCode: 0)
+
+        XCTAssertTrue(settled)
+        let entry = registry.entries[surfaceID]
+        XCTAssertEqual(entry?.state, .done)
+        XCTAssertEqual(entry?.source, .mcpConnection)
+    }
+
+    func test_handleGhosttyCommandFinished_stopSignalExitCode146_leavesWorkingRowUntouched() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("UserPromptSubmit", sessionID: "session-a"), surfaceID: surfaceID)
+        let before = registry.entries[surfaceID]
+        XCTAssertEqual(before?.state, .working, "Precondition: a live working row")
+
+        // 146 = 128 + SIGTSTP (18) -- Ctrl-Z on a running command.
+        let settled = registry.handleGhosttyCommandFinished(surfaceID: surfaceID, exitCode: 146)
+
+        XCTAssertFalse(settled, "A stop-signal exit code must not report the row as settled")
+        XCTAssertEqual(registry.entries[surfaceID], before,
+                       "ghostty's own signal excludes the same stop-signal exit codes handlePaneCommandFinished " +
+                       "does -- the pane's foreground job is still alive")
+    }
+
+    func test_handleGhosttyCommandFinished_stopSignalExitCode150_leavesWorkingRowUntouched() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("UserPromptSubmit", sessionID: "session-a"), surfaceID: surfaceID)
+        let before = registry.entries[surfaceID]
+
+        // 150 = 128 + SIGTTOU (22).
+        let settled = registry.handleGhosttyCommandFinished(surfaceID: surfaceID, exitCode: 150)
+
+        XCTAssertFalse(settled)
+        XCTAssertEqual(registry.entries[surfaceID], before)
+    }
+
+    func test_handleGhosttyCommandFinished_titleHeuristicEntry_isLeftUntouched() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleScreenClassification(surfaceID: surfaceID, state: .working)
+        let before = registry.entries[surfaceID]
+        XCTAssertEqual(before?.source, .titleHeuristic, "Precondition")
+
+        registry.handleGhosttyCommandFinished(surfaceID: surfaceID, exitCode: 0)
+
+        XCTAssertEqual(registry.entries[surfaceID], before,
+                       "A titleHeuristic row retires itself through its own miss-streak bookkeeping and " +
+                       "must not be settled by the ghostty pane-exit signal either")
+    }
+
+    func test_handleGhosttyCommandFinished_alreadyDoneEntry_isUntouched() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("SessionEnd", sessionID: "session-a"), surfaceID: surfaceID)
+        let before = registry.entries[surfaceID]
+        XCTAssertEqual(before?.state, .done, "Precondition: the session already ended")
+
+        registry.handleGhosttyCommandFinished(surfaceID: surfaceID, exitCode: 0)
+
+        XCTAssertEqual(registry.entries[surfaceID], before,
+                       "A row already done must not be rewritten by the ghostty signal either")
+    }
+
+    func test_handleGhosttyCommandFinished_unregisteredSurface_neverCreatesARow() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+
+        registry.handleGhosttyCommandFinished(surfaceID: surfaceID, exitCode: 0)
+
+        XCTAssertNil(registry.entries[surfaceID])
+        XCTAssertTrue(registry.entries.isEmpty, "A surface with no row must stay with no row")
+    }
+
+    func test_handleGhosttyCommandFinished_externalEntry_isNeverTouched() {
+        let registry = AgentRegistry()
+        let id = UUID()
+        let seeded = AgentEntry(
+            surfaceID: id, sessionID: nil, source: .external, state: .working,
+            cwd: "/Users/dev/herdr-project", kind: AgentEntry.claudeCodeKind, lastEventAt: Date()
+        )
+        registry.upsertExternalEntry(seeded)
+
+        registry.handleGhosttyCommandFinished(surfaceID: id, exitCode: 0)
+
+        XCTAssertEqual(registry.externalEntries[id], seeded,
+                       "A herdr-sourced external row must never be settled by the ghostty pane-exit signal")
+        XCTAssertTrue(registry.entries.isEmpty,
+                      "handleGhosttyCommandFinished must not create a native row for an externalEntries id either")
+    }
+
+    // MARK: - handleGhosttyCommandFinished: deferring to Calyx's own /command-event
+
+    // Once Calyx's own shell integration has reported a phase: end event
+    // for a surface, that surface's shell is one Calyx's own zsh/fish
+    // integration covers -- and that integration alone can tell a real
+    // exit apart from a suspend for it (zsh's 128+signal convention, or
+    // fish's own separate suspended flag). ghostty's fallback cannot
+    // detect a suspend at all, so it must defer entirely once Calyx has
+    // ever reported on a surface, rather than risk wrongly settling a row
+    // (and expiring its pending approvals) out from under a merely
+    // suspended job.
+
+    func test_handleGhosttyCommandFinished_surfaceWithPriorCalyxStopSignalReport_doesNotSettle() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("UserPromptSubmit", sessionID: "session-a"), surfaceID: surfaceID)
+        // Calyx's own shell integration reports here through the real
+        // entry point -- a stop-signal exit code, so the row itself is
+        // left untouched, but the report must still be remembered.
+        let calyxSettled = registry.handlePaneCommandFinished(surfaceID: surfaceID, exitCode: 146)
+        XCTAssertFalse(calyxSettled, "Precondition: the stop-signal report itself must not settle the row")
+        let before = registry.entries[surfaceID]
+        XCTAssertEqual(before?.state, .working, "Precondition: still working after the suspend report")
+
+        let ghosttySettled = registry.handleGhosttyCommandFinished(surfaceID: surfaceID, exitCode: 0)
+
+        XCTAssertFalse(ghosttySettled,
+                       "A surface Calyx's own /command-event has reported on must ignore a ghostty-sourced " +
+                       "settle, even with an ordinary exit code that would otherwise settle it")
+        XCTAssertEqual(registry.entries[surfaceID], before,
+                       "The row must stay exactly as it was after the ignored ghostty settle")
+    }
+
+    func test_handleGhosttyCommandFinished_surfaceWithPriorCalyxFishSuspendReport_doesNotSettle() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("UserPromptSubmit", sessionID: "session-a"), surfaceID: surfaceID)
+        // fish's own $status cannot itself signal a suspend, so its
+        // integration reports one through the separate suspended flag
+        // instead -- an ordinary exit code accompanies it.
+        let calyxSettled = registry.handlePaneCommandFinished(surfaceID: surfaceID, exitCode: 0, suspended: true)
+        XCTAssertFalse(calyxSettled, "Precondition: fish's suspended flag must not settle the row either")
+        let before = registry.entries[surfaceID]
+
+        let ghosttySettled = registry.handleGhosttyCommandFinished(surfaceID: surfaceID, exitCode: 0)
+
+        XCTAssertFalse(ghosttySettled,
+                       "fish is exactly the case this memory exists to protect: ghostty's own signal has no " +
+                       "way to detect fish's suspend at all, so it must defer to Calyx's own integration once " +
+                       "that integration has reported on this surface")
+        XCTAssertEqual(registry.entries[surfaceID], before)
+    }
+
+    func test_handleGhosttyCommandFinished_surfaceRevivedAfterCalyxSettle_stillIgnoresGhosttySettle() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("UserPromptSubmit", sessionID: "session-a"), surfaceID: surfaceID)
+        XCTAssertTrue(registry.handlePaneCommandFinished(surfaceID: surfaceID, exitCode: 0), "Precondition: settles")
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .done, "Precondition")
+        // The same session resumes -- a same-session SessionStart revives
+        // a done row to idle (test_sessionStart_sameSurfaceSameSession_doneEntryRevivesToIdle).
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        let before = registry.entries[surfaceID]
+        XCTAssertEqual(before?.state, .idle,
+                       "Precondition: revived, not done -- a wrong implementation that merely refuses to " +
+                       "resettle an already-done row could not explain this test on its own")
+
+        let ghosttySettled = registry.handleGhosttyCommandFinished(surfaceID: surfaceID, exitCode: 0)
+
+        XCTAssertFalse(ghosttySettled,
+                       "Calyx reported on this surface once, before the revive -- the memory of that report " +
+                       "must persist across later state changes unrelated to it")
+        XCTAssertEqual(registry.entries[surfaceID], before)
+    }
+
+    func test_handleGhosttyCommandFinished_afterHandleSurfaceDestroyed_settlesAgainForANewRowOnTheSameID() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("UserPromptSubmit", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handlePaneCommandFinished(surfaceID: surfaceID, exitCode: 146)
+        XCTAssertFalse(registry.handleGhosttyCommandFinished(surfaceID: surfaceID, exitCode: 0),
+                       "Precondition: the ghostty settle is currently ignored")
+
+        registry.handleSurfaceDestroyed(surfaceID: surfaceID)
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-b"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("UserPromptSubmit", sessionID: "session-b"), surfaceID: surfaceID)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .working, "Precondition: a fresh live row")
+
+        let settled = registry.handleGhosttyCommandFinished(surfaceID: surfaceID, exitCode: 0)
+
+        XCTAssertTrue(settled,
+                      "handleSurfaceDestroyed must drop the memory of Calyx's prior report -- a new " +
+                      "registration on the same surfaceID must not inherit it")
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .done)
+    }
+
     // MARK: - Readers after a pane-signaled done (must not undo the settle)
 
     // handlePaneCommandFinished makes .done reachable for an

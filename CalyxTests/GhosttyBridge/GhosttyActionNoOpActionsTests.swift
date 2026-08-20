@@ -2,28 +2,31 @@
 // CalyxTests
 //
 // Second missing-observer investigation, no-op batch (not a RED-phase
-// suite — these four are already fully implemented in GhosttyActionRouter
+// suite — these three are already fully implemented in GhosttyActionRouter
 // .handleAction, GhosttyBridge/GhosttyAction.swift, so every test below is
 // expected to PASS).
 //
 // GHOSTTY_ACTION_TOGGLE_TAB_OVERVIEW / SHOW_GTK_INSPECTOR /
-// SHOW_ON_SCREEN_KEYBOARD / COMMAND_FINISHED moved out of the "Known but
-// unimplemented" (`return false`) group into their own "Intentional
-// No-Ops" group (`return true`) — see each case's own comment in
-// GhosttyAction.swift for the full per-action rationale (GTK/iOS-only
-// capabilities Calyx has nothing to route to, or, for COMMAND_FINISHED,
-// a signal Calyx already replaced with its own shell-integration hook).
-// `return false` told libghostty the triggering keybind was NOT consumed,
-// so the raw key sequence fell through to the shell; `return true` fixes
-// that by marking it consumed instead.
+// SHOW_ON_SCREEN_KEYBOARD moved out of the "Known but unimplemented"
+// (`return false`) group into their own "Intentional No-Ops" group
+// (`return true`) — see each case's own comment in GhosttyAction.swift for
+// the full per-action rationale (GTK/iOS-only capabilities Calyx has
+// nothing to route to). `return false` told libghostty the triggering
+// keybind was NOT consumed, so the raw key sequence fell through to the
+// shell; `return true` fixes that by marking it consumed instead.
 //
 // Only `GHOSTTY_TARGET_APP` is exercised here, with a fake, never-
 // dereferenced `ghostty_app_t` (`void*` per ghostty.h) — sound only
-// because none of these four handlers ever calls `surfaceView(from:)` or
+// because none of these three handlers ever calls `surfaceView(from:)` or
 // otherwise dereferences `app`/`target`; each returns `true`
 // unconditionally, regardless of target. Do not add other actions to this
 // suite: e.g. `GHOSTTY_ACTION_CHECK_FOR_UPDATES` would construct
 // `UpdateController.shared`, whose `init` starts Sparkle.
+//
+// GHOSTTY_ACTION_COMMAND_FINISHED is not in this group: it is
+// surface-scoped and OSC-133-triggered, not keybind-triggered, so the
+// consumed/not-consumed rationale above does not apply to it. See
+// GhosttyActionCommandFinishedTests.swift instead.
 
 import Testing
 import GhosttyKit
@@ -34,7 +37,7 @@ import GhosttyKit
 struct GhosttyActionNoOpActionsTests {
 
     /// `ghostty_app_t` is `void*` (ghostty.h) and is never dereferenced by
-    /// any of these four handlers, so a non-null, otherwise-meaningless
+    /// any of these three handlers, so a non-null, otherwise-meaningless
     /// pointer is safe to pass — mirrors the same `UnsafeMutableRawPointer
     /// (bitPattern: 1)!` pattern already established by
     /// `AppDelegateRestoreRemoteSessionTests`/`CockpitAppAccessSeamTests`/etc.
@@ -44,7 +47,7 @@ struct GhosttyActionNoOpActionsTests {
     /// field (imported C structs get a memberwise-zero `init()` in
     /// addition to the field-by-field one); only `.tag` is set here. The
     /// unused `target.target.surface` union member staying zero/nil is
-    /// fine — these four handlers never read it.
+    /// fine — these three handlers never read it.
     private func makeAppTarget() -> ghostty_target_s {
         var target = ghostty_target_s()
         target.tag = GHOSTTY_TARGET_APP
@@ -71,14 +74,6 @@ struct GhosttyActionNoOpActionsTests {
     func showOnScreenKeyboardReturnsTrue() {
         var action = ghostty_action_s()
         action.tag = GHOSTTY_ACTION_SHOW_ON_SCREEN_KEYBOARD
-
-        #expect(GhosttyActionRouter.handleAction(app: dummyApp, target: makeAppTarget(), action: action))
-    }
-
-    @Test("COMMAND_FINISHED is treated as consumed")
-    func commandFinishedReturnsTrue() {
-        var action = ghostty_action_s()
-        action.tag = GHOSTTY_ACTION_COMMAND_FINISHED
 
         #expect(GhosttyActionRouter.handleAction(app: dummyApp, target: makeAppTarget(), action: action))
     }

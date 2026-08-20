@@ -561,6 +561,14 @@ extension Notification.Name {
     /// fallback. `userInfo["active"]` is `true` for `SET`/`INDETERMINATE`,
     /// `false` for `REMOVE`/`ERROR`/`PAUSE`.
     static let ghosttyProgressReport = Notification.Name("com.calyx.ghostty.progressReport")
+    /// Posted for `GHOSTTY_ACTION_COMMAND_FINISHED` (OSC 133 C/D pairing),
+    /// a pane-exit fallback for `AgentRegistry.handleGhosttyCommandFinished`
+    /// covering shells Calyx's own `/command-event` shell integration
+    /// does not reach. `object` is the triggering `SurfaceView`;
+    /// `userInfo["exit_code"]` is an `Int32?` (`GhosttyActionRouter
+    /// .commandFinishedExitCode`'s converted payload -- `nil` when
+    /// ghostty reported no exit code).
+    static let ghosttyCommandFinished = Notification.Name("com.calyx.ghostty.commandFinished")
     static let smoothScrollSettingChanged = Notification.Name("com.calyx.smoothScrollSettingChanged")
 
     // MARK: - Second Missing-Observer Investigation

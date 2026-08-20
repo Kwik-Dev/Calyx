@@ -590,6 +590,89 @@ final class AgentRegistry {
         return stopSignals.contains(exitCode - 128)
     }
 
+    /// Surfaces Calyx's own shell integration has ever reported on --
+    /// recorded by `recordCalyxShellIntegrationReported`, which
+    /// `CalyxMCPServer.routeCommandEvent` calls unconditionally for both
+    /// a `.start` and an `.end` `CommandEvent` (right after the surface
+    /// resolves, regardless of whether `CommandLogStore.ingest` accepts
+    /// or rejects it), and which `handlePaneCommandFinished` also calls
+    /// unconditionally on every one of its own calls, including one that
+    /// settles nothing because the report itself was a suspend
+    /// (`suspended: true`) or a stop-signal `exitCode`. Recording on
+    /// `.start` too, not just `.end`, matters because ghostty's own OSC
+    /// 133 D can otherwise win a race for the same command: ghostty
+    /// prepends its resources dir to `XDG_DATA_DIRS` while Calyx appends,
+    /// and fish sources vendor integration files in directory order and
+    /// dispatches their handlers in registration order, so ghostty's
+    /// pane-exit signal can be written before Calyx's own end-of-command
+    /// POST even spawns -- recording only on `.end` would leave this set
+    /// unpopulated at the exact moment such a race needs it populated.
+    ///
+    /// `handleGhosttyCommandFinished` defers entirely (returns `false`
+    /// without touching the row) once a surface is in this set: only
+    /// Calyx's own zsh/fish shell integration can tell a suspend apart
+    /// from a real exit for that surface (zsh's `128 + signal`
+    /// convention, or fish's own separate lingering-job check), so
+    /// ghostty's fallback signal -- which carries no such evidence at all
+    /// -- must not risk a false settle for it. That protection is itself
+    /// conditional on Command Tracking being on: `AppDelegate
+    /// .applyCalyxShellIntegrationIfEnabled` gates the whole shell
+    /// integration install and env injection on `CommandTrackingSettings
+    /// .trackingEnabled`, so with tracking off no Calyx integration is
+    /// ever present in the pane, nothing is ever recorded into this set
+    /// for it, and ghostty's fallback signal governs unopposed there --
+    /// a fish Ctrl-Z can retire the row early. That residual risk is
+    /// accepted rather than narrowed away (narrowing the fallback would
+    /// break bash, which has no Calyx integration to fall back from in
+    /// the first place): it is bounded to the row's colour, since a
+    /// ghostty-sourced settle never expires pending approvals -- only a
+    /// Calyx-sourced settle over `/command-event` does
+    /// (`CalyxMCPServer.routeCommandEvent`).
+    ///
+    /// Cleared per-surface on `handleSurfaceDestroyed`. Deliberately
+    /// never cleared wholesale, not even by `reset()`: a pane whose shell
+    /// already sourced Calyx's integration keeps reporting even after
+    /// Command Tracking is switched off, so the memory staying put is
+    /// correct -- only a newly destroyed/recreated surface starts over
+    /// with no memory and correctly falls back to ghostty again.
+    private var calyxShellIntegrationReportedSurfaces: Set<UUID> = []
+
+    /// Records that Calyx's own shell integration is live in
+    /// `surfaceID`'s pane, without touching the row's state at all --
+    /// the recording half of what `handlePaneCommandFinished` already
+    /// does unconditionally on every call of its own. `CalyxMCPServer
+    /// .routeCommandEvent` calls this directly, for both a `.start` and
+    /// an `.end` `CommandEvent`, right after the surface resolves and
+    /// regardless of `CommandLogStore.ingest`'s acceptance: a rejected
+    /// duplicate event still proves Calyx's integration is live in that
+    /// pane. See `calyxShellIntegrationReportedSurfaces`'s own doc
+    /// comment for why recording on `.start` as well as `.end` matters.
+    func recordCalyxShellIntegrationReported(surfaceID: UUID) {
+        calyxShellIntegrationReportedSurfaces.insert(surfaceID)
+    }
+
+    /// Shared settle core for `handlePaneCommandFinished` and
+    /// `handleGhosttyCommandFinished`: settles a `.hooks`/`.mcpConnection`
+    /// entry not already `.done` to `.done`, excluding `suspended` and a
+    /// stop-signal `exitCode` (`isStopSignalExitCode`). Never touches an
+    /// unregistered surface, a `.titleHeuristic` entry, or
+    /// `externalEntries`. Neither caller-specific concept -- Calyx's own
+    /// `suspended` flag, or ghostty's `calyxShellIntegrationReportedSurfaces`
+    /// deferral -- lives here; each caller applies its own on top.
+    private func settlePaneCommandFinished(
+        surfaceID: UUID, exitCode: Int32?, suspended: Bool, now: Date
+    ) -> Bool {
+        guard var existing = entries[surfaceID] else { return false }
+        guard existing.source == .hooks || existing.source == .mcpConnection else { return false }
+        guard existing.state != .done else { return false }
+        guard !suspended, !Self.isStopSignalExitCode(exitCode) else { return false }
+
+        existing.state = .done
+        existing.lastEventAt = now
+        entries[surfaceID] = existing
+        return true
+    }
+
     /// Settles `surfaceID`'s entry to `.done` in response to the pane's
     /// shell integration reporting a `/command-event` with `phase: end`:
     /// zsh's `precmd` / fish's `fish_postexec` firing means the pane's
@@ -642,19 +725,60 @@ final class AgentRegistry {
     /// (`ApprovalInboxStore.expireForSurface`): a suspend, or any other
     /// reason this call didn't settle anything, must not cancel an
     /// approval request the still-alive agent is waiting on.
+    ///
+    /// Every call -- settling something or not -- unconditionally records
+    /// `surfaceID` via `recordCalyxShellIntegrationReported` first: see
+    /// `calyxShellIntegrationReportedSurfaces`'s own doc comment for why
+    /// `handleGhosttyCommandFinished` depends on the recording happening
+    /// even when this call settles nothing. `CalyxMCPServer
+    /// .routeCommandEvent` also calls `recordCalyxShellIntegrationReported`
+    /// directly, on both a `.start` and an `.end` event, so the memory
+    /// does not depend on this method ever being reached.
     @discardableResult
     func handlePaneCommandFinished(
         surfaceID: UUID, exitCode: Int32? = nil, suspended: Bool = false, now: Date = Date()
     ) -> Bool {
-        guard var existing = entries[surfaceID] else { return false }
-        guard existing.source == .hooks || existing.source == .mcpConnection else { return false }
-        guard existing.state != .done else { return false }
-        guard !suspended, !Self.isStopSignalExitCode(exitCode) else { return false }
+        recordCalyxShellIntegrationReported(surfaceID: surfaceID)
+        return settlePaneCommandFinished(surfaceID: surfaceID, exitCode: exitCode, suspended: suspended, now: now)
+    }
 
-        existing.state = .done
-        existing.lastEventAt = now
-        entries[surfaceID] = existing
-        return true
+    /// Settles `surfaceID`'s entry to `.done` in response to
+    /// `GHOSTTY_ACTION_COMMAND_FINISHED` (ghostty's own OSC 133 C/D
+    /// pane-exit signal, forwarded via `.ghosttyCommandFinished`) -- a
+    /// fallback for the shells Calyx's own `/command-event` shell
+    /// integration does not cover (bash, elvish, nushell;
+    /// `ShellIntegrationInstaller` only installs zsh/fish bodies). Reuses
+    /// `handlePaneCommandFinished`'s own settle core
+    /// (`settlePaneCommandFinished`): the same `.hooks`/`.mcpConnection`-
+    /// only, not-already-`.done` guards, and the same
+    /// `isStopSignalExitCode` exclusion for a shell's `128 + signal`
+    /// report.
+    ///
+    /// Unlike `handlePaneCommandFinished`, this has no `suspended`
+    /// parameter: ghostty has no equivalent of zsh's `128 + signal`
+    /// convention or fish's own separate lingering-job check, so it has
+    /// no way to positively detect a suspend beyond the stop-signal exit
+    /// code the shared core already excludes. Because of that gap, this
+    /// method defers entirely -- returns `false` without touching the
+    /// row -- for any `surfaceID` already present in
+    /// `calyxShellIntegrationReportedSurfaces`: once Calyx's own
+    /// integration has ever reported on a surface, it alone is trusted to
+    /// tell a suspend apart from a real exit for that surface. The
+    /// mistake this asymmetry protects against is one-directional, same
+    /// as `isStopSignalExitCode`'s own: a false "still alive" from this
+    /// method only leaves a row live, whereas a false settle from a
+    /// source blind to suspends would wrongly expire a live agent's
+    /// pending approvals.
+    ///
+    /// Returns whether this call actually transitioned the row to
+    /// `.done`. Never consulted to expire pending approvals -- that
+    /// wiring lives in `CalyxMCPServer.routeCommandEvent`, gated on
+    /// `handlePaneCommandFinished`'s own return value, and this method is
+    /// not reachable from that call site.
+    @discardableResult
+    func handleGhosttyCommandFinished(surfaceID: UUID, exitCode: Int32?, now: Date = Date()) -> Bool {
+        guard !calyxShellIntegrationReportedSurfaces.contains(surfaceID) else { return false }
+        return settlePaneCommandFinished(surfaceID: surfaceID, exitCode: exitCode, suspended: false, now: now)
     }
 
     // MARK: - Heuristic Signal Arbitration
@@ -995,6 +1119,7 @@ final class AgentRegistry {
         entries.removeValue(forKey: surfaceID)
         unbindSurface(surfaceID)
         heuristicMissStreaks.removeValue(forKey: surfaceID)
+        calyxShellIntegrationReportedSurfaces.remove(surfaceID)
     }
 
     // MARK: - Sorting Helpers
