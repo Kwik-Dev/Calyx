@@ -414,8 +414,17 @@ final class CalyxMCPServer {
     /// can't resolve (an unknown calyx-session ID -- a detached
     /// persistent session that keeps emitting after its pane closed,
     /// normal steady-state) is a silent 204 drop, NOT a 400 -> resolved,
-    /// `commandLogStore.ingest(event, surfaceID:)`. A `phase: end` event
-    /// `ingest` actually accepted (its own return value -- NOT a
+    /// `agentRegistry.recordCalyxShellIntegrationReported(surfaceID:)`
+    /// runs unconditionally, for BOTH a `.start` and an `.end` event and
+    /// regardless of whether `commandLogStore.ingest(event, surfaceID:)`
+    /// below accepts or rejects it: a rejected duplicate still proves
+    /// Calyx's own integration is live in this pane. Recording on
+    /// `.start` too, not just `.end`, matters because ghostty's own OSC
+    /// 133 D can otherwise arrive first for the same command -- see
+    /// `AgentRegistry.calyxShellIntegrationReportedSurfaces`'s own doc
+    /// comment for the full race and its rationale. Then
+    /// `commandLogStore.ingest(event, surfaceID:)` runs. A `phase: end`
+    /// event `ingest` actually accepted (its own return value -- NOT a
     /// duplicate/late end `CommandLogStore` silently drops, see that
     /// method's doc comment) additionally calls
     /// `agentRegistry.handlePaneCommandFinished(surfaceID:exitCode:suspended:)`
@@ -457,6 +466,13 @@ final class CalyxMCPServer {
             // detached persistent session, not a client error.
             return HTTPParser.response(statusCode: 204, body: nil)
         }
+
+        // Recorded for both phases, and regardless of `ingest`'s
+        // acceptance below -- see `routeCommandEvent`'s own doc comment
+        // and `AgentRegistry.calyxShellIntegrationReportedSurfaces`'s for
+        // why a `.start` recording, not just `.end`, is needed to win a
+        // same-command race against ghostty's own OSC 133 D.
+        agentRegistry.recordCalyxShellIntegrationReported(surfaceID: surfaceID)
 
         let accepted = commandLogStore.ingest(event, surfaceID: surfaceID)
         if event.phase == .end, accepted,

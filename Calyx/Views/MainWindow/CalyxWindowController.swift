@@ -2402,6 +2402,8 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
                            name: .ghosttySetPwd, object: nil)
         center.addObserver(self, selector: #selector(handleProgressReportNotification(_:)),
                            name: .ghosttyProgressReport, object: nil)
+        center.addObserver(self, selector: #selector(handleGhosttyCommandFinishedNotification(_:)),
+                           name: .ghosttyCommandFinished, object: nil)
         center.addObserver(self, selector: #selector(handleDesktopNotification(_:)),
                            name: .ghosttyDesktopNotification, object: nil)
         center.addObserver(self, selector: #selector(handleGotoTabNotification(_:)),
@@ -4212,6 +4214,62 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         guard let surfaceID = surfaceView.surfaceController?.id else { return }
 
         AgentRegistry.shared.handleProgressReport(surfaceID: surfaceID, isActive: isActive)
+    }
+
+    /// ghostty's own OSC 133 C/D pane-exit signal
+    /// (`GHOSTTY_ACTION_COMMAND_FINISHED`, forwarded as
+    /// `.ghosttyCommandFinished`) -- feeds `AgentRegistry
+    /// .handleGhosttyCommandFinished`'s shell-integration-coverage
+    /// fallback for every pane, not just the tab's focused surface.
+    /// `userInfo["exit_code"]` is an `Int32?`
+    /// (`GhosttyActionRouter.commandFinishedExitCode`'s converted
+    /// payload): unlike `handleProgressReportNotification`'s required
+    /// `"active"` key, a missing/non-`Int32` value here is itself a
+    /// legitimate "no exit code reported" reading, not a malformed
+    /// notification to bail out on -- so it is read directly rather than
+    /// through a `guard let ... else { return }`.
+    ///
+    /// Unlike `handleSetTitleNotification`/`handleProgressReportNotification`,
+    /// this does NOT guard on `belongsToThisWindow`. Those two are
+    /// repeating signals -- a tick this window's controller drops because
+    /// the pane isn't its own is simply followed by another. This one
+    /// fires once per command with no replay, and a pane in a background
+    /// tab has already been removed from the view hierarchy
+    /// (`SplitContainerView.updateRegistry` does `subviews.forEach {
+    /// $0.removeFromSuperview() }`), leaving `view.window` nil there --
+    /// so filtering on the window would drop the settle for that pane
+    /// entirely, not just delay it. A `belongsToThisWindow` filter would
+    /// drop a QuickTerminal pane's settle the same way, since it belongs
+    /// to no `CalyxWindowController`-owned window at all; relaying
+    /// unconditionally reaches it too, through whichever live window's
+    /// controller happens to observe the notification, regardless of
+    /// which window the triggering surface actually belongs to. This
+    /// mirrors `handleSurfaceDestroyedForAgentMonitor` below: every
+    /// window's controller observes independently, and
+    /// `AgentRegistry.handleGhosttyCommandFinished`'s settle
+    /// (`settlePaneCommandFinished`'s `state != .done` guard) is a no-op
+    /// once the row is already `.done`, so the redundant calls across
+    /// windows are harmless.
+    ///
+    /// That reach is conditional on at least one `CalyxWindowController`
+    /// being alive, because this class is the only observer of
+    /// `.ghosttyCommandFinished` anywhere in the app. With every main
+    /// window closed and only the QuickTerminal open (an ordinary state
+    /// on macOS, where closing the last window does not terminate the
+    /// app), no observer remains, so the signal is dropped for that
+    /// pane and its row keeps whatever state it had. Its panes are real
+    /// surfaces with real rows: `QuickTerminalContentView` holds the
+    /// same `SplitContainerView` main windows use.
+    /// `handleSurfaceDestroyedForAgentMonitor` below is registered the
+    /// same way and therefore has the identical gap, so this is a
+    /// property of where these observers live, not something this
+    /// fallback introduced.
+    @objc private func handleGhosttyCommandFinishedNotification(_ notification: Notification) {
+        guard let surfaceView = notification.object as? SurfaceView else { return }
+        guard let surfaceID = surfaceView.surfaceController?.id else { return }
+        let exitCode = notification.userInfo?["exit_code"] as? Int32
+
+        AgentRegistry.shared.handleGhosttyCommandFinished(surfaceID: surfaceID, exitCode: exitCode)
     }
 
     /// Resolves an Agents sidebar row click to a surface owned by this

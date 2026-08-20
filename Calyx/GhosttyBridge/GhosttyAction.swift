@@ -162,6 +162,9 @@ enum GhosttyActionRouter {
         case GHOSTTY_ACTION_PROGRESS_REPORT:
             return handleProgressReport(app, target: target, value: action.action.progress_report)
 
+        case GHOSTTY_ACTION_COMMAND_FINISHED:
+            return handleCommandFinished(app, target: target, value: action.action.command_finished)
+
         case GHOSTTY_ACTION_SECURE_INPUT:
             return handleSecureInput(app, target: target, mode: action.action.secure_input)
 
@@ -200,7 +203,7 @@ enum GhosttyActionRouter {
         // MARK: - Intentional No-Ops
         //
         // Unlike the "Known but unimplemented" group above, each of these
-        // four is a deliberate decision, not a placeholder for later work.
+        // three is a deliberate decision, not a placeholder for later work.
         // Each still returns `true`: a `false` here tells libghostty the
         // keybind that triggered the action was NOT consumed, so it falls
         // through and the raw key sequence gets sent to the shell instead
@@ -225,22 +228,6 @@ enum GhosttyActionRouter {
             // On-screen-keyboard toggling only applies to GTK's touch
             // input and iOS; a physical-keyboard-first macOS terminal has
             // no on-screen keyboard concept to toggle.
-            return true
-
-        case GHOSTTY_ACTION_COMMAND_FINISHED:
-            // Calyx already has its own shell-integration hook (POST
-            // /command-event -> CommandLogStore.ingest) instead of
-            // ghostty's OSC 133 command-finished: CommandLogStore.swift
-            // documents that ghostty's own signal reports an unreliable
-            // exit code (always 0 for "unknown", indistinguishable from a
-            // real success), so it was dropped entirely in favor of the
-            // shell-integration hook's own start/end timestamps and exit
-            // code. This action is also currently unreachable in
-            // practice: Calyx never sets GHOSTTY_RESOURCES_DIR, so
-            // libghostty's shell-integration scripts that would emit the
-            // OSC 133 markers behind this action are never injected into
-            // the user's shell in the first place (see
-            // GhosttyResourcesDirResolverTests / architecture.md).
             return true
 
         default:
@@ -295,6 +282,55 @@ enum GhosttyActionRouter {
             userInfo: ["active": isActive]
         )
         return true
+    }
+
+    /// `GHOSTTY_ACTION_COMMAND_FINISHED` (`apprt.action.CommandFinished`,
+    /// from ghostty's own shell-integration OSC 133 C/D pairing),
+    /// forwarded as `.ghosttyCommandFinished` for `CalyxWindowController`
+    /// to feed into `AgentRegistry.handleGhosttyCommandFinished` -- a
+    /// pane-level fallback for the shells Calyx's own `/command-event`
+    /// shell integration does not cover (bash, elvish, nushell). A
+    /// command whose OSC 133;D carried no exit code still arrives here
+    /// as `0`, indistinguishable from a real success: ghostty's own
+    /// `termio/stream_handler.zig` reads the option as
+    /// `readOption(.exit_code) orelse 0` before building the action, so
+    /// the `?u8` it carries is never null on the terminal path. The C
+    /// struct nonetheless reserves `-1` for "no exit code reported", and
+    /// `commandFinishedExitCode` below honours that contract even though
+    /// this path cannot currently produce it. That ambiguity is why this
+    /// stays a fallback rather than a replacement, and why
+    /// `CommandLogStore` still relies on Calyx's own hook for the command
+    /// log rather than this signal. An
+    /// empty Enter at the prompt emits nothing: the action only fires
+    /// once a command's OSC 133;C is paired with its matching 133;D,
+    /// which an empty line never produces.
+    private static func handleCommandFinished(
+        _ app: ghostty_app_t,
+        target: ghostty_target_s,
+        value: ghostty_action_command_finished_s
+    ) -> Bool {
+        guard let surfaceView = surfaceView(from: target) else { return false }
+
+        NotificationCenter.default.post(
+            name: .ghosttyCommandFinished,
+            object: surfaceView,
+            userInfo: ["exit_code": commandFinishedExitCode(value.exit_code) as Any]
+        )
+        return true
+    }
+
+    /// Maps `ghostty_action_command_finished_s.exit_code`'s raw payload
+    /// to `AgentRegistry.handleGhosttyCommandFinished`'s `exitCode:
+    /// Int32?` parameter: ghostty's own `-1` sentinel ("no exit code was
+    /// reported", ghostty.h) becomes `nil`; every other value -- stop-
+    /// signal codes included -- passes through unchanged, since excluding
+    /// those is `AgentRegistry.handleGhosttyCommandFinished`'s own job,
+    /// not this mapper's. Not `private`: `@testable import Calyx` reaches
+    /// this from `GhosttyActionCommandFinishedTests` to pin the mapping
+    /// independently of `handleCommandFinished`'s own FFI-dependent
+    /// target resolution.
+    static func commandFinishedExitCode(_ rawExitCode: Int16) -> Int32? {
+        rawExitCode == -1 ? nil : Int32(rawExitCode)
     }
 
     private static func handlePwd(
