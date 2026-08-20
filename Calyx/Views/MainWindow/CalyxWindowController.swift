@@ -3835,7 +3835,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         return tab.registry.createSurface(app: app, config: config, pwd: pwd, command: command)
     }
 
-    /// Round-18 G6: positive-evidence check `performReconnect`'s grace
+    /// Positive-evidence check `performReconnect`'s grace
     /// `Task` consults immediately before `markEstablished`, alongside
     /// (not instead of) the existing surface-identity check -- see that
     /// call site's doc comment for why time and surface identity alone
@@ -3927,7 +3927,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         // later, unrelated disconnect still starts backing off from
         // attempt 1 again (`markEstablished`'s original purpose).
         //
-        // Round-18 finding G6: time alone still proved insufficient -- an
+        // Time alone still proved insufficient -- an
         // attach process that dies SLOWER than the grace window (e.g. a
         // ~2.5s die/respawn cycle against a daemon that keeps answering
         // `.running`/`.unreachable`) got its attempt count reset every
@@ -4635,7 +4635,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     }
     #endif
 
-    /// R12-C (r12-fix-spec.md): delegates TabSnapshot/TabGroupSnapshot
+    /// Delegates TabSnapshot/TabGroupSnapshot
     /// construction to the tested `Tab.snapshot()`/`TabGroup.snapshot()`
     /// extension chain (SessionSnapshot.swift) instead of duplicating a
     /// second, hand-kept-in-sync builder here. Only the live-window-only

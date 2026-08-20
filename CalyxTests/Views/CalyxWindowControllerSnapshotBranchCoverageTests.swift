@@ -2,7 +2,6 @@
 //  CalyxWindowControllerSnapshotBranchCoverageTests.swift
 //  CalyxTests
 //
-//  TDD Red phase, round 12 (r12-fix-spec.md, sweep addendum item 3):
 //  windowSnapshot()'s two special-case branches had ZERO test coverage
 //  before this file:
 //
@@ -23,7 +22,7 @@
 //  BrowserView/WebKit.
 //
 //  Both assertions below PASS today (verified against a941b245d): they
-//  cover EXISTING production behavior that predates this round's R12-C
+//  cover EXISTING production behavior that predates the delegation
 //  refactor (which collapses windowSnapshot() to delegate to
 //  Tab.snapshot()). These are therefore REGRESSION GUARDS, not RED
 //  proof -- the point, per the sweep addendum, is locking both branches
@@ -48,7 +47,7 @@ import XCTest
 final class CalyxWindowControllerSnapshotBranchCoverageTests: XCTestCase {
 
     private func makeController(tab: Tab) -> CalyxWindowController {
-        let group = TabGroup(name: "Round 12 Branch Coverage", tabs: [tab], activeTabID: tab.id)
+        let group = TabGroup(name: "Branch Coverage", tabs: [tab], activeTabID: tab.id)
         let windowSession = WindowSession(groups: [group], activeGroupID: group.id)
         let window = CalyxWindow(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
@@ -62,7 +61,7 @@ final class CalyxWindowControllerSnapshotBranchCoverageTests: XCTestCase {
     // MARK: - Live browserURL override wins over the configured URL
 
     /// Regression guard (sweep addendum item 3a): existing production
-    /// behavior, not a round-12 change -- locks it down before R12-C's
+    /// behavior, not a new change -- locks it down before the
     /// delegation refactor touches this branch.
     func test_windowSnapshot_browserTabWithLiveController_usesLiveURL_notConfiguredURL() throws {
         let registry = SurfaceRegistry()
@@ -92,7 +91,7 @@ final class CalyxWindowControllerSnapshotBranchCoverageTests: XCTestCase {
             tabSnapshot.browserURL, liveURL,
             "windowSnapshot() must carry the LIVE browserControllers URL, not the tab's configured content " +
             "URL, when a live BrowserTabController is registered for the tab -- regression guard for the " +
-            "R12-C delegation, not RED proof (this precedence already exists today); see this file's header " +
+            "delegation, not RED proof (this precedence already exists today); see this file's header " +
             "comment"
         )
     }
@@ -100,7 +99,7 @@ final class CalyxWindowControllerSnapshotBranchCoverageTests: XCTestCase {
     // MARK: - Diff tabs are excluded from the persisted snapshot
 
     /// Regression guard (sweep addendum item 3b): existing production
-    /// behavior, not a round-12 change -- locks it down before R12-C's
+    /// behavior, not a new change -- locks it down before the
     /// delegation refactor touches this branch.
     func test_windowSnapshot_diffTab_isExcludedFromPersistedTabs() {
         let registry = SurfaceRegistry()
@@ -112,7 +111,7 @@ final class CalyxWindowControllerSnapshotBranchCoverageTests: XCTestCase {
         XCTAssertEqual(
             groupSnapshot?.tabs.count, 0,
             "windowSnapshot() must exclude .diff-content tabs from the persisted snapshot entirely -- " +
-            "regression guard for the R12-C delegation, not RED proof (diff tabs are already skipped today); " +
+            "regression guard for the delegation, not RED proof (diff tabs are already skipped today); " +
             "see this file's header comment"
         )
     }

@@ -2,9 +2,9 @@
 //  SessionDaemonClientSessionStateBoundTimeoutSeamTests.swift
 //  CalyxTests
 //
-//  TDD Red phase, round 14 (r14-fix-spec.md, R14-B): `bounded()`
-//  currently hard-codes ONE shared timeout (`listAllBoundTimeoutSeconds`,
-//  5s) for every caller, including `sessionStateBounded(id:)`
+//  `bounded()` currently hard-codes ONE shared timeout
+//  (`listAllBoundTimeoutSeconds`, 5s) for every caller, including
+//  `sessionStateBounded(id:)`
 //  (SessionReconnectCoordinator.childExited's reconnect decision). But
 //  that path feeds a 5-attempt-cap retry/backoff sequence (0/1/2/4/8s),
 //  so its bound must be generous enough to separate "daemon truly hung"
@@ -18,7 +18,7 @@
 //  Asserting the real 15s-vs-5s difference directly would need a 15s+
 //  wall-clock test; this codebase's established convention (see
 //  SessionSettings._testStore's suite-swap seam, NotificationManager
-//  .shared's #if DEBUG var seam, R6-F) is to add a narrow, DEBUG-only
+//  .shared's #if DEBUG var seam) is to add a narrow, DEBUG-only
 //  override hook instead, so the SAME plumbing (which constant
 //  `sessionStateBounded(id:)` actually threads into `bounded(timeout:)`)
 //  can be asserted with tiny, clearly-distinguishable overridden values.
@@ -40,8 +40,8 @@
 //  itself citing CalyxWindowControllerFullScreenTests), this file is
 //  expected to FAIL TO COMPILE until the TDD Green phase adds the
 //  overrides enum plus the rename/parameterization above -- that compile
-//  failure IS this contract's round-14 RED evidence for R14-B. This is
-//  the "held-out" file: run the rest of the round-14 RED suite with this
+//  failure IS this contract's RED evidence. This is
+//  the "held-out" file: run the rest of the RED suite with this
 //  file's new symbols absent from the build, then attempt this file on
 //  its own to capture the specific compiler errors.
 //
@@ -96,7 +96,7 @@ final class SessionDaemonClientSessionStateBoundTimeoutSeamTests: XCTestCase {
         super.tearDown()
     }
 
-    /// RED (R14-B, compile-RED per this file's header comment):
+    /// RED (compile-RED per this file's header comment):
     /// `SessionDaemonClientBoundTimeoutOverrides` does not exist yet, so
     /// this file fails to compile until Green adds the dedicated bound,
     /// the rename, and the override seam described above.

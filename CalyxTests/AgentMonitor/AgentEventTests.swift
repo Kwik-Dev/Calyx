@@ -273,7 +273,7 @@ final class AgentEventTests: XCTestCase {
                        "pi's product name is lowercase, so the sidebar row shows the kind verbatim")
     }
 
-    // MARK: - ipcSelfPeerID extraction (Round 3: unread message badges)
+    // MARK: - ipcSelfPeerID extraction (unread message badges)
     //
     // A PreToolUse for one of Calyx's own mcp__calyx-ipc__* tools carries
     // this surface's own peer ID in tool_input — AgentRegistry uses it to
@@ -337,7 +337,7 @@ final class AgentEventTests: XCTestCase {
     }
 
     // test_decode_preToolUse_ackMessages_extractsIpcSelfPeerIDFromPeerID
-    // removed: ack_messages was removed as an MCP tool in Round 7, so it's
+    // removed: ack_messages was removed as an MCP tool, so it's
     // no longer one of the tool names AgentEvent extracts a self peer ID
     // for either.
 

@@ -91,8 +91,8 @@ enum SessionCommandSynthesizer {
     /// field-verified broken by how ghostty's own `exec` wrapping
     /// resolves its target word; see
     /// `SessionCommandSynthesizerRuntimeStateDirFlagsTests` for that full
-    /// saga, including the verbatim field failures. Round 18 retires that
-    /// whole approach: the session root now travels as the Rust CLI's own
+    /// saga, including the verbatim field failures. That whole approach
+    /// is retired: the session root now travels as the Rust CLI's own
     /// global `--runtime-dir`/`--state-dir` flags
     /// (`calyx-session/crates/cli/src/cli.rs:15-20`, `global = true`),
     /// which `attach` both accepts and forwards verbatim to the daemon it

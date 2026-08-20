@@ -37,8 +37,8 @@
 //  even for a non-terminating close (a quick terminal keeps the app
 //  alive, see that flag's own doc comment), so gating on it directly
 //  would incorrectly skip the save for that legitimate case too --
-//  exactly the discriminator-mismatch class round 6-8's fix rounds
-//  already fought (see isAppActuallyTerminating's own doc comment).
+//  exactly the discriminator-mismatch class earlier fixes already
+//  fought (see isAppActuallyTerminating's own doc comment).
 //
 //  Drives windowWillClose(_:) directly with a bare Notification, mirrors
 //  CalyxWindowControllerNonLastWindowCloseTests' established pattern

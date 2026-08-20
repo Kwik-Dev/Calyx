@@ -287,7 +287,7 @@ final class SessionBrowserModel {
     /// pattern.
     var onRemoteSessionRequested: ((SessionSpawnContext) -> Void)?
 
-    /// R12-A item 3 (r12-fix-spec.md): guards against `refresh()`'s 1s
+    /// Guards against `refresh()`'s 1s
     /// poll timer stacking an unbounded number of concurrent
     /// `listAllBounded()` round-trips behind a slow/hung daemon. A
     /// second `refresh()` issued while one is still in flight is a
@@ -399,18 +399,17 @@ final class SessionBrowserModel {
     /// keeps the browser a view of sessions you can actually attach to
     /// or kill.
     ///
-    /// R10-C item 2 (r10-fix-spec.md): routed through `listAllBounded()`
+    /// Routed through `listAllBounded()`
     /// rather than `listAll()` directly, since a hung daemon used to
     /// freeze the whole session browser forever. Shares the same 5s
     /// bound `AppDelegate`'s agent-resume path already applied to itself
     /// (see `SessionDaemonClientProtocol.listAllBounded()`'s own doc
     /// comment).
     ///
-    /// R14-A sweep addendum item 1 (r14-fix-spec.md): guards on
-    /// `Task.isCancelled` before assigning `rows`, mirroring
-    /// `AppDelegate.listAllSessionsBounded`'s identical R12-A item 4
+    /// Guards on `Task.isCancelled` before assigning `rows`, mirroring
+    /// `AppDelegate.listAllSessionsBounded`'s identical
     /// guard. Without this, a closed-window poll cancellation (once
-    /// R14-A propagates it into `listAllBounded()`'s own race) could
+    /// cancellation reaches `listAllBounded()`'s own race) could
     /// still resolve early with a result that arrives after the
     /// caller gave up, wiping this SHARED model's rows with a stale
     /// value -- an empty flash on reopen.

@@ -2,7 +2,7 @@
 //  SessionCommandSynthesizerRuntimeStateDirFlagsTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (round 18, G5 flags migration): supersedes the former
+//  Supersedes the former
 //  SessionCommandSynthesizerHomeStampTests, which stamped the resolved
 //  session root as a leading `/usr/bin/env HOME=<root>` word ahead of
 //  the exec'd calyx-session binary. That stamp existed only to make the
@@ -21,14 +21,14 @@
 //  needing an env override or an `/usr/bin/env` wrapper at all.
 //
 //  This also RETIRES the entire ghostty-exec-wrapping saga the old
-//  HomeStampTests file fought through three rounds:
-//  - ROUND 1: a bare `HOME=<root>` first word resolved as a cwd-relative
+//  HomeStampTests file fought through, in three steps:
+//  - A bare `HOME=<root>` first word resolves as a cwd-relative
 //    path, field-verified broken as `bash: .../HOME=/tmp/cxpane: No such
 //    file or directory`.
-//  - ROUND 2: a redundant leading `exec` PATH-searched as a literal
+//  - A redundant leading `exec` is PATH-searched as a literal
 //    nonexistent program, field-verified broken as `bash: line 0: exec:
 //    exec: not found`.
-//  - ROUND 3: finally routing through `/usr/bin/env` to make the `HOME=`
+//  - Routing through `/usr/bin/env` finally makes the `HOME=`
 //    word an actual env assignment rather than a literal argv word.
 //  Once the session root travels as ordinary argv words to the binary
 //  itself rather than as an env assignment ahead of it, the command's
@@ -39,7 +39,7 @@
 //  `.shell`-variant command Calyx always produces); its own single
 //  `exec` finds and execs an absolute first word directly, with no
 //  cwd-relative or PATH-search ambiguity, so there is no failure mode
-//  left for this file to guard against the way the old ROUND 1/2/3 tests
+//  left for this file to guard against the way those older tests
 //  did. (This is the canonical copy of this narrative -- other files
 //  that reference this saga, including `SessionCommandSynthesizer.swift`
 //  itself, point back here rather than repeating it.)

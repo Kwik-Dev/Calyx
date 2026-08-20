@@ -100,7 +100,7 @@ final class SessionCommandSynthesizerTests: XCTestCase {
         let command = SessionCommandSynthesizer.attachCommand(
             binaryPath: binaryPath, sessionID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", cwd: "/Users/dev/repo"
         )
-        // Round-18 flags migration: the session root travels as the
+        // The session root travels as the
         // Rust CLI's own global --runtime-dir/--state-dir argv flags
         // now (calyx-session/crates/cli/src/cli.rs:15-20), prepended
         // ahead of the attach subcommand, rather than as a leading
@@ -114,7 +114,7 @@ final class SessionCommandSynthesizerTests: XCTestCase {
                        "now travels as --runtime-dir/--state-dir argv words directly to the binary")
         XCTAssertFalse(command.contains("HOME="),
                        "The command must never contain a HOME= word anywhere -- stamping HOME was the old " +
-                       "mechanism the round-18 flags migration retires")
+                       "mechanism the flags migration retires")
 
         let argv = try runAndCaptureArgv(command, outputPath: outputPath)
         let expectedRoot = SessionRootResolver().resolve()

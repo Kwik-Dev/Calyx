@@ -2,8 +2,7 @@
 //  TwoPaneSessionFixture.swift
 //  CalyxTests
 //
-//  R8-G (r8-fix-spec.md, item G2; consolidates a r7-verdicts.md fixture-
-//  duplication finding): SessionReconnectGiveUpTests and
+//  SessionReconnectGiveUpTests and
 //  CalyxWindowControllerNonLastWindowCloseTests each built an identical
 //  two-pane, single-tab, single-group window fixture (trackedLeafID
 //  carrying a SessionRef registered in both tab.sessionRefs and

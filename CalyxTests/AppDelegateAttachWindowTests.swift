@@ -2,8 +2,7 @@
 //  AppDelegateAttachWindowTests.swift
 //  CalyxTests
 //
-//  TDD Red phase for round-4 fix F6/T6 (r4-fix-spec.md; evidence in
-//  r4-verdicts.md S1/known-defect #3): `AppDelegate.attachWindow
+//  `AppDelegate.attachWindow
 //  (sessionID:cwd:)`, the session browser's "Attach" action for a
 //  running, no-live-surface session, must not create a second
 //  window/attach when `sessionID` is ALREADY registered in
@@ -49,7 +48,7 @@ final class AppDelegateAttachWindowTests: XCTestCase {
     /// mapping would end up overwritten in the real (non-hooked)
     /// implementation.
     ///
-    /// R6-D (r6-fix-spec.md) fixture update: a stale mapping (registered,
+    /// Fixture update: a stale mapping (registered,
     /// but no controller anywhere contains the surfaceID) now legitimately
     /// proceeds to a fresh attach instead of silently doing nothing (see
     /// `AppDelegateFocusExistingSessionTests`'s stale-mapping coverage),

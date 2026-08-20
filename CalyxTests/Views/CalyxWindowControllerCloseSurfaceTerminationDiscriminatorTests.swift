@@ -7,7 +7,7 @@
 //  `killSessionIfPersistent(tab:surfaceID:isTerminating: isClosingForShutdown)`
 //  -- reading the per-WINDOW `isClosingForShutdown` flag as its "is this
 //  actually a quit" signal. That is exactly the discriminator-mismatch
-//  class `CalyxWindowControllerNonLastWindowCloseTests`'s R8-C fix
+//  class `CalyxWindowControllerNonLastWindowCloseTests`'s fix
 //  already closed for `windowWillClose`'s OWN teardown loop (which
 //  correctly reads `isAppActuallyTerminating` instead -- see that file's
 //  header comment and its

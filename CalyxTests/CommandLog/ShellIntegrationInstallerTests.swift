@@ -141,7 +141,7 @@ final class ShellIntegrationInstallerTests: XCTestCase {
 
     // MARK: - Symlink handling
     //
-    // OpenCodePluginManagerTests' actual, verified contract (Round 3):
+    // OpenCodePluginManagerTests' actual, verified contract:
     // install() FOLLOWS a symlink at the destination path and overwrites
     // the real target, leaving the symlink itself intact -- NOT
     // rejection. ConfigFileUtils.resolveConfigPath is the shared

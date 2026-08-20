@@ -18,7 +18,7 @@ struct ClaudeHooksConfigManager: Sendable {
     /// `matcher` each uses (`nil` means no `"matcher"` key is written —
     /// Claude Code treats an absent matcher as "always run").
     ///
-    /// `PermissionRequest` (Round 4) is a tool-approval-prompt hook,
+    /// `PermissionRequest` is a tool-approval-prompt hook,
     /// subscribed here with matcher `"*"` — unified with `PreToolUse`/
     /// `PostToolUse` rather than left without a matcher — and installed
     /// alongside `Notification`("permission_prompt") rather than in place

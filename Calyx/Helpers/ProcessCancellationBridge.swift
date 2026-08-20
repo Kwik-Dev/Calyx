@@ -1,11 +1,10 @@
 // ProcessCancellationBridge.swift
 // Calyx
 //
-// R16-1 (r16-fix-spec.md): shared by SystemCommandRunner.runInternal and
-// GitService.run -- was two byte-identical `private final class
-// CancellationBridge` copies, one per file (R14-D/R14-E), consolidated
-// here so a future fix to the terminate-once discipline only has to
-// land in one place.
+// Shared by SystemCommandRunner.runInternal and GitService.run --
+// was two byte-identical `private final class CancellationBridge`
+// copies, one per file, consolidated here so a future fix to the
+// terminate-once discipline only has to land in one place.
 
 import Foundation
 

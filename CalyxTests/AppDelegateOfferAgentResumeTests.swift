@@ -2,11 +2,10 @@
 //  AppDelegateOfferAgentResumeTests.swift
 //  CalyxTests
 //
-//  TDD Red phase for round-4 fix F14 (r4-fix-spec.md; evidence in
-//  r4-verdicts.md V11/S3): behavioral coverage for
+//  Behavioral coverage for
 //  `AppDelegate.offerAgentResume(tab:surfaceID:sessionID:sessions:)`'s
 //  decode/selection/sendText pipeline, which had no direct test coverage
-//  before this round (only reachable indirectly through a live restore/
+//  before (only reachable indirectly through a live restore/
 //  attach with a real ghostty surface and daemon round-trip).
 //
 //  Drives `offerAgentResume` directly (made non-private for this

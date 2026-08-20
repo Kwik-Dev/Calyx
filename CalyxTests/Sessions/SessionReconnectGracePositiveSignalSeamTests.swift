@@ -2,8 +2,7 @@
 //  SessionReconnectGracePositiveSignalSeamTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (COMPILE-RED, HELD-OUT FILE) for round-18 finding G6:
-//  the reconnect grace task (`CalyxWindowController.performReconnect`'s
+//  The reconnect grace task (`CalyxWindowController.performReconnect`'s
 //  deferred `markEstablished(sessionID:)` confirmation `Task`, see that
 //  method's own doc comment and `SessionReconnectEstablishGraceSeamTests`
 //  for the grace-period fix this builds on) resets the attempt counter
@@ -123,7 +122,7 @@
 //  shape) -- see those files' own header comments for why each is
 //  necessary/safe. `pumpRunLoop`/`ReconnectFixture`/`makeReconnectFixture`
 //  themselves now live in the shared `CalyxTests/ReconnectFixture.swift`
-//  (round-18 cleanup consolidating what used to be three byte-identical
+//  (consolidating what used to be three byte-identical
 //  per-file copies).
 //
 //  Coverage:

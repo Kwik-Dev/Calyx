@@ -218,7 +218,7 @@ final class ClaudeConfigManagerTests: XCTestCase {
                        "Authorization header should be 'Bearer {token}'")
     }
 
-    // Round 4: the MCP connection itself must carry the pane's surface ID,
+    // The MCP connection itself must carry the pane's surface ID,
     // via Claude Code's documented `${VAR}` header env-expansion, so the
     // server can bind surface -> peer at `initialize` time even for a
     // passive recipient that never calls a calyx-ipc tool (and so never
@@ -254,7 +254,7 @@ final class ClaudeConfigManagerTests: XCTestCase {
     }
 
     func test_enableIPC_updatesExistingEntry_headersIncludeSurfaceIDPlaceholder() throws {
-        // Given: calyx-ipc already exists from a pre-Round-4 config (single header)
+        // Given: calyx-ipc already exists from an older config (single header)
         let existingJSON = """
         {
             "mcpServers": {
@@ -281,7 +281,7 @@ final class ClaudeConfigManagerTests: XCTestCase {
 
         XCTAssertEqual(headers?["Authorization"], "Bearer new-token")
         XCTAssertEqual(headers?["X-Calyx-Surface-ID"], "${CALYX_SURFACE_ID:-}",
-                       "Re-running enableIPC on a pre-Round-4 entry must add X-Calyx-Surface-ID, " +
+                       "Re-running enableIPC on an older entry must add X-Calyx-Surface-ID, " +
                        "not just refresh Authorization")
         XCTAssertEqual(headers?["X-Calyx-Session-ID"], "${CALYX_SESSION_ID:-}",
                        "Re-running enableIPC on an entry written before X-Calyx-Session-ID existed must " +
@@ -413,7 +413,7 @@ final class ClaudeConfigManagerTests: XCTestCase {
 
     // MARK: - Security
 
-    // Contract changed (Round 3): dotfiles-managed setups commonly symlink
+    // Contract: dotfiles-managed setups commonly symlink
     // ~/.claude.json to a repo elsewhere (e.g. `~/dotfiles/.claude.json`),
     // and blanket symlink rejection silently broke IPC configuration
     // entirely for that (legitimate, self-authored) setup. Calyx now
@@ -452,7 +452,7 @@ final class ClaudeConfigManagerTests: XCTestCase {
         XCTAssertEqual(destination, realFile, "The symlink must still point at the same real file")
     }
 
-    // Round 3 fix: resolveConfigPath now follows a multi-hop *dangling*
+    // resolveConfigPath follows a multi-hop *dangling*
     // symlink chain all the way to its final destination, rather than
     // stopping at the first intermediate link (which used to cause the
     // write to replace that intermediate link with a regular file,

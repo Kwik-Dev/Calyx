@@ -20,7 +20,7 @@
 //    SessionDaemonClientRuntimeDirArgsTests already covers, with a nil
 //    environment
 //  - setHistoryEnabled(_:) shields commandRunner.run(...) from the
-//    caller's ambient Task cancellation, mirroring kill(id:)'s own R14-C
+//    caller's ambient Task cancellation, mirroring kill(id:)'s own
 //    shield (SessionDaemonClientWriteOpCancellationShieldTests) -- a
 //    WRITE, so an in-flight toggle must run to completion even if the
 //    caller's Task is cancelled mid-flight
@@ -186,9 +186,9 @@ final class SessionDaemonClientHistoryToggleCancellationShieldTests: XCTestCase 
         }
     }
 
-    /// RED (P6 RED2): cancelling the host Task calling setHistoryEnabled(_:)
+    /// RED: cancelling the host Task calling setHistoryEnabled(_:)
     /// mid-flight must NOT reach the runner's own Task -- mirrors
-    /// kill(id:)'s own R14-C shield exactly.
+    /// kill(id:)'s own shield exactly.
     func test_setHistoryEnabled_shieldsRunnerFromHostTaskCancellation() async {
         let resolver = FixedBinaryResolver(path: "/opt/calyx-fixture/bin/calyx-session")
         let runner = CancellationRecordingCommandRunner()

@@ -227,7 +227,7 @@ struct MCPRouter: Sendable {
 
     /// Register-peer guidance for a connection `initialize` DID
     /// auto-register a peer for (a surface-bound pane — see
-    /// `CalyxMCPServer`'s `initialize` case). Round 6: the old text told
+    /// `CalyxMCPServer`'s `initialize` case). The old text told
     /// every client "call register_peer once immediately after
     /// connecting" while `initialize` itself also auto-registers and
     /// announces a peer_id in the same response — a contradiction that let
@@ -247,16 +247,16 @@ struct MCPRouter: Sendable {
     /// a message is removed from the inbox as it's returned, so it will
     /// not be returned again by a later call. Not `private` — shared
     /// verbatim between `commonSuffixParagraphs` below and
-    /// `OpenCodeConfigManager`'s managed AGENTS.md block (Round 7 review:
-    /// the two used to carry independently-authored copies of this
+    /// `OpenCodeConfigManager`'s managed AGENTS.md block (the two
+    /// used to carry independently-authored copies of this
     /// sentence, which could silently drift out of sync), so there's
     /// exactly one place this wording lives.
     static let receiveMessagesOnceNotice =
         "receive_messages removes each message from your inbox as it returns it, so a message will not be returned again on a later call"
 
     /// Paragraphs shared by both instructions variants, following
-    /// whichever register-peer guidance applies. Factored out (Round 6
-    /// review) so the browser/LSP tool surface descriptions aren't
+    /// whichever register-peer guidance applies. Factored out so the
+    /// browser/LSP tool surface descriptions aren't
     /// duplicated (and liable to drift) between the two variants.
     private static let commonSuffixParagraphs: [String] = [
         "After completing any significant task, call receive_messages to check for messages from other peers. \(receiveMessagesOnceNotice) — process and respond via send_message as soon as you receive it.",

@@ -2,7 +2,6 @@
 //  SystemCommandRunnerCancellationTests.swift
 //  CalyxTests
 //
-//  TDD Red phase, round 12 (r12-fix-spec.md, R12-A item 1):
 //  SystemCommandRunner.run()'s subprocess wait is a plain
 //  withCheckedThrowingContinuation with no withTaskCancellationHandler
 //  attached, so cancelling the Swift Task awaiting run() is silently
@@ -86,7 +85,7 @@ final class SystemCommandRunnerCancellationTests: XCTestCase {
 
     // MARK: - Cancellation must reach the subprocess
 
-    /// RED (R12-A item 1): today `run()`'s continuation has no
+    /// RED: today `run()`'s continuation has no
     /// `withTaskCancellationHandler`, so `task.cancel()` never reaches
     /// the spawned `Process` -- the child survives well past the bound
     /// below and is only ever killed by this test's own cleanup `defer`.

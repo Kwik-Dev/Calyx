@@ -2,11 +2,11 @@
 //  GitServiceCancellationTests.swift
 //  CalyxTests
 //
-//  TDD Red phase, round 14 (r14-fix-spec.md, R14-E): GitService.run
-//  (args:workDir:) is SystemCommandRunner.runInternal(...)'s own sibling
+//  GitService.run(args:workDir:) is
+//  SystemCommandRunner.runInternal(...)'s own sibling
 //  -- cited by that type's CancellationBridge doc comment ("mirrors the
 //  pattern used by GitService.run(args:workDir:)") -- yet, unlike
-//  SystemCommandRunner post-R12-A, GitService.run(args:workDir:) never
+//  SystemCommandRunner, GitService.run(args:workDir:) never
 //  adopted the withTaskCancellationHandler fix: its continuation await
 //  has no cancellation handler at all, so cancelling a Task awaiting any
 //  GitService call (e.g. the diff tab's close path) does nothing -- the
@@ -109,7 +109,7 @@ final class GitServiceCancellationTests: XCTestCase {
 
     // MARK: - Cancellation must reach the git subprocess
 
-    /// RED (R14-E): today GitService.run(args:workDir:)'s continuation
+    /// RED: today GitService.run(args:workDir:)'s continuation
     /// has no withTaskCancellationHandler, so task.cancel() never reaches
     /// the spawned `git status` process -- it survives well past the
     /// bound below, torn down only by this test's own cleanup `defer`

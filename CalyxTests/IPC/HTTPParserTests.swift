@@ -318,7 +318,7 @@ final class HTTPParserTests: XCTestCase {
         XCTAssertEqual(HTTPParser.maxBodySize, 1 * 1024 * 1024)
     }
 
-    // ==================== Round 5 review: shared Content-Length lookup ====================
+    // ==================== shared Content-Length lookup ====================
     //
     // `contentLength(inHeaderString:)` is the single implementation
     // `parse(_:)` and `CalyxMCPServer.receiveUntilComplete`'s pre-parse
@@ -328,7 +328,7 @@ final class HTTPParserTests: XCTestCase {
 
     // Duplicate `Content-Length` headers, identical casing: the shared
     // lookup takes the first occurrence in document order. This is a
-    // deliberate behavior change from the pre-Round-5 implementation
+    // deliberate behavior change from the earlier implementation
     // (a `[String: String]` dictionary where a same-case duplicate key
     // simply overwrote the earlier value, so the *last* occurrence won)
     // — see `contentLength(inHeaderString:)`'s doc comment for why
@@ -390,7 +390,7 @@ final class HTTPParserTests: XCTestCase {
         XCTAssertEqual(request.body, bodyData, "parse(_:) must select the same first-occurrence Content-Length the gate used")
     }
 
-    // ==================== Round 5 review: completeness(of:) ====================
+    // ==================== completeness(of:) ====================
 
     func test_completeness_headersNotYetTerminated_isIncomplete() {
         let raw = makeRawData("POST /data HTTP/1.1\r\nContent-Length: 2\r\n")
@@ -420,7 +420,7 @@ final class HTTPParserTests: XCTestCase {
         XCTAssertEqual(state, .complete, "A request with no Content-Length has no body to wait for once headers terminate")
     }
 
-    // MARK: - Round 5 review: integer-overflow-safe size gating (pre-auth DoS)
+    // MARK: - Integer-overflow-safe size gating (pre-auth DoS)
 
     // A `Content-Length` near `Int.max` must be rejected as `.tooLarge`
     // immediately — not crash the process by overflowing `headerLength +
@@ -467,7 +467,7 @@ final class HTTPParserTests: XCTestCase {
         XCTAssertEqual(requiredTotal, rawString.utf8.count + HTTPParser.maxBodySize)
     }
 
-    // ==================== Round 5 final review (Warning): request line must never be scanned for Content-Length ====================
+    // ==================== request line must never be scanned for Content-Length ====================
     //
     // Before this diff, `parse(_:)` built its `headers` dictionary from
     // `lines[1...]` — explicitly excluding the request line (`lines[0]`).

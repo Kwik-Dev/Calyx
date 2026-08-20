@@ -2,8 +2,7 @@
 //  CalyxWindowControllerCloseArmsTests.swift
 //  CalyxTests
 //
-//  TDD Red phase for round-4 fixes F7/F8 (r4-fix-spec.md; full evidence
-//  in r4-verdicts.md V07/V08), plus the window-lifetime redesign's own
+//  Covers fixes F7/F8, plus the window-lifetime redesign's own
 //  "closing the last tab/group must not confirm quit" coverage below.
 //
 //  - F7/T7 (the three arms NOT already covered by
@@ -27,8 +26,8 @@
 //  harmless no-op), no live ghostty surface is needed to exercise the
 //  flag-timing contracts under test.
 //
-//  `closeAllTabsInGroup(id:)` is not `private` (P4 round-4 fix RED
-//  phase, see its own doc comment) so this file can drive it directly,
+//  `closeAllTabsInGroup(id:)` is not `private` (see its own doc
+//  comment) so this file can drive it directly,
 //  matching this codebase's `handleSessionReconnectDecision` precedent.
 //
 
@@ -69,8 +68,8 @@ final class CalyxWindowControllerCloseArmsTests: XCTestCase {
     /// `AppDelegate` subclass confirming quit unconditionally, driving
     /// every close path under test through to its `.windowShouldClose`
     /// arm without a real, blocking `NSAlert.runModal()`.
-    /// `removeWindowController` comes from `ConfirmQuitMockAppDelegate`
-    /// (R6-J, r6-fix-spec.md): confirmed teardown here empties the
+    /// `removeWindowController` comes from `ConfirmQuitMockAppDelegate`:
+    /// confirmed teardown here empties the
     /// window for real, calling `window?.close()` -> `windowWillClose`
     /// -> `AppDelegate.removeWindowController`, see that base class's
     /// own doc comment for why the override is a no-op.

@@ -7,7 +7,7 @@
 //  own header for the full rationale of each half's reachability), plus
 //  a third part (C) this file adds on top of that shape:
 //
-//  ROUND-3 UPDATE (user-directed Settings restructure): commandTracking
+//  PANE UPDATE (user-directed Settings restructure): commandTracking
 //  moved off the Sessions pane onto the new Agents pane along with
 //  agentResume/agentResumeAutoExecute/cockpitAutoApprove -- everywhere
 //  below originally said "Sessions pane"/`.pane == .sessions` (P4-era,
@@ -43,7 +43,7 @@
 //  Proposed API:
 //
 //    SettingsRow.swift: add `case commandTracking` to the enum, routed
-//    to `.pane == .sessions` at the time (round-3 moved it to `.agents`
+//    to `.pane == .sessions` at the time (later moved to `.agents`
 //    -- see this file's header).
 //
 //    AccessibilityID.swift, enum Settings: add

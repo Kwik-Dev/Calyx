@@ -91,7 +91,7 @@
 //  own contentView(for:) case, so nothing else depends on them staying
 //  stored properties.
 //
-//  ROUND-3 SPLIT (user-directed information-architecture fix, Settings
+//  PANE SPLIT (user-directed information-architecture fix, Settings
 //  restructure): agentResume/agentResumeAutoExecute/cockpitAutoApprove/
 //  commandTracking moved out of the Sessions pane onto a new Agents pane
 //  (SettingsPane.agents) -- Sessions now carries only persistentSessions/
@@ -177,7 +177,7 @@ final class SettingsWindowControllerSessionsToggleWiringTests: XCTestCase {
         return result
     }
 
-    // Round-3 split (see file header): agentResume/agentResumeAutoExecute/
+    // Pane split (see file header): agentResume/agentResumeAutoExecute/
     // cockpitAutoApprove/commandTracking moved to the Agents pane, so the
     // Sessions pane now shows only persistentSessions/historyPersistence.
     func test_sessionsToggleSwitches_exactlyTwo_inRowOrder() throws {

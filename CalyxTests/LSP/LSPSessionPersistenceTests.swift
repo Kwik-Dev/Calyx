@@ -453,7 +453,7 @@ final class LSPSessionPersistenceTests: XCTestCase {
         let storage = try makeStorageURL()
         let bak = storage.appendingPathExtension("bak")
 
-        // Round 1: pre-existing stale .bak from a previous rotation.
+        // Pre-existing stale .bak from a previous rotation.
         try Data("old-bak-bytes".utf8).write(to: bak, options: .atomic)
         // Current storage file is corrupt.
         let corruptV2 = Data("corrupt-v2 }}}".utf8)

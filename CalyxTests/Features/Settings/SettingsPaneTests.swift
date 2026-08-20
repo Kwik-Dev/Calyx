@@ -28,8 +28,8 @@
 //  what the Appearance pane manages, so that is its natural home.
 //
 //  PANE ORDER: Appearance, Sessions, LSP -- the order the user's own
-//  restructure request listed them in. Agents (round-3 Red phase, user-
-//  directed information-architecture fix) was inserted right after
+//  restructure request listed them in. Agents (a user-directed
+//  information-architecture fix) was inserted right after
 //  Sessions: its rows (agentResume/agentResumeAutoExecute/
 //  cockpitAutoApprove/commandTracking) all moved out of Sessions, which
 //  had become a dumping ground with mismatched section typography (only
@@ -44,7 +44,7 @@
 //  cockpitAutoApprove/commandTracking each were before it (see this
 //  repo's own history on this file).
 //
-//  ICON COVERAGE (round-2 Red phase, user-reported defect): the Settings
+//  ICON COVERAGE (user-reported defect): the Settings
 //  toolbar's tabStyle (.toolbar, SettingsWindowController.setupContent())
 //  renders a degenerate fat header with sunk text when a tab item has no
 //  icon -- NSTabViewController's toolbar style expects one. SettingsPane

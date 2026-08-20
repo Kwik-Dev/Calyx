@@ -9,15 +9,14 @@
 // `withTaskCancellationHandler`'s onCancel (which is NOT actor-isolated
 // and may run concurrently with the other two on a different thread),
 // so a lock rather than actor isolation guards the shared state. Same
-// consolidation rationale as ProcessCancellationBridge (R16-1,
-// r16-fix-spec.md): a future fix to the exactly-once discipline now
-// only has to land in one place.
+// consolidation rationale as ProcessCancellationBridge: a future fix
+// to the exactly-once discipline now only has to land in one place.
 //
 // Deliberately NOT used by SessionDaemonClient's own
 // SessionDaemonBoundedRaceBridge: that type races two independent,
 // separately-cancellable arms (an operation Task AND a timeout Task)
 // with a closure-valued `onTimeout()` result and winner-cancels-loser
-// ordering (see that type's own R10-C doc comment) -- a different,
+// ordering (see that type's own doc comment) -- a different,
 // three-way race shape this simpler single-timeout-arm bridge doesn't
 // cover.
 

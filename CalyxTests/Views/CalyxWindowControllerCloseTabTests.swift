@@ -128,8 +128,7 @@ final class CalyxWindowControllerCloseTabTests: XCTestCase {
         )
     }
 
-    /// Regression/crash guard (r6-fix-spec.md-style "most important"
-    /// callout in the investigation): OTHER with MORE than 3 tabs, target
+    /// Regression/crash guard: OTHER with MORE than 3 tabs, target
     /// at index 0 (a different position than the "3 tabs, middle target"
     /// test above, so this is not a duplicate of it). By hand: starting
     /// tabs are [tab0..tab4] (5 tabs), target = tab0; OTHER must leave

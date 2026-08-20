@@ -49,11 +49,11 @@ final class ConfigFileUtilsTests: XCTestCase {
                        "A regular file must not be reported as a directory")
     }
 
-    // MARK: - resolveConfigPath(_:) — Round 3 (symlink-following config writes)
+    // MARK: - resolveConfigPath(_:) — symlink-following config writes
     //
-    // Added for the Round 3 fix: `~/.claude/settings.json` etc. is
-    // commonly a dotfiles-managed symlink, and blanket symlink rejection
-    // silently broke hooks installation entirely in that setup. These
+    // `~/.claude/settings.json` etc. is commonly a dotfiles-managed
+    // symlink, and blanket symlink rejection silently broke hooks
+    // installation entirely in that setup. These
     // cover the real dotfiles-adjacent shapes resolveConfigPath must
     // handle: a plain file, a symlink to an existing file, a dangling
     // symlink (writes should land at the link's destination), a
@@ -123,9 +123,9 @@ final class ConfigFileUtilsTests: XCTestCase {
                        "A relative dangling symlink's destination must be absolutized against the link's own directory")
     }
 
-    // MARK: - resolveConfigPath(_:) — Round 3 fix (multi-hop resolution)
+    // MARK: - resolveConfigPath(_:) — multi-hop resolution
     //
-    // Round 3 review: the original single-hop implementation only
+    // The original single-hop implementation only
     // followed ONE symlink when the target didn't exist, so a two-hop
     // dangling chain (link -> link -> not-yet-existing file) resolved to
     // the INTERMEDIATE link instead of the final destination. Since

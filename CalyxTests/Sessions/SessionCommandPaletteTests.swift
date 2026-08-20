@@ -309,7 +309,7 @@ final class SessionCommandPaletteTests: XCTestCase {
     /// a count of exactly 0, proving `closeFocusedSessionSurface` never
     /// consults it at all any more, not just pinning one particular
     /// outcome of it. `removeWindowController` comes from
-    /// `ConfirmQuitMockAppDelegate` (R6-J, r6-fix-spec.md): invoking
+    /// `ConfirmQuitMockAppDelegate`: invoking
     /// `session.detach`/`session.kill` on `SinglePaneFixture` below
     /// empties the window for real, so `closeSurfaceAndCleanUp` calls
     /// `window?.close()`, which fires `windowWillClose` ->
@@ -488,9 +488,9 @@ final class SessionCommandPaletteTests: XCTestCase {
                      "Teardown must remove the now-empty tab and its now-empty group")
     }
 
-    // MARK: - closingTabIDs insertion ordering (F2/T2, r4-fix-spec.md)
+    // MARK: - closingTabIDs insertion ordering (F2/T2)
     //
-    // r4-fix-spec.md F2 (V02, CRITICAL): `closeFocusedSessionSurface`
+    // F2 (CRITICAL): `closeFocusedSessionSurface`
     // must insert `tab.id` into `closingTabIDs` BEFORE any surface
     // teardown work runs, mirroring `closeTab`'s own insert-before-
     // teardown ordering, so a synchronous reentrant close for the same
@@ -603,9 +603,9 @@ final class SessionCommandPaletteTests: XCTestCase {
                        "ordering")
     }
 
-    // MARK: - Round-4 fix (F7/T7): isClosingForShutdown timing
+    // MARK: - isClosingForShutdown timing (F7/T7)
     //
-    // r4-fix-spec.md F7 (S2, WARNING): `closeSurfaceAndCleanUp`'s
+    // F7 (WARNING): `closeSurfaceAndCleanUp`'s
     // `.windowShouldClose` arm (one of the four arms covered by F7/F8,
     // the other three, `closeTab`/`closeActiveGroup`/
     // `closeAllTabsInGroup`, are covered by

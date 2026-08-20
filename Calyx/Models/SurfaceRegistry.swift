@@ -78,9 +78,8 @@ final class SurfaceRegistry {
 
     var count: Int { entries.count }
 
-    /// P4 round-6 fix (R6-D, r6-fix-spec.md): also includes
-    /// `_testInsert`-only entries under `#if DEBUG`. `closeTab`/
-    /// `closeAllTabsInGroup`/`closeActiveGroup`, and (as of round 6)
+    /// Also includes `_testInsert`-only entries under `#if DEBUG`.
+    /// `closeTab`/`closeAllTabsInGroup`/`closeActiveGroup`, and
     /// `CalyxWindowController.windowWillClose`, iterate `allIDs` to
     /// decide which surfaces to run kill/detach close-policy handling on
     /// before destroying them. A `_testInsert`-only fixture (this

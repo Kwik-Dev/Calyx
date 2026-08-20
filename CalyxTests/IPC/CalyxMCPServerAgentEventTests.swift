@@ -305,7 +305,7 @@ final class CalyxMCPServerAgentEventTests: XCTestCase {
         XCTAssertEqual(unknownPathResponse.statusCode, 404)
     }
 
-    // MARK: - Round 3: unread-badge wiring (route() binding + real tool calls)
+    // MARK: - Unread-badge wiring (route() binding + real tool calls)
     //
     // No mocking: drives the real PreToolUse-binding path through route(),
     // then the real send_message/receive_messages tool handlers through
@@ -330,7 +330,7 @@ final class CalyxMCPServerAgentEventTests: XCTestCase {
         return try XCTUnwrap(content.first?["text"] as? String)
     }
 
-    // Round 4 review: previously duplicated the same
+    // Previously duplicated the same
     // `JSONSerialization`/`peerId` extraction inline; now delegates to
     // `peerID(fromToolResultBody:)` below, the single place that logic
     // lives.
@@ -348,7 +348,7 @@ final class CalyxMCPServerAgentEventTests: XCTestCase {
     }
 
     func test_agentEventBinding_postToolUseRegisterPeerResponse_bindsSurface_firstMessageLightsUpBadge() async throws {
-        // Round 3 fix: a surface is now also bound to its own peer ID
+        // A surface is now also bound to its own peer ID
         // right from register_peer's PostToolUse response
         // (tool_response.peerId), not only from a later PreToolUse for
         // one of the other calyx-ipc tools — so a message sent to a pane
@@ -383,7 +383,7 @@ final class CalyxMCPServerAgentEventTests: XCTestCase {
                        "must light up the badge on its first send, with no prior PreToolUse needed")
     }
 
-    // MARK: - Round 3 review follow-up: syncBoundPeerInboxCounts gating
+    // MARK: - syncBoundPeerInboxCounts gating
 
     func test_agentEventBinding_lspToolCall_doesNotRefreshInboxCounts_messagingToolDoes() async throws {
         let registry = AgentRegistry()
@@ -430,7 +430,7 @@ final class CalyxMCPServerAgentEventTests: XCTestCase {
                        "syncBoundPeerInboxCounts and pick up the count left stale by the earlier lsp_* call")
     }
 
-    // MARK: - Round 4: MCP-connection surface binding (X-Calyx-Surface-ID
+    // MARK: - MCP-connection surface binding (X-Calyx-Surface-ID
     // on /mcp itself), so a passive recipient that never calls a
     // calyx-ipc tool still gets its unread badge lit.
     //
@@ -592,7 +592,7 @@ final class CalyxMCPServerAgentEventTests: XCTestCase {
         XCTAssertEqual(sessionStartB.statusCode, 204)
 
         // A sends to B via the real send_message tool — B never calls any
-        // calyx-ipc tool itself, so the pre-Round-4 PreToolUse/
+        // calyx-ipc tool itself, so the PreToolUse/
         // PostToolUse-only binding path never learns B's surface.
         let sendResponse = await server.route(request: mcpRequest(
             token: testToken, surfaceIDHeader: nil,
@@ -619,7 +619,7 @@ final class CalyxMCPServerAgentEventTests: XCTestCase {
 
     // MARK: - initialize header validation
 
-    // Round 6 review: `initialize`'s auto-registration is now itself
+    // `initialize`'s auto-registration is now itself
     // gated on a valid `X-Calyx-Surface-ID` header (see
     // `test_initialize_withoutSurfaceHeader_doesNotAutoRegisterPeer`) —
     // a surfaceless connection has no surface for a peer to ever be bound
@@ -720,19 +720,18 @@ final class CalyxMCPServerAgentEventTests: XCTestCase {
                        "peer to that surface, the same way initialize's auto-registered peer does")
     }
 
-    // MARK: - Round 4 review / Round 6 fix review: initialize only binds
-    // an unbound surface
+    // MARK: - initialize only binds an unbound surface
     //
-    // This test originally (Round 4) asserted that a second `initialize`
+    // This test originally asserted that a second `initialize`
     // on an already-bound surface mints a distinct "ghost" peer whose
     // binding must not steal the first peer's — i.e. it treated the ghost
     // peer as an accepted side effect and only guarded against its
-    // binding leaking. That ghost peer WAS the Round 6 defect (see
+    // binding leaking. That ghost peer WAS the defect (see
     // `test_initialize_sameSurfaceReconnect_reportsSamePeerID_singleListPeersEntry_registerPeerAlsoSameID`
     // for the direct contract): a second `initialize` on a still-alive,
     // already-bound surface no longer mints anything at all, so there is
     // no second peer here to compare bindings against. This test now
-    // instead confirms the ORIGINAL Round 4 concern — that message
+    // instead confirms the ORIGINAL concern — that message
     // delivery/badges keep working across a reconnect — holds under the
     // new single-identity behavior.
 
@@ -791,7 +790,7 @@ final class CalyxMCPServerAgentEventTests: XCTestCase {
         XCTAssertEqual(registry.entries[surfaceID]?.unreadCount, 0)
     }
 
-    // MARK: - Round 4 review: shared surface-ID header parsing (trim)
+    // MARK: - Shared surface-ID header parsing (trim)
     // across /mcp and /agent-event
 
     func test_surfaceIDHeader_leadingTrailingWhitespace_parsesIdenticallyOnMCPAndAgentEvent() async throws {
@@ -815,8 +814,8 @@ final class CalyxMCPServerAgentEventTests: XCTestCase {
         // (trimmed) surface UUID, exactly as the unpadded form does
         // elsewhere in this file. The surface isn't yet peer-bound at
         // this point (SessionStart above never carries an
-        // ipcSelfPeerID), so Round 4 review fix #1's "only bind an
-        // unbound surface" gate doesn't block this.
+        // ipcSelfPeerID), so the "only bind an unbound surface" gate
+        // doesn't block this.
         let initResponse = await server.route(request: mcpRequest(
             token: testToken, surfaceIDHeader: paddedHeader, body: initializeRequestBody(id: 1)
         ))
@@ -836,10 +835,10 @@ final class CalyxMCPServerAgentEventTests: XCTestCase {
                        "lighting up the same surface's badge")
     }
 
-    // MARK: - Round 6: register_peer rename semantics (single identity per surface)
+    // MARK: - register_peer rename semantics (single identity per surface)
     //
     // Bug: register_peer always minted a fresh UUID (IPCStore.registerPeer),
-    // so a pane that followed the (pre-Round-6) instructions' "call
+    // so a pane that followed the earlier instructions' "call
     // register_peer once after connecting" ended up with TWO registered
     // identities for the same surface — the auto-registered peer from
     // `initialize`, and a second, disconnected one from its own
@@ -942,7 +941,7 @@ final class CalyxMCPServerAgentEventTests: XCTestCase {
 
         // An external MCP client without X-Calyx-Surface-ID (e.g. a
         // non-Ghostty-pane client) has no surface binding, so register_peer
-        // must keep its pre-Round-6 behavior: always mint a fresh peer.
+        // must keep its original behavior: always mint a fresh peer.
         // Non-regression — this must pass both before and after the fix.
         let register1 = await server.route(request: mcpRequest(
             token: testToken, surfaceIDHeader: nil,
@@ -960,7 +959,7 @@ final class CalyxMCPServerAgentEventTests: XCTestCase {
 
         XCTAssertNotEqual(peer1, peer2,
                           "register_peer without a surface header must keep registering brand-new peers " +
-                          "every time, exactly like before Round 6 — there is no binding to rename")
+                          "every time — there is no binding to rename")
     }
 
     func test_registerPeer_boundPeerNotAliveInStore_selfHeals_createsNewAndRebinds() async throws {
@@ -1009,7 +1008,7 @@ final class CalyxMCPServerAgentEventTests: XCTestCase {
                        "previously bound peer is no longer alive in the store — self-healing")
     }
 
-    // MARK: - Round 6 review: initialize's auto-registration limited to
+    // MARK: - initialize's auto-registration limited to
     // surface-bound connections
     //
     // The rename semantics above only help a surface-bound pane — an
@@ -1076,17 +1075,17 @@ final class CalyxMCPServerAgentEventTests: XCTestCase {
         return try XCTUnwrap(json["peers"] as? [[String: Any]])
     }
 
-    // MARK: - Round 6 fix review: reconnect on an already-bound, still-
-    // alive surface must not mint a ghost peer
+    // MARK: - Reconnect on an already-bound, still-alive surface must
+    // not mint a ghost peer
     //
-    // The Round 6 fix above only auto-registers a peer for a surface-bound
+    // The fix above only auto-registers a peer for a surface-bound
     // `initialize`, but it originally still called `registerPeer`
     // unconditionally whenever a surface header was present — including a
     // RECONNECT on a surface that was already bound to a still-alive peer
     // (e.g. an MCP client restart mid-session). That minted a second,
     // ghost identity on every reconnect and reported ITS id back as
     // "already registered", which `register_peer` could then never
-    // reproduce — breaking the very promise the Round 6 instructions text
+    // reproduce — breaking the very promise the instructions text
     // makes. Fix: `initialize` on an already-bound surface whose peer is
     // still alive in `IPCStore` reports that SAME peer_id and does
     // nothing else (no new `registerPeer`, no rebind).
@@ -1182,7 +1181,7 @@ final class CalyxMCPServerAgentEventTests: XCTestCase {
                        "previously bound peer has been TTL-purged from the store — self-healing")
     }
 
-    // MARK: - Round 6 fix review: register_peer rename must not blank out
+    // MARK: - register_peer rename must not blank out
     // an omitted/empty name or role
     //
     // `handleRegisterPeer`'s rename path originally passed the raw
@@ -1253,7 +1252,7 @@ final class CalyxMCPServerAgentEventTests: XCTestCase {
 
     // Code review follow-up: a whitespace-only argument (not just the
     // exact empty string `""`) must also be treated as "omitted" — the
-    // one case Round 6 specifically set out to protect against, since a
+    // one case this rename path specifically protects against, since a
     // caller sending `"name": " "` would otherwise blank out the
     // existing name with a whitespace-only value instead of preserving
     // it. Mirrors the header-parsing trim-before-isEmpty convention used
@@ -1288,7 +1287,7 @@ final class CalyxMCPServerAgentEventTests: XCTestCase {
         XCTAssertEqual(renamed["role"] as? String, "worker", "the supplied role must apply")
     }
 
-    // MARK: - Round 7: messages are deleted on receive (at-most-once);
+    // MARK: - Messages are deleted on receive (at-most-once);
     // ack_messages is removed entirely.
 
     func test_agentEventBinding_sendMessageIncrementsUnreadCount_receiveClearsIt_secondReceiveReturnsEmpty() async throws {
@@ -1324,7 +1323,7 @@ final class CalyxMCPServerAgentEventTests: XCTestCase {
                        "Sending a message to the bound peer must increment the surface row's unreadCount")
 
         // The FIRST receive_messages call returns the message and clears
-        // unreadCount — unchanged from the pre-Round-7 contract.
+        // unreadCount.
         let firstReceiveRequest = rpcToolCallRequest(id: 3, toolName: "receive_messages", arguments: ["peer_id": p1])
         let (firstReceiveStatus, firstReceiveBody) = await server.handleJSONRPC(data: firstReceiveRequest, authToken: testToken)
         XCTAssertEqual(firstReceiveStatus, 200)
@@ -1335,7 +1334,7 @@ final class CalyxMCPServerAgentEventTests: XCTestCase {
         XCTAssertEqual(registry.entries[boundSurface]?.unreadCount, 0,
                        "receive_messages must clear the bound surface's unreadCount")
 
-        // Round 7 core contract: a SECOND receive_messages call for the
+        // Core contract: a SECOND receive_messages call for the
         // same peer, with nothing new sent in between, must now return
         // an empty array — the message was already deleted from the
         // inbox by the first call (at-most-once delivery), with no
@@ -1350,7 +1349,7 @@ final class CalyxMCPServerAgentEventTests: XCTestCase {
     }
 
     func test_ackMessagesToolCall_returnsUnknownToolError() async throws {
-        // Round 7: ack_messages is removed entirely — messages are
+        // ack_messages is removed entirely — messages are
         // deleted on receive (at-most-once), so there is no longer a
         // separate ack step. A client still holding onto stale
         // instructions/tool list that calls ack_messages anyway must get

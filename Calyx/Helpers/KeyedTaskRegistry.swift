@@ -1,7 +1,7 @@
 // KeyedTaskRegistry.swift
 // Calyx
 //
-// Round-18 cleanup: CalyxWindowController.swift had FOUR hand-rolled
+// CalyxWindowController.swift had FOUR hand-rolled
 // copies of the same keyed-Task-dictionary idiom (diffTasks,
 // expandTasks, childExitedTasks, reconnectEstablishGraceTasks), each
 // duplicating cancel-before-replace, self-removal-on-completion, and

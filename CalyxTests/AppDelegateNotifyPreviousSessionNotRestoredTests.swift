@@ -17,7 +17,7 @@
 //  Its own test, SessionReconnectGiveUpTests
 //  .test_giveUp_notificationText_noLongerClaimsSessionIsLostOrOnlyRecoverableAsNew,
 //  spies on NotificationManager via a subclass overriding
-//  sendNotification and swapping NotificationManager.shared (the R6-F
+//  sendNotification and swapping NotificationManager.shared (the
 //  DEBUG seam, `#if DEBUG static var shared` instead of `static let`,
 //  specifically added so tests can substitute a spy instead of going
 //  through the real UNUserNotificationCenter, which is a no-op under

@@ -71,7 +71,7 @@
 //  shape) -- see that file's own header comment for why each of those
 //  is necessary/safe. `pumpRunLoop`/`ReconnectFixture`/
 //  `makeReconnectFixture` themselves live in the shared
-//  `CalyxTests/ReconnectFixture.swift` (round-18 cleanup).
+//  `CalyxTests/ReconnectFixture.swift`.
 //
 //  Coverage:
 //  - A replacement surface that survives past the (overridden, tiny)
@@ -137,7 +137,7 @@ final class SessionReconnectEstablishGraceSeamTests: XCTestCase {
         let newSurfaceID = UUID()
         fixture.tab.registry._testInsert(view: SurfaceView(frame: .zero), id: newSurfaceID)
         fixture.controller._performReconnectSurfaceCreationHookForTesting = { newSurfaceID }
-        // Round-18 G6: establishment now also requires
+        // Establishment also requires
         // `reconnectGraceProbe(sessionID:)` to report `.established`. This
         // test drives a real `performReconnect` against `/usr/bin/true`
         // and never registers `sessionID` with any real or fake daemon

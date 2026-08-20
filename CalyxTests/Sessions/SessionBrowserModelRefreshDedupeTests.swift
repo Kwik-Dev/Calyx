@@ -2,7 +2,6 @@
 //  SessionBrowserModelRefreshDedupeTests.swift
 //  CalyxTests
 //
-//  TDD Red phase, round 12 (r12-fix-spec.md, R12-A item 3):
 //  SessionBrowserModel.refresh() has no in-flight guard, so a second
 //  refresh() issued while a previous one is still awaiting the daemon
 //  round-trip (listAllBounded()) starts a second, fully overlapping
@@ -104,7 +103,7 @@ final class SessionBrowserModelRefreshDedupeTests: XCTestCase {
         }
     }
 
-    /// Primary RED-proving assertion (R12-A item 3): against the
+    /// Primary RED-proving assertion: against the
     /// CURRENT code, `refresh()` has no in-flight guard, so a second
     /// call issued while the first is still awaiting the daemon starts
     /// its own, fully overlapping `listAll()` round-trip.

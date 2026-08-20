@@ -15,15 +15,15 @@ enum ScreenStateClassifier {
 
     /// The choice-cursor marker Claude Code's approval/permission prompt
     /// renders in front of its default-selected numbered option (e.g.
-    /// "❯ 1. Yes"). Round 3's original blocked-pattern set also matched
-    /// generic phrases like "do you want" / "would you like" / "esc to
-    /// cancel" on their own, which false-positived on unrelated shell
+    /// "❯ 1. Yes"). A blocked-pattern set that also matched generic
+    /// phrases like "do you want" / "would you like" / "esc to
+    /// cancel" on their own would false-positive on unrelated shell
     /// tools that ask their own yes/no questions — apt's
     /// "Do you want to continue? [Y/n]", fzf's "ESC to cancel" footer —
     /// neither of which renders this cursor+numbered-option shape.
     /// Requiring it is Claude-Code-specific and conservative: no
     /// confirmed Codex/OpenCode-equivalent marker exists yet (verifying
-    /// real on-device wording is an open Round 3 follow-up), so every
+    /// real on-device wording is an open follow-up), so every
     /// `kind`, including an unrecognized one, is classified against this
     /// same minimal pattern for now rather than a per-`kind` guess.
     private static let choiceMarkerPattern = #"❯\s*\d+\."#
@@ -41,7 +41,7 @@ enum ScreenStateClassifier {
     /// recognized, `.working` when the in-progress marker is
     /// recognized, or `nil` when neither is found — callers treat `nil`
     /// as "fall back to idle" rather than "no signal at all", per the
-    /// Round 3 plan's conservative-by-design rule (a false
+    /// conservative-by-design rule (a false
     /// `.blocked`/`.working` is worse than a missed one). `.blocked`
     /// takes priority when both kinds of pattern are present (e.g. an
     /// approval prompt that interrupted a still-visible in-progress

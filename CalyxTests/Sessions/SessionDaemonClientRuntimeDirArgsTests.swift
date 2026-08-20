@@ -2,7 +2,7 @@
 //  SessionDaemonClientRuntimeDirArgsTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (round 18, G5 flags migration): supersedes the former
+//  Supersedes the former
 //  SessionDaemonClientHomeEnvironmentTests, which passed every
 //  commandRunner.run(...) call a full ProcessInfo-copy environment with
 //  only "HOME" overridden to the resolved session root -- see

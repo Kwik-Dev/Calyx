@@ -2,9 +2,7 @@
 //  SessionDaemonClientBoundedOperationsTests.swift
 //  CalyxTests
 //
-//  TDD Red phase, round 12 (r12-fix-spec.md, R12-B, as narrowed by the
-//  round-11 sweep addendum item 1): the 5s daemon-round-trip bound
-//  `listAllBounded()` established (round 10, see
+//  The 5s daemon-round-trip bound `listAllBounded()` established (see
 //  SessionDaemonClientBoundedListTests) covers only the ledger listing
 //  call. `sessionState(id:)` (SessionReconnectCoordinator.childExited's
 //  reconnect decision) still awaits the underlying
@@ -17,7 +15,7 @@
 //  covered here. It is read-only, so racing it against a timeout and
 //  cancelling the loser (mirroring `listAllBounded()`'s shape exactly)
 //  is safe. `kill(id:)` is deliberately EXCLUDED from this bounded
-//  treatment: now that R12-A makes Task cancellation reach the actual
+//  treatment: now that Task cancellation reaches the actual
 //  Process (SIGTERM), cancelling a slow `calyx-session kill` mid-IPC-write
 //  would silently lose the kill -- worse than a slow-but-eventually-
 //  completed one. `kill(id:)` keeps its current unbounded
@@ -34,7 +32,7 @@
 //  SessionDaemonClientBoundedListTests' header comment, itself citing
 //  CalyxWindowControllerFullScreenTests), this file is expected to FAIL
 //  TO COMPILE until the TDD Green phase adds it -- that compile failure
-//  IS this contract's round-12 RED evidence. Once Green adds the
+//  IS this contract's RED evidence. Once Green adds the
 //  bounded wrapper, this test exercises it against a REAL
 //  SessionDaemonClient (not a protocol-level fake), with a
 //  never-completing LSPCommandRunner injected via the client's existing
@@ -82,17 +80,17 @@ private struct FixedBinaryResolver: SessionBinaryResolverProtocol {
 final class SessionDaemonClientBoundedOperationsTests: XCTestCase {
 
     override func tearDown() {
-        // R14-B (r14-fix-spec.md): test isolation, mirroring
+        // Test isolation, mirroring
         // SessionDaemonClientSessionStateBoundTimeoutSeamTests' own
         // tearDown -- no override must leak into a later test.
         SessionDaemonClientBoundTimeoutOverrides.sessionStateBoundTimeoutSeconds = nil
         super.tearDown()
     }
 
-    /// R12-B: against a never-completing commandRunner,
+    /// Against a never-completing commandRunner,
     /// sessionStateBounded(id:) must still reach a terminal
     /// .unreachable within a generous margin over its own bound.
-    /// R14-B (r14-fix-spec.md): overrides `sessionStateBoundTimeoutSeconds`
+    /// Overrides `sessionStateBoundTimeoutSeconds`
     /// to 1s via the DEBUG timeout seam so this test runs in
     /// milliseconds instead of burning the real ~5s default.
     func test_sessionStateBounded_returnsUnreachableWithinBound_whenCommandRunnerNeverCompletes() async {

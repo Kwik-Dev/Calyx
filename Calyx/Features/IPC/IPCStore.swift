@@ -141,11 +141,11 @@ actor IPCStore {
     /// Updates an existing peer's `name`/`role` in place and bumps its
     /// `lastSeen`, preserving `id` and `registeredAt` — a rename, not a
     /// re-registration. `nil` for either parameter keeps that field's
-    /// current value unchanged (Round 6 review: `CalyxMCPServer.handleRegisterPeer`
+    /// current value unchanged (`CalyxMCPServer.handleRegisterPeer`
     /// passes `nil` for an omitted or empty `register_peer` argument so a
     /// caller that only supplies a new `name` doesn't blank out the
     /// existing `role`, or vice versa). Returns the updated `Peer`, or
-    /// `nil` if `id` has no registered (alive) peer. Round 6: backs
+    /// `nil` if `id` has no registered (alive) peer. Backs
     /// `handleRegisterPeer`'s rename semantics — a surface with an
     /// already-bound, still-alive peer gets that peer renamed instead of
     /// a second identity being minted, closing the "two peers per pane"
@@ -241,7 +241,7 @@ actor IPCStore {
     /// `lastSeen` of every distinct sender of returned messages. If the
     /// peer is not alive, returns [] and purges.
     ///
-    /// Round 7: replaces the earlier at-least-once contract (a message
+    /// Replaces the earlier at-least-once contract (a message
     /// stayed in the inbox, merely marked delivered, until a separate
     /// `ackMessages` call removed it). In practice `ackMessages` was
     /// rarely called — MCP instructions never told a client it needed

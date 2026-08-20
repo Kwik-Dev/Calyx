@@ -6,7 +6,7 @@
 //  RED -- no new production API needed, unlike this round's other
 //  contracts; every seam this file uses already exists):
 //
-//  performReconnect's grace Task (round-18 finding G6, see
+//  performReconnect's grace Task (see
 //  ReconnectGraceProbeResult's own doc comment) requires a POSITIVE
 //  daemon probe (reconnectGraceProbe(sessionID:), which queries
 //  SessionDaemonClient.shared -- the LOCAL calyx-session daemon)

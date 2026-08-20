@@ -220,7 +220,7 @@ final class CalyxMCPServer {
     /// Test-only counter of how many times `sendHTTPResponse` was
     /// *entered* for any connection on this server instance —
     /// incremented unconditionally, before its `accumulator.didRespond`
-    /// guard. Confirmed empirically (Round 5 final review) to reach `2`
+    /// guard. Confirmed empirically to reach `2`
     /// for a single connection in the exact scenario the deadline
     /// double-send bug describes — the guard makes the second entry a
     /// harmless no-op, but does not prevent the entry itself, so this
@@ -237,7 +237,7 @@ final class CalyxMCPServer {
     /// Test-only counter of how many times `sendHTTPResponse` actually
     /// proceeded past its `accumulator.didRespond` guard to call
     /// `connection.send(...)` — i.e. the count that must stay at `1` per
-    /// connection for the Round 5 final review's Critical fix to hold.
+    /// connection.
     /// See `_testSendHTTPResponseAttemptCount` for the (deliberately
     /// unguarded) entry counter this complements.
     private(set) var _testSendHTTPResponseSentCount = 0
@@ -295,7 +295,7 @@ final class CalyxMCPServer {
 
     /// Trims whitespace from `X-Calyx-Surface-ID` and parses it as a
     /// `UUID`, returning `nil` for a missing, empty, or non-UUID value.
-    /// Shared (Round 4 review) by both `/mcp` (`routeMCP`) and
+    /// Shared by both `/mcp` (`routeMCP`) and
     /// `/agent-event` (`routeAgentEvent`) so the same header — sent by an
     /// actual Claude Code MCP client on one route and by
     /// `calyx-agent-hook`'s own hook POST on the other — is parsed
@@ -894,7 +894,7 @@ final class CalyxMCPServer {
     /// The resolved port is read back from `nl.port?.rawValue` rather than
     /// trusted to equal `tryPort` because `requiredLocalEndpoint` with a
     /// literal port of `0` is not rejected by Network framework on every
-    /// host (Round 5 / task #47 — see `bindKernelAssignedListener`'s doc
+    /// host (see `bindKernelAssignedListener`'s doc
     /// comment): on hosts where it isn't rejected, this very function can
     /// reach `.ready` with the kernel having silently picked an ephemeral
     /// port for `tryPort == 0`, and the only way to learn which port that
@@ -937,8 +937,8 @@ final class CalyxMCPServer {
     /// `requiredLocalEndpoint` with a literal port of `0` directly, on
     /// the assumption that Network framework rejects a literal-`0`
     /// `requiredLocalEndpoint` at `start()` time
-    /// (`nw_path_create_evaluator_for_listener failed`). Round 5 (task
-    /// #47) established that this rejection is environment-dependent,
+    /// (`nw_path_create_evaluator_for_listener failed`). That rejection
+    /// is environment-dependent,
     /// not universal: on hosts where it does *not* reject the bind, a
     /// literal-`0` `requiredLocalEndpoint` reaches `.ready` directly,
     /// with the kernel silently choosing the ephemeral port during
@@ -988,9 +988,9 @@ final class CalyxMCPServer {
             // sub-millisecond — but nothing structurally guarantees
             // they can never differ, and recording an unverified
             // pre-bind guess here would silently reopen the exact class
-            // of bug `bindListener(onPort:)` was fixed to close (Round
-            // 5 / task #47): a caller trusting a port number the
-            // listener never confirmed it actually bound.
+            // of bug `bindListener(onPort:)` was fixed to close: a
+            // caller trusting a port number the listener never
+            // confirmed it actually bound.
             guard let boundPort = ready.port?.rawValue, boundPort != 0 else {
                 ready.cancel()
                 continue
@@ -1615,15 +1615,15 @@ final class CalyxMCPServer {
     /// Returns an HTTP-like status code and optional response body.
     ///
     /// - Parameter surfaceID: The pane's `X-Calyx-Surface-ID` header, when
-    ///   present and valid on the underlying HTTP request (Round 4),
+    ///   present and valid on the underlying HTTP request,
     ///   parsed by `routeMCP`'s `parseSurfaceID(from:)`. When non-`nil`,
     ///   the `initialize` case reports (and, if needed, (re)binds) that
-    ///   surface's one true peer identity (Round 6 review — see that call
+    ///   surface's one true peer identity (see that call
     ///   site's own comment), and `tools/call`'s `register_peer`
     ///   unconditionally binds it to whatever peer it resolves to — both
     ///   via `agentRegistry.bindSurface` — so a pane's row gets its unread
     ///   badge lit even if it never calls a calyx-ipc tool itself (the
-    ///   pre-Round-4 hook-derived binding in `AgentRegistry.handleHookEvent`
+    ///   hook-derived binding in `AgentRegistry.handleHookEvent`
     ///   still runs independently, as a fallback that needs no
     ///   `X-Calyx-Surface-ID` header at all).
     func handleJSONRPC(
@@ -1655,7 +1655,7 @@ final class CalyxMCPServer {
         // 4. Route by method
         switch request.method {
         case "initialize":
-            // Round 6: auto-register a peer ONLY for a surface-bound
+            // Auto-register a peer ONLY for a surface-bound
             // connection (one carrying `X-Calyx-Surface-ID`). A
             // surfaceless connection (e.g. an external MCP client like
             // OpenCode) has no surface for a peer to ever be bound to —
@@ -1663,12 +1663,12 @@ final class CalyxMCPServer {
             // leaves an orphaned, unaddressable identity behind on every
             // reconnect, with no way to rename it back onto whatever
             // identity the client eventually self-registers via
-            // `register_peer`. Such a client keeps the pre-Round-6
+            // `register_peer`. Such a client keeps the
             // "self-register immediately" instructions (see
             // `MCPRouter.instructions`) as its only path to a peer_id —
             // that's the intended, unchanged contract for it, not a gap.
             //
-            // Round 6 review: a surface-bound connection instead resolves
+            // A surface-bound connection instead resolves
             // to the surface's ONE peer identity, not a fresh one every
             // time:
             // - Bound to a peer that's still alive in `IPCStore`: report
@@ -1858,7 +1858,7 @@ final class CalyxMCPServer {
 
     // MARK: - Tool Handlers
 
-    /// Round 6: enforces "1 surface = 1 peer identity". Before this fix,
+    /// Enforces "1 surface = 1 peer identity". Before this fix,
     /// `register_peer` always minted a brand-new peer, while `initialize`
     /// already auto-registers one for every surface-bound connection and
     /// (contradictorily) the old instructions told clients to call
@@ -1908,10 +1908,9 @@ final class CalyxMCPServer {
         }
 
         // A brand-new registration has no existing name/role to preserve,
-        // so an omitted/empty argument here becomes "" exactly as before
-        // Round 6.
+        // so an omitted/empty argument here becomes "".
         let peer = await store.registerPeer(name: nameArg ?? "", role: roleArg ?? "")
-        // Bind the connection's own surface (Round 4) to the freshly
+        // Bind the connection's own surface to the freshly
         // created peer — covers explicit re-registration (e.g. after
         // `/clear`, or self-healing a stale binding above) the same way
         // `initialize`'s auto-registration does in `handleJSONRPC`, not

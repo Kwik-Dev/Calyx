@@ -61,9 +61,9 @@ protocol SessionDaemonClientProtocol: Sendable {
     func setHistoryEnabled(_ enabled: Bool) async
 }
 
-/// R14-B (r14-fix-spec.md): narrow `#if DEBUG` override hook for the
+/// Narrow `#if DEBUG` override hook for the
 /// two bounded-timeout constants below, mirroring
-/// `NotificationManager.shared`'s R6-F override and
+/// `NotificationManager.shared`'s override and
 /// `SessionSettings._testStore`'s suite-swap seam. `nil` (the default)
 /// means "use the production value"; a test sets one or both to a
 /// tiny, distinguishable value so it can assert the bound's plumbing
@@ -78,23 +78,21 @@ enum SessionDaemonClientBoundTimeoutOverrides {
 }
 #endif
 
-/// R14-A (r14-fix-spec.md): thread-safe bridge between
-/// `withTaskCancellationHandler`'s `onCancel` closure and
-/// `SessionDaemonClientProtocol.bounded(...)`'s own `operationTask`/
-/// `timeoutTask`/`continuation`, mirroring `SystemCommandRunner`'s
-/// `CancellationBridge`. Declared at file scope, generic over `T`,
-/// because Swift does not allow a nested type inside a generic
-/// function. `resume(with:)` is exactly-once, shared by all three
-/// potential resumers (the operation arm, the timeout arm, and
+/// Thread-safe bridge between `withTaskCancellationHandler`'s `onCancel`
+/// closure and `SessionDaemonClientProtocol.bounded(...)`'s own
+/// `operationTask`/`timeoutTask`/`continuation`, mirroring
+/// `SystemCommandRunner`'s `CancellationBridge`. Declared at file scope,
+/// generic over `T`, because Swift does not allow a nested type inside a
+/// generic function. `resume(with:)` is exactly-once, shared by all
+/// three potential resumers (the operation arm, the timeout arm, and
 /// `cancel(onTimeout:)`). `register(...)`'s return value tells the
 /// caller whether the bridge was already cancelled by the time it ran,
-/// mirroring that type's own already-cancelled-before-register
-/// handling.
+/// mirroring that type's own already-cancelled-before-register handling.
 ///
 /// Deliberately separate from the generic `AwaitBridge<Value>` helper
 /// (`Calyx/Helpers/AwaitBridge.swift`): this type races two independent,
 /// separately-cancellable arms (`operationTask` AND `timeoutTask`) with
-/// winner-cancels-loser ordering (see `bounded(...)`'s own R10-C doc
+/// winner-cancels-loser ordering (see `bounded(...)`'s own doc
 /// comment) and a closure-valued `onTimeout()` result, a three-way race
 /// shape `AwaitBridge`'s single fixed-fallback timeout arm doesn't cover.
 final class SessionDaemonBoundedRaceBridge<T: Sendable>: @unchecked Sendable {
@@ -133,7 +131,7 @@ final class SessionDaemonBoundedRaceBridge<T: Sendable>: @unchecked Sendable {
         isCancelled = true
         let opTask = operationTask
         let toTask = timeoutTask
-        // R16-3 (r16-fix-spec.md): `register(...)` hasn't run yet when
+        // `register(...)` hasn't run yet when
         // `continuation` is still nil, so its own already-cancelled
         // branch (see `bounded(...)` below) is the one that will call
         // `onTimeout()`, not this method -- calling it here too would
@@ -183,15 +181,15 @@ extension SessionDaemonClientProtocol {
     /// overrides it itself.
     func setHistoryEnabled(_ enabled: Bool) async {}
 
-    /// R10-C item 2 (r10-fix-spec.md): the single bound shared by every
+    /// The single bound shared by every
     /// query-style caller that must not await `listAll()` unbounded,
     /// originally `AppDelegate`'s agent-resume path alone
-    /// (`listAllSessionsBounded`, R8-D item 1), now also
+    /// (`listAllSessionsBounded`), now also
     /// `SessionBrowserModel.refresh()`, which used to await `listAll()`
     /// completely unbounded and freeze the whole session browser behind
     /// a hung `calyx-session` daemon.
     ///
-    /// R14-B (r14-fix-spec.md): renamed from `listAllBoundTimeoutSeconds`
+    /// Renamed from `listAllBoundTimeoutSeconds`
     /// -- `sessionStateBounded(id:)` now has its own dedicated, longer
     /// `sessionStateBoundTimeoutSeconds` below, so this name describes
     /// only the low-consequence query callers that still share the
@@ -208,7 +206,7 @@ extension SessionDaemonClientProtocol {
         return 5
     }
 
-    /// R14-B (r14-fix-spec.md): `sessionStateBounded(id:)` feeds
+    /// `sessionStateBounded(id:)` feeds
     /// `SessionReconnectCoordinator.childExited`'s reconnect decision --
     /// a 5-attempt-cap retry/backoff sequence (0/1/2/4/8s) -- so its
     /// bound must be generous enough to separate "daemon truly hung"
@@ -225,16 +223,16 @@ extension SessionDaemonClientProtocol {
         return 15
     }
 
-    /// R12-B (r12-fix-spec.md): generalized race shape shared by every
+    /// Generalized race shape shared by every
     /// bounded daemon call. Races `operation()` against `timeoutSeconds`
-    /// (default `daemonQueryBoundTimeoutSeconds`; R14-B lets
-    /// `sessionStateBounded(id:)` pass its own dedicated, longer bound
+    /// (default `daemonQueryBoundTimeoutSeconds`;
+    /// `sessionStateBounded(id:)` passes its own dedicated, longer bound
     /// instead), resolving to `onTimeout()` if `operation()` hasn't
     /// completed by then, so a hung daemon never blocks a caller
     /// indefinitely. Originally `listAllBounded()`'s own implementation
     /// (lifted from `AppDelegate`'s former private
-    /// `listAllSessionsBounded`, R8-D item 1); generalized here so
-    /// `sessionStateBounded(id:)` (R12-B) shares the identical race
+    /// `listAllSessionsBounded`); generalized here so
+    /// `sessionStateBounded(id:)` shares the identical race
     /// shape instead of duplicating it.
     ///
     /// Deliberately NOT a `TaskGroup` race: `withTaskGroup` always
@@ -251,7 +249,7 @@ extension SessionDaemonClientProtocol {
     /// `AppDelegate.applicationWillTerminate`'s identical `killsDrained`
     /// pattern.
     ///
-    /// R10-C item 1 (r10-fix-spec.md): the winner cancels the loser (a
+    /// The winner cancels the loser (a
     /// beaten operation task is cancelled, not merely abandoned; the
     /// subprocess layer may ignore it, but the signal is sent; a beaten
     /// timeout task is cancelled too), and the timeout arm re-checks
@@ -261,7 +259,7 @@ extension SessionDaemonClientProtocol {
     /// resume the continuation with a stale value after the operation
     /// task had already won).
     ///
-    /// R14-A (r14-fix-spec.md): the continuation await is now wrapped in
+    /// The continuation await is now wrapped in
     /// `withTaskCancellationHandler`, whose handler cancels BOTH the
     /// operation and timeout arms and resumes promptly with `onTimeout()`
     /// -- before this fix, cancelling the CALLER's own Task did nothing:
@@ -300,7 +298,7 @@ extension SessionDaemonClientProtocol {
                     // Already cancelled by the time both arms were
                     // created and registered; cancel them and resume
                     // right away instead of waiting for either to
-                    // notice on its own. R16-3 (r16-fix-spec.md): this
+                    // notice on its own. This
                     // branch is the sole `onTimeout()` caller for this
                     // race -- `bridge.cancel(onTimeout:)` skips its own
                     // call when it ran before `register(...)` did (see
@@ -326,7 +324,7 @@ extension SessionDaemonClientProtocol {
         await bounded(operation: { await listAll() }, onTimeout: { [] })
     }
 
-    /// R12-B (r12-fix-spec.md): `sessionState(id:)` used to await the
+    /// `sessionState(id:)` used to await the
     /// underlying `commandRunner.run(...)` completely unbounded, so a
     /// hung `calyx-session` daemon could stall
     /// `SessionReconnectCoordinator.childExited`'s reconnect decision
@@ -337,7 +335,7 @@ extension SessionDaemonClientProtocol {
     /// `.unreachable` on timeout, which `SessionReconnectCoordinator`
     /// already treats as a retry/give-up input.
     ///
-    /// R14-B (r14-fix-spec.md): threads its own dedicated, longer
+    /// Threads its own dedicated, longer
     /// `sessionStateBoundTimeoutSeconds` into `bounded(timeout:)`
     /// instead of the general `daemonQueryBoundTimeoutSeconds` every
     /// other bounded call shares (see that constant's own doc comment
@@ -459,8 +457,8 @@ final class SessionDaemonClient: SessionDaemonClientProtocol, Sendable {
         }
     }
 
-    /// Deliberately NOT bounded (R12-B sweep addendum, r12-fix-spec.md):
-    /// with R12-A's SIGTERM-on-cancel now reaching the actual
+    /// Deliberately NOT bounded:
+    /// with SIGTERM-on-cancel now reaching the actual
     /// `calyx-session kill` subprocess, racing it against a timeout and
     /// cancelling the loser could terminate it mid-IPC-write, silently
     /// losing the kill -- worse than a slow-but-eventually-completed
@@ -468,7 +466,7 @@ final class SessionDaemonClient: SessionDaemonClientProtocol, Sendable {
     /// `SessionKillTracker`'s 2s quit-drain already abandons (without
     /// cancelling) rather than needing a bounded wrapper here.
     ///
-    /// R14-C (r14-fix-spec.md): the same R12-A SIGTERM-on-cancel fix
+    /// The same SIGTERM-on-cancel fix
     /// also newly exposed this write to the CALLER's own ambient Task
     /// cancellation -- with no internal race arm shielding it (unlike
     /// `listAllBounded()`/`sessionStateBounded(id:)`), `commandRunner
@@ -512,15 +510,15 @@ final class SessionDaemonClient: SessionDaemonClientProtocol, Sendable {
     /// Shells out to `meta set <id> <key>=<value>` exactly like
     /// `kill(id:)` above, ignoring the result the same way — a failed
     /// meta write is not user-visible, it just means resume won't be
-    /// offered next time. Left unbounded (R12-B sweep addendum,
-    /// r12-fix-spec.md): a WRITE, so bounding it would need an
-    /// abandon-style wrapper that resumes the caller without cancelling
-    /// the write arm (cancelling mid-write risks the same silent loss
-    /// `kill(id:)`'s doc comment describes); this fire-and-forget
-    /// background call already never blocks a user-visible flow, so the
-    /// simplest acceptable choice is leaving it as-is.
+    /// offered next time. Left unbounded: a WRITE, so bounding it would
+    /// need an abandon-style wrapper that resumes the caller without
+    /// cancelling the write arm (cancelling mid-write risks the same
+    /// silent loss `kill(id:)`'s doc comment describes); this
+    /// fire-and-forget background call already never blocks a
+    /// user-visible flow, so the simplest acceptable choice is leaving
+    /// it as-is.
     ///
-    /// R14-C (r14-fix-spec.md): shielded from the caller's own ambient
+    /// Shielded from the caller's own ambient
     /// Task cancellation the same structural way `kill(id:)` now is
     /// (see its doc comment) -- an inner unstructured `Task` around
     /// `commandRunner.run(...)` that ambient cancellation can never
@@ -611,7 +609,7 @@ final class SessionDaemonClient: SessionDaemonClientProtocol, Sendable {
     ///
     /// A WRITE, so shielded from the caller's own ambient Task
     /// cancellation the same structural way `kill(id:)` is (see that
-    /// method's own R14-C doc comment): an inner unstructured `Task`
+    /// method's own doc comment): an inner unstructured `Task`
     /// around `commandRunner.run(...)` that ambient cancellation can
     /// never reach -- an in-flight toggle write must run to completion
     /// even if the caller's Task is cancelled mid-flight.

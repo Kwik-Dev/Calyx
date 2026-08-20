@@ -343,8 +343,7 @@ final class CalyxMCPServerLSPIntegrationTests: XCTestCase {
     // ==================== MCPRouter Catalogue Tests ====================
 
     // 1. allTools combines IPC (6) + LSP (70) + terminal_* (3) + Cockpit (6) = 85
-    //    (Round 7 removed ack_messages, P3 added the terminal_* surface, P4 added the
-    //    ungated Cockpit tools, P5 added the 3 gated ones).
+    //    (no ack_messages; the 6 Cockpit tools are 3 ungated + 3 gated).
     func test_mcpRouter_allTools_includesIPCAndLSPTools() {
         let all = MCPRouter.allTools
         XCTAssertEqual(all.count, 85,

@@ -300,7 +300,7 @@ final class OpenCodePluginManagerTests: XCTestCase {
 
     // MARK: - Security
 
-    // Contract changed (Round 3): a dotfiles-managed OpenCode config root
+    // Contract: a dotfiles-managed OpenCode config root
     // can legitimately symlink its plugins/ directory (or an individual
     // plugin file) elsewhere. Blanket symlink rejection silently broke
     // plugin installation in that setup. install() now follows the link
@@ -328,7 +328,7 @@ final class OpenCodePluginManagerTests: XCTestCase {
         XCTAssertEqual(destination, realFile)
     }
 
-    // Round 3 fix: resolveConfigPath now follows a multi-hop *dangling*
+    // resolveConfigPath follows a multi-hop *dangling*
     // symlink chain (link -> link -> not-yet-existing file) all the way
     // to its final destination, rather than stopping at the first
     // intermediate link. Same shared ConfigFileUtils primitive as every
@@ -355,7 +355,7 @@ final class OpenCodePluginManagerTests: XCTestCase {
                        "The intermediate link must survive as a symlink, not be replaced with a regular file")
     }
 
-    // Round 3 fix: remove() previously deleted the raw (possibly
+    // remove() previously deleted the raw (possibly
     // symlinked) destination path directly — for a symlinked
     // destination, that deletes the *symlink itself* (unlink(2) doesn't
     // follow it), leaving the real installed file behind un-removed and

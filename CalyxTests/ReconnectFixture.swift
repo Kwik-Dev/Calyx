@@ -2,7 +2,7 @@
 //  ReconnectFixture.swift
 //  CalyxTests
 //
-//  Round-18 cleanup: SessionReconnectAttemptResetTimingTests,
+//  SessionReconnectAttemptResetTimingTests,
 //  SessionReconnectEstablishGraceSeamTests, and
 //  SessionReconnectGracePositiveSignalSeamTests each carried an
 //  identical `pumpRunLoop(timeout:until:)` helper and an identical
