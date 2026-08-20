@@ -56,8 +56,8 @@ struct AgentEntry: Identifiable, Sendable, Equatable {
     var kind: String
     var lastEventAt: Date
     /// Count of unread IPC messages waiting for the peer bound to this
-    /// surface, kept in sync by `AgentRegistry.updateInbox` /
-    /// `syncInboxCounts` from `IPCStore`'s current inbox count.
+    /// surface, kept in sync by `AgentRegistry.syncInboxCounts` from
+    /// `IPCStore`'s current inbox count.
     var unreadCount: Int = 0
     /// The Calyx surface (if any) an `.external` entry's row should
     /// focus when clicked -- an external entry's own `surfaceID` is not
