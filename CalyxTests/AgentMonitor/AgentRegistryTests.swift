@@ -1134,9 +1134,9 @@ final class AgentRegistryTests: XCTestCase {
         registry.reset()
     }
 
-    // MARK: - Unread message badges (peer binding + updateInbox)
+    // MARK: - Unread message badges (peer binding + syncInboxCounts)
 
-    func test_handleHookEvent_preToolUseWithIpcSelfPeerID_learnsBindingReflectedViaUpdateInbox() {
+    func test_handleHookEvent_preToolUseWithIpcSelfPeerID_learnsBindingReflectedViaSyncInboxCounts() {
         let registry = AgentRegistry()
         let boundSurface = UUID()
         let peerID = UUID()
@@ -1152,16 +1152,16 @@ final class AgentRegistryTests: XCTestCase {
         let unboundSurface = UUID()
         registry.handleHookEvent(event("SessionStart", sessionID: "session-b"), surfaceID: unboundSurface)
 
-        registry.updateInbox(peerID: peerID, count: 3)
-        registry.updateInbox(peerID: UUID(), count: 99)  // an unknown / unbound peer
+        registry.syncInboxCounts([peerID: 3])
+        registry.syncInboxCounts([UUID(): 99])  // an unknown / unbound peer
 
         XCTAssertEqual(registry.entries[boundSurface]?.unreadCount, 3,
-                       "updateInbox must set unreadCount on the surface bound to this peer via PreToolUse")
+                       "syncInboxCounts must set unreadCount on the surface bound to this peer via PreToolUse")
         XCTAssertEqual(registry.entries[unboundSurface]?.unreadCount, 0,
                        "A peer with no bound surface must not affect any entry's unreadCount")
     }
 
-    func test_updateInbox_bindingForgottenOnHandleSurfaceDestroyed() {
+    func test_peerBinding_forgottenOnHandleSurfaceDestroyed() {
         let registry = AgentRegistry()
         let surfaceID = UUID()
         let peerID = UUID()
@@ -1170,9 +1170,9 @@ final class AgentRegistryTests: XCTestCase {
                        ipcSelfPeerID: peerID.uuidString),
             surfaceID: surfaceID
         )
-        registry.updateInbox(peerID: peerID, count: 5)
+        registry.syncInboxCounts([peerID: 5])
         XCTAssertEqual(registry.entries[surfaceID]?.unreadCount, 5,
-                       "updateInbox must set unreadCount for the bound surface")
+                       "syncInboxCounts must set unreadCount for the bound surface")
 
         registry.handleSurfaceDestroyed(surfaceID: surfaceID)
         XCTAssertNil(registry.entries[surfaceID], "Precondition: destroying the surface removes its entry")
@@ -1181,13 +1181,13 @@ final class AgentRegistryTests: XCTestCase {
         // inbox again: the old binding must have been forgotten, so the
         // fresh entry must not retroactively pick up the stale count.
         registry.handleHookEvent(event("SessionStart", sessionID: "session-c"), surfaceID: surfaceID)
-        registry.updateInbox(peerID: peerID, count: 9)
+        registry.syncInboxCounts([peerID: 9])
 
         XCTAssertEqual(registry.entries[surfaceID]?.unreadCount, 0,
                        "A destroyed surface's peer binding must not survive its re-registration")
     }
 
-    func test_updateInbox_bindingForgottenOnReset() {
+    func test_peerBinding_forgottenOnReset() {
         let registry = AgentRegistry()
         let surfaceID = UUID()
         let peerID = UUID()
@@ -1196,13 +1196,13 @@ final class AgentRegistryTests: XCTestCase {
                        ipcSelfPeerID: peerID.uuidString),
             surfaceID: surfaceID
         )
-        registry.updateInbox(peerID: peerID, count: 4)
+        registry.syncInboxCounts([peerID: 4])
         XCTAssertEqual(registry.entries[surfaceID]?.unreadCount, 4,
-                       "updateInbox must set unreadCount for the bound surface before reset")
+                       "syncInboxCounts must set unreadCount for the bound surface before reset")
 
         registry.reset()
         registry.handleHookEvent(event("SessionStart", sessionID: "session-d"), surfaceID: surfaceID)
-        registry.updateInbox(peerID: peerID, count: 8)
+        registry.syncInboxCounts([peerID: 8])
 
         XCTAssertEqual(registry.entries[surfaceID]?.unreadCount, 0,
                        "reset() must forget peer bindings so a re-registered surface doesn't inherit the old peer's count")
@@ -1220,7 +1220,7 @@ final class AgentRegistryTests: XCTestCase {
                        ipcSelfPeerID: peerID.uuidString),
             surfaceID: surfaceID
         )
-        registry.updateInbox(peerID: peerID, count: 2)
+        registry.syncInboxCounts([peerID: 2])
 
         XCTAssertEqual(registry.entries[surfaceID]?.unreadCount, 2,
                        "A register_peer PostToolUse's self-reported peer ID must bind the surface " +
@@ -1230,7 +1230,7 @@ final class AgentRegistryTests: XCTestCase {
     func test_bindSurface_newBindingForSamePeer_replacesOldSurfaceBinding() {
         // "1 peer = 1 surface": rebinding peerID to a new surface must
         // remove its previous surface's binding, not let both surfaces
-        // receive updateInbox for the same peer.
+        // receive that peer's inbox count.
         let registry = AgentRegistry()
         let peerID = UUID()
         let oldSurface = UUID()
@@ -1247,12 +1247,12 @@ final class AgentRegistryTests: XCTestCase {
             surfaceID: newSurface
         )
 
-        registry.updateInbox(peerID: peerID, count: 7)
+        registry.syncInboxCounts([peerID: 7])
 
         XCTAssertEqual(registry.entries[newSurface]?.unreadCount, 7,
-                       "The new surface must receive updateInbox for the rebound peer")
+                       "The new surface must receive the rebound peer's inbox count")
         XCTAssertEqual(registry.entries[oldSurface]?.unreadCount, 0,
-                       "The old surface's stale binding must no longer receive updateInbox for this peer")
+                       "The old surface's stale binding must no longer receive this peer's inbox count")
     }
 
     func test_bindSurface_doubleSteal_surfaceMovesToPeerThatHadADifferentSurface_endsAsCleanBijection() {
@@ -1287,14 +1287,14 @@ final class AgentRegistryTests: XCTestCase {
             surfaceID: surfaceA
         )
 
-        registry.updateInbox(peerID: peer2, count: 9)
-        registry.updateInbox(peerID: peer1, count: 99)
+        registry.syncInboxCounts([peer2: 9])
+        registry.syncInboxCounts([peer1: 99])
 
         XCTAssertEqual(registry.entries[surfaceA]?.unreadCount, 9,
-                       "A must receive updateInbox for P2, the peer it just rebound to")
+                       "A must receive P2's inbox count, the peer it just rebound to")
         XCTAssertEqual(registry.entries[surfaceB]?.unreadCount, 0,
                        "B's stale binding to P2 must be fully evicted — B must not receive P2's " +
-                       "updateInbox anymore")
+                       "inbox count anymore")
 
         XCTAssertEqual(Set(registry.boundPeerIDs), [peer2],
                        "Only P2 must remain bound after the double-steal: P1 (A's old peer) is fully " +
@@ -1361,7 +1361,7 @@ final class AgentRegistryTests: XCTestCase {
                        ipcSelfPeerID: peerID.uuidString),
             surfaceID: surfaceID
         )
-        registry.updateInbox(peerID: peerID, count: 4)
+        registry.syncInboxCounts([peerID: 4])
         XCTAssertEqual(registry.entries[surfaceID]?.unreadCount, 4)
 
         registry.syncInboxCounts([:])
@@ -1758,24 +1758,6 @@ final class AgentRegistryTests: XCTestCase {
                        "2.0s have elapsed since the row entered blocked, outside the 1.5s window, so this " +
                        "PreToolUse is genuine forward progress and must clear blocked no matter how many " +
                        "blocking Notifications re-stamped lastEventAt in between")
-    }
-
-    // MARK: - isSurfaceBound
-
-    func test_isSurfaceBound_reflectsBindingState() {
-        let registry = AgentRegistry()
-        let surfaceID = UUID()
-
-        XCTAssertFalse(registry.isSurfaceBound(surfaceID), "An unbound surface must report false")
-
-        registry.handleHookEvent(
-            AgentEvent(hookEventName: "PreToolUse", sessionID: "session-1", cwd: nil, message: nil,
-                       ipcSelfPeerID: UUID().uuidString),
-            surfaceID: surfaceID
-        )
-
-        XCTAssertTrue(registry.isSurfaceBound(surfaceID),
-                      "A surface bound via a hook-derived ipcSelfPeerID must report true")
     }
 
     // MARK: - handlePaneCommandFinished (shell integration pane-exit signal)
@@ -2849,7 +2831,7 @@ final class AgentRegistryTests: XCTestCase {
                        ipcSelfPeerID: peerID.uuidString),
             surfaceID: surfaceID
         )
-        registry.updateInbox(peerID: peerID, count: 3)
+        registry.syncInboxCounts([peerID: 3])
         let precondition = registry.entries[surfaceID]
         XCTAssertEqual(precondition?.state, .working, "Precondition: a live .hooks row")
         XCTAssertEqual(precondition?.unreadCount, 3, "Precondition: unread badge set via the bound peer")

@@ -304,6 +304,35 @@ final class LSPClientTests: XCTestCase {
         await fulfillment(of: [exp], timeout: 2.0)
     }
 
+    /// Deterministic variant of the recovery test above: the malformed
+    /// header and the well-formed follow-up message are concatenated into
+    /// a single buffer and delivered through one `simulateServerMessage`
+    /// call, so there is no cross-task race between "the client noticed
+    /// the bad header" and "the good message reached the client" — both
+    /// are already sitting in `receiveBuffer` before parsing starts. This
+    /// fails every time, not just under scheduling contention, when a
+    /// malformed Content-Length wipes the whole receive buffer instead of
+    /// discarding only the malformed header.
+    func test_framing_malformedHeaderSharesBufferWithGoodMessage_isRecoveredDeterministically() async throws {
+        let transport = InMemoryLSPTransport()
+        let client = LSPClient(transport: transport)
+        try await client.start()
+        defer { Task { await client.close() } }
+
+        let exp = expectation(description: "follow-up notification still processed")
+        await client.setNotificationHandler(method: "test/after-bad") { _ in
+            exp.fulfill()
+        }
+
+        let bogusHeader = "Content-Length: NOT_A_NUMBER\r\n\r\n{}"
+        let good = lspFrame(jsonRPCNotification(method: "test/after-bad"))
+        var combined = Data(bogusHeader.utf8)
+        combined.append(good)
+        await transport.simulateServerMessage(combined)
+
+        await fulfillment(of: [exp], timeout: 2.0)
+    }
+
     // MARK: - Client → server: sendRequest
 
     func test_sendRequest_emitsContentLengthFramedJSONRPCRequest() async throws {

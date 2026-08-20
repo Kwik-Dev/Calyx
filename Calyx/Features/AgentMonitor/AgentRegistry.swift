@@ -28,9 +28,9 @@ final class AgentRegistry {
     /// ever clears `entries`, so it leaves this store alone without
     /// needing to know it exists.
     /// Populated/depopulated via `upsertExternalEntry` /
-    /// `removeExternalEntry` / `removeAllExternalEntries` below; queried
-    /// via `hasExternalEntries`. `sortedEntries` merges both stores for
-    /// sidebar display -- see that property's doc comment.
+    /// `removeExternalEntry` below; queried via `hasExternalEntries`.
+    /// `sortedEntries` merges both stores for sidebar display -- see
+    /// that property's doc comment.
     private(set) var externalEntries: [UUID: AgentEntry] = [:]
 
     /// Human-readable descriptions of agent CLI config write failures,
@@ -64,9 +64,9 @@ final class AgentRegistry {
     /// `reset()`.
     private var surfaceToPeer: [UUID: UUID] = [:]
 
-    /// Reverse of `surfaceToPeer`, giving `updateInbox` / `syncInboxCounts`
-    /// an O(1), deterministic peer → surface lookup instead of a linear
-    /// scan of `surfaceToPeer` for a matching value (which was also
+    /// Reverse of `surfaceToPeer`, giving `syncInboxCounts` an O(1),
+    /// deterministic peer → surface lookup instead of a linear scan of
+    /// `surfaceToPeer` for a matching value (which was also
     /// order-dependent if more than one surface had ever mapped to the
     /// same peer). `bindSurface` enforces "1 peer = 1 surface": binding a
     /// peer to a new surface removes its previous surface's binding, so
@@ -200,12 +200,6 @@ final class AgentRegistry {
     /// `id` with no external entry. Never touches `entries`.
     func removeExternalEntry(id: UUID) {
         externalEntries.removeValue(forKey: id)
-    }
-
-    /// Clears every external entry. Never touches `entries` -- unlike
-    /// `reset()`, this is scoped to `externalEntries` alone.
-    func removeAllExternalEntries() {
-        externalEntries.removeAll()
     }
 
     /// Whether `externalEntries` currently holds at least one row.
@@ -731,22 +725,11 @@ final class AgentRegistry {
         peerToSurface.removeValue(forKey: peerID)
     }
 
-    /// Whether `surfaceID` currently has a peer bound to it via
-    /// `bindSurface`. Read-only query: `CalyxMCPServer`'s
-    /// `initialize` handler uses this to only auto-bind a surface that
-    /// isn't already bound, rather than unconditionally rebinding on every
-    /// MCP `initialize` — see that call site's own comment for why an
-    /// unconditional bind there is unsafe. `register_peer`'s own binding
-    /// remains unconditional and does not consult this.
-    func isSurfaceBound(_ surfaceID: UUID) -> Bool {
-        surfaceToPeer[surfaceID] != nil
-    }
-
     /// Returns the peer ID currently bound to `surfaceID` via `bindSurface`,
-    /// or `nil` if the surface has no binding. Unlike
-    /// `isSurfaceBound` (Bool-only), this hands back the actual peer id so
-    /// callers can look up whether that peer is still alive in
-    /// `IPCStore`. Two call sites in `CalyxMCPServer` rely on this:
+    /// or `nil` if the surface has no binding. Hands back the peer id
+    /// itself, not a bare "is it bound" flag, so callers can look up
+    /// whether that peer is still alive in `IPCStore`. Two call sites in
+    /// `CalyxMCPServer` rely on this:
     /// `handleJSONRPC`'s `initialize` case uses it to resolve a
     /// reconnecting surface's ONE true peer identity — reporting the same
     /// `peer_id` back instead of auto-registering a fresh one — and
@@ -765,25 +748,16 @@ final class AgentRegistry {
         Array(peerToSurface.keys)
     }
 
-    /// Reflects `count` as the `unreadCount` of the surface bound to
-    /// `peerID` (learned from a `PreToolUse`/`PostToolUse` hook event
-    /// carrying an `AgentEvent.ipcSelfPeerID` — see `bindSurface`). A
-    /// no-op when no surface is bound to `peerID` yet.
-    func updateInbox(peerID: UUID, count: Int) {
-        guard let surfaceID = peerToSurface[peerID], var entry = entries[surfaceID] else { return }
-        entry.unreadCount = count
-        entries[surfaceID] = entry
-    }
-
-    /// Batch counterpart to `updateInbox`: applies `counts` (typically
-    /// `IPCStore.inboxCounts(for: boundPeerIDs)`) to every currently-
-    /// bound surface in one pass, via `peerToSurface`'s O(1) reverse
-    /// lookup. `CalyxMCPServer` calls this once at the end of every
-    /// `tools/call` request instead of each individual IPC tool handler
-    /// calling `updateInbox` separately — see that call site's doc
-    /// comment. A `peerID` in `counts` with no bound surface (already
-    /// possible for `updateInbox`, e.g. a stale/purged peer) is simply
-    /// skipped.
+    /// Applies `counts` (typically `IPCStore.inboxCounts(for: boundPeerIDs)`)
+    /// to every currently-bound surface in one pass, via
+    /// `peerToSurface`'s O(1) reverse lookup: each peer's count becomes
+    /// the `unreadCount` of the surface bound to it (a binding learned
+    /// from a `PreToolUse`/`PostToolUse` hook event carrying an
+    /// `AgentEvent.ipcSelfPeerID` -- see `bindSurface`). `CalyxMCPServer`
+    /// calls this once at the end of every `tools/call` request, batching
+    /// every IPC tool handler's badge update into a single pass -- see
+    /// that call site's doc comment. A `peerID` in `counts` with no bound
+    /// surface (e.g. a stale/purged peer) is simply skipped.
     func syncInboxCounts(_ counts: [UUID: Int]) {
         for (peerID, count) in counts {
             guard let surfaceID = peerToSurface[peerID], var entry = entries[surfaceID] else { continue }
