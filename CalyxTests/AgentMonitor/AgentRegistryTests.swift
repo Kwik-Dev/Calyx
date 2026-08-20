@@ -548,7 +548,7 @@ final class AgentRegistryTests: XCTestCase {
 
     func test_handleSurfaceDestroyed_removesTitleHeuristicEntry() {
         let registry = AgentRegistry()
-        // C1 fix: handleTitleChange only creates a row while the server
+        // handleTitleChange only creates a row while the server
         // is running -- see that method's own doc comment.
         registry.markServerStarted()
         let surfaceID = UUID()
@@ -566,7 +566,7 @@ final class AgentRegistryTests: XCTestCase {
 
     func test_handleTitleChange_unregisteredSurfaceWorkingTitle_createsTitleHeuristicEntry() {
         let registry = AgentRegistry()
-        // C1 fix: handleTitleChange only creates a row while the server
+        // handleTitleChange only creates a row while the server
         // is running -- see that method's own doc comment.
         registry.markServerStarted()
         let surfaceID = UUID()
@@ -580,13 +580,13 @@ final class AgentRegistryTests: XCTestCase {
     }
 
     func test_handleTitleChange_serverNotRunning_neverCreatesARow() {
-        // C1 fix / regression pin: the herdr-connected + IPC-disabled
-        // combination this fix targets -- an external (herdr) row keeps
-        // the Agents sidebar visible (AgentSidebarGate) even while
-        // isServerRunning is false, so without this guard a title-change
-        // notification arriving in that state would create a
-        // .titleHeuristic row with no way to ever retire (see
-        // handleTitleChange's own doc comment for the full reasoning).
+        // Regression pin for the herdr-connected + IPC-disabled
+        // combination: an external (herdr) row keeps the Agents sidebar
+        // visible (AgentSidebarGate) even while isServerRunning is
+        // false, so without the guard a title-change notification
+        // arriving in that state would create a .titleHeuristic row with
+        // no way to ever retire (see handleTitleChange's own doc comment
+        // for the full reasoning).
         let registry = AgentRegistry()
         XCTAssertFalse(registry.isServerRunning, "Precondition: a fresh registry has the server stopped")
         registry.upsertExternalEntry(AgentEntry(
@@ -619,7 +619,7 @@ final class AgentRegistryTests: XCTestCase {
 
     func test_titleHeuristicEntry_promotedToHooksOnSubsequentHookEvent() {
         let registry = AgentRegistry()
-        // C1 fix: handleTitleChange only creates a row while the server
+        // handleTitleChange only creates a row while the server
         // is running -- see that method's own doc comment.
         registry.markServerStarted()
         let surfaceID = UUID()
@@ -701,7 +701,7 @@ final class AgentRegistryTests: XCTestCase {
 
     func test_handleTitleChange_setsClaudeCodeKind() {
         let registry = AgentRegistry()
-        // C1 fix: handleTitleChange only creates a row while the server
+        // handleTitleChange only creates a row while the server
         // is running -- see that method's own doc comment.
         registry.markServerStarted()
         let surfaceID = UUID()
@@ -984,11 +984,11 @@ final class AgentRegistryTests: XCTestCase {
                        "A stale .blocked entry must never be swept")
     }
 
-    // MARK: - Round 3: handleScreenClassification (Herdr layer 2)
+    // MARK: - handleScreenClassification (Herdr layer 2)
 
     func test_handleScreenClassification_hooksEntryUnaffected_titleHeuristicEntryReflectsClassification() {
         let registry = AgentRegistry()
-        // C1 fix: handleTitleChange only creates a row while the server
+        // handleTitleChange only creates a row while the server
         // is running -- see that method's own doc comment.
         registry.markServerStarted()
         let hooksSurface = UUID()
@@ -1014,7 +1014,7 @@ final class AgentRegistryTests: XCTestCase {
 
     func test_handleScreenClassification_titleHeuristicEntry_reflectsWorkingThenNilBecomesIdle() {
         let registry = AgentRegistry()
-        // C1 fix: handleTitleChange only creates a row while the server
+        // handleTitleChange only creates a row while the server
         // is running -- see that method's own doc comment.
         registry.markServerStarted()
         let surfaceID = UUID()
@@ -1055,11 +1055,11 @@ final class AgentRegistryTests: XCTestCase {
                     "An unregistered surface with no recognized pattern must not create a row at all")
     }
 
-    // MARK: - Round 3: handleProgressReport (OSC 9;4)
+    // MARK: - handleProgressReport (OSC 9;4)
 
     func test_handleProgressReport_hooksEntryUnaffected_heuristicEntryReflectsActiveState() {
         let registry = AgentRegistry()
-        // C1 fix: handleTitleChange only creates a row while the server
+        // handleTitleChange only creates a row while the server
         // is running -- see that method's own doc comment.
         registry.markServerStarted()
         let hooksSurface = UUID()
@@ -1085,7 +1085,7 @@ final class AgentRegistryTests: XCTestCase {
         registry.reset()
     }
 
-    // MARK: - Round 3: hooksIssues
+    // MARK: - hooksIssues
 
     func test_setHooksIssues_reflectsValue_andResetClears() {
         let registry = AgentRegistry()
@@ -1134,7 +1134,7 @@ final class AgentRegistryTests: XCTestCase {
         registry.reset()
     }
 
-    // MARK: - Round 3: unread message badges (peer binding + updateInbox)
+    // MARK: - Unread message badges (peer binding + updateInbox)
 
     func test_handleHookEvent_preToolUseWithIpcSelfPeerID_learnsBindingReflectedViaUpdateInbox() {
         let registry = AgentRegistry()
@@ -1208,7 +1208,7 @@ final class AgentRegistryTests: XCTestCase {
                        "reset() must forget peer bindings so a re-registered surface doesn't inherit the old peer's count")
     }
 
-    // MARK: - Round 3 fix: register_peer PostToolUse binding + 1 peer = 1 surface
+    // MARK: - register_peer PostToolUse binding + 1 peer = 1 surface
 
     func test_handleHookEvent_postToolUseRegisterPeerResponse_learnsBinding() {
         let registry = AgentRegistry()
@@ -1302,7 +1302,7 @@ final class AgentRegistryTests: XCTestCase {
                        "bindSurface fired correctly in the same call")
     }
 
-    // MARK: - Round 3: boundPeerIDs / syncInboxCounts (batch badge sync)
+    // MARK: - boundPeerIDs / syncInboxCounts (batch badge sync)
 
     func test_boundPeerIDs_reflectsEveryCurrentlyBoundPeer() {
         let registry = AgentRegistry()
@@ -1370,7 +1370,7 @@ final class AgentRegistryTests: XCTestCase {
                        "An empty/unrelated counts map must not zero out a surface's last known unreadCount")
     }
 
-    // MARK: - Round 3 fix: heuristic row retirement (miss-streak)
+    // MARK: - Heuristic row retirement (miss-streak)
 
     func test_handleScreenClassification_fiveConsecutiveNilMisses_removesHeuristicRow() {
         let registry = AgentRegistry()
@@ -1415,11 +1415,11 @@ final class AgentRegistryTests: XCTestCase {
 
     func test_handleScreenClassification_missStreakResetByTitleWorkingSignal() {
         let registry = AgentRegistry()
-        // C1 fix: handleTitleChange (called below, on an already-existing
+        // handleTitleChange (called below, on an already-existing
         // titleHeuristic row) only resets the miss streak while the
         // server is running -- see that method's own doc comment. The
         // row itself is created via handleScreenClassification, which
-        // this test's own C1-independent call site does not gate.
+        // does not gate row creation on the server running.
         registry.markServerStarted()
         let surfaceID = UUID()
         registry.handleScreenClassification(surfaceID: surfaceID, state: .working)
@@ -1515,9 +1515,9 @@ final class AgentRegistryTests: XCTestCase {
                         "the surface was promoted to .hooks")
     }
 
-    // MARK: - Round 3 fix: heuristic signal arbitration (blocked protection)
+    // MARK: - Heuristic signal arbitration (blocked protection)
 
-    func test_applyHeuristicState_blockedNotClearedByNonAuthoritativeProgressReport() {
+    func test_heuristicApply_blockedNotClearedByNonAuthoritativeProgressReport() {
         // Regression: a titleHeuristic row's .blocked state (set by a
         // screen classification that saw an approval prompt) must not be
         // cleared by a lower-confidence progress-report signal going
@@ -1534,7 +1534,7 @@ final class AgentRegistryTests: XCTestCase {
                        "A progress-report isActive=false must not clear a .blocked heuristic row")
     }
 
-    func test_applyHeuristicState_blockedNotClearedByNonAuthoritativeTitleChange() {
+    func test_heuristicApply_blockedNotClearedByNonAuthoritativeTitleChange() {
         // Regression: same protection against a title-heuristic signal
         // (spinner glyph, i.e. "still working") flapping a .blocked row
         // back to .working.
@@ -1549,7 +1549,7 @@ final class AgentRegistryTests: XCTestCase {
                        "A title-heuristic working signal must not clear a .blocked heuristic row")
     }
 
-    func test_applyHeuristicState_blockedClearedOnlyByAuthoritativeScreenNilResult() {
+    func test_heuristicApply_blockedClearedOnlyByAuthoritativeScreenNilResult() {
         // The complementary case: a screen classification's own miss
         // (nil, falling back to idle) — the authoritative source — DOES
         // clear .blocked, unlike the non-authoritative signals above.
@@ -1564,7 +1564,7 @@ final class AgentRegistryTests: XCTestCase {
                        "A screen classification's own non-blocked (nil -> idle) result must clear .blocked")
     }
 
-    func test_applyHeuristicState_sameStateWriteDoesNotRefreshLastEventAt() {
+    func test_heuristicApply_sameStateWriteDoesNotRefreshLastEventAt() {
         // (a) "don't write an identical state" — verified indirectly via
         // lastEventAt, since AgentEntry equality would otherwise make a
         // same-state no-op write unobservable.
@@ -1580,7 +1580,7 @@ final class AgentRegistryTests: XCTestCase {
                        "Writing the same state again must not refresh lastEventAt (no-op write)")
     }
 
-    // MARK: - Round 4 review: async-delivery race guard for a just-blocked entry
+    // MARK: - Async-delivery race guard for a just-blocked entry
 
     func test_handleHookEvent_lateArrivingPreToolUseWithin1_5sOfBlocked_doesNotOverwriteBlocked() {
         let registry = AgentRegistry()
@@ -1603,10 +1603,10 @@ final class AgentRegistryTests: XCTestCase {
                        "a stale async-delivery race, not genuine progress")
     }
 
-    // Round 4 review follow-up: pins down the *accepted trade-off* this
-    // guard makes — not just that it correctly ignores a genuinely stale,
-    // out-of-order `PreToolUse`, but that it also drops a *legitimate*,
-    // unrelated tool call's `PreToolUse` landing in the same window, since
+    // Pins down the *accepted trade-off* this guard makes — not just
+    // that it correctly ignores a genuinely stale, out-of-order
+    // `PreToolUse`, but that it also drops a *legitimate*, unrelated
+    // tool call's `PreToolUse` landing in the same window, since
     // `AgentRegistry` has no `tool_name`/call-identity field to tell the
     // two apart at this layer. Mechanically identical to the "late
     // arriving" race test above; kept separate because it documents a
@@ -1634,9 +1634,9 @@ final class AgentRegistryTests: XCTestCase {
                        "the very next PostToolUse/Stop/UserPromptSubmit regardless")
     }
 
-    // Round 4 review follow-up: pins the window's exact boundary contract
-    // (`<`, not `<=`) — a PreToolUse arriving at *exactly* 1.5s must clear
-    // blocked, not be dropped.
+    // Pins the window's exact boundary contract (`<`, not `<=`) — a
+    // PreToolUse arriving at *exactly* 1.5s must clear blocked, not be
+    // dropped.
     func test_handleHookEvent_preToolUseAtExactly1_5sBoundary_clearsBlocked() {
         let registry = AgentRegistry()
         let surfaceID = UUID()
@@ -1728,7 +1728,7 @@ final class AgentRegistryTests: XCTestCase {
                        "Stop must still clear blocked to idle immediately, unlike PreToolUse")
     }
 
-    // MARK: - Round 4 review: isSurfaceBound
+    // MARK: - isSurfaceBound
 
     func test_isSurfaceBound_reflectsBindingState() {
         let registry = AgentRegistry()
@@ -2540,11 +2540,11 @@ final class AgentRegistryTests: XCTestCase {
                        "The row must stay idle, not be settled to done by ghostty's fallback signal")
     }
 
-    // MARK: - reset(): heuristicMissStreaks is cleared wholesale
+    // MARK: - reset(): AgentRegistry.evidence is cleared wholesale
 
-    func test_reset_clearsHeuristicMissStreaks() {
+    func test_reset_clearsAgentEvidence() {
         // The deliberate opposite of calyxShellIntegrationReportedSurfaces's
-        // own survival above: heuristicMissStreaks IS cleared by reset(),
+        // own survival above: AgentRegistry.evidence IS cleared by reset(),
         // so a leftover miss count from before a server restart can never
         // combine with fresh misses afterward to retire a row prematurely.
         let registry = AgentRegistry()
@@ -2560,13 +2560,13 @@ final class AgentRegistryTests: XCTestCase {
 
         // The creation branch deliberately never touches the miss-streak
         // bookkeeping, so recreating the row this way cannot itself launder
-        // a leftover streak -- only reset() clearing heuristicMissStreaks
+        // a leftover streak -- only reset() clearing AgentRegistry.evidence
         // can.
         registry.handleScreenClassification(surfaceID: surfaceID, state: .working)
         registry.handleScreenClassification(surfaceID: surfaceID, state: nil)
 
         XCTAssertNotNil(registry.entries[surfaceID],
-                        "reset() must clear heuristicMissStreaks -- otherwise this one fresh miss since the row " +
+                        "reset() must clear AgentRegistry.evidence -- otherwise this one fresh miss since the row " +
                         "was recreated would combine with the 4 leaked misses from before reset() and retire a " +
                         "row that has only actually missed once since it came back")
     }
@@ -2594,7 +2594,8 @@ final class AgentRegistryTests: XCTestCase {
     func test_sweepStaleEntries_leavesStaleWorkingTitleHeuristicEntryUnchanged() {
         // The other half of the same guard: a .titleHeuristic row must
         // never be swept -- it retires itself through its own miss-streak
-        // bookkeeping (heuristicMissStreaks) instead of through staleness.
+        // bookkeeping (AgentRegistry.evidence's screenMissStreak) instead
+        // of through staleness.
         let registry = AgentRegistry()
         let surfaceID = UUID()
         registry.handleScreenClassification(surfaceID: surfaceID, state: .working)

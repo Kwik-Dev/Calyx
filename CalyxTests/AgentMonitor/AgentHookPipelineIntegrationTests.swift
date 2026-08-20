@@ -62,14 +62,13 @@ final class AgentHookPipelineIntegrationTests: XCTestCase {
         server.agentRegistry = registry
         server.agentEndpointDirectory = appSupportDir
         // A randomized preferred port (IANA dynamic/private range, one
-        // per test run) rather than a hardcoded literal like the Round 3
-        // review flagged — this test only needs *some* running server
-        // (the script reads the actual bound port from
-        // agent-endpoint.json at call time), so there's no reason to
-        // risk colliding with a fixed port another test file or process
-        // on the host might already be holding. `start()`'s own
-        // canonical-scan-then-kernel-assigned-fallback still applies on
-        // top of this if the randomly chosen port also happens to be
+        // per test run) rather than a hardcoded literal — this test only
+        // needs *some* running server (the script reads the actual bound
+        // port from agent-endpoint.json at call time), so there's no
+        // reason to risk colliding with a fixed port another test file
+        // or process on the host might already be holding. `start()`'s
+        // own canonical-scan-then-kernel-assigned-fallback still applies
+        // on top of this if the randomly chosen port also happens to be
         // taken.
         try server.start(token: testToken, preferredPort: Int.random(in: 49_152...65_000))
 
@@ -223,7 +222,7 @@ final class AgentHookPipelineIntegrationTests: XCTestCase {
 
     // MARK: - Codex SessionEnd settles an idle row to done
 
-    /// Pins the receiving end of AgentRegistry.resultingState's SessionEnd
+    /// Pins the receiving end of AgentStateResolver.resultingState's SessionEnd
     /// -> .done mapping for a codex-kind row, end to end through the real
     /// installed script: SessionStart then Stop settle the row at .idle,
     /// then a SessionEnd payload shaped like Codex's real hook JSON
@@ -283,7 +282,7 @@ final class AgentHookPipelineIntegrationTests: XCTestCase {
             "The Stop POST must land and advance lastEventAt before the SessionEnd step below fires"
         )
         XCTAssertEqual(afterStop.state, .idle,
-                       "Precondition: Stop settles the row at idle, matching AgentRegistry.resultingState's " +
+                       "Precondition: Stop settles the row at idle, matching AgentStateResolver.resultingState's " +
                        "Stop -> .idle mapping; only a subsequent SessionEnd event moves it to .done")
 
         let endExitCode = try runHookScript(stdinJSON: sessionEndStdin, surfaceID: surfaceID, kindArgument: "codex")
@@ -292,8 +291,8 @@ final class AgentHookPipelineIntegrationTests: XCTestCase {
         let afterEnd = await waitForEntry(surfaceID: surfaceID) { $0.state == .done }
         XCTAssertEqual(afterEnd?.state, .done,
                        "A SessionEnd event for the same session on the same surface must settle an idle " +
-                       "Codex row to done, exactly like AgentRegistry's existing SessionEnd -> .done mapping " +
-                       "already does for any other kind")
+                       "Codex row to done, exactly like AgentStateResolver.resultingState's " +
+                       "SessionEnd -> .done mapping already does for any other kind")
         XCTAssertEqual(afterEnd?.sessionID, sessionID)
         XCTAssertEqual(afterEnd?.kind, AgentEntry.codexKind, "the settled .done row must still be the codex row")
     }

@@ -207,7 +207,7 @@ final class AgentRegistryExternalEntriesTests: XCTestCase {
 
     func test_handleTitleChange_neverMutatesExternalEntry_evenOnSurfaceIDCollision() {
         let registry = AgentRegistry()
-        // C1 fix: handleTitleChange only creates a row while the server
+        // handleTitleChange only creates a row while the server
         // is running -- see that method's own doc comment.
         registry.markServerStarted()
         let collidingID = UUID()

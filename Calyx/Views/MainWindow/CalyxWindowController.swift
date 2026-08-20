@@ -3756,10 +3756,10 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         )
     }
 
-    /// R6-B (r6-fix-spec.md, r5-verdicts.md V6): a Calyx-side, persistent
-    /// in-pane indication for `handleReconnectGiveUp`'s last-pane-
-    /// everywhere branch, which keeps the pane open (detach bookkeeping
-    /// only) instead of closing it. Ghostty's own child-exited text is
+    /// A Calyx-side, persistent in-pane indication for
+    /// `handleReconnectGiveUp`'s last-pane-everywhere branch, which keeps
+    /// the pane open (detach bookkeeping only) instead of closing it.
+    /// Ghostty's own child-exited text is
     /// suppressed for every surface (`GhosttyAction.swift`'s
     /// `show_child_exited` handling always returns `true`), the child
     /// process is dead so `sendText` goes nowhere, and the macOS
@@ -4247,9 +4247,9 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// mirrors `handleSurfaceDestroyedForAgentMonitor` below: every
     /// window's controller observes independently, and
     /// `AgentRegistry.handleGhosttyCommandFinished`'s settle
-    /// (`settlePaneCommandFinished`'s `state != .done` guard) is a no-op
-    /// once the row is already `.done`, so the redundant calls across
-    /// windows are harmless.
+    /// (`AgentStateResolver.resolvePaneCommandFinished`'s
+    /// `state != .done` guard) is a no-op once the row is already
+    /// `.done`, so the redundant calls across windows are harmless.
     ///
     /// That reach is conditional on at least one `CalyxWindowController`
     /// being alive, because this class is the only observer of
@@ -4706,11 +4706,10 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         findTab(surfaceID: surfaceID) != nil
     }
 
-    /// R6-E (r6-fix-spec.md, A2): activates the tab (and, by extension
-    /// via `switchToTab(id:)`, its group) containing `surfaceID`,
-    /// reusing this controller's existing tab-switch logic rather than
-    /// reimplementing containment (reuse finding F3f). A no-op if no tab
-    /// in this window contains `surfaceID`. Not `private`:
+    /// Activates the tab (and, by extension via `switchToTab(id:)`, its
+    /// group) containing `surfaceID`, reusing this controller's existing
+    /// tab-switch logic rather than reimplementing containment. A no-op
+    /// if no tab in this window contains `surfaceID`. Not `private`:
     /// `AppDelegate.focusWindowForExistingSession` calls this directly
     /// so the session browser's "Attach" action for an already-live
     /// surface in a background tab actually shows it, not just the
@@ -4899,8 +4898,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
             }
         }
 
-        // Destroy all surfaces in all tabs. R6-D (r6-fix-spec.md, sweep
-        // finding in r5-verdicts.md): when the app is NOT actually
+        // Destroy all surfaces in all tabs. When the app is NOT actually
         // terminating (a red-button close of one of several open
         // windows), each persistent surface must go through the same
         // close policy closeTab already uses (kill semantics, an
@@ -4910,14 +4908,13 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         // without kill/detach, so tracking state survives into the
         // snapshot for the next launch. `isAppActuallyTerminating`, not
         // the per-window `isClosingForShutdown`, is the discriminator
-        // (see each flag's own doc comment for why). R8-F
-        // (tearDownSurfaces) shares this loop's body with closeTab/
-        // closeActiveGroup/closeAllTabsInGroup; R8-C passes
-        // `appIsTerminating` straight through to it (rather than gating
-        // the call outside and letting the policy re-derive its own
-        // notion of "terminating" from `isClosingForShutdown` inside),
-        // so this outer gate and the inner kill decision always read
-        // the exact same value.
+        // (see each flag's own doc comment for why). `tearDownSurfaces`
+        // shares this loop's body with closeTab/closeActiveGroup/
+        // closeAllTabsInGroup, and receives `appIsTerminating` straight
+        // through (rather than gating the call outside and letting the
+        // policy re-derive its own notion of "terminating" from
+        // `isClosingForShutdown` inside), so this outer gate and the
+        // inner kill decision always read the exact same value.
         let appIsTerminating = isAppActuallyTerminating
         for group in windowSession.groups {
             for tab in group.tabs {
