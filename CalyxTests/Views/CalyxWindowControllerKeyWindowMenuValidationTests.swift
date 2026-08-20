@@ -2,7 +2,7 @@
 //  CalyxWindowControllerKeyWindowMenuValidationTests.swift
 //  CalyxTests
 //
-//  TDD Red phase, GitHub issue #45. Full root-cause writeup:
+//  GitHub issue #45. Full root-cause writeup:
 //  `NSWindow+CalyxClose.swift`'s header comment.
 //
 //  `CalyxWindowController.validateMenuItem(_:)` (CalyxWindowController
@@ -27,7 +27,7 @@
 //  ends up main/frontmost. Tests below pin this as intentional, not an
 //  oversight.
 //
-//  Originally (TDD red phase) this file scoped the key-window gate to
+//  Originally this file scoped the key-window gate to
 //  5 selectors — `closeTab:`/`closeGroup:`/`toggleFullScreen:`/
 //  `selectNextTab:`/`selectPreviousTab:` — and deliberately did not
 //  re-test `jumpToMostRecentUnreadTab`/`findNext:`/`findPrevious:`/
@@ -45,25 +45,25 @@
 //  `_isKeyWindowOverrideForTesting` at all (the property exists purely
 //  as an unused stub seam), so:
 //
-//  RED ledger (ran 2026-08-07): every "disabledWhenNotKeyWindow" test
-//  is RED-proving — the current code's `return true` fallthrough (for
+//  Every "disabledWhenNotKeyWindow" test
+//  pins the gate — the pre-fix code's `return true` fallthrough (for
 //  closeTab:/closeGroup:/toggleFullScreen:) or existing tabs.count-only
 //  gate (for selectNextTab:/selectPreviousTab:, run here with 2 tabs so
 //  that gate alone would already say "enabled") ignores the override
 //  entirely and answers `true`/enabled, not the expected `false`/
 //  disabled. Every "enabledWhenKeyWindow"/"disabledWhenKeyWindow
 //  WithSingleTab" test and both `newTab:`/`newBrowserTab:`/`newGroup:`
-//  tests are regression guards (NOT RED-proving): they assert exactly
-//  what the CURRENT, override-blind code already does, and must keep
-//  doing once the gate exists.
+//  tests are regression guards: they assert exactly
+//  what the override-blind code already did, and must keep
+//  doing now that the gate exists.
 //
-//  Follow-up ledger (added 2026-08-07, NOT a new red phase): the 8
+//  Follow-up ledger (added 2026-08-07): the 8
 //  selectors covered below (`nextGroup:`/`previousGroup:`/
 //  `jumpToMostRecentUnreadTab`/`toggleSidebar`/`toggleCommandPalette`/
 //  `toggleComposeOverlay`/`findNext:`/`findPrevious:`) are already
 //  present in `keyWindowGatedActions` and already correctly gated, so
-//  every test added for them here is a regression guard, not
-//  RED-proving — each goes green immediately against the current
+//  every test added for them here is a regression guard: each goes
+//  green immediately against the current
 //  implementation. Their value is catching a FUTURE regression instead
 //  (an entry silently dropped from the `Set`, or the gate block in
 //  `validateMenuItem(_:)` deleted outright): today, without these
@@ -134,7 +134,7 @@ final class CalyxWindowControllerKeyWindowMenuValidationTests: XCTestCase {
         NSMenuItem(title: "Test", action: action, keyEquivalent: "")
     }
 
-    // MARK: - RED-proving: disabled when NOT the key window
+    // MARK: - Disabled when NOT the key window
 
     func test_validateMenuItem_closeTab_disabledWhenNotKeyWindow() {
         let controller = makeFixture(tabCount: 1)

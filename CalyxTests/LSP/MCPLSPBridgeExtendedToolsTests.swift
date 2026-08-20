@@ -2,7 +2,7 @@
 //  MCPLSPBridgeExtendedToolsTests.swift
 //  Calyx
 //
-//  TDD red-phase tests for the 11 additional MCP tools the LSP bridge will
+//  Tests for the 11 additional MCP tools the LSP bridge will
 //  ship on top of the 10 core navigation / symbol / completion tools
 //  already exercised by `MCPLSPBridgeTests`.
 //
@@ -22,11 +22,9 @@
 //      - lsp_session_warmup
 //      - lsp_session_shutdown
 //
-//  TDD phase: RED. The bridge currently advertises 10 tools and only
-//  routes those. This file is expected to fail to compile (no
-//  `SignatureHelpTool`, etc.) and — once the new tool symbols exist —
-//  to fail at runtime because the new `installer:` init parameter and
-//  routing branches will not yet be in place.
+//  The bridge must advertise and route the 11 additional tools named
+//  above, through the `installer:` init parameter and its routing
+//  branches.
 //
 //  Strategy notes:
 //    - The fake LSP-server driver, `MockCommandRunner`, etc. are

@@ -24,8 +24,8 @@
 //  Both assertions below PASS today (verified against a941b245d): they
 //  cover EXISTING production behavior that predates the delegation
 //  refactor (which collapses windowSnapshot() to delegate to
-//  Tab.snapshot()). These are therefore REGRESSION GUARDS, not RED
-//  proof -- the point, per the sweep addendum, is locking both branches
+//  Tab.snapshot()). These are therefore REGRESSION GUARDS, not
+//  fix-pinning tests -- the point is locking both branches
 //  down BEFORE the refactor touches them, so any accidental behavior
 //  change during the collapse (e.g. the live override silently losing
 //  precedence, or a diff tab leaking into a persisted snapshot) is
@@ -60,7 +60,7 @@ final class CalyxWindowControllerSnapshotBranchCoverageTests: XCTestCase {
 
     // MARK: - Live browserURL override wins over the configured URL
 
-    /// Regression guard (sweep addendum item 3a): existing production
+    /// Regression guard: existing production
     /// behavior, not a new change -- locks it down before the
     /// delegation refactor touches this branch.
     func test_windowSnapshot_browserTabWithLiveController_usesLiveURL_notConfiguredURL() throws {
@@ -91,14 +91,14 @@ final class CalyxWindowControllerSnapshotBranchCoverageTests: XCTestCase {
             tabSnapshot.browserURL, liveURL,
             "windowSnapshot() must carry the LIVE browserControllers URL, not the tab's configured content " +
             "URL, when a live BrowserTabController is registered for the tab -- regression guard for the " +
-            "delegation, not RED proof (this precedence already exists today); see this file's header " +
+            "delegation, not a fix-pinning assertion (this precedence already exists today); see this file's header " +
             "comment"
         )
     }
 
     // MARK: - Diff tabs are excluded from the persisted snapshot
 
-    /// Regression guard (sweep addendum item 3b): existing production
+    /// Regression guard for the diff-tab branch: existing production
     /// behavior, not a new change -- locks it down before the
     /// delegation refactor touches this branch.
     func test_windowSnapshot_diffTab_isExcludedFromPersistedTabs() {
@@ -111,7 +111,7 @@ final class CalyxWindowControllerSnapshotBranchCoverageTests: XCTestCase {
         XCTAssertEqual(
             groupSnapshot?.tabs.count, 0,
             "windowSnapshot() must exclude .diff-content tabs from the persisted snapshot entirely -- " +
-            "regression guard for the delegation, not RED proof (diff tabs are already skipped today); " +
+            "regression guard for the delegation, not a fix-pinning assertion (diff tabs are already skipped today); " +
             "see this file's header comment"
         )
     }

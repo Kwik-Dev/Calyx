@@ -32,11 +32,10 @@
 //    that runs the same superview-coords → ratio math without requiring a
 //    real event. This test exercises that seam.
 //
-//  Red-phase expectation:
-//  ----------------------
-//  Fails to compile against pre-fix code because neither
-//  `SplitDividerView.onTargetRatioChange` nor
-//  `SplitDividerView._testSimulateDrag(toSuperviewPoint:)` exists.
+//  Under test:
+//  -----------
+//  `SplitDividerView.onTargetRatioChange` and
+//  `SplitDividerView._testSimulateDrag(toSuperviewPoint:)`.
 //
 
 import AppKit

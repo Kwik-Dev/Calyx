@@ -2,14 +2,14 @@
 //  SessionReconnectCoordinatorTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for SessionReconnectCoordinator: what to do when a
+//  Covers SessionReconnectCoordinator: what to do when a
 //  persistent-session surface's child process exits, given that macOS
 //  never reports a trustworthy SHOW_CHILD_EXITED exit code (see
 //  SessionDaemonClient.swift's header comment) — resolved instead by
 //  querying the daemon directly through a fake
 //  SessionDaemonClientProtocol.
 //
-//  Fix round (review findings, item 3) changes three things covered
+//  Three things are covered
 //  here on top of the original contract:
 //    (a) attempt tracking must survive a reconnect's surface swap
 //        (keyed by sessionID, not surfaceID)
@@ -19,7 +19,7 @@
 //        surface", not the global SessionSettings
 //        .persistentSessionsEnabled toggle
 //
-//  Second fix round (give-up redesign) changes one more thing: .giveUp
+//  The give-up redesign changes one more thing: .giveUp
 //  used to carry a sessionID and its caller deliberately left the pane
 //  open. It now carries no payload (the caller resolves whatever it
 //  needs via SessionSurfaceMap/the surfaceID in hand), and the caller
@@ -171,7 +171,7 @@ final class SessionReconnectCoordinatorTests: XCTestCase {
            "attempt count, the value a caller derives an exponential backoff delay from")
     }
 
-    // MARK: - Attempt persists across a surface replacement (fix round, item 3a)
+    // MARK: - Attempt persists across a surface replacement
 
     func test_attemptCount_persistsAcrossSurfaceReplacement_keyedBySessionIDNotSurfaceID() async {
         let sessionID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
@@ -274,7 +274,7 @@ final class SessionReconnectCoordinatorTests: XCTestCase {
         ], "markEstablished must reset the attempt counter so a later, unrelated disconnect backs off from 1 again")
     }
 
-    // MARK: - Gate: SessionSurfaceMap presence, not the global toggle (fix round, item 3c)
+    // MARK: - Gate: SessionSurfaceMap presence, not the global toggle
     //
     // Replaces the original contract's "settings OFF -> never decides"
     // test: that test conflated the global toggle with the per-surface

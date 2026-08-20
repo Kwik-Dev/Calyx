@@ -2,7 +2,7 @@
 //  SessionSpawnPlannerTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for SessionSpawnPlanner.plan(for:): whether a new
+//  Covers SessionSpawnPlanner.plan(for:): whether a new
 //  terminal surface launches a plain shell (.passthrough) or a
 //  calyx-session-backed persistent shell (.persistent), gated by
 //  SessionSettings.persistentSessionsEnabled and the spawn context's
@@ -170,7 +170,7 @@ final class SessionSpawnPlannerTests: XCTestCase {
                               "attach", sessionID, "--create", "--cwd", "/Users/dev/repo"],
                        "The synthesized command must prepend the two global directory flags ahead of the " +
                        "attach subcommand, then attach/create the exact sessionID returned alongside it, " +
-                       "positionally (matching the P2 CLI's AttachArgs, not a --id flag), and carry the " +
+                       "positionally (matching the CLI's AttachArgs, not a --id flag), and carry the " +
                        "context's cwd intact through /bin/sh -c regardless of the escaping strategy used")
     }
 

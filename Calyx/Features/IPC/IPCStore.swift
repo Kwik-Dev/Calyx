@@ -299,7 +299,7 @@ actor IPCStore {
     /// envelope's own re-encode in `toolSuccess`, or a network-layer
     /// failure writing the HTTP response — both of which lose the
     /// already-deleted messages permanently. That's the accepted
-    /// boundary of the at-most-once contract this round establishes, not
+    /// boundary of the at-most-once contract, not
     /// a gap `requeue` is meant to close.
     ///
     /// Unlike `sendMessage`, `broadcast`, and `receiveMessages`, this

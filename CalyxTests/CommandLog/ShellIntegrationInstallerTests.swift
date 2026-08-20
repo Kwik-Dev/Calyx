@@ -2,7 +2,7 @@
 //  ShellIntegrationInstallerTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (P4, command-log shell integration installer). Pins
+//  Covers the command-log shell integration installer. Pins
 //  ShellIntegrationInstaller's install/remove/isInstalled file-management
 //  contract (mirroring OpenCodePluginManagerTests' verified symlink-
 //  following behavior, NOT literal rejection) plus the actual runtime
@@ -192,7 +192,7 @@ final class ShellIntegrationInstallerTests: XCTestCase {
     // and fish (zero statements), so each syntax check below is paired
     // with a non-empty guard that itself fails against the stub --
     // otherwise this whole section would pass vacuously against an
-    // empty stub forever, even after a Green-phase regression reintroduced
+    // empty stub forever, even if a later regression reintroduced
     // a syntax error.
 
     private func syntaxCheckExitCode(interpreter: String, body: String) throws -> Int32 {
@@ -212,7 +212,7 @@ final class ShellIntegrationInstallerTests: XCTestCase {
 
     func test_zshenvBody_isNonEmptyAndPassesZshSyntaxCheck() throws {
         XCTAssertFalse(ShellIntegrationInstaller.zshenvBody.isEmpty,
-                       "zshenvBody must contain the real ZDOTDIR-restore/source chain, not the RED-phase stub")
+                       "zshenvBody must contain the real ZDOTDIR-restore/source chain")
 
         let exitCode = try syntaxCheckExitCode(interpreter: "/bin/zsh", body: ShellIntegrationInstaller.zshenvBody)
         XCTAssertEqual(exitCode, 0, "zshenvBody must be syntactically valid zsh (`zsh -n`)")
@@ -220,7 +220,7 @@ final class ShellIntegrationInstallerTests: XCTestCase {
 
     func test_calyxZshBody_isNonEmptyAndPassesZshSyntaxCheck() throws {
         XCTAssertFalse(ShellIntegrationInstaller.calyxZshBody.isEmpty,
-                       "calyxZshBody must contain the real preexec/precmd hook registration, not the RED-phase stub")
+                       "calyxZshBody must contain the real preexec/precmd hook registration")
 
         let exitCode = try syntaxCheckExitCode(interpreter: "/bin/zsh", body: ShellIntegrationInstaller.calyxZshBody)
         XCTAssertEqual(exitCode, 0, "calyxZshBody must be syntactically valid zsh (`zsh -n`)")
@@ -228,7 +228,7 @@ final class ShellIntegrationInstallerTests: XCTestCase {
 
     func test_fishIntegrationBody_isNonEmptyAndPassesFishSyntaxCheck() throws {
         XCTAssertFalse(ShellIntegrationInstaller.fishIntegrationBody.isEmpty,
-                       "fishIntegrationBody must contain the real fish integration, not the RED-phase stub")
+                       "fishIntegrationBody must contain the real fish integration")
 
         guard let fishPath = try locateExecutable(named: "fish") else {
             throw XCTSkip("fish is not installed on this host")
@@ -412,7 +412,7 @@ final class ShellIntegrationInstallerTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(
             lines.count, 2,
             "a single `true` command run interactively must post exactly a start and an end event -- " +
-            "found \(lines.count) (stub body means 0 is expected until Green phase lands real content)"
+            "found \(lines.count)"
         )
 
         let startLine = try XCTUnwrap(lines.first { $0.contains("\"phase\":\"start\"") },
@@ -452,7 +452,7 @@ final class ShellIntegrationInstallerTests: XCTestCase {
     }
 
     func test_realZshSession_nonZeroExitCommand_postsMatchingExitCode() async throws {
-        // Review finding: the decisive test above only ever exercises
+        // The decisive test above only ever exercises
         // `true` (exit 0) -- a hook that hardcoded/ignored the real exit
         // code would pass it just as well. `(exit 3)` (a subshell that
         // exits with a specific non-zero code) proves the pipeline
@@ -478,21 +478,19 @@ final class ShellIntegrationInstallerTests: XCTestCase {
 
         // Precondition: the same integration DOES post for a real
         // command, proving the assertion below is caused specifically by
-        // the empty interaction and not some other pipeline failure (or,
-        // right now, the RED-phase empty-string stub). Drains for BOTH
-        // events (start + end) before removing the log -- draining only
-        // the first (start) risks the backgrounded+disowned end POST for
-        // THIS sanity command landing after the log is deleted and the
-        // real (empty-interaction) scenario below has already started
-        // polling, corrupting that scenario's own "must post nothing"
-        // assertion with a stray leftover line.
+        // the empty interaction and not some other pipeline failure.
+        // Drains for BOTH events (start + end) before removing the log --
+        // draining only the first (start) risks the backgrounded+disowned
+        // end POST for THIS sanity command landing after the log is
+        // deleted and the real (empty-interaction) scenario below has
+        // already started polling, corrupting that scenario's own "must
+        // post nothing" assertion with a stray leftover line.
         try runInteractiveZsh(command: "true; exit", extraEnv: ["CALYX_SURFACE_ID": sanitySurfaceID.uuidString])
         let sanityLines = await waitForCurlLogLines(minCount: 2)
-        // guard, not just an assertion: against the RED-phase empty-string
-        // stub, the sanity precondition itself is the whole story -- the
-        // curl log file was never created, so continuing on to remove it
-        // below would throw a second, unrelated "no such file" failure
-        // that obscures this one.
+        // guard, not just an assertion: when the sanity precondition
+        // fails, the curl log file was never created, so continuing on to
+        // remove it below would throw a second, unrelated "no such file"
+        // failure that obscures this one.
         guard sanityLines.count >= 2 else {
             XCTFail("precondition: a real command must post both a start and an end event")
             return
@@ -581,7 +579,7 @@ final class ShellIntegrationInstallerTests: XCTestCase {
     // (verified empirically), so fishIntegrationBody's own top-line guard
     // doesn't early-return before the event handlers are even defined.
     //
-    // Review finding: a multi-line $argv[1] (a real multi-line command,
+    // A multi-line $argv[1] (a real multi-line command,
     // e.g. pasted or continued with a backslash) broke the whitespace-
     // only guard -- `test -n (string trim -- "$argv[1]")` splits a
     // multi-line command-substitution result across several `test`

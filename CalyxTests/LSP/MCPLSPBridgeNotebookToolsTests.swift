@@ -2,7 +2,7 @@
 //  MCPLSPBridgeNotebookToolsTests.swift
 //  Calyx
 //
-//  TDD red-phase tests for the three "notebook document synchronisation"
+//  Tests for the three "notebook document synchronisation"
 //  MCP tools the LSP bridge will ship on top of the 67 tools (10 core + 11
 //  extended + 7 hierarchy/moniker + 7 information-cluster-A + 8
 //  information-cluster-B + 11 edit/workspace cluster + 13 file-ops/AI)
@@ -22,10 +22,9 @@
 //      caller receives a tiny `{"success": true}` payload — notifications
 //      have no response.
 //
-//  TDD phase: RED. The bridge currently advertises 67 tools and routes only
-//  those. These tests are expected to fail at runtime — the catalogue
-//  assertion sees 67 names instead of 70, and every `handleToolCall` for
-//  one of the new tools surfaces as `MCPLSPBridgeError.unknownTool`.
+//  The bridge must advertise 70 tools and route all of them: the
+//  catalogue assertion pins that count, and every `handleToolCall` for
+//  an unrouted tool surfaces as `MCPLSPBridgeError.unknownTool`.
 //
 //  Strategy notes:
 //    - The fake LSP-server driver and helpers are file-private here to
@@ -565,7 +564,7 @@ final class MCPLSPBridgeNotebookToolsTests: XCTestCase {
                 "missingArgument must point at the 'notebook' key; got: \(name)"
             )
         } catch let MCPLSPBridgeError.unknownTool(name) {
-            // RED-phase guard: the bridge must already register the tool and
+            // The bridge must already register the tool and
             // refuse the call because the required `notebook` argument is
             // missing. A bare unknownTool means the tool isn't wired up yet.
             XCTFail(

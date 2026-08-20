@@ -2,7 +2,7 @@
 //  GhosttyAppControllerConfigReloadOrderingTests.swift
 //  CalyxTests
 //
-//  Code review follow-up (missing-observer investigation, Finding 2):
+//  Missing-observer investigation:
 //  `GhosttyAppController.reloadConfig(soft:)` and its
 //  `ReloadDepsAdapter.loadConfigFromDisk()` twin used to call
 //  `GhosttyFFI.appUpdateConfig(app, config:)` BEFORE reassigning

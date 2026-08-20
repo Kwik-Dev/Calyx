@@ -38,7 +38,7 @@ struct SessionBrowserRow: Identifiable, Equatable, Sendable {
     /// User-visible label for the `isOrphan` badge (`SessionBrowserRowView`).
     /// Kept separate from the SwiftUI view so this string is testable
     /// without a snapshot/view-inspection dependency. Internal name
-    /// (`isOrphan`) is unchanged this cycle -- only the user-visible
+    /// (`isOrphan`) is unchanged -- only the user-visible
     /// wording moves from "Orphaned" to "Detached".
     static let orphanBadgeLabel = "Detached"
 

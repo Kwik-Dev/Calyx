@@ -2,7 +2,7 @@
 //  ScreenStateClassifierTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for ScreenStateClassifier: Herdr-style "layer 2"
+//  Covers ScreenStateClassifier: Herdr-style "layer 2"
 //  classification of a pane's bottom-of-screen text into .blocked /
 //  .working / nil.
 //

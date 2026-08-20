@@ -2,7 +2,7 @@
 //  CalyxMCPServerAgentEventTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for CalyxMCPServer.route(request:): the extracted HTTP
+//  Covers CalyxMCPServer.route(request:): the extracted HTTP
 //  path dispatcher, and the new POST /agent-event endpoint.
 //
 //  Coverage:
@@ -1250,7 +1250,7 @@ final class CalyxMCPServerAgentEventTests: XCTestCase {
         XCTAssertEqual(renamed["role"] as? String, "worker", "the supplied role must apply")
     }
 
-    // Code review follow-up: a whitespace-only argument (not just the
+    // A whitespace-only argument (not just the
     // exact empty string `""`) must also be treated as "omitted" — the
     // one case this rename path specifically protects against, since a
     // caller sending `"name": " "` would otherwise blank out the

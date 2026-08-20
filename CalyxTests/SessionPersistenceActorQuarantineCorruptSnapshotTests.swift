@@ -2,9 +2,9 @@
 //  SessionPersistenceActorQuarantineCorruptSnapshotTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (recovery-feature code review, CRITICAL F2 -- an
+//  The defect this file pins: an
 //  undecodable preserved snapshot permanently sticks
-//  hasPreservedSessionSnapshot at true with a dead command, ACTOR half).
+//  hasPreservedSessionSnapshot at true with a dead command (ACTOR half).
 //  ROOT CAUSE: preserveSnapshotForRecovery()'s own doc comment states it
 //  deliberately preserves the raw on-disk file "including one restore()
 //  itself failed to decode (corrupt JSON, unknown future schema
@@ -32,11 +32,8 @@
 //  the caller can safely reset hasPreservedSessionSnapshot and retire
 //  the dead command.
 //
-//  Held-out compile-RED (see SessionCommandSynthesizerRemoteAttachTests's
-//  header for this codebase's convention):
-//  SessionPersistenceActor.quarantineCorruptPreservedSnapshot() does not
-//  exist yet. This file fails to compile until the Green phase adds it.
-//  That compile failure IS this file's RED evidence.
+//  Under test:
+//  SessionPersistenceActor.quarantineCorruptPreservedSnapshot().
 //
 //  Proposed API (SessionPersistenceActor.swift addition, alongside the
 //  existing preserveSnapshotForRecovery()/hasPreservedSnapshot()/

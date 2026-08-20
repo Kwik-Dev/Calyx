@@ -166,7 +166,7 @@ final class ConfigFileUtilsTests: XCTestCase {
 
     // MARK: - atomicWrite(_:to:) — lock-file location & persistence
     //
-    // Post-review fix: atomicWrite's lock file used to live next to the
+    // atomicWrite's lock file used to live next to the
     // resolved config path and was unlinked after use, which reintroduces
     // the classic flock "dotlock" TOCTOU race (a process that opens the
     // lock path after it's been unlinked gets an unrelated inode, so two

@@ -2,7 +2,7 @@
 //  AppDelegateRecoverPreservedSessionReentrancyGuardTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (session-UI defect review, DEFECT 4, LOW priority):
+//  The defect this file pins:
 //  recoverPreservedSession() (AppDelegate.swift:1466) has no reentrancy
 //  guard. Two back-to-back invocations (e.g. a user double-clicking
 //  "Recover Previous Session" in the command palette, or triggering it
@@ -37,20 +37,19 @@
 //  is already in flight" as a given fact, not a race outcome) against a
 //  preserved-snapshot state that resolves through the SAFE (never
 //  reaching restoreWindow(_:)) "nothing preserved" branch, and asserts
-//  the guarded call makes ZERO observable changes at all. This is
-//  genuine RED, not a vacuous pass: today, with NO guard at all, that
-//  same "nothing preserved" branch still unconditionally resets
+//  the guarded call makes ZERO observable changes at all. This is not a
+//  vacuous pass: with NO guard at all, that
+//  same "nothing preserved" branch unconditionally resets
 //  hasPreservedSessionSnapshot to false regardless of `isRecovering`'s
 //  value (quarantineCorruptPreservedSnapshot() is a safe no-op on an
 //  absent file, but the flag reset that follows it is not gated on
 //  anything today) -- so a correct guard is the only thing that can
 //  make this file's first test pass.
 //
-//  Held-out compile-RED: `isRecovering` / `_setIsRecoveringForTesting(_:)`
-//  do not exist on AppDelegate yet -- mirrors
+//  Under test: AppDelegate's `isRecovering` /
+//  `_setIsRecoveringForTesting(_:)` -- mirrors
 //  `_setHasPreservedSessionSnapshotForTesting`'s own existing
-//  private(set)-Bool test-seam precedent. This file fails to compile
-//  until the Green phase adds them.
+//  private(set)-Bool test-seam precedent.
 //
 //  Proposed API (AppDelegate.swift):
 //

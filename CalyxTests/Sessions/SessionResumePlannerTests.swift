@@ -2,7 +2,7 @@
 //  SessionResumePlannerTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for `SessionResumePlanner`: the pure-function layer
+//  Covers `SessionResumePlanner`: the pure-function layer
 //  that formats an agent CLI's resume command and the meta-key
 //  convention `AgentSessionMetaBridge` stores an agent session ID
 //  under. No I/O — matches `SessionCommandSynthesizerTests`'s

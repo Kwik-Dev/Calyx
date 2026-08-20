@@ -2,7 +2,7 @@
 //  CommandEventDecodeTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for CommandEvent.decode(from:): the shell integration's
+//  Covers CommandEvent.decode(from:): the shell integration's
 //  command-lifecycle JSON payload (snake_case, base64-encoded free-text
 //  fields) decoding, mirroring AgentEventTests' coverage shape for
 //  AgentEvent.decode(from:).

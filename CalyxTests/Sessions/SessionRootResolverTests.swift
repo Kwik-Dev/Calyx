@@ -2,7 +2,7 @@
 //  SessionRootResolverTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (session-root-resolution fix round): the Rust
+//  The session-root-resolution fix: the Rust
 //  calyx-session daemon/CLI resolves its on-disk state root
 //  ($HOME/.calyx: run/sessiond.sock, state/) from the literal HOME env
 //  var at process start (see calyx-session/crates/daemon/src/session.rs),
@@ -22,12 +22,7 @@
 //  query environment (SessionDaemonClientHomeEnvironmentTests).
 //
 //  This file targets `SessionRootResolverProtocol` and
-//  `SessionRootResolver`, NEITHER of which exists in the codebase yet.
-//  Following this codebase's established convention for new-API RED
-//  tests (see SessionDaemonClientBoundedListTests' header comment,
-//  itself citing CalyxWindowControllerFullScreenTests), this file is
-//  expected to FAIL TO COMPILE until the TDD Green phase adds them --
-//  that compile failure IS this contract's RED evidence.
+//  `SessionRootResolver`.
 //
 //  Coverage:
 //  - resolve() returns the injected environment's "HOME" value when

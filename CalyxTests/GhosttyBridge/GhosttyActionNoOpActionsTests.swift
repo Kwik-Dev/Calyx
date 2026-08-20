@@ -1,10 +1,10 @@
 // GhosttyActionNoOpActionsTests.swift
 // CalyxTests
 //
-// Second missing-observer investigation, no-op batch (not a RED-phase
-// suite — these three are already fully implemented in GhosttyActionRouter
+// Missing-observer investigation, no-op batch: these three are already
+// fully implemented in GhosttyActionRouter
 // .handleAction, GhosttyBridge/GhosttyAction.swift, so every test below is
-// expected to PASS).
+// expected to PASS.
 //
 // GHOSTTY_ACTION_TOGGLE_TAB_OVERVIEW / SHOW_GTK_INSPECTOR /
 // SHOW_ON_SCREEN_KEYBOARD moved out of the "Known but unimplemented"

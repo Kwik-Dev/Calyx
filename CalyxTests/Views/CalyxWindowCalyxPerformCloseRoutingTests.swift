@@ -2,7 +2,7 @@
 //  CalyxWindowCalyxPerformCloseRoutingTests.swift
 //  CalyxTests
 //
-//  TDD Red phase, GitHub issue #45. Full root-cause writeup:
+//  GitHub issue #45. Full root-cause writeup:
 //  `NSWindow+CalyxClose.swift`'s header comment.
 //
 //  Exercises `CalyxWindow.calyxPerformClose(_:)` itself (not the pure
@@ -19,8 +19,8 @@
 //  Against the CURRENT code, `CalyxWindow.calyxPerformClose(_:)` is an
 //  empty override and `CalyxWindowController.performCloseFocusedTarget(_:)`
 //  is an empty stub that never touches the hook at all, so BOTH tests
-//  below are RED-proving: the hook is never invoked, and `observed`
-//  stays `nil`.
+//  below pin the fix: without it the hook is never invoked, and
+//  `observed` stays `nil`.
 //
 //  Fixtures mirror `CalyxWindowControllerCloseWindowTests
 //  .makeSurfaceOwningFixture()` (terminal case) and
@@ -90,7 +90,7 @@ final class CalyxWindowCalyxPerformCloseRoutingTests: XCTestCase {
 
     // MARK: - Tests
 
-    /// RED-proving: see file header.
+    /// Pins the fix: see file header.
     func test_calyxPerformClose_terminalTabWithFocusedLeaf_routesToSurfaceTarget() {
         let fixture = makeTerminalTabFixture()
         var observed: CloseFocusedTarget?
@@ -104,7 +104,7 @@ final class CalyxWindowCalyxPerformCloseRoutingTests: XCTestCase {
         )
     }
 
-    /// RED-proving: see file header.
+    /// Pins the fix: see file header.
     func test_calyxPerformClose_browserTab_routesToTabTarget() {
         let fixture = makeBrowserTabFixture()
         var observed: CloseFocusedTarget?

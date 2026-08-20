@@ -2,7 +2,7 @@
 //  LSPInstallerBugSpecTests.swift
 //  CalyxTests
 //
-//  RED-phase regression tests for four `LSPInstaller` bugs derived from
+//  Regression tests for four `LSPInstaller` bugs derived from
 //  the live production source (Calyx/Features/LSP/LSPInstaller.swift) and
 //  the registry table (Calyx/Features/LSP/LSPServerRegistry.swift).
 //

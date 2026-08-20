@@ -42,8 +42,8 @@
 //  Coverage:
 //  - Cancelling a Task awaiting GitService.gitStatus(workDir:) terminates
 //    the underlying `git status` process well before its natural
-//    duration (RED: today cancellation is ignored entirely -- the
-//    process survives the bound)
+//    duration (before the fix, cancellation was ignored entirely and
+//    the process survived the bound)
 //
 
 import XCTest
@@ -109,7 +109,7 @@ final class GitServiceCancellationTests: XCTestCase {
 
     // MARK: - Cancellation must reach the git subprocess
 
-    /// RED: today GitService.run(args:workDir:)'s continuation
+    /// The bug: GitService.run(args:workDir:)'s continuation
     /// has no withTaskCancellationHandler, so task.cancel() never reaches
     /// the spawned `git status` process -- it survives well past the
     /// bound below, torn down only by this test's own cleanup `defer`

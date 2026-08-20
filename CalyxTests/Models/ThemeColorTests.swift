@@ -1,7 +1,7 @@
 // ThemeColorTests.swift
 // CalyxTests
 //
-// TDD red-phase tests for ThemeColorPreset and HexColor.
+// Tests for ThemeColorPreset and HexColor.
 //
 // ThemeColorPreset is a CaseIterable enum representing built-in theme color
 // presets (original, ghostty, black, gray, custom). Each preset maps to an

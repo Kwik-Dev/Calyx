@@ -23,11 +23,10 @@
 //       the existing `run(...)` watchdog.
 //
 //  Both tests below are written to FAIL against the current code: the
-//  LSPClient test references an `initializeTimeoutSeconds:` init
-//  parameter that does not yet exist, and the SystemCommandRunner test
-//  references an `installRun(...)` method that does not yet exist. The
-//  compiler is the assertion mechanism for the RED phase — once the
-//  fixes land, both tests compile and pass.
+//  LSPClient test pins an `initializeTimeoutSeconds:` init
+//  parameter, and the SystemCommandRunner test pins an
+//  `installRun(...)` method: the compiler itself is the assertion
+//  mechanism for both.
 //
 
 import XCTest
@@ -106,9 +105,8 @@ final class LSPTimeoutsBugSpecTests: XCTestCase {
     ///     kicks in), and a subsequent non-initialize request that takes
     ///     ~0.5 s MUST time out (the short default still applies).
     ///
-    /// RED expectation: against the CURRENT code, `LSPClient.init` does
-    /// not accept `initializeTimeoutSeconds:`, so this test fails to
-    /// compile. That compile failure is the RED signal.
+    /// Without `initializeTimeoutSeconds:` on `LSPClient.init`, this
+    /// test fails to compile: the compiler itself is the assertion.
     func test_initialize_usesSeparateLongTimeout() async throws {
         let transport = InMemoryLSPTransport()
 
@@ -187,9 +185,8 @@ final class LSPTimeoutsBugSpecTests: XCTestCase {
     ///     a `/bin/sh -c 'sleep 0.1; exit 0'` invocation through the
     ///     install path returns exit code 0 with no timeout artifact.
     ///
-    /// RED expectation: against the CURRENT code, `SystemCommandRunner`
-    /// does not expose `installRun(...)`, so the call below fails to
-    /// compile. That compile failure is the RED signal.
+    /// Without `installRun(...)` on `SystemCommandRunner`, the call
+    /// below fails to compile: the compiler itself is the assertion.
     func test_runner_install_usesLongerTimeout_thanRunTimeout() async throws {
         let shPath = "/bin/sh"
         guard FileManager.default.fileExists(atPath: shPath) else {

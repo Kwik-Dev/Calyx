@@ -18,15 +18,14 @@
 //
 //  Total: 7 tests.
 //
-//  TDD phase: RED. None of the following types exist yet:
+//  Types under test:
 //    - DidOpenTextDocumentParams
 //    - DidChangeTextDocumentParams
 //    - TextDocumentContentChangeEvent
 //    - DidCloseTextDocumentParams
 //    - DidSaveTextDocumentParams
 //
-//  This file is expected to fail to compile until the swift-specialist
-//  implements them under `Calyx/Features/LSP/LSPTypes/`.
+//  They live under `Calyx/Features/LSP/LSPTypes/`.
 //
 
 import XCTest

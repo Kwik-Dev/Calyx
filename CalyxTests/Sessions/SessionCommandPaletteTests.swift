@@ -2,18 +2,18 @@
 //  SessionCommandPaletteTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for P4's session command-palette entries:
+//  Covers the session command-palette entries:
 //  `session.attach` / `session.detach` / `session.kill` must be
 //  registered by `CalyxWindowController.setupCommandRegistry`, gated
 //  by `isAvailable`. Directly queries `commandRegistry.allCommands`
-//  (not `private` — see that property's P4 doc comment) rather than
+//  (not `private` — see that property's doc comment) rather than
 //  driving the real command palette UI, matching this codebase's
 //  direct-query test style.
 //
-//  None of the three commands exist yet — every test below fails at
-//  `XCTUnwrap` until the Green phase registers them.
+//  Every test below unwraps its command out of the registry, so an
+//  unregistered command fails at `XCTUnwrap`.
 //
-//  Fix round (review findings, item 3): `session.detach`/`session.kill`
+//  `session.detach`/`session.kill`
 //  used to execute `closeTab(id:killSessions:)`, tearing down every
 //  surface in the active tab even though `isAvailable`
 //  (`focusedPaneHasTrackedSession`) only checks the ONE focused pane.
@@ -49,8 +49,8 @@ final class SessionCommandPaletteTests: XCTestCase {
     /// sessionIDs registered with `SessionSurfaceMap.shared` by
     /// `makeMultiPaneFixture()`/`makeSinglePaneFixture()`, so `tearDown`
     /// can unregister exactly those entries rather than nuking the
-    /// whole shared singleton (review finding: fixtures registered
-    /// sessions here but never unregistered them, leaking entries into
+    /// whole shared singleton (fixtures used to register
+    /// sessions here but never unregister them, leaking entries into
     /// other tests that share the same process-wide singleton).
     private var registeredSessionIDs: [String] = []
 
@@ -89,7 +89,7 @@ final class SessionCommandPaletteTests: XCTestCase {
     /// tab.splitTree.focusedLeafID else { return false }`) short-circuits
     /// on `makeController()`'s tab without ever reaching the
     /// `tab.sessionRefs[leafID] != nil` check — this fixture is what
-    /// actually exercises that second check (review finding: the two
+    /// actually exercises that second check (the two
     /// `isUnavailable` tests below used to both drive the same
     /// short-circuited path via `makeController()`).
     private func makeControllerWithFocusedUntrackedPane() -> CalyxWindowController {
@@ -208,7 +208,7 @@ final class SessionCommandPaletteTests: XCTestCase {
                        "session.detach must gate on there being a focused leaf at all")
     }
 
-    // MARK: - Multi-pane targeting (fix round, item 3)
+    // MARK: - Multi-pane targeting
 
     /// Two-pane fixture: `trackedLeafID` carries a `SessionRef` (both in
     /// `tab.sessionRefs` and `SessionSurfaceMap.shared`) and is focused;

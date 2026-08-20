@@ -2,7 +2,7 @@
 //  SessionReconnectEstablishGraceSeamTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (COMPILE-RED, HELD-OUT FILE) for the eventual fix to
+//  Covers the fix for
 //  the HIGH-SPEED RECONNECT FLASHING bug covered directly by
 //  SessionReconnectAttemptResetTimingTests (see that file's header
 //  comment for the bug itself): `CalyxWindowController.performReconnect`
@@ -41,26 +41,11 @@
 //  the grace window doesn't wrongly reset an unrelated, still-in-
 //  progress attempt count.
 //
-//  NONE of this exists in the codebase yet: neither the override enum,
-//  nor the grace-period wait itself (`performReconnect` today calls
+//  Under test: the override enum and the grace-period wait itself.
+//  Before them, `performReconnect` called
 //  `markEstablished(sessionID:)` unconditionally and immediately --
 //  see `SessionReconnectAttemptResetTimingTests` for that bug's own
-//  direct, already-RED coverage). Following this codebase's
-//  established convention for new-API RED tests (see
-//  `SessionDaemonClientSessionStateBoundTimeoutSeamTests`'s header
-//  comment, itself citing `CalyxWindowControllerFullScreenTests`), this
-//  file is expected to FAIL TO COMPILE until the TDD Green phase adds
-//  the override enum plus the grace-period wait it gates. That compile
-//  failure IS this contract's RED evidence.
-//
-//  THIS IS THE "HELD-OUT" FILE for this round: it must be excluded
-//  from the build (e.g. temporarily moved out of `CalyxTests/`) while
-//  running the rest of the round's RED suite, since a compile failure
-//  anywhere in the `CalyxTests` target fails the WHOLE target (Swift
-//  compiles a target as one module) -- otherwise no other test, old or
-//  new, could be verified at all. Verify this file's specific compiler
-//  errors with a separate, standalone attempt once the rest of the
-//  suite is confirmed green/RED as expected.
+//  direct coverage.
 //
 //  Reuses the exact fixture/seam approach
 //  SessionReconnectAttemptResetTimingTests already establishes
@@ -100,13 +85,11 @@ final class SessionReconnectEstablishGraceSeamTests: XCTestCase {
         super.tearDown()
     }
 
-    /// RED (COMPILE-RED per this file's header comment):
-    /// `CalyxWindowControllerReconnectGraceOverrides` does not exist
-    /// yet, so this file fails to compile until Green adds the
-    /// grace-period wait, its override seam, and the delayed
+    /// Pins the grace-period wait, its override seam
+    /// (`CalyxWindowControllerReconnectGraceOverrides`), and the delayed
     /// `markEstablished` call described above.
     ///
-    /// Once Green lands: overrides the grace period to a tiny value,
+    /// Overrides the grace period to a tiny value,
     /// seeds attemptCounts[sessionID] = 2 (simulating two prior
     /// consecutive reconnect failures already recorded), drives a real
     /// `.reconnect(attempt: 1)` decision through the real, unmodified

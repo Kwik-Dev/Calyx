@@ -2,8 +2,8 @@
 //  AppDelegateApplyGhosttyResourcesDirEnvironmentTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (persistent-session shell-integration fix), Swift half,
-//  R3 (AppDelegate wiring). ROOT CAUSE: persistent panes run
+//  The persistent-session shell-integration fix, Swift half
+//  (AppDelegate wiring). ROOT CAUSE: persistent panes run
 //  `calyx-session attach` as the surface command; the Rust attach client
 //  (fixed in parallel) forwards ghostty's zsh shell-integration env to
 //  the daemon shell, keyed off GHOSTTY_RESOURCES_DIR in the CLIENT's own
@@ -34,15 +34,12 @@
 //  very first thing applicationDidFinishLaunching does, ahead of even
 //  the existing PATH-setenv block at lines 93-97.
 //
-//  Held-out compile-RED (see SessionCommandSynthesizerRemoteAttachTests's
-//  header for this codebase's convention): AppDelegate
+//  Under test: AppDelegate
 //  .applyGhosttyResourcesDirEnvironmentIfNeeded() and the DEBUG-only test
-//  seam _ghosttyResourcesRootForTesting do not exist yet, and this file
-//  also depends on the sibling RED types GhosttyResourcesDirResolver /
-//  GhosttyResourcesDirEnvironment (see GhosttyResourcesDirResolverTests /
-//  GhosttyResourcesDirEnvironmentTests, this same round). This file fails
-//  to compile until the Green phase adds all three. That compile failure
-//  IS this file's RED evidence.
+//  seam _ghosttyResourcesRootForTesting, on top of the types
+//  GhosttyResourcesDirResolver / GhosttyResourcesDirEnvironment (see
+//  GhosttyResourcesDirResolverTests /
+//  GhosttyResourcesDirEnvironmentTests).
 //
 //  Proposed API (AppDelegate.swift additions):
 //
@@ -89,9 +86,8 @@
 //  (b) that it runs before GhosttyAppController.shared's first access --
 //  both are properties of applicationDidFinishLaunching's own body, which
 //  has no safe unit-level seam to observe call order against a real
-//  singleton access. The Green phase implementer and code review must
-//  verify (a)/(b) by reading the diff; no test in this file substitutes
-//  for that reading.
+//  singleton access. (a)/(b) must be verified by reading the code; no
+//  test in this file substitutes for that reading.
 //
 //  Coverage:
 //  - resources root with a valid bundled ghostty/shell-integration:

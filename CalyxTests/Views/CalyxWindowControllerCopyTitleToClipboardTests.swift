@@ -2,7 +2,7 @@
 //  CalyxWindowControllerCopyTitleToClipboardTests.swift
 //  CalyxTests
 //
-//  TDD RED phase, second missing-observer investigation: ghostty's
+//  Missing observer: ghostty's
 //  copy_title_to_clipboard keybind (`GHOSTTY_ACTION_COPY_TITLE_TO_CLIPBOARD`)
 //  is not routed anywhere in `GhosttyActionRouter.handleAction` at all
 //  (falls to `default:`) -- pressing it does nothing.

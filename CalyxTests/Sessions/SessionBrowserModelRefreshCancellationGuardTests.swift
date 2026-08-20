@@ -32,7 +32,7 @@
 //
 //  Coverage:
 //  - A cancelled refresh() must not overwrite rows with a result that
-//    arrives after cancellation (RED today: rows is wiped to [] anyway)
+//    arrives after cancellation (before the fix, rows was wiped to [] anyway)
 //
 
 import XCTest
@@ -95,7 +95,7 @@ final class SessionBrowserModelRefreshCancellationGuardTests: XCTestCase {
         )
     }
 
-    /// RED: a refresh() whose
+    /// A refresh() whose
     /// Task is cancelled while its daemon round-trip is still in flight
     /// must not let that round-trip's eventual result overwrite rows --
     /// today it does, because refresh() never checks Task.isCancelled

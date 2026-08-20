@@ -2,7 +2,7 @@
 //  CalyxMCPServerSessionRoutingTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for CalyxMCPServer's session -> surface resolution: a
+//  Covers CalyxMCPServer's session -> surface resolution: a
 //  persistent-session pane's calyx-agent-hook sends its stable
 //  calyx-session ID (see AgentHookScriptSessionIDTests) in the same
 //  X-Calyx-Surface-ID header a legacy pane sends its raw surface UUID
@@ -18,7 +18,7 @@
 //  - An unresolvable (unregistered, non-UUID) value still 400s, same
 //    as today's malformed-header behavior
 //  - A plain surface UUID header keeps working unchanged (non-regression)
-//  - Fix round (review, item 7): /mcp must get the same session-ID
+//  - /mcp must get the same session-ID
 //    fallback /agent-event already has — today routeMCP intentionally
 //    keeps using parseSurfaceID directly and does NOT fall back to
 //    SessionSurfaceMap, so an MCP client running inside a
@@ -125,7 +125,7 @@ final class CalyxMCPServerSessionRoutingTests: XCTestCase {
                         "exactly as before")
     }
 
-    // MARK: - routeMCP session-ID fallback (fix round, item 7)
+    // MARK: - routeMCP session-ID fallback
 
     private func mcpRequest(
         token: String?,

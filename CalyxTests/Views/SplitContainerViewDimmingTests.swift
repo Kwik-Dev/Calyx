@@ -17,10 +17,8 @@
 //       `surfaceDidBecomeActive(_:)`, plus `private var activeLeafID: UUID?`
 //       and `private func applyActiveDimming()`.
 //
-//  Until the production TDD Green phase lands those symbols, the test file
-//  is expected to FAIL TO COMPILE on references to `SurfaceFocusHost`,
+//  The tests below reference `SurfaceFocusHost`,
 //  `SurfaceView.focusHost`, and `SplitContainerView.surfaceDidBecomeActive`.
-//  That is the Red phase for this feature.
 //
 //  Observable behaviour under test:
 //
@@ -50,10 +48,10 @@
 //    tests below reference the natural API shape; tests that exercise
 //    `updateLayout`-driven wrapper population will observe an empty
 //    `scrollWrappers` dictionary until a test seam is introduced. This is an
-//    acknowledged Red-phase limitation: these tests are syntactically valid
-//    Swift that pins the intended API contract. A subsequent task may add a
-//    `#if DEBUG`-guarded test seam on `SurfaceRegistry` so the implementation
-//    subagent can make all six tests pass at runtime.
+//    acknowledged limitation: these tests are syntactically valid
+//    Swift that pins the intended API contract. A `#if DEBUG`-guarded test
+//    seam on `SurfaceRegistry` would be needed to make all six pass at
+//    runtime.
 //
 
 import AppKit
@@ -492,8 +490,7 @@ final class SplitContainerViewDimmingTests: XCTestCase {
     //   controller propagate the click into the tab's split-tree model so the
     //   next `restoreFocus()` reads a current value.
     //
-    // Red-phase expectation: this test FAILS TO COMPILE because
-    // `container.onActiveLeafChange` does not exist yet.
+    // Under test: `container.onActiveLeafChange`.
 
     /// Given: a 2-pane tree with `focusedLeafID = firstLeafID`, laid out in
     ///        the container, and `onActiveLeafChange` assigned.

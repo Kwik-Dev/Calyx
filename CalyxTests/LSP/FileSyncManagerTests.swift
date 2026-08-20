@@ -24,10 +24,9 @@
 //    - `watch` for an already-watched root is a no-op; `unwatch` for an
 //      unknown root is a no-op.
 //
-//  TDD phase: RED. None of `FileSyncManager`, `FileSystemEventSource`,
-//  `FileSystemEvent`, `FSEventsEventSource`, or `MockFileSystemEventSource`
-//  exist yet. This file is expected to fail to compile until the
-//  swift-specialist implements them under
+//  `FileSyncManager`, `FileSystemEventSource`,
+//  `FileSystemEvent`, `FSEventsEventSource`, and `MockFileSystemEventSource`
+//  live under
 //  `Calyx/Features/LSP/FileSyncManager.swift`.
 //
 

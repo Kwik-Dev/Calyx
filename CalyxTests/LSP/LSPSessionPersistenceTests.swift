@@ -22,9 +22,8 @@
 //      `[]` (and the implementation is expected to log a warning).
 //    - `persist(_:)` creates any missing parent directories on first write.
 //
-//  TDD phase: RED. None of the types under test exist yet. This file is
-//  expected to fail to compile until the swift-specialist creates
-//  `Calyx/Features/LSP/LSPSessionPersistence.swift` defining:
+//  The types under test live in
+//  `Calyx/Features/LSP/LSPSessionPersistence.swift`:
 //    - `actor LSPSessionPersistence`
 //    - `LSPSessionPersistence.SessionSnapshot` (nested to avoid colliding
 //      with the existing top-level `SessionSnapshot` used for window/tab

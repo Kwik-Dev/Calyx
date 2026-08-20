@@ -25,7 +25,7 @@
 //  close-policy teardown `closeTab` already uses (kill semantics, an
 //  explicit window close) UNLESS the app is actually terminating, in
 //  which case today's preserve-into-snapshot behavior must stay exactly
-//  as it is (`AppDelegate.isApplicationTerminating`, new in this round,
+//  as it is (`AppDelegate.isApplicationTerminating`,
 //  see its own doc comment, is the discriminator; the window's own
 //  `isClosingForShutdown` alone is NOT enough, since `closeLastWindow`
 //  also sets that flag for a non-terminating close).
@@ -101,7 +101,7 @@ final class CalyxWindowControllerNonLastWindowCloseTests: XCTestCase {
     /// `detachSessionIfPersistent`/`SessionCloseKillPolicy` at all, it
     /// destroys every surface directly, leaving `SessionSurfaceMap` and
     /// `tab.sessionRefs` untouched regardless of whether the app is
-    /// terminating. This is the PRIMARY RED-proving assertion: with the
+    /// terminating. This is the PRIMARY assertion pinning the fix: with the
     /// app NOT terminating (`isApplicationTerminating == false`, the
     /// default, a red-button close on one of several open windows),
     /// closing must run the normal close policy and unregister/clear the
@@ -131,7 +131,7 @@ final class CalyxWindowControllerNonLastWindowCloseTests: XCTestCase {
                     "for an explicit, non-quit window close")
     }
 
-    /// Regression guard, NOT a RED-proving test:
+    /// Regression guard:
     /// while the app IS actually terminating (`isApplicationTerminating
     /// == true`, mirroring `markAllControllersClosingForShutdown` having
     /// run, which also sets the window's own `isClosingForShutdown`),

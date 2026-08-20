@@ -33,10 +33,9 @@
 //    - `clear(workspaceRoot:)` removes one workspace; others remain.
 //    - `clearAll()` removes everything.
 //
-//  TDD phase: RED. `DiagnosticsStore`, `DiagnosticsDiff`,
+//  `DiagnosticsStore`, `DiagnosticsDiff`,
 //  `DiagnosticsStoreError`, `SnapshotId`, and `PublishDiagnosticsParams`
-//  do not exist yet. This file is expected to fail to compile until the
-//  swift-specialist creates `Calyx/Features/LSP/DiagnosticsStore.swift`
+//  live in `Calyx/Features/LSP/DiagnosticsStore.swift`
 //  (and the matching `PublishDiagnosticsParams.swift`).
 //
 

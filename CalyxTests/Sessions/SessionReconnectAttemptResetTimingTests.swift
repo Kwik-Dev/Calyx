@@ -2,7 +2,7 @@
 //  SessionReconnectAttemptResetTimingTests.swift
 //  CalyxTests
 //
-//  TDD Red phase for the HIGH-SPEED RECONNECT FLASHING bug:
+//  Covers the HIGH-SPEED RECONNECT FLASHING bug:
 //  `CalyxWindowController.performReconnect` calls
 //  `sessionReconnectCoordinator.markEstablished(sessionID:)`
 //  unconditionally, immediately after swapping in the replacement
@@ -19,7 +19,7 @@
 //  gives up.
 //
 //  THE INTENDED FIX (covered by SessionReconnectEstablishGraceSeamTests,
-//  a held-out compile-RED file, not this one): the attempt counter
+//  not this file): the attempt counter
 //  must reset ONLY once the replacement surface survives a grace
 //  period without its own child exiting, not merely because it was
 //  created. This file covers the bug itself -- the premature reset --

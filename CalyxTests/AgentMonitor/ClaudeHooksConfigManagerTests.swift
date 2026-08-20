@@ -2,7 +2,7 @@
 //  ClaudeHooksConfigManagerTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for ClaudeHooksConfigManager: writes the "hooks" section of
+//  Covers ClaudeHooksConfigManager: writes the "hooks" section of
 //  ~/.claude/settings.json for the calyx-agent-hook script, following the
 //  same file-safety guarantees as ClaudeConfigManager (see
 //  ClaudeConfigManagerTests.swift): symlink rejection, .bak backup, and

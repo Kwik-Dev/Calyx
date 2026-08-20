@@ -32,7 +32,7 @@ struct TwoPaneSessionFixture {
     let sessionID: String
 }
 
-/// - Parameter host: P5 (remote sessions) addition. `nil` (the default)
+/// - Parameter host: `nil` (the default)
 ///   matches every existing call site's local-session fixture exactly.
 ///   Non-nil carries a remote host on the fixture's `SessionRef`, for
 ///   tests asserting kill/close routing's remote-vs-local behavior.

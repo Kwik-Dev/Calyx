@@ -2,7 +2,7 @@
 //  AppDelegateApplyCalyxShellIntegrationTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (P4, command-log shell integration). Same shape and
+//  Covers the command-log shell integration. Same shape and
 //  same reachability bounds as AppDelegateApplyGhosttyResourcesDirEnvironmentTests
 //  (see that file's own header for why applicationDidFinishLaunching
 //  itself is not exercisable from this test host): calls

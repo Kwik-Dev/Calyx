@@ -2,7 +2,7 @@
 //  OpenCodePluginManagerTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for OpenCodePluginManager (Phase 2): installs/removes
+//  Covers OpenCodePluginManager (Phase 2): installs/removes
 //  `<pluginsDirectory>/plugins/calyx-agent-monitor.js`, a Bun-runtime
 //  plugin OpenCode auto-loads with no opencode.json edit required.
 //

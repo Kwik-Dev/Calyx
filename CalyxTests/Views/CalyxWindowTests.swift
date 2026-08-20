@@ -18,9 +18,7 @@
 //  Coordinate system: AppKit window coordinates with flipped == false, so the
 //  y axis increases upward and the title bar occupies the top of the window.
 //
-//  These tests target a static helper that does NOT exist in the codebase yet.
-//  They are expected to FAIL compile/run until the TDD Green phase implements
-//  `CalyxWindow.shouldPerformZoom`.
+//  These tests target the static helper `CalyxWindow.shouldPerformZoom`.
 //
 
 import AppKit

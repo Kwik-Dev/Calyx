@@ -2,7 +2,7 @@
 //  ApprovalInboxStoreTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for ApprovalInboxStore: the Cockpit approval-request
+//  Covers ApprovalInboxStore: the Cockpit approval-request
 //  queue and its await/decide/expire continuation lifecycle (mirrors
 //  CommandLogStore.awaitCompletion's bridge-based coordination -- see
 //  CommandLogStoreTests.swift's awaitCompletion tests for the timing

@@ -22,7 +22,7 @@
 //  suite creates a real ghostty surface or calls `showWindow` for real
 //  (grepped the whole `CalyxTests` target to confirm), which is why
 //  this was never previously exercised. The hung process had to be
-//  killed manually; retrying it is not an acceptable RED-phase check.
+//  killed manually; retrying it is not an acceptable check.
 //
 //  Instead, this file uses `AppDelegate._attachWindowCreationHookForTesting`,
 //  a minimal seam (`nil` by default, so production behavior is
@@ -59,7 +59,7 @@ final class AppDelegateAttachWindowTests: XCTestCase {
     /// actually cover. `_focusWindowForExistingSessionShowHookForTesting`
     /// replaces the real `wc.showWindow(nil)` call for the same test-
     /// process-safety reason `AppDelegateFocusExistingSessionTests` uses
-    /// it. Flagged in this round's handoff (see both files' headers).
+    /// it (see both files' headers).
     func test_attachWindow_forAlreadyRegisteredSessionID_neverReachesWindowCreation() {
         let appDelegate = AppDelegate()
         var creationHookCallCount = 0

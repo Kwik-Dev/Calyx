@@ -2,8 +2,7 @@
 //  SettingsWindowControllerSessionsToggleWiringTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (session-UI defect review, DEFECT 1, SEVERE/top
-//  priority): the four Settings > Sessions switches
+//  The defect this file pins: the four Settings > Sessions switches
 //  (persistentSessionsSwitch/agentResumeSwitch/agentResumeAutoExecuteSwitch/
 //  historyPersistenceSwitch, SettingsWindowController.swift ~18-21) are
 //  built via `controlRow(label:control:)` (contentView(for:), ~154-161),
@@ -46,16 +45,14 @@
 //  run, `.shared` may already be constructed, with whatever
 //  SessionSettings value was live at THAT moment -- there is no
 //  reliable way to control the build-time snapshot through the real
-//  singleton at all. Per the team-lead handoff's own escape hatch
-//  ("if the switches aren't reachable... extract a small helper... and
-//  unit-test THAT"), this half is pinned instead against a new, pure,
-//  singleton-independent static function proposed below.
+//  singleton at all. Since the switches are not reachable, this half is
+//  pinned instead against a pure,
+//  singleton-independent static function: the small-helper extraction
+//  this codebase uses whenever a real singleton blocks a direct test.
 //
-//  Held-out compile-RED, half (B) only:
-//  `SettingsWindowController.sessionToggleInitialState(for:)` does not
-//  exist yet. This file fails to compile until the Green phase adds it.
-//  Half (A) is runtime-RED (an assertion failure against today's
-//  missing `.target`/`.action`), not a compile failure.
+//  Half (B) covers
+//  `SettingsWindowController.sessionToggleInitialState(for:)`; half (A)
+//  covers the switches' own `.target`/`.action` wiring.
 //
 //  Proposed API (SettingsWindowController.swift addition, no access-level
 //  change to any existing private member needed -- selectors are

@@ -21,7 +21,7 @@
 //  it does (verified against a941b245d): both builders read title,
 //  titleOverride, pwd, splitTree, and sessionRefs straight off the same
 //  Tab, and a terminal tab's browserURL is nil in both. This assertion
-//  is therefore a REGRESSION GUARD, not RED proof, for the terminal-tab
+//  is therefore a REGRESSION GUARD, not a fix-pinning assertion, for the terminal-tab
 //  case -- it locks the two builders' agreement so any future edit to
 //  either one that silently diverges them is caught immediately. The
 //  refactor's real regression guard remains
@@ -86,7 +86,7 @@ final class CalyxWindowControllerSnapshotDelegationTests: XCTestCase {
             windowTabSnapshot, directTabSnapshot,
             "windowSnapshot()'s TabSnapshot for a tab with no live browser override must equal " +
             "Tab.snapshot()'s own output for the identical tab -- regression guard for the " +
-            "delegation, not RED proof (both builders already agree here); see this file's header comment"
+            "delegation, not a fix-pinning assertion (both builders already agree here); see this file's header comment"
         )
     }
 }

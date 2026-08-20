@@ -3248,7 +3248,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// unhealthy, additionally logs and — if this window can resolve the
     /// surface's owning tab — surfaces a user-facing notification via
     /// `NotificationManager`; pane-level overlay presentation is out of
-    /// scope for this pass.
+    /// scope here.
     func processRendererHealth(surfaceView: SurfaceView, healthy: Bool) {
         surfaceView.isRendererHealthy = healthy
         guard !healthy else { return }
@@ -3801,7 +3801,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// on a daemon that turned out to be merely unreachable rather than
     /// truly gone.
     ///
-    /// CRITICAL ordering (review finding): `SurfaceRegistry
+    /// CRITICAL ordering: `SurfaceRegistry
     /// .destroySurface(_:)` synchronously re-enters ghostty's
     /// `close_surface` callback (`handleCloseSurfaceNotification` ->
     /// `closeSurfaceAndCleanUp`) from inside `requestClose()`, *before*
@@ -3955,7 +3955,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         // attempt count, and this stale confirmation must not wrongly
         // reset it out from under an unrelated, still-in-progress retry.
         //
-        // P5 (remote sessions): `reconnectGraceProbe` queries the LOCAL
+        // Remote sessions: `reconnectGraceProbe` queries the LOCAL
         // calyx-session daemon, which can never have a matching
         // SessionInfo for a REMOTE session (its daemon lives entirely on
         // the remote host) -- the probe would forever report

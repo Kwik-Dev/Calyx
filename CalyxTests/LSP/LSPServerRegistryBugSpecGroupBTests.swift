@@ -34,15 +34,12 @@
 //       The Go entry's list must include both `["--version"]` AND
 //       `["version"]`.
 //
-//  TDD phase: RED. Until the fixes land, these tests reference symbols
-//  (`executableCandidates`, `versionArgumentCandidates`) that do not
-//  exist on the current `LSPServerRegistry.swift`. The file therefore
-//  FAILS TO COMPILE — and compile failure IS the RED signal per the
-//  bug spec.
+//  These tests reference the symbols
+//  `executableCandidates` and `versionArgumentCandidates` on
+//  `LSPServerRegistry.swift`.
 //
-//  This file MUST fail (compile or runtime) against the current
-//  production `LSPServerRegistry.swift`. Do not soften any assertion
-//  to make it "pass" against the buggy registry.
+//  Do not soften any assertion to make it "pass" against a registry
+//  that has regressed.
 //
 
 import XCTest
@@ -60,7 +57,7 @@ final class LSPServerRegistryBugSpecGroupBTests: XCTestCase {
     /// and `"jdt-language-server"` so that Coursier-based installs are
     /// detected by `lsp_check_installation`.
     ///
-    /// RED signal: until `LSPServerDefinition` grows an
+    /// Until `LSPServerDefinition` grows an
     /// `executableCandidates: [String]` field, this test fails to
     /// compile.
     func test_java_entry_hasFallbackExecutableCandidates() throws {
@@ -70,9 +67,7 @@ final class LSPServerRegistryBugSpecGroupBTests: XCTestCase {
             return
         }
 
-        // This member access is what makes the RED phase a compile
-        // failure: `executableCandidates` does not exist yet on
-        // `LSPServerDefinition`. After the fix, this read should
+        // `executableCandidates` on `LSPServerDefinition` must
         // return the full fallback chain.
         let candidates: [String] = java.executableCandidates
 
@@ -103,7 +98,7 @@ final class LSPServerRegistryBugSpecGroupBTests: XCTestCase {
     /// AND `["version"]` so that any gopls release Calyx encounters can
     /// be successfully version-probed.
     ///
-    /// RED signal: until `LSPServerDefinition` grows a
+    /// Until `LSPServerDefinition` grows a
     /// `versionArgumentCandidates: [[String]]` field, this test fails
     /// to compile.
     func test_gopls_entry_probesMultipleVersionFlags() throws {
@@ -113,9 +108,7 @@ final class LSPServerRegistryBugSpecGroupBTests: XCTestCase {
             return
         }
 
-        // This member access is what makes the RED phase a compile
-        // failure: `versionArgumentCandidates` does not exist yet on
-        // `LSPServerDefinition`. After the fix, this read should
+        // `versionArgumentCandidates` on `LSPServerDefinition` must
         // return the full candidate list of arg sets.
         let candidates: [[String]] = go.versionArgumentCandidates
 

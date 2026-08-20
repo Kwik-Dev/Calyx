@@ -28,7 +28,7 @@
 //  hanging the test process waiting on something with no signal at
 //  all. Waits via XCTWaiter with a generous, bounded timeout so the
 //  test itself cannot hang even if the production bound is still
-//  missing: a timed-out wait is exactly this test's RED result.
+//  missing: a timed-out wait is exactly this test's failure signal.
 //
 
 import XCTest
@@ -82,7 +82,7 @@ final class AppDelegateOfferAgentResumePipelineBoundTests: XCTestCase {
     /// injected daemon's listAll() never resolves, so that Task never
     /// reaches offerAgentResume at all within any reasonable window.
     /// The completion hook therefore never fires, and the wait below
-    /// times out (RED). The fix must give agentResumeSessionsTask its
+    /// times out. The fix gives agentResumeSessionsTask its
     /// own short deadline so this pipeline always reaches a terminal
     /// state.
     func test_offerAgentResumePipeline_reachesTerminalState_evenWithUnresponsiveDaemon() {

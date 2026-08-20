@@ -777,7 +777,7 @@ final class CalyxMCPServerTests: XCTestCase {
         }
     }
 
-    // 20. RED: `preferredPort: 0` must record the actual
+    // 20. `preferredPort: 0` must record the actual
     // kernel-bound port — `server.port > 0`, `agent-endpoint.json`'s
     // `port` matching that same non-zero value, and the published port
     // reachable over a real HTTP `initialize` call — never the requested
@@ -847,7 +847,7 @@ final class CalyxMCPServerTests: XCTestCase {
         srv.stop()
     }
 
-    // 21. Regression (should stay GREEN both pre- and post-fix): a free
+    // 21. Regression (passes both pre- and post-fix): a free
     // high port passed as `preferredPort` must record exactly that port.
     // The canonical scan's first iteration binds it and `finishStart`
     // records `tryPort == preferredPort` — this is the common,
@@ -871,7 +871,7 @@ final class CalyxMCPServerTests: XCTestCase {
         srv.stop()
     }
 
-    // 22. RED: TCP-level split between the HTTP header segment and the
+    // 22. TCP-level split between the HTTP header segment and the
     // body segment. `handleConnection` passes whatever a *single*
     // `NWConnection.receive` call returns straight to `HTTPParser.parse`
     // without re-issuing `receive` for a request whose `Content-Length`

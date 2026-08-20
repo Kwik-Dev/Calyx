@@ -2,7 +2,7 @@
 //  AppDelegateLaunchEnvironmentGateTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (unit-test host isolation fix). ROOT CAUSE: the
+//  The unit-test host isolation fix. ROOT CAUSE: the
 //  CalyxTests scheme uses Calyx.app as its test HOST, and by the time any
 //  test method runs, the host process has already completed a full,
 //  ungated applicationDidFinishLaunching against the developer's real
@@ -25,19 +25,15 @@
 //  applyGhosttyResourcesDirEnvironmentIfNeeded()) calls
 //  `setenv("PATH", "\(binPath):\(currentPath)", 1)` with no existence
 //  gate on binPath, so it runs on every single launch that reaches it,
-//  unconditionally, with no dependence on bundle contents. Once the
-//  early-return gate lands in applicationDidFinishLaunching, this
+//  unconditionally, with no dependence on bundle contents. With the
+//  early-return gate in applicationDidFinishLaunching, this
 //  process's own PATH must NEVER acquire that marker, because the host
 //  never runs that launch body under a unit-test host in the first
-//  place. TODAY (no gate exists), the assertion below fails for real:
-//  the host already ran the launch before this test executes, so the
-//  marker IS present in this process's PATH. That failure is this
-//  file's runtime RED evidence -- not a compile error, an actual
-//  assertion failure caused by the bug this fix removes. After the Green
-//  phase gates applicationDidFinishLaunching behind
-//  LaunchEnvironmentPolicy.isUnitTestHost(), the host never reaches the
-//  PATH setenv at all, and this same assertion flips to passing with no
-//  change to the test itself.
+//  place. Without the gate the assertion below would fail for real:
+//  the host would already have run the launch before this test
+//  executes, so the marker would be present in this process's PATH.
+//  Gated behind LaunchEnvironmentPolicy.isUnitTestHost(), the host
+//  never reaches the PATH setenv at all, and the assertion below holds.
 //
 //  Uses getenv(3) rather than ProcessInfo.processInfo.environment,
 //  mirroring AppDelegateApplyGhosttyResourcesDirEnvironmentTests's own

@@ -25,13 +25,12 @@
 //  - Calling an LSP tool before `startLSP()` returns a structured error
 //    instead of crashing.
 //
-//  TDD phase: RED. None of the symbols below
-//  (`MCPRouter.lspTools`, `MCPRouter.allTools`, `MCPRouter.isLSPTool`,
-//  `CalyxMCPServer.lspBridge`, `CalyxMCPServer.startLSP()`,
-//  `CalyxMCPServer._testInjectLSPBridge(_:)`) exist yet. This file is
-//  expected to fail compilation until swift-specialist adds them in
+//  Under test: `MCPRouter.lspTools`, `MCPRouter.allTools`,
+//  `MCPRouter.isLSPTool`,
+//  `CalyxMCPServer.lspBridge`, `CalyxMCPServer.startLSP()`, and
+//  `CalyxMCPServer._testInjectLSPBridge(_:)`, declared in
 //  `Calyx/Features/IPC/MCPProtocol.swift` and
-//  `Calyx/Features/IPC/CalyxMCPServer.swift`. Once implemented, every
+//  `Calyx/Features/IPC/CalyxMCPServer.swift`. Every
 //  test below must pass without touching the surrounding files in this
 //  directory.
 //

@@ -73,7 +73,7 @@ struct CommandResult: Sendable, Equatable {
 /// contract: cancelling its race's operation arm only actually ends the
 /// daemon round-trip promptly because the injected `LSPCommandRunner`
 /// honors cancellation this way. A future runner that talks to a
-/// remote daemon over SSH (P5) must uphold the same contract, or
+/// remote daemon over SSH must uphold the same contract, or
 /// `bounded(...)`'s cancellation propagation silently regresses to a
 /// no-op for that transport.
 protocol LSPCommandRunner: Sendable {

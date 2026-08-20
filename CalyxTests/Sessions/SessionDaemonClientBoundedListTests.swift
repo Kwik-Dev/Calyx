@@ -14,13 +14,8 @@
 //  one timeout constant instead of each reimplementing (or, in the
 //  browser's case, omitting) it.
 //
-//  This test targets `SessionDaemonClient.listAllBounded()`, which does
-//  NOT exist in the codebase yet. Following this codebase's established
-//  convention for new-API RED tests (see
-//  CalyxWindowControllerFullScreenTests's header comment), it is
-//  expected to FAIL TO COMPILE until the TDD Green phase adds it --
-//  that compile failure IS this contract's RED evidence. Once
-//  Green implements `listAllBounded()`, this test exercises it against
+//  This test targets `SessionDaemonClient.listAllBounded()`.
+//  It exercises that method against
 //  a REAL SessionDaemonClient (not a protocol-level fake), with a
 //  never-completing LSPCommandRunner injected via the client's existing
 //  `commandRunner:` seam (mirrors SessionBinaryResolverTests' direct-

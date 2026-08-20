@@ -2,7 +2,7 @@
 //  CalyxWindowControllerHerdrAutoCloseTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase (herdr ): a surface registered in
+//  Herdr auto-close: a surface registered in
 //  HerdrHostedSurfaces, or bridged via HerdrPaneRegistry, reports
 //  GHOSTTY_ACTION_SHOW_CHILD_EXITED (`processChildExited`, wired from
 //  `handleShowChildExitedNotification`) -- Calyx must automatically

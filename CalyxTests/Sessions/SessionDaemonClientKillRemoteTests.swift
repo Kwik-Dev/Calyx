@@ -2,8 +2,8 @@
 //  SessionDaemonClientKillRemoteTests.swift
 //  CalyxTests
 //
-//  P5 (remote sessions) RED phase, BUG 1 (five-angle convergence review
-//  finding): CalyxWindowController.killSessionIfPersistent never
+//  Remote sessions. THE DEFECT:
+//  CalyxWindowController.killSessionIfPersistent never
 //  consults SessionRef.host, so closing a remote pane always kills via
 //  the LOCAL daemon client -- a silent no-op against a session whose
 //  daemon lives entirely on the remote host, orphaning it forever and
@@ -39,21 +39,15 @@
 //  a NEW protocol requirement. Every existing SessionDaemonClientProtocol
 //  fake across the suite (SessionReconnectCoordinatorTests,
 //  SessionDaemonClientBoundedCancellationTests, etc.) must keep compiling
-//  untouched, so the Green phase must add a default protocol extension
-//  (a no-op) alongside the requirement -- mirroring `installRemote(host:)`'s
+//  untouched, so a default protocol extension
+//  (a no-op) sits alongside the requirement -- mirroring `installRemote(host:)`'s
 //  own identical precedent (SessionDaemonClient.swift) -- rather than a
 //  bare protocol requirement that would force every existing fake in the
 //  suite to grow a new override.
 //
-//  Held-out compile-RED file per this codebase's established convention
-//  (see SessionRemoteInstallTests's header for the identical precedent
-//  this mirrors): `killRemote(host:sessionID:)` does not exist anywhere
-//  in the codebase yet -- neither on the protocol nor on the concrete
-//  SessionDaemonClient, which also does not yet accept an `sshResolver`
-//  dependency. Expected to FAIL TO COMPILE until the Green phase adds
-//  both. That compile failure IS this file's RED evidence. Must be
-//  excluded from the build while running the rest of the round's RED
-//  suite and verified separately for its own specific compiler errors.
+//  Under test: `killRemote(host:sessionID:)` on both the protocol and
+//  the concrete SessionDaemonClient, plus that client's `sshResolver`
+//  dependency.
 //
 //  Coverage:
 //  - killRemote(host:sessionID:) invokes the resolved ssh binary

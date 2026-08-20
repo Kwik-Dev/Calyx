@@ -2,13 +2,8 @@
 //  SettingsPaneTests.swift
 //  CalyxTests
 //
-//  TDD Red phase: tabbed Settings window restructure. Introduces
-//  SettingsPane and SettingsRow, which do not exist anywhere in the
-//  codebase yet -- a held-out compile-RED file per this codebase's
-//  established convention (see SessionCommandSynthesizerRemoteAttachTests's
-//  header): the whole CalyxTests target fails to build until the Green
-//  phase adds both types. That compile failure IS this file's RED
-//  evidence.
+//  Covers the tabbed Settings window restructure: SettingsPane and
+//  SettingsRow, the row -> pane model the restructure is built on.
 //
 //  WHY A ROW -> PANE MODEL: SettingsWindowController.swift currently
 //  builds one long NSStackView with 14 UI elements (3 theme-color rows,
@@ -48,13 +43,10 @@
 //  toolbar's tabStyle (.toolbar, SettingsWindowController.setupContent())
 //  renders a degenerate fat header with sunk text when a tab item has no
 //  icon -- NSTabViewController's toolbar style expects one. SettingsPane
-//  gains an `icon` (SF Symbol name) below, a held-out compile-RED
-//  addition (SettingsPane already exists, but `.icon` does not yet):
-//  the whole CalyxTests target fails to build until the Green phase adds
-//  it, exactly like this file's original SettingsPane/SettingsRow
-//  compile-RED (see header above). The NSTabViewItem.image/window-title
+//  gains an `icon` (SF Symbol name), pinned below. The
+//  NSTabViewItem.image/window-title
 //  wiring itself is not covered here (see AppDelegateAttachPlaceholderTitleTests's
-//  sibling investigation note and this cycle's handoff for why).
+//  sibling investigation note for why).
 //
 
 import XCTest

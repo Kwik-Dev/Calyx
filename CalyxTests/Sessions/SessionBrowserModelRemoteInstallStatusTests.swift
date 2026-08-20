@@ -2,7 +2,7 @@
 //  SessionBrowserModelRemoteInstallStatusTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (session-UI defect review, DEFECT 3, MEDIUM priority):
+//  The defect this file pins:
 //  SessionBrowserView.swift's Install button
 //  (`Button("Install") { Task { await model.installRemote(host: host) } }`,
 //  ~line 108) discards installRemote(host:)'s `CommandResult?` entirely.
@@ -22,9 +22,8 @@
 //  side effect around that same call, it does not change its return
 //  value or signature.
 //
-//  Held-out compile-RED: `RemoteInstallStatus`,
-//  `installStatus(forHost:)` do not exist on SessionBrowserModel yet.
-//  This file fails to compile until the Green phase adds them.
+//  Under test: SessionBrowserModel's `RemoteInstallStatus` and
+//  `installStatus(forHost:)`.
 //
 //  Proposed API (SessionBrowserModel.swift addition):
 //

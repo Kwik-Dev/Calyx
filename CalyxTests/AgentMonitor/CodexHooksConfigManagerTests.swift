@@ -2,7 +2,7 @@
 //  CodexHooksConfigManagerTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for CodexHooksConfigManager (Phase 2): writes a
+//  Covers CodexHooksConfigManager (Phase 2): writes a
 //  BEGIN/END-delimited managed block of `[[hooks.<Event>]]` TOML
 //  array-of-tables entries into `~/.codex/config.toml` for the
 //  calyx-agent-hook script. Follows the tempDir + configPath injection

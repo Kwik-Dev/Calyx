@@ -7,10 +7,8 @@
 //  use, by walking the file system upwards looking for the workspace
 //  markers declared in `LSPServerRegistry`.
 //
-//  TDD phase: RED. `WorkspaceResolver` does not exist yet. This file is
-//  expected to fail to compile until the swift-specialist creates
-//  `Calyx/Features/LSP/WorkspaceResolver.swift` per the API contract
-//  documented in the parent task brief.
+//  `WorkspaceResolver` lives in
+//  `Calyx/Features/LSP/WorkspaceResolver.swift`.
 //
 //  Contract under test:
 //    - resolveWorkspaceRoot(from:) walks upwards from cwd. The first

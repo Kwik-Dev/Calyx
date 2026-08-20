@@ -143,7 +143,7 @@ final class CalyxMCPServerWiringBugSpecTests: XCTestCase {
     ///      after `teardown_1` has fully drained.
     ///
     /// Assertion: `inflightTeardownCountAtLastStartLSPEntry == 0`. Pre
-    /// fix this is `1` (RED); post fix it is `0` (GREEN). The check
+    /// fix this is `1`; post fix it is `0`. The check
     /// is the deterministic test-only signal for the
     /// race-to-install-bridge leak described in the audit.
     func test_doubleStart_newStartLSPRunsAfterPriorTeardownDrains() async throws {

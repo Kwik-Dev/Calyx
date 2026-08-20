@@ -2,7 +2,7 @@
 //  NSWindowCalyxCloseTests.swift
 //  CalyxTests
 //
-//  TDD Red phase, GitHub issue #45. Full root-cause writeup:
+//  GitHub issue #45. Full root-cause writeup:
 //  `NSWindow+CalyxClose.swift`'s header comment.
 //
 //  Exercises `NSWindow.calyxPerformClose(_:)`'s DEFAULT behavior — i.e.
@@ -32,12 +32,12 @@
 //  window, which would make the first test below fail for the wrong
 //  reason against a correct implementation.
 //
-//  RED ledger (ran 2026-08-07):
-//   - `test_calyxPerformClose_onPlainWindow_queriesWindowShouldClose` is
-//     RED-proving: the current stub body is empty, so the delegate is
-//     never queried (`windowShouldCloseCallCount` stays 0, not 1).
+//  What each test pins:
+//   - `test_calyxPerformClose_onPlainWindow_queriesWindowShouldClose`
+//     pins the fix: the pre-fix stub body was empty, so the delegate was
+//     never queried (`windowShouldCloseCallCount` stayed 0, not 1).
 //   - `test_calyxPerformClose_onSheetWindow_doesNotQueryWindowShouldClose`
-//     is NOT RED-proving (regression guard only): "the delegate was
+//     is a regression guard: "the delegate was
 //     never queried" is trivially true against the same empty stub. It
 //     protects the OTHER half of the contract — that a sheet must never
 //     be closed by Cmd+W (`ClipboardConfirmationController` presents a
@@ -87,7 +87,7 @@ final class NSWindowCalyxCloseTests: XCTestCase {
         return window
     }
 
-    // MARK: - No sheet: windowShouldClose IS queried (RED-proving)
+    // MARK: - No sheet: windowShouldClose IS queried (pins the fix)
 
     func test_calyxPerformClose_onPlainWindow_queriesWindowShouldClose() {
         let window = makeBareWindow()

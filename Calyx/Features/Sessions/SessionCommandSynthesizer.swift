@@ -30,7 +30,7 @@ enum SessionCommandSynthesizer {
     /// drag-and-drop keystroke quoting — and deliberately left
     /// untouched).
     ///
-    /// Internal, not `private` (P5 remote sessions):
+    /// Internal, not `private`:
     /// `SessionDaemonClient.killRemote(host:sessionID:)` reuses this
     /// exact escaping for the sessionID word in the remote `kill`
     /// command line it shells over `ssh`, rather than reimplementing a
@@ -73,7 +73,7 @@ enum SessionCommandSynthesizer {
 
     /// Builds `<binaryPath> --runtime-dir <root>/.calyx/run --state-dir
     /// <root>/.calyx/state attach <sessionID> --create --cwd <cwd>`.
-    /// `sessionID` is positional, matching the P2 CLI's `AttachArgs`
+    /// `sessionID` is positional, matching the CLI's `AttachArgs`
     /// (`calyx-session/crates/cli/src/cli.rs`), which has no `--id` flag.
     ///
     /// Ghostty does not hand this string to a shell unmodified; it wraps

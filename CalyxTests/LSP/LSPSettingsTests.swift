@@ -20,11 +20,10 @@
 //                                              handler (UI surfaces the prompt)
 //          true                  false         .silent
 //
-//  TDD phase: RED. `LSPSettings` does not exist yet. This file is expected
-//  to fail to compile until the swift-specialist creates
+//  `LSPSettings` lives in
 //  `Calyx/Features/LSP/LSPSettings.swift`. The `ConfirmationMode` enum is
-//  already defined in `Calyx/Features/LSP/LSPInstaller.swift`; the
-//  implementation MUST reuse it (do not redeclare).
+//  defined in `Calyx/Features/LSP/LSPInstaller.swift` and reused there;
+//  it must never be redeclared.
 //
 //  Test isolation:
 //    - Each test starts with `LSPSettings.resetToDefaults()` via `setUp()`,

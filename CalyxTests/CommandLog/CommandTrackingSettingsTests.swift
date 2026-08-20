@@ -2,7 +2,7 @@
 //  CommandTrackingSettingsTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for CommandTrackingSettings: the command-tracking feature
+//  Covers CommandTrackingSettings: the command-tracking feature
 //  toggle, same shape as SessionSettings.persistentSessionsEnabled but
 //  defaulting ON.
 //

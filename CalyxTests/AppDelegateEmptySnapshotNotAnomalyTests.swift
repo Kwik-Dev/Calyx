@@ -2,8 +2,8 @@
 //  AppDelegateEmptySnapshotNotAnomalyTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (window-lifetime redesign follow-up -- C4's anomaly
-//  guard is now itself the bug). CONTEXT: earlier in this same feature
+//  The window-lifetime redesign's empty-snapshot anomaly
+//  guard is now itself the bug. CONTEXT: earlier in this same feature
 //  area, closing the last window stopped terminating the app
 //  (applicationShouldTerminateAfterLastWindowClosed now returns
 //  `false`), and AppDelegate.removeWindowController(_:) was changed to
@@ -39,22 +39,18 @@
 //  this fix.
 //
 //  SCOPE NOTE: CalyxTests/AppDelegateEmptySnapshotAnomalyGuardTests.swift
-//  pins the OLD (soon-to-be-reversed) hasRunningPersistentSessions()
-//  contract in isolation and is left untouched by this file, per this
-//  cycle's instructions -- a later pass reconciles/removes it once the
-//  Green phase lands. This file's fake daemon client and
+//  pins the OLD hasRunningPersistentSessions()
+//  contract in isolation and is left untouched by this file.
+//  This file's fake daemon client and
 //  NotificationManager spy patterns are deliberately copied from that
 //  file's (and AppDelegateNotifyPreviousSessionNotRestoredTests') own
 //  established style, not reused by reference, since both source
 //  classes are file-private.
 //
-//  Held-out compile-RED (see SessionCommandSynthesizerRemoteAttachTests's
-//  header for this codebase's convention): AppDelegate
-//  .handleEmptyRestoredSnapshot() does not exist yet. This file fails to
-//  compile until the Green phase adds it. That compile failure IS this
-//  file's RED evidence.
+//  The method under test is AppDelegate
+//  .handleEmptyRestoredSnapshot().
 //
-//  Proposed API (AppDelegate.swift change, replacing the guard body at
+//  Its API (AppDelegate.swift, replacing the guard body at
 //  restoreSession()'s existing `guard !snapshot.windows.isEmpty else {
 //  ... }` ~1879-1897): extracted into its own method for the same
 //  reason attemptSessionRestoreFromDisk(deadline:)/
@@ -88,7 +84,7 @@
 //        return handleEmptyRestoredSnapshot()
 //    }
 //
-//  NOTE for Green phase / code review, not this file's concern to
+//  NOTE, not this file's concern to
 //  decide: once nothing calls hasRunningPersistentSessionsBridged()/
 //  hasRunningPersistentSessions() from restoreSession() any more,
 //  whether those two methods become dead code to remove, or are kept
@@ -111,9 +107,9 @@
 //  empty-snapshot branch instead of something else -- restoreSession()
 //  remains private and reaches GhosttyAppController.shared/real window
 //  creation once past this guard (see AppDelegateRecoveryCounterResetTests'
-//  own header for the identical constraint). The Green phase implementer
-//  and code review must verify that call-site wiring by reading the
-//  diff; no test in this file substitutes for that reading.
+//  own header for the identical constraint). That call-site wiring
+//  must be verified by reading the code; no test in this file
+//  substitutes for that reading.
 //
 //  Coverage (single scenario, three assertions on one action -- mirrors
 //  AppDelegateSessionRestoreDiskTimeoutTests'
@@ -209,9 +205,9 @@ final class AppDelegateEmptySnapshotNotAnomalyTests: XCTestCase {
     /// that method's own doc comment -- which can only run once the
     /// CURRENT MainActor turn returns; an `async` XCTest method already
     /// occupies that turn itself and would deadlock such a busy-wait,
-    /// exactly as that doc comment describes. Should the Green phase
-    /// implementer choose a shape that still consults the daemon
-    /// synchronously from inside handleEmptyRestoredSnapshot() (e.g. an
+    /// exactly as that doc comment describes. Should
+    /// handleEmptyRestoredSnapshot() ever consult the daemon
+    /// synchronously (e.g. an
     /// assertion/sanity check that it is never actually reached), this
     /// test must keep working unchanged rather than newly deadlock -- a
     /// plain synchronous test method, like every real production call

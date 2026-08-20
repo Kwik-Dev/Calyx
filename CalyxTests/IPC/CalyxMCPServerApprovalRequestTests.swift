@@ -2,7 +2,7 @@
 //  CalyxMCPServerApprovalRequestTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for Stage B of the approval-inbox-for-CLI-agents
+//  Covers Stage B of the approval-inbox-for-CLI-agents
 //  feature: the new `POST /approval-request` long-poll endpoint on
 //  CalyxMCPServer. Mirrors CalyxMCPServerAgentEventTests' harness
 //  (HTTPRequest construction + `await server.route(request:)` direct

@@ -35,7 +35,7 @@
 //
 //  Coverage:
 //  - kill(id:) shields commandRunner.run(...) from the caller's ambient
-//    Task cancellation (RED today: cancelling the host Task reaches
+//    Task cancellation (before the fix, cancelling the host Task reached
 //    straight through to the runner's own Task, observed as true, and
 //    the kill never gets the chance to be resumed to completion the way
 //    this test expects)
@@ -132,7 +132,7 @@ final class SessionDaemonClientWriteOpCancellationShieldTests: XCTestCase {
         }
     }
 
-    /// RED: cancelling the host Task calling kill(id:) mid-flight
+    /// Cancelling the host Task calling kill(id:) mid-flight
     /// must NOT reach the runner's own Task -- today it does, because
     /// kill(id:) awaits commandRunner.run(...) directly in the caller's
     /// Task instead of an insulated inner one.

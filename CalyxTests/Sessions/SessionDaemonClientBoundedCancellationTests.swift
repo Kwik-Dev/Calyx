@@ -30,7 +30,7 @@
 //  Coverage:
 //  - Cancelling the Task awaiting listAllBounded() ends promptly (well
 //    under the 5s bound) with the [] sentinel, AND the runner observed
-//    cancellation promptly too (RED today: the call rides out the full
+//    cancellation promptly too (before the fix: the call rides out the full
 //    ~5s bound, and by the time it resolves the runner's cancellation was
 //    already observed via the race's own unrelated internal mechanism --
 //    not promptly, and not because of the caller's early cancel())
@@ -99,7 +99,7 @@ private struct FixedBinaryResolver: SessionBinaryResolverProtocol {
 
 final class SessionDaemonClientBoundedCancellationTests: XCTestCase {
 
-    /// RED: cancelling the outer Task awaiting listAllBounded()
+    /// Cancelling the outer Task awaiting listAllBounded()
     /// must end the call promptly and reach the runner promptly too --
     /// today neither happens: the call rides out the internal race's own
     /// ~5s bound, and the runner's cancellation (when it eventually

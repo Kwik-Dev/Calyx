@@ -66,12 +66,12 @@ struct BellFeatures: OptionSet, Sendable {
 /// Every closure defaults to a no-op, but `AppDelegate.processRingBell`
 /// already dispatches to all five unconditionally, whenever the
 /// matching `BellFeatures` bit is set (see that method's own doc
-/// comment) — this is not a RED-phase stub. `handleRingBellNotification`
+/// comment). `handleRingBellNotification`
 /// (`AppDelegate.swift`), the real production call site, wires
 /// `performSystemBell`/`performAudioBell`/`requestAttention` to real
 /// system effects; `flashTitle`/`flashBorder` are the two left as
 /// no-ops there (bell-emoji-in-title and border-flash presentation are
-/// out of scope for this pass — see that call site's own doc comment).
+/// out of scope here — see that call site's own doc comment).
 struct BellEffectHandlers {
     var performSystemBell: () -> Void = {}
     var performAudioBell: () -> Void = {}

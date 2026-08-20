@@ -2,7 +2,7 @@
 //  CalyxWindowControllerLastWindowCloseSaveTests.swift
 //  CalyxTests
 //
-//  TDD Red phase for the last-window-close session-loss bug (root-caused
+//  Covers the last-window-close session-loss bug (root-caused
 //  from a real user incident): quitting the app by closing the last
 //  window (the red button) loses the session snapshot, so the next
 //  launch cannot reattach and instead creates fresh sessions, leaving

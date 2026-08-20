@@ -10,11 +10,11 @@
 // border: bool = false }`, field order = bit order, LSB first; read from
 // the `ghostty` submodule pinned at
 // 332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28). These tests therefore PASS
-// today by design (pinning/drift-detection tests, not RED-proving ones):
+// today by design (pinning/drift-detection tests, not fix-pinning ones):
 // they exist so a typo here, or a future ghostty submodule bump that
 // changes the upstream `bell-features` default, fails loudly instead of
-// silently drifting out of sync with the real bit layout. The RED-proving
-// coverage for THIS investigation's bell-ringing feature lives in
+// silently drifting out of sync with the real bit layout. The
+// behavioral coverage for the bell-ringing feature itself lives in
 // AppDelegateRingBellTests (processRingBell's still-stubbed dispatch).
 
 import Testing

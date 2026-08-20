@@ -2,7 +2,7 @@
 //  AppDelegateSessionBrowserMenuItemTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (user-reported gap, same area as the attach-as-tab fix):
+//  The user-reported gap this file pins:
 //  there is NO menu bar item to open the session browser at all today --
 //  grepped setupMainMenu (AppDelegate.swift) for any addItem referencing
 //  SessionBrowserWindowController/showBrowser and found none; the only
@@ -36,7 +36,7 @@
 //    Cmd+Shift+U (Jump to Unread Tab) Cmd+1..Cmd+9 (Select Tab N)
 //    Ctrl+Shift+N (New Group) Ctrl+Shift+W (Close Group)
 //    Ctrl+Shift+] (Next Group) Ctrl+Shift+[ (Previous Group)
-//  NOTE: the task brief's own suggested alternative, Cmd+Shift+E, is
+//  NOTE: the obvious alternative, Cmd+Shift+E, is
 //  already taken (Compose Input) -- confirmed by this enumeration, which
 //  is exactly why this file also pins a SECOND, general test (every
 //  keyEquivalent+modifierMask pair menu-tree-wide is unique) rather than
@@ -63,11 +63,9 @@
 //  safe (unlike `attachWindow`/`showWindow`, which hang the process; see
 //  `AppDelegateAttachWindowTests`'s header for that contrast).
 //
-//  Neither the menu item nor `openSessionBrowser(_:)` exist yet -- this
-//  file compiles against TODAY's code (it references no not-yet-existing
-//  Swift symbol; the expected action name is a string literal) and fails
-//  via genuine runtime assertion failures (item not found) instead, so
-//  no held-out/compile-RED file was needed.
+//  This file references no Swift symbol that could be missing (the
+//  expected action name is a string literal), so a missing menu item
+//  shows up as a runtime assertion failure rather than a build error.
 //
 
 import XCTest

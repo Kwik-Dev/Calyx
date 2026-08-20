@@ -9,7 +9,7 @@
 //  attach process's own HOME-derived state-root resolution agree with
 //  whatever SessionDaemonClient resolved for the same rootResolver (see
 //  SessionRootResolver.swift's header) -- but the Rust CLI has carried
-//  its own, more direct answer to the same problem since P2: global
+//  its own, more direct answer to the same problem: global
 //  `--runtime-dir`/`--state-dir` flags (calyx-session/crates/cli/src/cli.rs:15-20,
 //  `global = true`, so every subcommand accepts them, not just `daemon`)
 //  that `attach` both accepts and, when it auto-spawns the daemon,
@@ -162,7 +162,7 @@ final class SessionCommandSynthesizerRuntimeStateDirFlagsTests: XCTestCase {
     }
 
     /// Asserts `command` contains neither an `/usr/bin/env` wrapper nor
-    /// a `HOME=` word anywhere -- both retired by this round's flags
+    /// a `HOME=` word anywhere -- both retired by the flags
     /// migration (see this file's header for why).
     private func assertContainsNoEnvWrapperOrHomeStamp(
         _ command: String, file: StaticString = #filePath, line: UInt = #line
@@ -174,7 +174,7 @@ final class SessionCommandSynthesizerRuntimeStateDirFlagsTests: XCTestCase {
                        file: file, line: line)
         XCTAssertFalse(command.contains("HOME="),
                        "The synthesized command must never contain a HOME= word anywhere -- stamping HOME " +
-                       "was the old mechanism this round retires in favor of explicit --runtime-dir/--state-dir " +
+                       "was the old mechanism, retired in favor of explicit --runtime-dir/--state-dir " +
                        "flags",
                        file: file, line: line)
     }

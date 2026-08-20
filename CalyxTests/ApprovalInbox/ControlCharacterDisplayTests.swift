@@ -2,7 +2,7 @@
 //  ControlCharacterDisplayTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for ControlCharacterDisplay: renders raw command
+//  Covers ControlCharacterDisplay: renders raw command
 //  payload text (e.g. an ApprovalRequest.payload of literal
 //  pane_send_keys bytes) into a safely-displayable string for the
 //  approval banner -- escaping ASCII control characters into their

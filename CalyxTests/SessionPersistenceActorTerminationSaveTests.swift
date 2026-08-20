@@ -2,8 +2,8 @@
 //  SessionPersistenceActorTerminationSaveTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (session-restore fix, Bug 2 -- quit-save empty
-//  overwrite). ROOT CAUSE: AppDelegate.applicationWillTerminate builds a
+//  The defect this file pins: a quit-save empty
+//  overwrite. ROOT CAUSE: AppDelegate.applicationWillTerminate builds a
 //  snapshot from `windowControllers` (buildSnapshot(), AppDelegate.swift
 //  ~1053) and hands it to SessionPersistenceActor.saveImmediately(_:),
 //  the SAME actor method CalyxWindowController.windowWillClose's
@@ -22,11 +22,8 @@
 //  termination call site, that refuses to replace a non-empty on-disk
 //  snapshot with an empty one.
 //
-//  Held-out compile-RED (see SessionCommandSynthesizerRemoteAttachTests's
-//  header for this codebase's convention):
-//  SessionPersistenceActor.saveAtTermination(_:) does not exist yet. This
-//  file fails to compile until the Green phase adds it. That compile
-//  failure IS this file's RED evidence.
+//  Under test:
+//  SessionPersistenceActor.saveAtTermination(_:).
 //
 //  Proposed API (SessionPersistenceActor.swift addition, alongside the
 //  existing save()/saveImmediately(_:)):
@@ -67,9 +64,9 @@
 //  non-empty `windowControllers` array of genuine CalyxWindowControllers,
 //  which (per AppDelegateApplyGhosttyResourcesDirEnvironmentTests's own
 //  precedent) reaches GhosttyAppController.shared and real window/surface
-//  creation and hangs this test host. The Green phase implementer and
-//  code review must verify the call-site switch by reading the diff; no
-//  test in this file substitutes for that reading.
+//  creation and hangs this test host. The call-site switch must be
+//  verified by reading the code; no test in this file substitutes for
+//  that reading.
 //
 //  Coverage:
 //  - empty snapshot + non-empty on-disk snapshot: disk file left

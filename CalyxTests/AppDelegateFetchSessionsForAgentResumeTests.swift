@@ -78,7 +78,7 @@ final class AppDelegateFetchSessionsForAgentResumeTests: XCTestCase {
         }
     }
 
-    /// Primary RED-proving assertion:
+    /// Primary assertion pinning the fix:
     /// against the CURRENT code, `fetchSessionsForAgentResume()`'s
     /// `RunLoop.current.run` spin blocks the calling thread for its full
     /// ~2.0s deadline before giving up and returning `[:]`, since the

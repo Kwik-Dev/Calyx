@@ -2,7 +2,7 @@
 //  SessionBrowserModelRemoteHostsGateTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (session-UI defect review, DEFECT 2, HIGH priority):
+//  The defect this file pins:
 //  the session browser's Remote Hosts section renders (and its own
 //  "Attach" button stays enabled) whenever SSH config yields ANY host
 //  candidate at all, with NO dependency on
@@ -43,14 +43,12 @@
 //    make the section render again the instant the user flips the
 //    setting off, before any intervening refresh clears it out
 //
-//  Held-out compile-RED: `showRemoteHostsSection` does not exist on
-//  SessionBrowserModel yet. This file fails to compile until the Green
-//  phase adds it. refreshRemoteHostCandidates()'s OWN gating is
-//  runtime-RED (the method and remoteHostCandidates already exist, see
-//  SessionBrowserModelRemoteHostTests) -- an assertion failure against
-//  today's ungated implementation, not a compile failure.
+//  Under test: SessionBrowserModel's `showRemoteHostsSection`, plus
+//  refreshRemoteHostCandidates()'s own gating (that method and
+//  remoteHostCandidates predate this file, see
+//  SessionBrowserModelRemoteHostTests).
 //
-//  OUT OF SCOPE (per this cycle's handoff): SessionSpawnPlanner.plan(for:)'s
+//  OUT OF SCOPE: SessionSpawnPlanner.plan(for:)'s
 //  own host!=nil + persistentSessionsEnabled==false behavior is left
 //  as-is -- the primary fix is the UI-level gate pinned here, which
 //  (once landed) means the UI never actually reaches that planner case

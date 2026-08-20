@@ -2,7 +2,7 @@
 //  LSPInstallerShellDetectionBugSpecTests.swift
 //  CalyxTests
 //
-//  RED-phase regression test for a metacharacter-coverage bug in
+//  Regression test for a metacharacter-coverage bug in
 //  `LSPInstaller.commandNeedsShell(_:)` (see
 //  Calyx/Features/LSP/LSPInstaller.swift around lines 623–628).
 //

@@ -53,8 +53,8 @@ class NotificationManager {
         // The CalyxTests process is an XCTest host, not a real running
         // app -- requesting notification permission here would either
         // hang the test run on a system permission dialog or spuriously
-        // prompt on a developer's machine every test run (review
-        // finding). Shares `TestEnvironment.isTestHost` with
+        // prompt on a developer's machine every test run.
+        // Shares `TestEnvironment.isTestHost` with
         // `AppDelegate.installGlobalEventTap`'s
         // equivalent check, this codebase's established convention for
         // skipping side-effecting setup under test. Also skipped under

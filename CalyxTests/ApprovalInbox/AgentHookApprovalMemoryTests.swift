@@ -2,7 +2,7 @@
 //  AgentHookApprovalMemoryTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for Stage E of the approval-inbox-for-CLI-agents
+//  Covers Stage E of the approval-inbox-for-CLI-agents
 //  feature: AgentHookApprovalMemory, the per-session "Always Allow"
 //  memory that lets a human's Always-Allow click on an agent-hook
 //  approval request (see ApprovalRequest.Source.agentHook) skip the

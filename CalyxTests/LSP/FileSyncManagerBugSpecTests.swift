@@ -4,8 +4,7 @@
 //
 //  Bug-spec regression tests for `FileSyncManager` covering five distinct
 //  defects identified in the production source. All non-skipped tests in
-//  this file are RED against the current implementation; they pin the
-//  intended behaviour for the upcoming fix work.
+//  this file pin the intended behaviour of the fixes.
 //
 //  Bug inventory (matching the bug spec passed to test-writer):
 //    1. FSEventStreamStart return value ignored. A failed start publishes a
@@ -38,10 +37,6 @@
 //       past the 200 ms threshold requires either a 256 MB+ temp file
 //       (excessive for unit tests) or a Task.detached read path that
 //       does not yet exist, so this test is marked `XCTSkip`.
-//
-//  TDD phase: RED. The non-skipped tests must FAIL against the current
-//  implementation. The swift-specialist will then implement the fixes to
-//  drive them green.
 //
 
 import XCTest

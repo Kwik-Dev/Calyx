@@ -27,8 +27,9 @@
 //
 //  Coverage:
 //  - Cancelling a Task awaiting SystemCommandRunner.run() terminates the
-//    underlying Process well before its natural duration (RED: today
-//    cancellation is ignored entirely -- the child survives the bound)
+//    underlying Process well before its natural duration (before the
+//    fix, cancellation was ignored entirely and the child survived the
+//    bound)
 //
 
 import XCTest
@@ -85,7 +86,7 @@ final class SystemCommandRunnerCancellationTests: XCTestCase {
 
     // MARK: - Cancellation must reach the subprocess
 
-    /// RED: today `run()`'s continuation has no
+    /// The bug: `run()`'s continuation has no
     /// `withTaskCancellationHandler`, so `task.cancel()` never reaches
     /// the spawned `Process` -- the child survives well past the bound
     /// below and is only ever killed by this test's own cleanup `defer`.

@@ -179,8 +179,8 @@ final class SurfaceRegistry {
     func destroySurface(_ id: UUID) {
         guard var entry = entries[id] else {
             #if DEBUG
-            // Symmetric with `contains(_:)`'s injected-ID fallback
-            // (review finding): a `_testInsert`-only entry has no live
+            // Symmetric with `contains(_:)`'s injected-ID fallback:
+            // a `_testInsert`-only entry has no live
             // ghostty surface to tear down, but it must still be
             // dropped from test-only storage so `contains(_:)` (and
             // `view(for:)`/`id(for:)`) correctly stop resolving it
@@ -198,7 +198,7 @@ final class SurfaceRegistry {
             orphanCommandsIfNotPersistent(surfaceID: id)
             approvalInboxStore.expireForSurface(id)
             agentHookApprovalMemory.clearPaneEntries(surfaceID: id)
-            // P3 review (F4): symmetric with the main destroy path below
+            // Symmetric with the main destroy path below
             // -- unregisterView + the .calyxSurfaceDestroyed post must
             // ALSO run here so SurfacePropertyStore prunes a
             // _testInsert-only surface's recorded title/cwd on destroy,
@@ -341,7 +341,7 @@ final class SurfaceRegistry {
     /// which need `findTab(surfaceID:)`/`findTabAndGroup(surfaceID:)`
     /// (both gated on `contains(_:)`) to find a `_testInsert`-only tab
     /// without a live ghostty app. `destroySurface(_:)` is ALSO extended
-    /// to remove an injected entry (review finding: it used to leave
+    /// to remove an injected entry (it used to leave
     /// `_testViewsByID` untouched, so `contains(_:)` kept reporting
     /// `true` for an ID that had just been torn down — an asymmetry
     /// with the production-entry path, where `destroySurface` always

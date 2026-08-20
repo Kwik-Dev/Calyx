@@ -2,7 +2,7 @@
 //  SplitContainerViewInitialActiveLeafSaveTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (save-reliability C1, first-save trigger). ROOT CAUSE:
+//  A save-reliability defect: the first-save trigger. ROOT CAUSE:
 //  a brand new window's (or a brand new tab's) very first surface never
 //  triggers a session save, because nothing calls requestSave() until
 //  SOME later focus/split/tab action fires
@@ -41,10 +41,9 @@
 //  fired for") requests a save the moment a window/tab's first surface
 //  is laid out, with no user action required.
 //
-//  This is a genuine runtime Red, not a compile-RED: `onActiveLeafChange`
-//  already exists as a settable closure property, so these tests compile
-//  today and FAIL as real assertion failures (0 invocations recorded)
-//  against the current silent-assignment code.
+//  `onActiveLeafChange` is a settable closure property, so these tests
+//  assert on invocation counts directly: against the pre-fix
+//  silent-assignment code they recorded 0 invocations.
 //
 //  WHAT THIS FILE CAN AND CANNOT PIN: SplitContainerView itself requires
 //  no live ghostty surface or NSWindow (mirrors

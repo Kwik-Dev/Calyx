@@ -9,9 +9,9 @@
 //  scale (direct handleJSONRPC calls, no real NWConnection).
 //
 //  Coverage:
-//  - tools/list includes pane_list/pane_split/tab_create (ungated, P4)
-//    and pane_run/pane_send_keys/palette_execute (human-approval gated,
-//    P5), totaling 85 (6 IPC + 70 LSP + 3 terminal_* + 6 Cockpit)
+//  - tools/list includes pane_list/pane_split/tab_create (ungated)
+//    and pane_run/pane_send_keys/palette_execute (human-approval
+//    gated), totaling 85 (6 IPC + 70 LSP + 3 terminal_* + 6 Cockpit)
 //  - tools/call pane_list dispatches through the injected FakeCockpitAccess
 //    and returns the panes JSON MCPCockpitBridge builds
 //  - a Cockpit tool call does not trigger syncBoundPeerInboxCounts (it's

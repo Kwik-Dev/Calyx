@@ -2,9 +2,9 @@
 //  AppDelegateRecoverPreservedSessionCorruptSnapshotTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (recovery-feature code review, CRITICAL F2 -- an
+//  The defect this file pins: an
 //  undecodable preserved snapshot permanently sticks
-//  hasPreservedSessionSnapshot at true with a dead command, APP half).
+//  hasPreservedSessionSnapshot at true with a dead command (APP half).
 //  ROOT CAUSE: recoverPreservedSession()'s guard,
 //  `guard let snapshot = await actor.loadPreservedSnapshot(), !snapshot
 //  .windows.isEmpty else { return }`, takes its no-op `return` branch
@@ -36,9 +36,9 @@
 //
 //  No NEW symbol is referenced directly by this file (it drives the
 //  already-existing recoverPreservedSession() end-to-end and only
-//  inspects filesystem side effects), so this file's RED evidence is an
-//  assertion FAILURE at runtime against the current guard's plain
-//  `return`, not a compile failure. It DOES, however, require the
+//  inspects filesystem side effects), so this file asserts at runtime
+//  against the pre-fix guard's plain
+//  `return`, rather than failing to compile. It DOES, however, require the
 //  sibling SessionPersistenceActorQuarantineCorruptSnapshotTests' new
 //  quarantineCorruptPreservedSnapshot() to exist before the suite as a
 //  whole compiles again -- tracked there, not duplicated here.

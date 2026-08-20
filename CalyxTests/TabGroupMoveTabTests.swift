@@ -2,7 +2,7 @@
 //  TabGroupMoveTabTests.swift
 //  CalyxTests
 //
-//  TDD RED phase, second missing-observer investigation:
+//  Missing observer:
 //  `TabGroup.moveTab(fromIndex:by:)` is `GHOSTTY_ACTION_MOVE_TAB`'s intended
 //  pure-logic core (via `CalyxWindowController.processMoveTab(tab:group:
 //  amount:)`) but is currently an intentional no-op stub (see its own doc
@@ -26,8 +26,7 @@
 //  holds regardless of whether the guard the test is meant to verify
 //  actually exists. They stay in this suite as regression guards for the
 //  real implementation (e.g. a missing `fromIndex` bounds check would crash
-//  via `tabs.remove(at:)` rather than merely misbehave). See the RED-phase
-//  handoff notes for which specific tests this applies to.
+//  via `tabs.remove(at:)` rather than merely misbehave).
 
 import XCTest
 @testable import Calyx

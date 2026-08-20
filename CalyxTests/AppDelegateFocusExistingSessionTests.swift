@@ -37,8 +37,8 @@
 //  genuine owning controller either, so implementing it WILL require
 //  updating that test's fixture to include a real owning
 //  controller (making it a genuinely LIVE mapping, not a stale one).
-//  Flagged here, and in this round's handoff, rather than silently left
-//  for the implementer to discover.
+//  Flagged here rather than silently left
+//  for the next reader to discover.
 //
 
 import XCTest

@@ -67,8 +67,8 @@ struct MCPRouter: Sendable {
 
     /// `internal` (not `private`): shared with `MCPCommandLogBridge` and
     /// `MCPLSPBridge`, which used to each carry their own copy of this
-    /// exact helper. Promoted to a single source of truth (code review
-    /// finding) instead of three independently-drifting copies.
+    /// exact helper. Promoted to a single source of truth instead of
+    /// three independently-drifting copies.
     static func prop(_ type: String, _ desc: String) -> AnyCodable {
         AnyCodable(["type": AnyCodable(type), "description": AnyCodable(desc)] as [String: AnyCodable])
     }
@@ -173,8 +173,8 @@ struct MCPRouter: Sendable {
     }
 
     /// Cockpit tool catalogue: pane_list / pane_split / tab_create
-    /// (ungated, P4) plus pane_run / pane_send_keys / palette_execute
-    /// (human-approval gated, P5). Delegates to `MCPCockpitBridge.tools`,
+    /// (ungated) plus pane_run / pane_send_keys / palette_execute
+    /// (human-approval gated). Delegates to `MCPCockpitBridge.tools`,
     /// same rationale as `lspTools`/`terminalTools` delegating to their
     /// own bridges.
     static var cockpitTools: [MCPTool] {

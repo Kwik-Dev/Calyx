@@ -199,8 +199,8 @@ final class HerdrEventTests: XCTestCase {
     }
 
     /// Malformed: a "data" object present, but with no "pane_id" in
-    /// either the nested `pane` location or flat -- per this stage's own
-    /// instructions (and HerdrEvent.swift's header "B1 rule"), this
+    /// either the nested `pane` location or flat -- per
+    /// HerdrEvent.swift's header "B1 rule", this
     /// falls back to `.unknown(eventType:)`, preserving the ORIGINAL
     /// event type string, rather than throwing.
     func test_decode_paneClosed_malformedEnvelopeLackingAnyPaneID_decodesToUnknown_preservingOriginalEventTypeString() throws {
@@ -316,7 +316,7 @@ final class HerdrEventTests: XCTestCase {
 
     // MARK: - Structural guards: HerdrPaneRecord (PaneInfo)
 
-    /// The regression pin for this stage's whole reason to exist: a
+    /// The regression pin for this file's whole reason to exist: a
     /// payload carrying ONLY `PaneInfo`'s 7 schema-required fields must
     /// decode successfully, with every one of the other 12 (optional)
     /// properties `nil`.

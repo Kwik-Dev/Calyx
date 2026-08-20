@@ -2,8 +2,8 @@
 //  AppDelegateRecoveryCounterResetTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (session-restore fix, Bug 1 -- crash-loop counter never
-//  resets on a healthy "nothing to restore" launch). ROOT CAUSE:
+//  The defect this file pins: the crash-loop counter never
+//  resets on a healthy "nothing to restore" launch. ROOT CAUSE:
 //  AppDelegate.restoreSession() (AppDelegate.swift ~1059-1112) increments
 //  SessionPersistenceActor's on-disk recovery counter on EVERY launch
 //  (incrementRecoveryCounter()), but only schedules the delayed 5s reset
@@ -30,12 +30,9 @@
 //  success-only tail into its own method, called unconditionally once
 //  per restoreSession() invocation.
 //
-//  Held-out compile-RED (see SessionCommandSynthesizerRemoteAttachTests's
-//  header for this codebase's convention): AppDelegate
+//  Under test: AppDelegate
 //  .scheduleRecoveryCounterResetAfterStableLaunch(delay:) and the
-//  DEBUG-only test seam _sessionPersistenceActorForTesting do not exist
-//  yet. This file fails to compile until the Green phase adds both. That
-//  compile failure IS this file's RED evidence.
+//  DEBUG-only test seam _sessionPersistenceActorForTesting.
 //
 //  Proposed API (AppDelegate.swift additions):
 //
@@ -81,10 +78,9 @@
 //  restoreSession() is private and, once past its own crash-loop guard,
 //  reaches GhosttyAppController.shared and real window/surface creation
 //  (per AppDelegateApplyGhosttyResourcesDirEnvironmentTests's own
-//  precedent for why that hangs this test host). The Green phase
-//  implementer and code review must verify restoreSession()'s call-site
-//  wiring by reading the diff; no test in this file substitutes for that
-//  reading.
+//  precedent for why that hangs this test host). restoreSession()'s
+//  call-site wiring must be verified by reading the code; no test in
+//  this file substitutes for that reading.
 //
 //  Coverage:
 //  - reset does not happen before the injected delay elapses (rules out

@@ -2,7 +2,7 @@
 //  CalyxWindowControllerSetTabTitleTests.swift
 //  CalyxTests
 //
-//  TDD RED phase, second missing-observer investigation: ghostty's
+//  Missing observer: ghostty's
 //  set_tab_title keybind (`GHOSTTY_ACTION_SET_TAB_TITLE`) is not routed
 //  anywhere in `GhosttyActionRouter.handleAction` at all (falls to
 //  `default:`) -- pressing it does nothing.

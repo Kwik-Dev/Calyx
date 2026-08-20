@@ -2,7 +2,7 @@
 //  CalyxWindowControllerMoveTabTests.swift
 //  CalyxTests
 //
-//  TDD RED phase, second missing-observer investigation:
+//  Missing observer: 
 //  `GhosttyActionRouter.handleAction` still lists `GHOSTTY_ACTION_MOVE_TAB`
 //  in its "Known but unimplemented" group (`return false`,
 //  GhosttyAction.swift) -- ghostty's default move_tab keybinds do nothing.

@@ -11,7 +11,7 @@
 // Pure function group — no I/O, no actor isolation required, same
 // shape as `SessionCommandSynthesizer`.
 //
-// Green-phase implementation: pure string formatting only, no I/O.
+// Pure string formatting only, no I/O.
 
 import Foundation
 

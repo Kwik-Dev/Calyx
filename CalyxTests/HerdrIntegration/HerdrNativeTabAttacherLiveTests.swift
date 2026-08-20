@@ -2,7 +2,7 @@
 //  HerdrNativeTabAttacherLiveTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for HerdrNativeTabAttacherLive (app-layer
+//  Covers HerdrNativeTabAttacherLive (app-layer
 //  wiring): the production HerdrNativeTabAttacher conformer that
 //  HerdrTabCoordinator drives. Every side-effectful dependency
 //  (tabsProvider, attachHook, focusHook, ratioMutationHook,

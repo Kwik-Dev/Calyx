@@ -2,7 +2,7 @@
 //  CommandTrackingSettingsToggleWiringTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (P4, command-log Settings section). Same two-half split
+//  Covers the command-log Settings section. Same two-half split
 //  as SettingsWindowControllerSessionsToggleWiringTests (see that file's
 //  own header for the full rationale of each half's reachability), plus
 //  a third part (C) this file adds on top of that shape:
@@ -10,14 +10,14 @@
 //  PANE UPDATE (user-directed Settings restructure): commandTracking
 //  moved off the Sessions pane onto the new Agents pane along with
 //  agentResume/agentResumeAutoExecute/cockpitAutoApprove -- everywhere
-//  below originally said "Sessions pane"/`.pane == .sessions` (P4-era,
-//  still accurate as history) now reads "Agents pane"/`.pane == .agents`
+//  below originally said "Sessions pane"/`.pane == .sessions` and
+//  now reads "Agents pane"/`.pane == .agents`
 //  to match where the row actually lives today.
 //
 //  (A) TARGET/ACTION WIRING -- against the REAL SettingsWindowController
 //  .shared singleton's Agents pane view tree, located by its OWN
 //  accessibility identifier (not positional index), so this file is
-//  independent of wherever the Green phase places the new row relative
+//  independent of where that row sits relative
 //  to the other agent-related toggles.
 //
 //  (B) INITIAL-STATE SEEDING -- against
@@ -28,17 +28,15 @@
 //  (command tracking's backing store is CommandTrackingSettings, not
 //  SessionSettings).
 //
-//  (C) SIDE EFFECTS (review finding, added post-Green) -- (A) only pins
+//  (C) SIDE EFFECTS -- (A) only pins
 //  that .target/.action are wired, never that invoking the handler does
 //  the right thing. This part drives the real switch through its real
 //  action via SettingsWindowController._shellIntegrationRootForTesting
 //  (see that section's own header below).
 //
-//  Held-out compile-RED (see SessionCommandSynthesizerRemoteAttachTests'
-//  header for this codebase's convention): SettingsRow.commandTracking,
+//  Under test: SettingsRow.commandTracking,
 //  AccessibilityID.Settings.commandTrackingSwitch, and the
-//  #selector(commandTrackingDidChange:) target do not exist yet. This
-//  file fails to compile until the Green phase adds all three.
+//  #selector(commandTrackingDidChange:) target.
 //
 //  Proposed API:
 //
@@ -92,8 +90,8 @@ final class CommandTrackingSettingsToggleWiringTests: XCTestCase {
     /// tree whose accessibility identifier matches `identifier` --
     /// located by identifier rather than position, unlike
     /// SettingsWindowControllerSessionsToggleWiringTests' positional
-    /// collectSwitches(in:), since this file must not assume where the
-    /// Green phase places the new row relative to the four existing
+    /// collectSwitches(in:), since this file must not assume where that
+    /// row sits relative to the four existing
     /// session toggles.
     private func findSwitch(identifier: String, in view: NSView) -> NSSwitch? {
         for subview in view.subviews {
@@ -126,7 +124,7 @@ final class CommandTrackingSettingsToggleWiringTests: XCTestCase {
     // MARK: - (C) commandTrackingDidChange(_:) side effects, via the real
     // singleton's own switch and the _shellIntegrationRootForTesting seam
     //
-    // Review finding: (A) above only pins that .target/.action are wired
+    // (A) above only pins that .target/.action are wired
     // -- it never actually invokes the handler, so a handler that
     // resolved the wrong root, or silently did nothing, would still pass
     // it. This drives the REAL switch found by (A)'s own lookup through

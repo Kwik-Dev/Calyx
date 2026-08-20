@@ -23,8 +23,8 @@
 //      for wc in targets { wc.isClosingForShutdown = true }
 //      for wc in targets { wc.window?.close() }
 //
-//  DANGER, confirmed twice in this project's history (see this cycle's
-//  task brief): closing a REAL window cascades window?.close() ->
+//  DANGER, confirmed twice in this project's history: closing a REAL
+//  window cascades window?.close() ->
 //  windowWillClose -> AppDelegate.removeWindowController ->
 //  NSApp.terminate(nil) once windowControllers is empty, which kills the
 //  XCTest host process. Every test below that lets window?.close() run
@@ -36,9 +36,7 @@
 //  window?.close() call from this exact test host (see that file's own
 //  "Mocks" section header comment for the identical rationale).
 //
-//  Quick Terminal invariant (previously a CRITICAL code-review finding
-//  against the pre-merge implementation -- see this branch's own
-//  history): with a Quick Terminal open, closing every managed window
+//  Quick Terminal invariant: with a Quick Terminal open, closing every managed window
 //  must still correctly KILL (never leak/detach) every persistent
 //  session behind them, honoring this codebase's "close=kill / quit=
 //  detach" contract (`SessionCloseKillPolicy.swift`). Under the OLD

@@ -27,9 +27,8 @@
 //    - `nonisolated` `workspaceRoot` and `languageId` properties are
 //      accessible without `await`.
 //
-//  TDD phase: RED. None of `LSPSession`, `SessionState`, `LSPSessionError`
-//  exist yet. This file is expected to fail to compile until the
-//  swift-specialist implements them under `Calyx/Features/LSP/`.
+//  `LSPSession`, `SessionState`, and `LSPSessionError`
+//  live under `Calyx/Features/LSP/`.
 //
 
 import XCTest

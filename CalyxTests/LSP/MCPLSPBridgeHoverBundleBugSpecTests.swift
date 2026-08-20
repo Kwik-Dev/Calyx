@@ -2,7 +2,7 @@
 //  MCPLSPBridgeHoverBundleBugSpecTests.swift
 //  Calyx
 //
-//  TDD red-phase tests for the two remaining `lsp_hover_bundle` gaps
+//  Tests for the two remaining `lsp_hover_bundle` gaps
 //  promised by the original plan but not yet wired into the handler:
 //
 //    1. `dependent_types` — the bundle must surface hover info for every
@@ -30,10 +30,9 @@
 //  per-method so the dependent-type test can serve a distinct
 //  `workspace/symbol` payload for each identifier in arrival order.
 //
-//  TDD phase: RED. Every assertion below MUST FAIL against the current
-//  bridge: the bundle envelope only contains
-//  `hover` / `definition` / `surrounding_code` today, so `dependent_types`
-//  / `doc_comment` parsing returns nil and `workspace/symbol` is never
+//  The gap each assertion below pins: the bundle envelope carried only
+//  `hover` / `definition` / `surrounding_code`, so `dependent_types`
+//  / `doc_comment` parsing returned nil and `workspace/symbol` was never
 //  issued from this code path.
 //
 

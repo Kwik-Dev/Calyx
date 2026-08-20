@@ -2,13 +2,13 @@
 //  SessionCommandSynthesizerTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for SessionCommandSynthesizer.attachCommand: the shell
+//  Covers SessionCommandSynthesizer.attachCommand: the shell
 //  command string ghostty runs (via `/bin/sh -c`) for a persistent
 //  session's surface.
 //
 //  Coverage:
 //  - Basic form: `exec <binary> attach <id> --create --cwd <cwd>` (id is
-//    positional, matching the P2 CLI's AttachArgs — see
+//    positional, matching the CLI's AttachArgs — see
 //    calyx-session/crates/cli/src/cli.rs, which has no --id flag)
 //  - cwd containing a space, a single quote, and Japanese characters
 //    survives /bin/sh -c intact
@@ -206,7 +206,7 @@ final class SessionCommandSynthesizerTests: XCTestCase {
                        "fail to find anything, so the dumper script would never run and capture this argv at all")
     }
 
-    // MARK: - sessionID (fix round, item 2)
+    // MARK: - sessionID
 
     func test_attachCommand_sessionIDWithMetaCharacters_survivesShCIntact() throws {
         // Deliberately harmless-if-ever-actually-executed: this test

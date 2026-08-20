@@ -13,8 +13,6 @@
 //  on the CANONICAL form of `workspaceRoot` (resolved symlinks, trailing
 //  slash stripped), and `load()` must return the canonical URL.
 //
-//  TDD phase: RED. Each test MUST FAIL against current code.
-//
 
 import XCTest
 @testable import Calyx

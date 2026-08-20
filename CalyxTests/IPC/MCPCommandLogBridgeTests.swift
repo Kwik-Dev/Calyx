@@ -19,7 +19,7 @@
 //    omitted while state still reads running; present again once drained)
 //  - terminal_read_output: unknown/non-string command_id, output
 //    present, output nil (output_unavailable, no text key), output
-//    empty (text "", total_rows 0) -- the P1 empty-vs-nil distinction
+//    empty (text "", total_rows 0) -- the empty-vs-nil distinction
 //    must survive serialization; a record mid-async-redaction-gap
 //    (output_pending true, no output_unavailable/text, real text once
 //    drained)
@@ -155,8 +155,8 @@ final class MCPCommandLogBridgeTests: XCTestCase {
         store.ingest(startEvent(cmdID: "cmd-1", command: "ls -la", cwd: "/tmp", ts: startedAt1), surfaceID: surfaceID)
         reader.rowCounts[surfaceID] = 103
         reader.tailLines[surfaceID] = "a\nb\nc"
-        // finalize() derives durationNanos from endedAt - startedAt (P2
-        // GREEN: OSC133's unreliable exit code was dropped, so duration
+        // finalize() derives durationNanos from endedAt - startedAt
+        // (OSC133's unreliable exit code was dropped, so duration
         // now comes purely from the shell integration's own start/end
         // timestamps) -- a 2s gap here must read back as duration_ms 2000.
         let endedAt1 = startedAt1.addingTimeInterval(2)
@@ -441,7 +441,7 @@ final class MCPCommandLogBridgeTests: XCTestCase {
     func test_readOutput_nilOutput_returnsOutputUnavailableWithNoTextKey() async throws {
         let store = CommandLogStore()
         // No reader injected -- materializeOutput always returns nil
-        // without one (P1 contract).
+        // without one, by contract.
         let bridge = MCPCommandLogBridge(store: store, sessionSurfaceMap: SessionSurfaceMap())
         let surfaceID = UUID()
         store.ingest(startEvent(cmdID: "cmd-1"), surfaceID: surfaceID)
@@ -467,7 +467,7 @@ final class MCPCommandLogBridgeTests: XCTestCase {
         reader.rowCounts[surfaceID] = 10
         store.ingest(startEvent(cmdID: "cmd-1"), surfaceID: surfaceID)
         // Zero row delta (alt-screen case): output materializes as an
-        // explicit empty CommandOutput, not nil (P1 contract).
+        // explicit empty CommandOutput, not nil, by contract.
         store.ingest(endEvent(cmdID: "cmd-1", exitCode: 0), surfaceID: surfaceID)
         let record = try XCTUnwrap(store.records(surfaceID: surfaceID, limit: nil, state: nil).first)
         XCTAssertNotNil(record.output, "Precondition: a zero row delta must still materialize an explicit (empty) output")

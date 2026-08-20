@@ -660,7 +660,7 @@ final class MCPProtocolTests: XCTestCase {
                       "Nil id must serialize as JSON null")
     }
 
-    // ==================== P3: terminal_* tool surface ====================
+    // ==================== terminal_* tool surface ====================
 
     // A single method (rather than separate true/false-only tests):
     // asserting a "must be true" case alongside the "must be false"

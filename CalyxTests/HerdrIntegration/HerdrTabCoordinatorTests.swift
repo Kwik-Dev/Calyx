@@ -2,7 +2,7 @@
 //  HerdrTabCoordinatorTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for HerdrTabCoordinator: centerpiece, owning
+//  Covers HerdrTabCoordinator: centerpiece, owning
 //  "open a herdr workspace as a native Calyx tab" plus live layout sync.
 //  Every side-effectful dependency is injected (transportFactory,
 //  surfaceFactory, attacher, registry, sleep) so this file never opens a
@@ -28,12 +28,11 @@
 //  deliberately non-"<workspaceID>:t1"-shaped active_tab_id, "wF:t3").
 //  `driveLayoutExport` (the OLDER, narrower helper) is now used ONLY by
 //  handleLayoutUpdated's own refresh-path tests below -- that method's
-//  own tab-id sourcing is DELIBERATELY left unpinned by this pass (its
-//  own tests' contract is unchanged): this correction fixes openWorkspace
-//  only, per its own task brief; whether a later pass also routes
-//  handleLayoutUpdated through workspace.get (or instead threads the
-//  already-resolved tab id through from the open) is left for that pass
-//  to decide.
+//  own tab-id sourcing is DELIBERATELY left unpinned (its
+//  own tests' contract is unchanged): the correction covered here fixes
+//  openWorkspace only. Whether handleLayoutUpdated should also route
+//  through workspace.get (or instead thread the
+//  already-resolved tab id through from the open) is still open.
 //
 //  Coverage:
 //  - openWorkspace: single-pane happy path -- one workspace.get, one
@@ -266,14 +265,14 @@ final class HerdrTabCoordinatorTests: XCTestCase {
 
     /// REFRESH-PATH ONLY (see this file's header "OPEN DERIVATION CHOICE
     /// -- RESOLVED"): used exclusively by handleLayoutUpdated's own tests
-    /// below, whose tab-id sourcing this pass deliberately leaves
+    /// below, whose tab-id sourcing is deliberately left
     /// unpinned -- NOT used by any openWorkspace-triggering test, which
     /// use `driveOpenSequence` instead. Awaits transport `#index`,
     /// asserts its one and only request is a well-formed `layout.export`
     /// (method, and params carrying exactly one of "pane_id"/"tab_id" as
     /// a non-empty string scoped to `workspaceID`, prefix
     /// "<workspaceID>:" -- deliberately still just a prefix check here,
-    /// since this method's own derivation is out of THIS pass's scope),
+    /// since this method's own derivation is out of scope here),
     /// then answers it with `responseRootJSON` as the layout's own
     /// "root". Returns the transport (already answered) for tests that
     /// need to inspect it further; `nil` (with an XCTFail already
@@ -773,8 +772,8 @@ final class HerdrTabCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(factory: factory, surfaceFactory: surfaceFactory, attacher: attacher)
 
         // A guard, not a bare assertion: if the precondition open itself
-        // failed (e.g. red-phase, before openWorkspace's own workspace.get
-        // support exists), the open would have consumed a DIFFERENT
+        // failed (e.g. without openWorkspace's own workspace.get
+        // support), the open would have consumed a DIFFERENT
         // number of transports than this test's own refresh-driving call
         // below assumes -- proceeding anyway would drive
         // `driveLayoutExport` against the WRONG transport index, leaving
@@ -983,7 +982,7 @@ final class HerdrTabCoordinatorTests: XCTestCase {
     // MARK: - 9b. workspace.get answers with an RPC error
 
     /// Companion to test 9 above -- "fails/errors" names TWO distinct
-    /// failure modes (this file's own task brief): a raw transport
+    /// failure modes: a raw transport
     /// failure (test 9), and an RPC-level `{"error":...}` response (this
     /// test). `HerdrOneShotRequest.send` documents throwing
     /// `HerdrConnectionError.rpc` for the latter (HerdrConnection.swift),
@@ -1234,7 +1233,7 @@ final class HerdrTabCoordinatorTests: XCTestCase {
     /// Pins `handleWorkspaceKilled(workspaceID:socketPath:)`: opens a
     /// baseline two-pane workspace (the same fixture the layout-refresh
     /// tests above share), kills it, and checks every angle this file's
-    /// own task brief calls out -- both leaves closed through the
+    /// own contract calls out -- both leaves closed through the
     /// attacher, the registry pruned in both directions for both panes,
     /// the coordinator's own `activeTabIDs`/`lastAppliedLayouts` bookkeeping
     /// pruned exactly like `handlePaneClosed` already leaves it (observed
@@ -1529,15 +1528,15 @@ final class HerdrTabCoordinatorTests: XCTestCase {
     // MARK: - Fixture builders (mirrors HerdrLayoutImporterTests' own shapes)
 
     /// {"id":..,"result":{"type":"workspace_info","workspace":{...}}} --
-    /// herdr's measured `workspace.get` result shape (this file's own
-    /// task brief: MEASURED against live herdr 0.8.0, protocol 19),
+    /// herdr's measured `workspace.get` result shape (MEASURED against
+    /// live herdr 0.8.0, protocol 19),
     /// confirmed against `herdr api schema --json`'s own
     /// success_response.$defs.ResponseResult "workspace_info" variant
     /// (required: "type", "workspace") wrapping WorkspaceInfo (required:
     /// "workspace_id", "number", "label", "focused", "pane_count",
     /// "tab_count", "active_tab_id", "agent_status" -- NOTE: "label" IS
-    /// required by the schema, not optional as one might guess from the
-    /// task brief's own hedge; it is included here for that reason).
+    /// required by the schema, not optional as one might guess; it is
+    /// included here for that reason).
     /// Required-fields-only, per this project's own fixture discipline --
     /// "worktree"/"tokens" are optional on WorkspaceInfo, deliberately
     /// omitted.

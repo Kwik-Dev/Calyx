@@ -2,7 +2,7 @@
 //  LaunchEnvironmentPolicyTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (unit-test host isolation fix). ROOT CAUSE: the
+//  The unit-test host isolation fix. ROOT CAUSE: the
 //  CalyxTests scheme uses Calyx.app as its test HOST, and
 //  applicationDidFinishLaunching runs its full production launch body
 //  against the developer's real ~/.calyx environment before any test
@@ -20,11 +20,7 @@
 //  This file pins the pure decision policy; the launch-site wiring
 //  itself is covered by AppDelegateLaunchEnvironmentGateTests.
 //
-//  Held-out compile-RED (see SessionCommandSynthesizerRemoteAttachTests's
-//  header for this codebase's convention): LaunchEnvironmentPolicy does
-//  not exist yet anywhere in the codebase, so this file fails to compile
-//  until the Green phase adds it. That compile failure IS this file's
-//  RED evidence.
+//  Under test: LaunchEnvironmentPolicy.
 //
 //  Proposed API (Calyx/Helpers/LaunchEnvironmentPolicy.swift), sibling to
 //  TestEnvironment.swift and reusing its isTestHost as the single source

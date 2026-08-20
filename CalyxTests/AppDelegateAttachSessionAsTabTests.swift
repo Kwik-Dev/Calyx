@@ -2,10 +2,10 @@
 //  AppDelegateAttachSessionAsTabTests.swift
 //  CalyxTests
 //
-//  TDD Red phase for a UX inconsistency reported by the user: the
-//  session browser's "Attach" button always opens a NEW WINDOW
+//  Covers a UX inconsistency reported by the user: the
+//  session browser's "Attach" button opened a NEW WINDOW
 //  (SessionBrowserWindowController.attach(_:) -> AppDelegate.attachWindow),
-//  even while a main Calyx window is already open -- unlike the sibling
+//  even while a main Calyx window was already open -- unlike the sibling
 //  remote-session flow (AppDelegate.spawnRemoteSessionTab(host:)), which
 //  adds a new TAB to an available window and only opens a fresh window
 //  when none exists.
@@ -27,7 +27,7 @@
 //  (`_attachWindowCreationHookForTesting`, `_focusWindowForExistingSessionShowHookForTesting`,
 //  `_testInsertWindowController`) for the exact same reason those files
 //  give: driving a real window/ghostty surface from this test host hangs
-//  the XCTest process indefinitely. `attachSessionAsTab`'s RED-phase stub
+//  the XCTest process indefinitely. `attachSessionAsTab`
 //  (see AppDelegate.swift) only ever reaches real work through
 //  `attachWindow`/`focusWindowForExistingSession`, both already safe
 //  through those existing hooks -- no new unsafe-to-test seam was needed
@@ -41,27 +41,23 @@
 //  SessionSurfaceMap registration and windowControllers -- instead of
 //  passing booleans directly):
 //  - Already attached, a window also available: focuses, never opens a
-//    new window (regression-shaped: passes today only because
-//    attachWindow's own pre-existing F6 guard happens to catch it via
-//    this method's `.attachAsNewWindow` fallback branch -- but the
-//    routing-decision observer assertion is genuine RED, since the
-//    RED-phase policy stub always answers `.attachAsNewWindow`
-//    regardless of input).
+//    new window (regression-shaped: the never-opens assertion alone
+//    would pass even through this method's `.attachAsNewWindow`
+//    fallback branch, since attachWindow's own pre-existing guard
+//    catches it there too, so the routing-decision observer assertion
+//    is what actually pins the `.focusExistingSurface` route).
 //  - A STALE mapping (registered, but no controller owns it, and no
 //    other window exists either): must unregister it and fall through to
 //    a fresh attach, going through TWO decisions
-//    (`.focusExistingSurface` then `.attachAsNewWindow`) once fixed --
-//    the RED-phase stub only ever produces one, this sequence assertion
-//    is this test's genuine RED evidence.
+//    (`.focusExistingSurface` then `.attachAsNewWindow`); the sequence
+//    assertion is what pins that two-step route.
 //  - CORE regression: not yet attached, a window IS available -- must
 //    choose `.attachAsTab` and must NEVER reach attachWindow's real
-//    window-creation step. Fails on both counts against the RED-phase
-//    stub (which always chooses `.attachAsNewWindow` and therefore always
-//    reaches window creation) -- this is the exact reported defect.
+//    window-creation step. This is the exact reported defect.
 //  - Sanity/regression companion: not attached, no window at all --
 //    `.attachAsNewWindow` is correct both before and after the fix
 //    (mirrors AppDelegateAttachWindowTests' own "still reaches window
-//    creation" regression companion). Expected to pass already.
+//    creation" regression companion).
 //
 
 import XCTest
@@ -206,8 +202,8 @@ final class AppDelegateAttachSessionAsTabTests: XCTestCase {
 
     // MARK: - Row 4 (sanity/regression companion): not attached, no window at all
 
-    /// Passes against both the RED-phase stub and the eventual fix (the
-    /// one truth-table row where both agree): included so a future
+    /// The one truth-table row where `.attachAsNewWindow` stays
+    /// correct: included so a future
     /// regression that over-broadens `.attachAsTab` (e.g. always
     /// choosing it, even with no window at all) would be caught here.
     func test_attachSessionAsTab_forNotYetAttachedSessionWithNoAvailableWindow_stillOpensNewWindow() {

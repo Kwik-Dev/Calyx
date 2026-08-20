@@ -2,7 +2,7 @@
 //  CalyxWindowControllerCloseWindowTests.swift
 //  CalyxTests
 //
-//  TDD RED phase, missing-observer investigation: `GhosttyActionRouter
+//  Missing observer: `GhosttyActionRouter
 //  .handleCloseWindow` (GhosttyAction.swift) posts `.ghosttyCloseWindow`
 //  for every `GHOSTTY_ACTION_CLOSE_WINDOW` action, but no observer has
 //  ever been registered for it — ghostty's default close_window keybind
@@ -16,10 +16,10 @@
 //  actually-unsafe-to-test call").
 //
 //  Two kinds of test below:
-//   - RED-proving (`test_processCloseWindow_...` and
+//   - Pin the fix (`test_processCloseWindow_...` and
 //     `test_ghosttyCloseWindow_postedForOwnSurface_...`): these assert
-//     the hook WAS called and currently fail, because the stub body is
-//     empty and no observer is registered.
+//     the hook WAS called, which failed while the stub body was
+//     empty and no observer was registered.
 //   - Regression guards (`..._doesNotInvoke...`): these assert the hook
 //     was NOT called for a scenario that should never trigger a close.
 //     Since NOTHING is wired up yet, "nothing happens" is trivially true
@@ -27,11 +27,11 @@
 //     real observer exists, only failing if a future implementation
 //     starts routing too broadly (e.g. skips the `findTab(for:)`
 //     ownership check). This mirrors this codebase's own established
-//     precedent for a non-RED-proving-but-still-valuable regression
+//     precedent for a still-valuable regression
 //     guard: see `CalyxWindowControllerNonLastWindowCloseTests
 //     .test_windowWillClose_terminatingClose_preservesSessionRefsIntoSnapshot`'s
-//     doc comment ("NOT a RED-proving test... passes against BOTH the
-//     current code... and the intended fix").
+//     doc comment ("a regression guard... passes against BOTH the
+//     pre-fix code... and the fix").
 //
 //  Fixture mirrors `CalyxWindowControllerChildExitedTasksTests
 //  .makeOrdinaryPaneFixture()`: `SurfaceRegistry()` -> `SurfaceView(frame:
@@ -73,7 +73,7 @@ final class CalyxWindowControllerCloseWindowTests: XCTestCase {
         return SurfaceOwningFixture(controller: controller, surfaceView: surfaceView)
     }
 
-    // MARK: - Direct call (unit-level RED)
+    // MARK: - Direct call (unit level)
 
     /// `processCloseWindow()` itself, called directly, must invoke the
     /// close hook. Against the current empty stub body, the hook is
@@ -110,7 +110,7 @@ final class CalyxWindowControllerCloseWindowTests: XCTestCase {
         )
     }
 
-    /// Regression guard (NOT RED-proving — see file header): posting
+    /// Regression guard (see file header): posting
     /// `.ghosttyCloseWindow` for a surface owned by a DIFFERENT window
     /// must never invoke THIS window's close hook.
     func test_ghosttyCloseWindow_postedForOtherWindowsSurface_doesNotInvokeCloseHook() {
@@ -142,7 +142,7 @@ final class CalyxWindowControllerCloseWindowTests: XCTestCase {
         )
     }
 
-    /// Regression guard (NOT RED-proving — see file header): an
+    /// Regression guard (see file header): an
     /// app-targeted broadcast (`object: nil`, mirroring
     /// `GhosttyActionRouter.handleCloseWindow`'s `GHOSTTY_TARGET_APP`
     /// branch, where `surfaceView(from:)` returns nil) must only affect

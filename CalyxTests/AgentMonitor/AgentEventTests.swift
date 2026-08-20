@@ -2,7 +2,7 @@
 //  AgentEventTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for AgentEvent.decode(from:): Claude Code hook stdin JSON
+//  Covers AgentEvent.decode(from:): Claude Code hook stdin JSON
 //  (snake_case) decoding for each hook_event_name Calyx observes.
 //
 //  Coverage:

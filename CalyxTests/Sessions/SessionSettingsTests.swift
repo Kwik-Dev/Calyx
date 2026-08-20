@@ -2,7 +2,7 @@
 //  SessionSettingsTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for SessionSettings: the persistent-sessions feature
+//  Covers SessionSettings: the persistent-sessions feature
 //  toggle, same shape as LSPSettings.
 //
 //  Coverage:
@@ -58,7 +58,7 @@ final class SessionSettingsTests: XCTestCase {
                       "resetToDefaults() must strip the persisted value, restoring the documented default")
     }
 
-    // MARK: - P4: agentResumeEnabled / agentResumeAutoExecute
+    // MARK: - agentResumeEnabled / agentResumeAutoExecute
 
     func test_agentResumeEnabled_defaultsToFalse() {
         XCTAssertFalse(SessionSettings.agentResumeEnabled,
@@ -93,13 +93,9 @@ final class SessionSettingsTests: XCTestCase {
         XCTAssertFalse(SessionSettings.agentResumeAutoExecute)
     }
 
-    // MARK: - P6 RED2: historyPersistenceEnabled
+    // MARK: - historyPersistenceEnabled
     //
-    // Held-out compile-RED (see SessionCommandSynthesizerRemoteAttachTests's
-    // header for this codebase's convention): historyPersistenceEnabled
-    // does not exist yet on SessionSettings, so these three cases fail
-    // to compile -- together with the rest of this round's new Swift
-    // API -- until the Green phase adds it, mirroring
+    // historyPersistenceEnabled mirrors
     // persistentSessionsEnabled's own shape exactly (UserDefaults-backed,
     // routed through _testStore, defaults off).
 

@@ -14,8 +14,8 @@
 //  Drives fetchSessionsForAgentResume() directly against a fake
 //  SessionDaemonClientProtocol injected via
 //  AppDelegate._sessionDaemonClientForTesting (the same seam
-//  AppDelegateFetchSessionsForAgentResumeTests' earlier RED phases
-//  established), counting real daemon round-trips instead of spawning
+//  AppDelegateFetchSessionsForAgentResumeTests also uses), counting
+//  real daemon round-trips instead of spawning
 //  a live calyx-session process. Pumps the shared agentResumeSessionsTask
 //  by awaiting its `.value` between fetches (rather than sleeping) so
 //  the first fetch is provably fully resolved before the second one is
@@ -23,8 +23,8 @@
 //
 //  Coverage:
 //  - A second fetchSessionsForAgentResume() issued AFTER the first has
-//    fully completed must start a fresh daemon round-trip (RED: today
-//    it reuses the completed task and never calls the daemon again)
+//    fully completed must start a fresh daemon round-trip (before the
+//    fix it reused the completed task and never called the daemon again)
 //  - Regression guard: two fetchSessionsForAgentResume() calls issued
 //    back-to-back WHILE the first is still unresolved must still
 //    collapse into exactly one daemon round-trip (already true today,
@@ -68,7 +68,7 @@ final class AppDelegateAgentResumeStalenessTests: XCTestCase {
         super.tearDown()
     }
 
-    /// Primary RED-proving assertion: against the CURRENT code,
+    /// Primary assertion pinning the fix: before it,
     /// the reuse guard never clears agentResumeSessionsTask on
     /// completion, so a second fetch issued after the first fully
     /// resolved is silently swallowed instead of reaching the daemon

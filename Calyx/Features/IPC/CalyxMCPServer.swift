@@ -117,14 +117,14 @@ final class CalyxMCPServer {
     /// `parseSurfaceID` fails to parse the header as a raw UUID.
     var sessionSurfaceMap: SessionSurfaceMap = .shared
 
-    /// The live-app view `pane_list`/`pane_split`/`tab_create` (and P5's
+    /// The live-app view `pane_list`/`pane_split`/`tab_create` (and the
     /// gated tools) dispatch through. Defaults to the real
     /// `LiveCockpitAppAccess`; tests inject a fake so assertions don't
     /// need a live `AppDelegate`/window, same rationale as
     /// `agentRegistry`/`commandLogStore`/`sessionSurfaceMap`.
     var cockpitAccess: CockpitAppAccessing = LiveCockpitAppAccess()
 
-    /// The approval inbox P5's gated Cockpit tools (pane_run/
+    /// The approval inbox the gated Cockpit tools (pane_run/
     /// pane_send_keys/palette_execute) submit into when
     /// `ApprovalPolicy.requiresApproval()`, via `lazyCockpitBridge`'s own
     /// `gate(toolName:targetSurfaceID:payload:)`. Defaults to the shared
@@ -187,7 +187,7 @@ final class CalyxMCPServer {
     )
 
     /// Records an agent hook event's self-reported session ID into the
-    /// calyx-session daemon's per-session meta map (P4), so a later
+    /// calyx-session daemon's per-session meta map, so a later
     /// reattach can offer to resume the same CLI conversation. Defaults
     /// to a bridge over the shared singletons; tests inject their own
     /// instance the same way as `agentRegistry`/`sessionSurfaceMap`.
@@ -391,7 +391,7 @@ final class CalyxMCPServer {
 
         let kind = agentKind(from: request.headers)
         agentRegistry.handleHookEvent(event, surfaceID: surfaceID, kind: kind)
-        // P4: record the agent's self-reported session ID (when
+        // Record the agent's self-reported session ID (when
         // present) into the calyx-session daemon's per-session meta so
         // a later reattach can offer to resume this conversation. A
         // no-op inside the bridge itself when `surfaceID` has no
@@ -405,7 +405,7 @@ final class CalyxMCPServer {
     }
 
     /// Ingests a shell integration's command-lifecycle event
-    /// (`CommandEvent`) into `commandLogStore`. Contract (Green phase):
+    /// (`CommandEvent`) into `commandLogStore`. Contract:
     /// bearer token check (401) -> body present and <= maxEventBodyBytes
     /// bytes, cap checked BEFORE decode (400 missing / 413 oversized) ->
     /// `CommandEvent.decode(from:)` (400 on nil) -> `X-Calyx-Surface-ID`
@@ -2123,8 +2123,8 @@ final class CalyxMCPServer {
 
     // MARK: - Cockpit Tool Dispatch
 
-    /// Route a Cockpit tool call (`pane_list`/`pane_split`/`tab_create`
-    /// this round) to `MCPCockpitBridge`, mirroring
+    /// Route a Cockpit tool call (`pane_list`/`pane_split`/`tab_create`)
+    /// to `MCPCockpitBridge`, mirroring
     /// `handleTerminalToolCall`'s shape exactly: `MCPCockpitBridgeError`
     /// also conforms to `LocalizedError`, so a single generic `catch`
     /// builds the tool-error text from `error.localizedDescription`.

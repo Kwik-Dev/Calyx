@@ -35,28 +35,28 @@ protocol SessionDaemonClientProtocol: Sendable {
     func kill(id: String) async
     /// The full ledger view (`ls --all --json`) -- every session the
     /// daemon has ever recorded, running or exited, with `meta`. Added
-    /// for P4's `SessionBrowserModel`.
+    /// for `SessionBrowserModel`.
     func listAll() async -> [SessionInfo]
     /// Persists `key=value` into session `id`'s daemon-side meta map
-    /// (`calyx-session meta set <id> <key>=<value>`). Added for P4's
+    /// (`calyx-session meta set <id> <key>=<value>`). Added for
     /// `AgentSessionMetaBridge`.
     func setMeta(id: String, key: String, value: String) async
     /// Deploys the daemon binary to `host` via the local bundled
     /// `calyx-session`'s own `remote-install` subcommand. Returns `nil`
     /// when the underlying run couldn't be attempted at all (e.g. no
-    /// local binary resolvable). Added for P5's remote-install wiring.
+    /// local binary resolvable). Added for the remote-install wiring.
     func installRemote(host: String) async -> CommandResult?
     /// Kills a REMOTE session by shelling `ssh -- <host>
     /// "$HOME/.calyx/bin/calyx-session kill '<sessionID>'"` -- the
     /// remote-host counterpart to `kill(id:)`, which only ever reaches
-    /// the LOCAL daemon. Added for P5's close=kill routing fix
+    /// the LOCAL daemon. Added for the close=kill routing fix
     /// (`CalyxWindowController.killSessionIfPersistent`).
     func killRemote(host: String, sessionID: String) async
     /// Toggles the daemon-wide on-disk history-persistence default
     /// (`calyx-session history on`/`off`, i.e.
     /// `ControlMsg::SetHistoryEnabled` -- see that message's own doc
     /// comment: a live, in-memory override, never persisted
-    /// daemon-side). Added for P6's `HistoryPersistenceToggleCoordinator`
+    /// daemon-side). Added for `HistoryPersistenceToggleCoordinator`
     /// and `AppDelegate.reassertHistoryPersistenceIfNeeded()`.
     func setHistoryEnabled(_ enabled: Bool) async
 }
@@ -150,24 +150,24 @@ final class SessionDaemonBoundedRaceBridge<T: Sendable>: @unchecked Sendable {
 }
 
 extension SessionDaemonClientProtocol {
-    /// Default empty/no-op implementations, so fakes built before P4
-    /// introduced `listAll()`/`setMeta(id:key:value:)` (e.g.
+    /// Default empty/no-op implementations, so fakes predating
+    /// `listAll()`/`setMeta(id:key:value:)` (e.g.
     /// `SessionReconnectCoordinatorTests`'s `FakeSessionDaemonClient`)
     /// keep conforming without modification. A fake that actually
-    /// exercises P4 behavior (`SessionBrowserModelTests`,
+    /// exercises those two (`SessionBrowserModelTests`,
     /// `AgentSessionMetaBridgeTests`) overrides these itself.
     func listAll() async -> [SessionInfo] { [] }
     func setMeta(id: String, key: String, value: String) async {}
     /// Default `nil`-returning implementation (mirrors `LSPCommandRunner`'s
     /// own default `installRun`-forwards-to-`run` precedent), so every
-    /// existing `SessionDaemonClientProtocol` fake predating P5's
+    /// existing `SessionDaemonClientProtocol` fake predating
     /// `installRemote(host:)` keeps conforming without modification. A
     /// fake that actually exercises this behavior overrides it itself.
     func installRemote(host: String) async -> CommandResult? { nil }
 
     /// Default no-op implementation, mirroring `installRemote(host:)`'s
     /// own identical precedent right above, so every existing
-    /// `SessionDaemonClientProtocol` fake predating P5's
+    /// `SessionDaemonClientProtocol` fake predating
     /// `killRemote(host:sessionID:)` keeps conforming without
     /// modification. A fake that actually exercises this behavior
     /// overrides it itself.
@@ -176,7 +176,7 @@ extension SessionDaemonClientProtocol {
     /// Default no-op implementation, mirroring `installRemote(host:)`'s
     /// and `killRemote(host:sessionID:)`'s own identical precedent right
     /// above, so every existing `SessionDaemonClientProtocol` fake
-    /// predating P6's `setHistoryEnabled(_:)` keeps conforming without
+    /// predating `setHistoryEnabled(_:)` keeps conforming without
     /// modification. A fake that actually exercises this behavior
     /// overrides it itself.
     func setHistoryEnabled(_ enabled: Bool) async {}
@@ -629,7 +629,7 @@ final class SessionDaemonClient: SessionDaemonClientProtocol, Sendable {
 /// Mirrors `proto::SessionInfo` (the CLI's `ls --json` / `ls --all
 /// --json` output — see `calyx-session/crates/proto/src/control.rs`).
 /// Originally a `private` `id`/`state`-only `SessionInfoJSON`
-/// (everything else `Decodable` simply ignored); extended for P4 to
+/// (everything else `Decodable` simply ignored); extended to
 /// carry every field `SessionBrowserModel` needs (`name`, `cwd`,
 /// `createdAtMs`, `attachedClients`, `pid`, `meta`) and un-privated so
 /// `SessionDaemonClient.listAll()` and the session-browser layer can
@@ -656,7 +656,7 @@ struct SessionInfo: Decodable, Equatable, Sendable {
 /// representation: the unit variant `Running` encodes as the bare
 /// string `"Running"`; the struct variant `Exited { code }` encodes as
 /// `{"Exited": {"code": N}}`. Renamed from the former `private
-/// SessionStateJSON` (P4) to `SessionLifecycleState` — not
+/// SessionStateJSON` to `SessionLifecycleState` — not
 /// `SessionState`, which already names an unrelated LSP-layer type in
 /// `LSPSession.swift` — and un-privated so `SessionInfo.state` can be
 /// inspected outside this file (e.g. `SessionBrowserModel`'s orphan

@@ -2,16 +2,10 @@
 //  SessionDaemonClientHistoryToggleTests.swift
 //  CalyxTests
 //
-//  TDD Red phase, P6 RED2: SessionDaemonClient.setHistoryEnabled(_:), the
+//  Covers SessionDaemonClient.setHistoryEnabled(_:), the
 //  first CLI-reaching surface for ControlMsg::SetHistoryEnabled (see
-//  calyx-session/crates/cli/src/commands/history.rs's own P6 RED2 header
-//  -- the daemon message pair has existed since an earlier P6 round, but
-//  no CLI subcommand could send it until this one). Held-out compile-RED
-//  (see SessionCommandSynthesizerRemoteAttachTests's header for this
-//  codebase's convention): setHistoryEnabled(_:) does not exist yet on
-//  SessionDaemonClientProtocol or SessionDaemonClient, so this file fails
-//  to compile until the Green phase adds both. That compile failure IS
-//  this file's RED evidence.
+//  calyx-session/crates/cli/src/commands/history.rs -- the daemon
+//  message pair predates the CLI subcommand that sends it).
 //
 //  Coverage:
 //  - setHistoryEnabled(true) / setHistoryEnabled(false) each prepend
@@ -186,7 +180,7 @@ final class SessionDaemonClientHistoryToggleCancellationShieldTests: XCTestCase 
         }
     }
 
-    /// RED: cancelling the host Task calling setHistoryEnabled(_:)
+    /// Cancelling the host Task calling setHistoryEnabled(_:)
     /// mid-flight must NOT reach the runner's own Task -- mirrors
     /// kill(id:)'s own shield exactly.
     func test_setHistoryEnabled_shieldsRunnerFromHostTaskCancellation() async {

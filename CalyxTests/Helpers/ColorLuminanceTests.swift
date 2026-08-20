@@ -1,7 +1,7 @@
 // ColorLuminanceTests.swift
 // CalyxTests
 //
-// TDD red-phase tests for ColorLuminance.
+// Tests for ColorLuminance.
 //
 // ColorLuminance is a utility enum for computing relative luminance of
 // NSColor values (per WCAG 2.x) and determining whether dark or light

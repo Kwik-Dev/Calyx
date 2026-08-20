@@ -6,9 +6,9 @@
 //  function that translates an NSEvent into a KeyMonitorAction (or nil
 //  when the event should be passed through to the responder chain).
 //
-//  Red phase (TDD): AppDelegate.matchKeyEvent and AppDelegate.KeyMonitorAction
-//  do not exist yet. These tests MUST fail to compile until the Swift
-//  specialist adds the extension in AppDelegate.swift.
+//  Under test: AppDelegate.matchKeyEvent and
+//  AppDelegate.KeyMonitorAction, declared in an extension in
+//  AppDelegate.swift.
 //
 //  Coverage:
 //  - PRIMARY bug fix (Issue #27):

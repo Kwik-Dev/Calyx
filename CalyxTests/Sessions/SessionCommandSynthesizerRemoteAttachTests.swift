@@ -2,14 +2,9 @@
 //  SessionCommandSynthesizerRemoteAttachTests.swift
 //  CalyxTests
 //
-//  TDD Red phase, P5 (remote sessions), cycle 1: remote attach command
-//  synthesis via ssh. Introduces two NEW symbols that do not exist yet
-//  anywhere in the codebase -- SessionCommandSynthesizer.remoteAttachCommand
-//  and SSHBinaryResolverProtocol/SSHBinaryResolver -- so this file is a
-//  held-out compile-RED file per this codebase's established convention
-//  (see SessionDaemonClientSessionStateBoundTimeoutSeamTests's header):
-//  it is expected to FAIL TO COMPILE until the Green phase adds both.
-//  That compile failure IS this file's RED evidence.
+//  Remote sessions: remote attach command
+//  synthesis via ssh, through SessionCommandSynthesizer.remoteAttachCommand
+//  and SSHBinaryResolverProtocol/SSHBinaryResolver.
 //
 //  DESIGN, TWO SHELL LAYERS:
 //  Exactly like attachCommand, ghostty wraps whatever `command` string we

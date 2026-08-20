@@ -2,7 +2,7 @@
 //  CalyxWindowControllerCloseFocusedTargetTests.swift
 //  CalyxTests
 //
-//  TDD Red phase, GitHub issue #45 ("Cmd+W does nothing on the About/
+//  GitHub issue #45 ("Cmd+W does nothing on the About/
 //  Settings/Session Browser panel, and worse, closes the wrong terminal
 //  window's tab"). Full root-cause writeup: `NSWindow+CalyxClose.swift`'s
 //  header comment.
@@ -36,10 +36,10 @@
 //  argument bug (e.g. `.surface(tabID: surfaceID, surfaceID: tabID)`)
 //  would fail these assertions rather than passing by coincidence.
 //
-//  RED ledger (ran 2026-08-07): cases 1-4 below are RED-proving (the
-//  current stub always returns `.window`, so only case 5's expectation
-//  matches it). Case 5 (`tabID == nil -> .window`) PASSES against the
-//  stub today — it is a regression guard, not RED-proving; kept because
+//  Cases 1-4 below pin the fix (the pre-fix stub always returned
+//  `.window`, so only case 5's expectation
+//  matched it). Case 5 (`tabID == nil -> .window`) passed against the
+//  stub too — it is a regression guard; kept because
 //  it is one of the five cases the spec enumerates, and a future
 //  implementation that regresses to e.g. always returning `.tab` for a
 //  nil tabID must still be caught.
@@ -53,7 +53,7 @@ final class CalyxWindowControllerCloseFocusedTargetTests: XCTestCase {
 
     // ==================== Terminal tab, focused leaf present ====================
 
-    /// RED-proving: the stub returns `.window`, not `.surface`.
+    /// Pins the fix: the pre-fix stub returned `.window`, not `.surface`.
     func test_closeFocusedTarget_terminalTabWithFocusedLeaf_returnsSurface() {
         let tabID = UUID()
         let leafID = UUID()
@@ -71,7 +71,7 @@ final class CalyxWindowControllerCloseFocusedTargetTests: XCTestCase {
 
     // ==================== Terminal tab, no focused leaf ====================
 
-    /// RED-proving: the stub returns `.window`, not `.tab`.
+    /// Pins the fix: the pre-fix stub returned `.window`, not `.tab`.
     func test_closeFocusedTarget_terminalTabWithNoFocusedLeaf_returnsTab() {
         let tabID = UUID()
 
@@ -87,7 +87,7 @@ final class CalyxWindowControllerCloseFocusedTargetTests: XCTestCase {
 
     // ==================== Browser tab ====================
 
-    /// RED-proving: the stub returns `.window`, not `.tab`. Passes a
+    /// Pins the fix: the pre-fix stub returned `.window`, not `.tab`. Passes a
     /// non-nil `focusedLeafID` deliberately (see file header) so this
     /// case actually exercises the `content` check, not just the
     /// nil-focusedLeafID branch.
@@ -110,7 +110,7 @@ final class CalyxWindowControllerCloseFocusedTargetTests: XCTestCase {
 
     // ==================== Diff tab ====================
 
-    /// RED-proving: the stub returns `.window`, not `.tab`. Same
+    /// Pins the fix: the pre-fix stub returned `.window`, not `.tab`. Same
     /// non-nil-`focusedLeafID` strengthening as the browser case above.
     func test_closeFocusedTarget_diffTab_returnsTab() {
         let tabID = UUID()
@@ -130,8 +130,8 @@ final class CalyxWindowControllerCloseFocusedTargetTests: XCTestCase {
 
     // ==================== No active tab ====================
 
-    /// NOT RED-proving (see file header): the stub's unconditional
-    /// `.window` already matches this expectation. Kept as a regression
+    /// Regression guard (see file header): the pre-fix stub's unconditional
+    /// `.window` already matched this expectation. Kept as a regression
     /// guard — one of the five cases the spec enumerates, and a future
     /// implementation must not regress it (e.g. by force-unwrapping
     /// `tabID` and crashing, or by defaulting to `.tab` for a nil id).

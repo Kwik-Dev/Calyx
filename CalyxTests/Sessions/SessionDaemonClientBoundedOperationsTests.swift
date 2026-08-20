@@ -11,7 +11,7 @@
 //  exactly the failure mode `listAllBounded()` already fixed for the
 //  ledger listing alone.
 //
-//  Scope note (binding, sweep addendum item 1): ONLY `sessionState` is
+//  Scope note (binding): ONLY `sessionState` is
 //  covered here. It is read-only, so racing it against a timeout and
 //  cancelling the loser (mirroring `listAllBounded()`'s shape exactly)
 //  is safe. `kill(id:)` is deliberately EXCLUDED from this bounded
@@ -24,16 +24,11 @@
 //  bounded wrapper. `setMeta(id:key:value:)` is a similar WRITE and, per
 //  the same addendum, is left to Green's discretion (abandon-style
 //  bound -- resume the caller on timeout WITHOUT cancelling the write
-//  -- if bounded at all); it is out of this RED contract's scope.
+//  -- if bounded at all); it is out of this contract's scope.
 //
-//  This test targets `SessionDaemonClientProtocol.sessionStateBounded(id:)`,
-//  which does NOT exist in the codebase yet. Following this codebase's
-//  established convention for new-API RED tests (see
-//  SessionDaemonClientBoundedListTests' header comment, itself citing
-//  CalyxWindowControllerFullScreenTests), this file is expected to FAIL
-//  TO COMPILE until the TDD Green phase adds it -- that compile failure
-//  IS this contract's RED evidence. Once Green adds the
-//  bounded wrapper, this test exercises it against a REAL
+//  This test targets `SessionDaemonClientProtocol.sessionStateBounded(id:)`.
+//  It exercises that
+//  bounded wrapper against a REAL
 //  SessionDaemonClient (not a protocol-level fake), with a
 //  never-completing LSPCommandRunner injected via the client's existing
 //  `commandRunner:` seam (mirrors SessionDaemonClientBoundedListTests'

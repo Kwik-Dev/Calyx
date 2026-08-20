@@ -2,9 +2,8 @@
 //  CalyxWindowControllerRemoteReconnectEstablishTests.swift
 //  CalyxTests
 //
-//  P5 (remote sessions) RED phase, contract R4 (ordinary, ASSERTION-based
-//  RED -- no new production API needed, unlike this round's other
-//  contracts; every seam this file uses already exists):
+//  Remote sessions. Every seam this file uses already exists, so it
+//  asserts against real behavior rather than pinning new API.
 //
 //  performReconnect's grace Task (see
 //  ReconnectGraceProbeResult's own doc comment) requires a POSITIVE
@@ -14,7 +13,7 @@
 //  resets the reconnect attempt counter. That's correct for a LOCAL
 //  session: the local daemon genuinely knows its own session's state.
 //
-//  THE BUG THIS ROUND MUST FIX: a REMOTE session's daemon lives entirely
+//  THE BUG: a REMOTE session's daemon lives entirely
 //  on the remote machine (remoteAttachCommand's whole point). The LOCAL
 //  daemon can never have a matching SessionInfo for it -- `listAllBounded()`
 //  will forever return no match, so `reconnectGraceProbe` forever reports
@@ -26,7 +25,7 @@
 //  starting fresh, eventually giving up (closing the pane) even though
 //  each individual disconnect recovered fine on its own.
 //
-//  THE FIX CONTRACT (per this round's investigation, matching the local
+//  THE FIX CONTRACT (matching the local
 //  path's own existing surface-identity-check precedent): for a REMOTE
 //  session (its leaf's SessionRef.host != nil, read from tab.sessionRefs
 //  the same way contract R3 does, captured at reconnect time before the
@@ -37,13 +36,14 @@
 //  ever consulting reconnectGraceProbe at all. LOCAL session semantics
 //  are UNCHANGED: the probe is still required.
 //
-//  THE ACCEPTED TRADEOFF (documented at the decision site per this
-//  round's brief): a positive local probe of a remote session is
-//  structurally impossible in v1 (no local knowledge of remote daemon
-//  state), so the unbounded-slow-loop risk G6 fixed for the LOCAL case
-//  is accepted, unmitigated, for remote panes -- bounded in practice by
-//  ssh's own connection failures being comparatively slow (seconds,
-//  not the sub-second churn G6's local-daemon scenario produced).
+//  THE ACCEPTED TRADEOFF (documented at the decision site): a positive
+//  local probe of a remote session is
+//  structurally impossible (no local knowledge of remote daemon
+//  state), so the unbounded-slow-loop risk the probe removes for the
+//  LOCAL case is accepted, unmitigated, for remote panes -- bounded in
+//  practice by ssh's own connection failures being comparatively slow
+//  (seconds, not the sub-second churn the local-daemon scenario
+//  produced).
 //
 //  Reuses SessionReconnectGracePositiveSignalSeamTests' exact
 //  driveReconnect shape (CalyxWindowControllerReconnectGraceOverrides
@@ -68,8 +68,7 @@
 //    sessionID) daemon probe must never gate it.
 //  - T2 (regression guard): a local session (fixture host == nil), same
 //    setup, must NOT reset -- the probe is still required for a local
-//    session, matching this round's "local semantics unchanged" contract
-//    and G6's own existing coverage.
+//    session, matching the "local semantics unchanged" contract.
 //
 
 import XCTest
@@ -188,8 +187,8 @@ final class CalyxWindowControllerRemoteReconnectEstablishTests: XCTestCase {
         XCTAssertEqual(
             fixture.controller._sessionReconnectCoordinatorForTesting.attemptCounts[fixture.sessionID], 2,
             "For a local session (SessionRef.host == nil), establishment must still require a genuine " +
-            "daemon probe reporting .established -- this round's remote-session fallback must not " +
-            "regress the local path G6 already fixed. The real fallback probe can never find this " +
+            "daemon probe reporting .established -- the remote-session fallback must not " +
+            "regress the local path. The real fallback probe can never find this " +
             "fixture's fake sessionID, so it must report .notEstablished and leave the seeded count " +
             "unchanged, exactly as it does today."
         )

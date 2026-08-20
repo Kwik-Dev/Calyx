@@ -14,11 +14,11 @@
 //  `Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String`
 //  so the value tracks the actual build instead of a literal string.
 //
-//  TDD phase: RED. The test below sends `initialize` over an in-memory
+//  The test below sends `initialize` over an in-memory
 //  transport, captures the InitializeParams that LSPSession wrote on
 //  the wire, and asserts that the `clientInfo.version` field matches
-//  the running bundle's short version. Against the current buggy code
-//  the literal `"0.26.1"` is sent, which fails both the bundle-match
+//  the running bundle's short version. The bug it pins: a hardcoded
+//  literal `"0.26.1"` was sent instead, failing both the bundle-match
 //  assertion and the explicit "not the literal 0.26.1" check below.
 //
 
@@ -151,7 +151,7 @@ final class LSPSessionClientInfoBugSpecTests: XCTestCase {
     ///     still enforce the looser invariant: the version on the wire must
     ///     not be the literal `"0.26.1"` and must be non-empty.
     ///
-    /// The GREEN fix sources the version from
+    /// The fix sources the version from
     /// `Bundle.main.infoDictionary?["CFBundleShortVersionString"]` so the
     /// value tracks the actual build.
     func test_clientInfo_version_matchesBundleShortVersion() async throws {

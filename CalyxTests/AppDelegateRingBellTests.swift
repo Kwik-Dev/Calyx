@@ -2,7 +2,7 @@
 //  AppDelegateRingBellTests.swift
 //  CalyxTests
 //
-//  TDD RED phase, missing-observer investigation: `GhosttyActionRouter
+//  Missing observer: `GhosttyActionRouter
 //  .handleRingBell` (GhosttyAction.swift) posts `.ghosttyRingBell` for a
 //  surface-targeted `GHOSTTY_ACTION_RING_BELL`, but no observer has ever
 //  been registered for it — none of the user's configured `bell-features`
@@ -21,7 +21,7 @@
 //  bit set, so it carries both a "must have fired" assertion (which
 //  currently fails, since the stub never calls any closure) and "must
 //  NOT have fired" assertions for the complementary bits — every test in
-//  this file is RED-proving as a whole, even though individual
+//  this file pins the fix as a whole, even though individual
 //  assertions within it may pass or fail independently.
 //
 

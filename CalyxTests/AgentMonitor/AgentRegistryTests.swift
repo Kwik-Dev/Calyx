@@ -347,7 +347,7 @@ final class AgentRegistryTests: XCTestCase {
     }
 
     func test_notification_matchingSessionNilMessage_setsBlocked() {
-        // Contract updated post-review: the hooks config's
+        // The hooks config's
         // `matcher: "permission_prompt"` already restricts which
         // `Notification`s reach the registry at all, so a nil message is
         // trusted as blocked rather than left unchanged. The substring
@@ -504,7 +504,7 @@ final class AgentRegistryTests: XCTestCase {
     }
 
     func test_sessionMismatch_entryNotDoneButEventForwardMoving_replacesEntry() {
-        // Contract added post-review: a forward-moving event
+        // A forward-moving event
         // (UserPromptSubmit/PreToolUse/PostToolUse) for a different,
         // unseen session means a new Claude Code session is genuinely
         // under way on this pane — most likely because IPC was enabled
@@ -1256,7 +1256,7 @@ final class AgentRegistryTests: XCTestCase {
     }
 
     func test_bindSurface_doubleSteal_surfaceMovesToPeerThatHadADifferentSurface_endsAsCleanBijection() {
-        // The "double-steal" case (post-review follow-up): surface A
+        // The "double-steal" case: surface A
         // moves off its own old peer P1 AND onto peer P2, where P2 was
         // itself already bound to a different surface B — both
         // invalidation branches of bindSurface fire in the same call.

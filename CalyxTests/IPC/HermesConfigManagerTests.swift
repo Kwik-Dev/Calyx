@@ -1,7 +1,7 @@
 // HermesConfigManagerTests.swift
 // CalyxTests
 //
-// TDD red-phase tests for `HermesConfigManager`.
+// Tests for `HermesConfigManager`.
 //
 // Coverage:
 // - `enableIPC` upsert behavior for `~/.hermes/config.yaml` (Case A: append, Case B: insert as child)

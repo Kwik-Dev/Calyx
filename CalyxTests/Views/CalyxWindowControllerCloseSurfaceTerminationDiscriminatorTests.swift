@@ -2,7 +2,7 @@
 //  CalyxWindowControllerCloseSurfaceTerminationDiscriminatorTests.swift
 //  CalyxTests
 //
-//  TDD Red phase, window-lifetime redesign: `closeSurfaceAndCleanUp`'s
+//  Window-lifetime redesign: `closeSurfaceAndCleanUp`'s
 //  kill decision (CalyxWindowController.swift ~:2305) still calls
 //  `killSessionIfPersistent(tab:surfaceID:isTerminating: isClosingForShutdown)`
 //  -- reading the per-WINDOW `isClosingForShutdown` flag as its "is this
@@ -34,7 +34,7 @@
 //  `SessionCloseKillPolicy.shouldKill(hasSession: true, isTerminating:
 //  true, isReconnectSwap: false)` is `false` ("must detach, not kill",
 //  see `SessionCloseKillPolicyTests`'s truth table) -- so the session is
-//  left registered, not killed. RED.
+//  left registered, not killed.
 //
 //  Drives `handleCloseSurfaceNotification` via the real
 //  `NotificationCenter` post it's wired to (mirrors

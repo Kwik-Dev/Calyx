@@ -2,8 +2,8 @@
 //  SessionSpawnPlannerRemoteHostTests.swift
 //  CalyxTests
 //
-//  P5 (remote sessions) RED phase, contract R5 (COMPILE-RED, HELD-OUT
-//  FILE): SessionSpawnPlanner.plan(for:) (SessionSpawnPlanner.swift) has
+//  Remote sessions. THE DEFECT:
+//  SessionSpawnPlanner.plan(for:) (SessionSpawnPlanner.swift) had
 //  no way to spawn a REMOTE persistent session at all today --
 //  SessionSpawnContext carries no host, and `plan(for:)` always (a)
 //  gates on the LOCAL calyx-session binary being resolvable via
@@ -11,14 +11,13 @@
 //  synthesizes its command via `SessionCommandSynthesizer.attachCommand`,
 //  the local-only path.
 //
-//  SCOPE NOTE (per this round's brief): this contract stays at the
+//  SCOPE NOTE: this contract stays at the
 //  PLANNER level. No call site constructs a `SessionSpawnContext` with a
 //  host yet -- exactly like `SessionSpawnOrigin.quickTerminal`'s own
 //  existing "deliberate tripwire, currently unreachable" precedent (see
 //  that case's doc comment in SessionSpawnPlanner.swift). The
 //  palette-level UI entry that lets a user actually pick a remote host
-//  for a NEW pane is out of scope for this cycle (a later one, per the
-//  investigation brief).
+//  for a NEW pane is out of scope here.
 //
 //  THE NEW FIELD: `SessionSpawnContext` gains a `host: String? = nil`
 //  stored property (`nil` for every existing call site, unchanged, plus
@@ -50,14 +49,8 @@
 //      all (ephemeral scratch panes, out of scope for reconnect/restore
 //      semantics regardless of locality).
 //
-//  NONE of `SessionSpawnContext.host` or the remote branch inside
-//  `plan(for:)` exist yet -- this file is expected to FAIL TO COMPILE
-//  until the TDD Green phase adds them. That compile failure IS this
-//  contract's RED evidence, following this codebase's established
-//  held-out-file convention (see
-//  SessionReconnectGracePositiveSignalSeamTests's header comment). Must
-//  be excluded from the build while running the rest of the round's RED
-//  suite and verified separately for its own specific compiler errors.
+//  Under test: `SessionSpawnContext.host` and the remote branch inside
+//  `plan(for:)`.
 //
 //  Reuses SessionSpawnPlannerTests' exact FakeBinaryResolver/
 //  SessionSettings._testUseSuite/ULID-validity-check conventions.

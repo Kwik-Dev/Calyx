@@ -20,9 +20,7 @@
 //    - SignatureHelp / SignatureInformation / ParameterInformation / ParameterLabel
 //    - StringOrMarkupContent (union: String | MarkupContent)
 //
-//  TDD phase: RED. None of these types exist yet. This file is expected to
-//  fail to compile until the swift-specialist implements them under
-//  `Calyx/Features/LSP/LSPTypes/`.
+//  The types under test live under `Calyx/Features/LSP/LSPTypes/`.
 //
 
 import XCTest
