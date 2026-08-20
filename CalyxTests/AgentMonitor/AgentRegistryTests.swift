@@ -2504,4 +2504,247 @@ final class AgentRegistryTests: XCTestCase {
                        "must not rewrite an already-done row -- including no lastEventAt churn, checked here by " +
                        "comparing the entire entry rather than state alone")
     }
+
+    // MARK: - reset(): calyxShellIntegrationReportedSurfaces survives wholesale clearing
+
+    func test_reset_doesNotClearCalyxShellIntegrationReportedSurfaces() {
+        // calyxShellIntegrationReportedSurfaces's own doc comment states it
+        // is deliberately never cleared wholesale, not even by reset(): a
+        // pane whose shell already sourced Calyx's own zsh/fish integration
+        // keeps reporting on that surface even after the IPC server
+        // restarts. If a refactor folded this set into a store reset()
+        // clears, handleGhosttyCommandFinished's fallback would start
+        // settling rows for panes where Calyx's own integration is live and
+        // CAN tell a suspend apart from a real exit -- a user hitting
+        // Ctrl-Z would see their agent's row retire.
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.recordCalyxShellIntegrationReported(surfaceID: surfaceID)
+
+        registry.reset()
+
+        // Hook-driven row creation is not gated on isServerRunning, unlike
+        // handleTitleChange's, so this registers cleanly after reset().
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle, "Precondition: a fresh live hooks row")
+        XCTAssertEqual(registry.entries[surfaceID]?.source, .hooks,
+                       "Precondition: the settle path is source-guarded, so a non-hooks row would satisfy " +
+                       "the assertions below for the wrong reason, without exercising the memory at all")
+
+        let settled = registry.handleGhosttyCommandFinished(surfaceID: surfaceID, exitCode: 0)
+
+        XCTAssertFalse(settled,
+                       "reset() must not clear calyxShellIntegrationReportedSurfaces -- ghostty's fallback must " +
+                       "keep deferring to Calyx's own shell integration's memory for this surface")
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle,
+                       "The row must stay idle, not be settled to done by ghostty's fallback signal")
+    }
+
+    // MARK: - reset(): heuristicMissStreaks is cleared wholesale
+
+    func test_reset_clearsHeuristicMissStreaks() {
+        // The deliberate opposite of calyxShellIntegrationReportedSurfaces's
+        // own survival above: heuristicMissStreaks IS cleared by reset(),
+        // so a leftover miss count from before a server restart can never
+        // combine with fresh misses afterward to retire a row prematurely.
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleScreenClassification(surfaceID: surfaceID, state: .working)
+
+        for _ in 0..<4 {
+            registry.handleScreenClassification(surfaceID: surfaceID, state: nil)
+        }
+        XCTAssertNotNil(registry.entries[surfaceID], "Precondition: row survives 4 misses, one below retirement")
+
+        registry.reset()
+
+        // The creation branch deliberately never touches the miss-streak
+        // bookkeeping, so recreating the row this way cannot itself launder
+        // a leftover streak -- only reset() clearing heuristicMissStreaks
+        // can.
+        registry.handleScreenClassification(surfaceID: surfaceID, state: .working)
+        registry.handleScreenClassification(surfaceID: surfaceID, state: nil)
+
+        XCTAssertNotNil(registry.entries[surfaceID],
+                        "reset() must clear heuristicMissStreaks -- otherwise this one fresh miss since the row " +
+                        "was recreated would combine with the 4 leaked misses from before reset() and retire a " +
+                        "row that has only actually missed once since it came back")
+    }
+
+    // MARK: - sweepStaleEntries: source membership
+
+    func test_sweepStaleEntries_downgradesStaleWorkingMCPConnectionEntryToIdle() {
+        // Every existing sweep test uses a .hooks row, leaving the
+        // .mcpConnection half of sweepStaleEntries's `.hooks ||
+        // .mcpConnection` source guard completely unpinned.
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.hermesKind)
+        registry.handleScreenClassification(surfaceID: surfaceID, state: .working)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .working, "Precondition")
+        XCTAssertEqual(registry.entries[surfaceID]?.source, .mcpConnection, "Precondition")
+
+        let farFuture = Date().addingTimeInterval(16 * 60)
+        registry.sweepStaleEntries(now: farFuture)
+
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle,
+                       "A stale working .mcpConnection entry must be downgraded to idle, same as a .hooks entry")
+    }
+
+    func test_sweepStaleEntries_leavesStaleWorkingTitleHeuristicEntryUnchanged() {
+        // The other half of the same guard: a .titleHeuristic row must
+        // never be swept -- it retires itself through its own miss-streak
+        // bookkeeping (heuristicMissStreaks) instead of through staleness.
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleScreenClassification(surfaceID: surfaceID, state: .working)
+        let before = registry.entries[surfaceID]
+        XCTAssertEqual(before?.source, .titleHeuristic, "Precondition")
+
+        let farFuture = Date().addingTimeInterval(16 * 60)
+        registry.sweepStaleEntries(now: farFuture)
+
+        XCTAssertEqual(registry.entries[surfaceID], before,
+                       "sweepStaleEntries must never touch a .titleHeuristic entry, however stale")
+    }
+
+    // MARK: - handleMCPConnection: cross-kind replacement over a live .hooks row
+
+    func test_handleMCPConnection_differentKindOverLiveHooksEntry_replacesFieldsAndCarriesOverUnreadCount() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        let peerID = UUID()
+        registry.handleHookEvent(
+            event("SessionStart", sessionID: "session-a", cwd: "/Users/dev/project-live"),
+            surfaceID: surfaceID,
+            kind: AgentEntry.claudeCodeKind
+        )
+        registry.handleHookEvent(
+            AgentEvent(hookEventName: "PreToolUse", sessionID: "session-a", cwd: nil, message: nil,
+                       ipcSelfPeerID: peerID.uuidString),
+            surfaceID: surfaceID
+        )
+        registry.updateInbox(peerID: peerID, count: 3)
+        let precondition = registry.entries[surfaceID]
+        XCTAssertEqual(precondition?.state, .working, "Precondition: a live .hooks row")
+        XCTAssertEqual(precondition?.unreadCount, 3, "Precondition: unread badge set via the bound peer")
+
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.codexKind)
+
+        let entry = registry.entries[surfaceID]
+        XCTAssertEqual(entry?.source, .mcpConnection)
+        XCTAssertEqual(entry?.kind, AgentEntry.codexKind)
+        XCTAssertEqual(entry?.state, .idle,
+                       "A different-kind MCP initialize demotes even a LIVE .working .hooks row to idle -- " +
+                       "surprising, but the early-return protection only covers a repeated same-kind initialize")
+        XCTAssertEqual(entry?.cwd, "/Users/dev/project-live", "cwd must carry over from the replaced entry")
+        XCTAssertNil(entry?.sessionID, "The replacement entry has no hooks session of its own")
+        XCTAssertEqual(entry?.unreadCount, 3,
+                       "unreadCount must carry over from the replaced entry -- a 'rebuild the entry from " +
+                       "evidence' refactor is exactly the kind of change that would silently drop this carry-over")
+    }
+
+    // MARK: - handleTitleChange: leaves a .mcpConnection row untouched
+
+    func test_handleTitleChange_mcpConnectionEntryUnaffectedByTitleSignal() {
+        // Screen classification DOES update a .mcpConnection row (its own
+        // branch in handleScreenClassification); a title change does NOT
+        // -- that asymmetry is what a unified "heuristic signals" path
+        // would flatten away.
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.hermesKind)
+        let before = registry.entries[surfaceID]
+        XCTAssertEqual(before?.source, .mcpConnection, "Precondition")
+
+        // "✳ Compacting conversation" is the same working-classified title
+        // the existing title-heuristic tests use (a leading spinner glyph
+        // maps to .working -- see ClaudeTitleHeuristic.classify).
+        registry.handleTitleChange(surfaceID: surfaceID, title: "✳ Compacting conversation")
+
+        // handleTitleChange still resets the miss-streak bookkeeping for a
+        // .working title before its source guard runs, so this call is not
+        // a total no-op -- only the entries row itself is untouched.
+        XCTAssertEqual(registry.entries[surfaceID], before,
+                       "A title signal must never update a .mcpConnection-sourced entry")
+    }
+
+    // MARK: - Injected clock: positive lastEventAt writes
+
+    func test_handleMCPConnection_freshInsert_stampsLastEventAtWithInjectedNow() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        let injected = Date(timeIntervalSince1970: 1_700_000_000)
+
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.codexKind, now: injected)
+
+        XCTAssertEqual(registry.entries[surfaceID]?.lastEventAt, injected,
+                       "A fresh MCP connection insert must stamp lastEventAt with the injected now, not Date()")
+    }
+
+    func test_handleMCPConnection_sameKindRefresh_preservesStateAndAdvancesLastEventAt() {
+        // A repeated same-kind MCP initialize refreshes lastEventAt
+        // without disturbing the row's current state: a Hermes or
+        // OpenCode pane the screen classifier has moved to .working must
+        // not flash back to .idle every time its agent re-initializes.
+        // The row has to be driven off .idle first for this to pin
+        // anything, because for a freshly inserted .idle row the refresh
+        // branch and the wholesale replace below it produce
+        // byte-identical entries.
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        let firstNow = Date(timeIntervalSince1970: 1_700_000_000)
+        let secondNow = Date(timeIntervalSince1970: 1_700_000_100)
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.codexKind, now: firstNow)
+        registry.handleScreenClassification(surfaceID: surfaceID, state: .working)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .working, "Precondition: a live working row")
+        XCTAssertEqual(registry.entries[surfaceID]?.source, .mcpConnection, "Precondition")
+
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.codexKind, now: secondNow)
+
+        let entry = registry.entries[surfaceID]
+        XCTAssertEqual(entry?.state, .working,
+                       "The same-kind refresh branch must preserve the row's state -- falling through to the " +
+                       "wholesale replace below it would reset a live working row to idle")
+        XCTAssertEqual(entry?.lastEventAt, secondNow,
+                       "The same-kind refresh branch must advance lastEventAt to the injected now, which is " +
+                       "what distinguishes it from the bare return the .hooks branch above it takes")
+    }
+
+    func test_handlePaneCommandFinished_and_handleGhosttyCommandFinished_useInjectedNowOnSettle() {
+        let registry = AgentRegistry()
+        let paneSurfaceID = UUID()
+        let ghosttySurfaceID = UUID()
+        let injectedPane = Date(timeIntervalSince1970: 1_700_000_200)
+        let injectedGhostty = Date(timeIntervalSince1970: 1_700_000_300)
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: paneSurfaceID)
+        registry.handleHookEvent(event("UserPromptSubmit", sessionID: "session-a"), surfaceID: paneSurfaceID)
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-b"), surfaceID: ghosttySurfaceID)
+        registry.handleHookEvent(event("UserPromptSubmit", sessionID: "session-b"), surfaceID: ghosttySurfaceID)
+
+        registry.handlePaneCommandFinished(surfaceID: paneSurfaceID, exitCode: 0, now: injectedPane)
+        registry.handleGhosttyCommandFinished(surfaceID: ghosttySurfaceID, exitCode: 0, now: injectedGhostty)
+
+        let paneEntry = registry.entries[paneSurfaceID]
+        XCTAssertEqual(paneEntry?.state, .done)
+        XCTAssertEqual(paneEntry?.lastEventAt, injectedPane,
+                       "handlePaneCommandFinished's settle must stamp lastEventAt with the injected now")
+
+        let ghosttyEntry = registry.entries[ghosttySurfaceID]
+        XCTAssertEqual(ghosttyEntry?.state, .done)
+        XCTAssertEqual(ghosttyEntry?.lastEventAt, injectedGhostty,
+                       "handleGhosttyCommandFinished's settle must stamp lastEventAt with the injected now")
+    }
+
+    // MARK: - handleProgressReport: never creates a row for an unregistered surface
+
+    func test_handleProgressReport_unregisteredSurface_neverCreatesARow() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+
+        registry.handleProgressReport(surfaceID: surfaceID, isActive: true)
+
+        XCTAssertNil(registry.entries[surfaceID])
+        XCTAssertTrue(registry.entries.isEmpty)
+    }
 }
