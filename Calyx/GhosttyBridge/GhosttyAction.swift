@@ -286,7 +286,7 @@ enum GhosttyActionRouter {
 
     /// `GHOSTTY_ACTION_COMMAND_FINISHED` (`apprt.action.CommandFinished`,
     /// from ghostty's own shell-integration OSC 133 C/D pairing),
-    /// forwarded as `.ghosttyCommandFinished` for `CalyxWindowController`
+    /// forwarded as `.ghosttyCommandFinished` for `AppDelegate`
     /// to feed into `AgentRegistry.handleGhosttyCommandFinished` -- a
     /// pane-level fallback for the shells Calyx's own `/command-event`
     /// shell integration does not cover (bash, elvish, nushell). A

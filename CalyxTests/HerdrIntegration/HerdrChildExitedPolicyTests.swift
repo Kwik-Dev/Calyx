@@ -2,7 +2,7 @@
 //  HerdrChildExitedPolicyTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for HerdrChildExitedPolicy.shouldAutoClose: the pure
+//  Covers HerdrChildExitedPolicy.shouldAutoClose: the pure
 //  decision behind Calyx auto-closing a herdr-hosted or herdr-bridged
 //  surface's pane on GHOSTTY_ACTION_SHOW_CHILD_EXITED instead of
 //  leaving ghostty's own "process exited" banner up forever

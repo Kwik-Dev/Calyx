@@ -2,7 +2,7 @@
 //  SessionAttachRoutingPolicyTests.swift
 //  CalyxTests
 //
-//  TDD Red phase for a UX inconsistency: the session browser's "Attach"
+//  Covers a UX inconsistency: the session browser's "Attach"
 //  button always opens a NEW WINDOW, even when a main Calyx window is
 //  already available (it should add a tab to it instead, matching the
 //  sibling remote-session flow, AppDelegate.spawnRemoteSessionTab) and
@@ -18,9 +18,9 @@
 //
 //  Coverage: the full 2^2 = 4-row truth table. Only the (false, false)
 //  row (not attached, no window available) yields `.attachAsNewWindow`
-//  both against the CURRENT RED-phase stub (which always returns
-//  `.attachAsNewWindow`) and the eventual fix -- see that row's comment
-//  in the truth table below. The other three rows currently fail.
+//  both against the pre-fix stub (which always returned
+//  `.attachAsNewWindow`) and the fix -- see that row's comment
+//  in the truth table below.
 //
 
 import XCTest
@@ -42,8 +42,8 @@ final class SessionAttachRoutingPolicyTests: XCTestCase {
             label: "already attached, no window available -- focus still wins over any attach"),
         Row(isAttachedHere: false, hasAvailableWindow: true, expected: .attachAsTab,
             label: "not attached, window available -- must add a tab to it, not open a second window"),
-        // The one row where the RED-phase stub's constant `.attachAsNewWindow`
-        // happens to already match: no live surface, and no window to add a
+        // The one row where the pre-fix stub's constant `.attachAsNewWindow`
+        // happened to already match: no live surface, and no window to add a
         // tab to, so a fresh window is genuinely the only option.
         Row(isAttachedHere: false, hasAvailableWindow: false, expected: .attachAsNewWindow,
             label: "not attached, no window available -- a fresh window is the only option"),

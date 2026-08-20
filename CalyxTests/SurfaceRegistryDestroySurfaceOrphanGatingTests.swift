@@ -2,7 +2,7 @@
 //  SurfaceRegistryDestroySurfaceOrphanGatingTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for SurfaceRegistry.destroySurface(_:)'s new command-log
+//  Covers SurfaceRegistry.destroySurface(_:)'s new command-log
 //  orphan gating: a torn-down surface's running commands are orphaned
 //  UNLESS the surface is still tracked in SessionSurfaceMap (a
 //  persistent-session pane, whose daemon-side session survives the
@@ -17,7 +17,7 @@
 //  Coverage:
 //  - No SessionSurfaceMap entry -> running commands become .orphaned
 //  - SessionSurfaceMap entry present -> running commands stay .running
-//  - (Cockpit P2 review finding W4) destroySurface also calls the
+//  - destroySurface also calls the
 //    injectable approvalInboxStore's expireForSurface(_:), same
 //    "defaults to .shared, test-injectable" DI shape as
 //    commandLogStore/sessionSurfaceMap -- proven here the same way, via

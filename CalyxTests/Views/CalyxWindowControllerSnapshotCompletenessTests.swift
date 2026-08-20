@@ -2,17 +2,17 @@
 //  CalyxWindowControllerSnapshotCompletenessTests.swift
 //  CalyxTests
 //
-//  TDD Red phase, round 10 (r10-fix-spec.md, R10-A item 3): production
-//  saves (requestSave/saveImmediately/applicationWillTerminate) all go
-//  through CalyxWindowController.windowSnapshot(), which constructs its
+//  Production saves (requestSave/saveImmediately/
+//  applicationWillTerminate) all go through
+//  CalyxWindowController.windowSnapshot(), which constructs its
 //  TabSnapshot WITHOUT sessionRefs, even though the tested-but-
 //  production-unused Tab.snapshot()/TabGroup.snapshot()/WindowSession
 //  .snapshot() extension chain (SessionSnapshot.swift) carries every
 //  field correctly. A persistent session's SessionRef therefore never
 //  reaches disk from a real save, so it cannot survive a relaunch.
 //
-//  This is the missing production-builder completeness test named by
-//  the round-10 sweep: build a real CalyxWindowController whose Tab
+//  This is the missing production-builder completeness test: build a
+//  real CalyxWindowController whose Tab
 //  carries non-empty sessionRefs plus a representative, non-default
 //  value for every other TabSnapshot/TabGroupSnapshot/WindowSnapshot
 //  field, call windowSnapshot(), and assert every field against the
@@ -67,7 +67,7 @@ final class CalyxWindowControllerSnapshotCompletenessTests: XCTestCase {
         )
 
         let group = TabGroup(
-            name: "Round 10 Group",
+            name: "Snapshot Completeness Group",
             color: .purple,
             isCollapsed: true,
             tabs: [tab],

@@ -2,7 +2,7 @@
 //  AgentHookApprovalSettingsToggleWiringTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for Stage E of the approval-inbox-for-CLI-agents
+//  Covers Stage E of the approval-inbox-for-CLI-agents
 //  feature: a new Agents-pane toggle for
 //  CockpitSettings.agentHookApprovalEnabled -- gates whether
 //  CalyxMCPServer's POST /approval-request endpoint (a CLI agent's
@@ -17,11 +17,9 @@
 //  side effect is a straight CockpitSettings write, not a shell
 //  integration install/env mutation.
 //
-//  Held-out compile-RED (see SessionCommandSynthesizerRemoteAttachTests'
-//  header for this codebase's convention): SettingsRow.agentHookApproval,
+//  Under test: SettingsRow.agentHookApproval,
 //  AccessibilityID.Settings.agentHookApprovalSwitch, and the
-//  #selector(agentHookApprovalDidChange:) target do not exist yet. This
-//  file fails to compile until the Green phase adds all three.
+//  #selector(agentHookApprovalDidChange:) target.
 //
 //  Proposed API:
 //

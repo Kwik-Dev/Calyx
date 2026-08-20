@@ -2,7 +2,7 @@
 //  AgentHookScriptSessionIDTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for AgentHookScript.scriptBody's calyx-session
+//  Covers AgentHookScript.scriptBody's calyx-session
 //  awareness: a persistent-session pane's identity survives ghostty
 //  surface re-creation (reconnect), while its CALYX_SURFACE_ID does
 //  not — so the hook must send whichever is stable, preferring
@@ -15,7 +15,7 @@
 //    $CALYX_SURFACE_ID}`, so a persistent-session pane's calyx-session
 //    ID is preferred whenever it is set, falling back to the existing
 //    CALYX_SURFACE_ID otherwise
-//  - Fix round (review, item 5): the guard must fail-open (exit 0)
+//  - The guard must fail-open (exit 0)
 //    only when BOTH CALYX_SURFACE_ID and CALYX_SESSION_ID are unset —
 //    not just CALYX_SURFACE_ID as before. A real /bin/sh execution test
 //    (AgentHookScriptSessionIDPipelineTests) proves this end to end
@@ -42,7 +42,7 @@ final class AgentHookScriptSessionIDTests: XCTestCase {
         )
     }
 
-    // Fix round (review, item 5): replaces the original contract's
+    // Replaces the original contract's
     // "guard only checks CALYX_SURFACE_ID" test. The corrected guard
     // must fail-open only when NEITHER variable is set, so that a
     // future call site which sets CALYX_SESSION_ID without

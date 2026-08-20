@@ -2,14 +2,9 @@
 //  SSHConfigParserTests.swift
 //  CalyxTests
 //
-//  TDD Red phase, P5 (remote sessions), cycle 1: read-only ~/.ssh/config
-//  candidate extraction for the future remote-host picker UI (not this
-//  cycle). Introduces ONE new symbol -- SSHConfigParser -- that does not
-//  exist anywhere in the codebase yet, so this file is a held-out
-//  compile-RED file per this codebase's established convention (see
-//  SessionDaemonClientSessionStateBoundTimeoutSeamTests's header): it is
-//  expected to FAIL TO COMPILE until the Green phase adds it. That
-//  compile failure IS this file's RED evidence.
+//  Remote sessions: read-only ~/.ssh/config
+//  candidate extraction for the remote-host picker UI, through
+//  SSHConfigParser.
 //
 //  SCOPE: SSHConfigParser.hostCandidates(from:) is a PURE function --
 //  its only input is an ssh_config-format STRING (never a file path, so

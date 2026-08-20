@@ -8,6 +8,7 @@
 //  implementations were consolidated into this single shared helper.
 //
 
+import CryptoKit
 import XCTest
 @testable import Calyx
 
@@ -49,11 +50,11 @@ final class ConfigFileUtilsTests: XCTestCase {
                        "A regular file must not be reported as a directory")
     }
 
-    // MARK: - resolveConfigPath(_:) — Round 3 (symlink-following config writes)
+    // MARK: - resolveConfigPath(_:) — symlink-following config writes
     //
-    // Added for the Round 3 fix: `~/.claude/settings.json` etc. is
-    // commonly a dotfiles-managed symlink, and blanket symlink rejection
-    // silently broke hooks installation entirely in that setup. These
+    // `~/.claude/settings.json` etc. is commonly a dotfiles-managed
+    // symlink, and blanket symlink rejection silently broke hooks
+    // installation entirely in that setup. These
     // cover the real dotfiles-adjacent shapes resolveConfigPath must
     // handle: a plain file, a symlink to an existing file, a dangling
     // symlink (writes should land at the link's destination), a
@@ -123,9 +124,9 @@ final class ConfigFileUtilsTests: XCTestCase {
                        "A relative dangling symlink's destination must be absolutized against the link's own directory")
     }
 
-    // MARK: - resolveConfigPath(_:) — Round 3 fix (multi-hop resolution)
+    // MARK: - resolveConfigPath(_:) — multi-hop resolution
     //
-    // Round 3 review: the original single-hop implementation only
+    // The original single-hop implementation only
     // followed ONE symlink when the target didn't exist, so a two-hop
     // dangling chain (link -> link -> not-yet-existing file) resolved to
     // the INTERMEDIATE link instead of the final destination. Since
@@ -166,7 +167,7 @@ final class ConfigFileUtilsTests: XCTestCase {
 
     // MARK: - atomicWrite(_:to:) — lock-file location & persistence
     //
-    // Post-review fix: atomicWrite's lock file used to live next to the
+    // atomicWrite's lock file used to live next to the
     // resolved config path and was unlinked after use, which reintroduces
     // the classic flock "dotlock" TOCTOU race (a process that opens the
     // lock path after it's been unlinked gets an unrelated inode, so two
@@ -253,5 +254,38 @@ final class ConfigFileUtilsTests: XCTestCase {
         let otherLockPath = try ConfigFileUtils.lockFilePath(forResolvedPath: otherPath)
         XCTAssertNotEqual(lockPath1, otherLockPath,
                           "Different resolved paths must map to different lock files")
+    }
+
+    func test_atomicWrite_underTestHost_createsNoLockFileInRealApplicationSupport() throws {
+        let targetPath = tempDir + "/real-locks-directory-must-stay-untouched.json"
+
+        // The real directory's lock path is derived here from first
+        // principles instead of from `lockFilePath`, which is the thing
+        // under test. Hashing the *resolved* path is what makes this
+        // name the file production would actually create: the temp
+        // directory these tests write to sits under `/var`, a symlink to
+        // `/private/var`, and `atomicWrite` hashes only the resolved form.
+        let resolvedPath = try ConfigFileUtils.resolveConfigPath(targetPath)
+        let digest = SHA256.hash(data: Data(resolvedPath.utf8))
+        let hex = digest.map { String(format: "%02x", $0) }.joined()
+        let realLocksDirectory = (AppSupportDirectory.path as NSString).appendingPathComponent("locks")
+        let realLockPath = (realLocksDirectory as NSString).appendingPathComponent(hex + ".lock")
+
+        try ConfigFileUtils.atomicWrite(data: Data("{}".utf8), to: targetPath)
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: realLockPath),
+            "A config write performed under the unit-test host must not create a lock file in the " +
+            "user's real Application Support directory. Lock files are named after a hash of the " +
+            "config path and are deliberately never deleted, and every test writes to a fresh UUID " +
+            "temp path, so each such write would leave one more permanent file behind: \(realLockPath)"
+        )
+
+        let lockPath = try ConfigFileUtils.lockFilePath(forResolvedPath: resolvedPath)
+        XCTAssertFalse(
+            lockPath.hasPrefix(AppSupportDirectory.path),
+            "Under the unit-test host the lock directory must resolve outside " +
+            "\(AppSupportDirectory.path), got: \(lockPath)"
+        )
     }
 }

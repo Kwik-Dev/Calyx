@@ -2,8 +2,8 @@
 //  RecoveryBarModelTests.swift
 //  CalyxTests
 //
-//  TDD Red phase for the Chrome-style in-app session-recovery bar
-//  (team-lead task: "in-app recovery bar + E2E"). WHY THIS FEATURE
+//  Covers the Chrome-style in-app session-recovery bar.
+//  WHY THIS FEATURE
 //  EXISTS: the only PRE-EXISTING signal that a previous session was
 //  preserved-but-not-restored is AppDelegate.notifyPreviousSessionNotRestored(),
 //  a macOS system notification. That notification is silently dropped
@@ -55,14 +55,9 @@
 //  Chrome's own "restore pages?" infobar, which is similarly per-window
 //  and dismissable without discarding the underlying saved-tabs data.
 //
-//  Held-out compile-RED (this codebase's established convention for a
-//  net-new type -- see AppDelegateRecoverPreservedSessionFinalizeTests's
-//  own header, and SessionCommandPaletteRecoverPreviousSessionTests's):
-//  `RecoveryBarModel` does not exist yet anywhere in the app target.
-//  This file fails to COMPILE until the Green phase adds it. That
-//  compile failure IS this file's RED evidence -- there is no runtime
-//  failure message to report because the build never reaches that
-//  stage.
+//  Under test: `RecoveryBarModel` (see
+//  AppDelegateRecoverPreservedSessionFinalizeTests's own header, and
+//  SessionCommandPaletteRecoverPreviousSessionTests's).
 //
 //  Proposed API (new file, Calyx/Features/Persistence/RecoveryBarModel.swift,
 //  alongside SessionPersistenceActor.swift/SessionSnapshot.swift -- this
@@ -101,7 +96,7 @@
 //
 //  Wiring this needs at the AppDelegate/CalyxWindowController level
 //  (investigated, not implemented here -- out of scope for this
-//  unit-level file, called out for the Green-phase implementer):
+//  unit-level file, called out for whoever wires it):
 //  - Every window-controller construction site (openNewWindow(initialHost:),
 //    openWindowAtPath(_:), makeRestoringWindowController(contentRect:windowSession:))
 //    must hand its new CalyxWindowController a RecoveryBarModel seeded
@@ -282,7 +277,7 @@ final class RecoveryBarModelTests: XCTestCase {
                      "have already cleared the flag itself")
     }
 
-    // MARK: - Team-lead scope addition: an EMPTY preserved snapshot must never show a bar
+    // MARK: - An EMPTY preserved snapshot must never show a bar
 
     /// Corollary of AppDelegateEmptyPreservedSnapshotTests.swift's
     /// contract (a): once initializeHasPreservedSessionSnapshotFlag()

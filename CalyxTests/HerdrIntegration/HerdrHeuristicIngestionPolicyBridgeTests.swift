@@ -2,13 +2,13 @@
 //  HerdrHeuristicIngestionPolicyBridgeTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for HerdrHeuristicIngestionPolicy's extension:
+//  Covers HerdrHeuristicIngestionPolicy's extension:
 //  a surface bridged via HerdrPaneRegistry (native-tab pane
 //  bridge) must be skipped by title-heuristic ingestion exactly like a
 //  HerdrHostedSurfaces member already is (see
 //  HerdrHeuristicIngestionPolicyTests.swift).
 //
-//  INTERFACE CHANGE (see this task's own handoff report): shouldIngest
+//  INTERFACE CHANGE: shouldIngest
 //  gains a REQUIRED second parameter, isBridgeSurface: Bool, with NO
 //  default value. This REPLACES the existing single-parameter overload
 //  (shouldIngest(isHerdrHosted:)) rather than coexisting alongside it --

@@ -5,7 +5,7 @@
 //  Two independent conformers of `HerdrTransport`, covered separately
 //  below:
 //
-//  1. `InMemoryHerdrTransport` -- the fully-real (not a RED stub) test
+//  1. `InMemoryHerdrTransport` -- the fully-real (not a stub) test
 //     double `HerdrSocketSessionTests` builds on. These tests PASS
 //     already: the double is test infrastructure, not
 //     under-development production logic. They exist so the double's

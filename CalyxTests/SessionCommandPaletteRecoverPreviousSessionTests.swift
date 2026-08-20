@@ -2,9 +2,9 @@
 //  SessionCommandPaletteRecoverPreviousSessionTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (session-restore fix, Bug 3c -- silent restore-skip must
-//  become recoverable, RECOVER half). Once Bug 3a preserves a
-//  skipped/failed session and Bug 3b tells the user about it, the user
+//  The RECOVER half of the session-restore fix: a silent restore-skip
+//  must become recoverable. Once the preserve half preserves a
+//  skipped/failed session and the notify half tells the user about it, the user
 //  needs an actual way to get their windows/tabs back: a command palette
 //  action, enabled only while a preserved snapshot exists.
 //
@@ -23,8 +23,8 @@
 //  query (isApplicationTerminating, isConfirmingQuit, etc.) -- mirrored
 //  here exactly, not a new access pattern.
 //
-//  NOTE ON THE LABEL: the task brief asked for "a Japanese label
-//  consistent with existing session commands." Investigated and
+//  NOTE ON THE LABEL: a Japanese label was requested, "consistent with
+//  existing session commands". Investigated and
 //  DEVIATED: every existing PaletteCommand title in this codebase is
 //  English ("Session Browser…", "Detach Session", "Kill Session", "New
 //  Remote Session…"), and there is no Localizable.strings/.lproj
@@ -34,15 +34,12 @@
 //  uses "Recover Previous Session" (English, Title Case, matching the
 //  existing four command titles' own style) instead.
 //
-//  Held-out compile-RED (see SessionCommandSynthesizerRemoteAttachTests's
-//  header for this codebase's convention): AppDelegate
+//  Under test: AppDelegate
 //  .hasPreservedSessionSnapshot / ._setHasPreservedSessionSnapshotForTesting(_:)
-//  / .recoverPreservedSession() do not exist yet, no session.recoverPreviousSession
-//  command is registered, and this file also depends on the sibling RED
-//  seam _sessionPersistenceActorForTesting (introduced by
-//  AppDelegateRecoveryCounterResetTests, this same round -- reused here,
-//  not redefined). This file fails to compile until the Green phase adds
-//  all of these. That compile failure IS this file's RED evidence.
+//  / .recoverPreservedSession(), and the session.recoverPreviousSession
+//  command. Also uses the _sessionPersistenceActorForTesting seam
+//  (defined by AppDelegateRecoveryCounterResetTests, reused here, not
+//  redefined).
 //
 //  Proposed API (AppDelegate.swift additions):
 //
@@ -107,9 +104,9 @@
 //  GhosttyAppController.shared.app and real window/surface creation, the
 //  same reachability limit AppDelegateApplyGhosttyResourcesDirEnvironmentTests
 //  and AppDelegateRecoveryCounterResetTests both already document for
-//  this test host. The Green phase implementer and code review must
-//  verify that path (and the call-site registration/wiring itself) by
-//  reading the diff; no test in this file substitutes for that reading.
+//  this test host. That path (and the call-site registration/wiring
+//  itself) must be verified by reading the code; no test in this file
+//  substitutes for that reading.
 //
 //  Coverage:
 //  - session.recoverPreviousSession is registered, category "Sessions"

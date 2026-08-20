@@ -2,7 +2,7 @@
 //  AppDelegateLastWindowClosedDoesNotTerminateTests.swift
 //  CalyxTests
 //
-//  TDD Red phase, window-lifetime redesign: Calyx must stop terminating
+//  Window-lifetime redesign: Calyx must stop terminating
 //  the app when the last tab/tab-group/window closes, matching Ghostty's
 //  own behavior. Two production entry points must change together:
 //
@@ -26,7 +26,7 @@
 //  `RemoveWindowControllerTerminationSpyAppDelegate` below overrides that
 //  method to unconditionally return `.terminateCancel`, aborting any
 //  stray `NSApp.terminate(nil)` call harmlessly -- while still recording
-//  whether it was called at all, which is this file's primary RED-proving
+//  whether it was called at all, which is this file's primary
 //  signal for (2). `saveImmediately()`/`requestSave()` are both overridden
 //  to pure spies (never calling through), since the real implementations
 //  reach `SessionPersistenceActor.shared` and would write to the
@@ -112,7 +112,7 @@ final class AppDelegateLastWindowClosedDoesNotTerminateTests: XCTestCase {
         }
     }
 
-    /// PRIMARY RED-proving assertion for (2): against the CURRENT code,
+    /// PRIMARY assertion pinning (2): before the fix,
     /// removing the last window controller falls into
     /// `removeWindowController`'s `else if quickTerminalController == nil`
     /// branch and calls `NSApp.terminate(nil)` directly, which
@@ -155,9 +155,9 @@ final class AppDelegateLastWindowClosedDoesNotTerminateTests: XCTestCase {
         )
     }
 
-    /// Regression guard (NOT a RED-proving assertion on its own; matches
-    /// this codebase's convention of pairing a "last controller" RED test
-    /// with a "not the last controller" sanity guard, see
+    /// Regression guard, not an assertion that pins the fix on its own
+    /// (matching this codebase's convention of pairing a "last
+    /// controller" test with a "not the last controller" sanity guard, see
     /// `CalyxWindowControllerLastWindowCloseSaveTests`'s identical
     /// pairing): removing a controller while another window remains open
     /// must keep going through the existing `requestSave()` path, not the

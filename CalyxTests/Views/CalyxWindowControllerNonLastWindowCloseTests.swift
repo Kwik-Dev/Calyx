@@ -2,9 +2,8 @@
 //  CalyxWindowControllerNonLastWindowCloseTests.swift
 //  CalyxTests
 //
-//  TDD Red phase for round-6 fix R6-D (r6-fix-spec.md; sweep finding in
-//  r5-verdicts.md): `windowWillClose`'s destroy loop currently runs the
-//  SAME direct `tab.registry.destroySurface(id)` teardown unconditionally,
+//  `windowWillClose`'s destroy loop currently runs the SAME direct
+//  `tab.registry.destroySurface(id)` teardown unconditionally,
 //  whether this window is closing on its own (app not terminating, a
 //  red-button close on one of several open windows) or as part of a real
 //  quit (app terminating, whose snapshot must still see this window's
@@ -26,11 +25,10 @@
 //  close-policy teardown `closeTab` already uses (kill semantics, an
 //  explicit window close) UNLESS the app is actually terminating, in
 //  which case today's preserve-into-snapshot behavior must stay exactly
-//  as it is (`AppDelegate.isApplicationTerminating`, new in this round,
+//  as it is (`AppDelegate.isApplicationTerminating`,
 //  see its own doc comment, is the discriminator; the window's own
 //  `isClosingForShutdown` alone is NOT enough, since `closeLastWindow`
-//  also sets that flag for a non-terminating close, per round-5 finding
-//  I2).
+//  also sets that flag for a non-terminating close).
 //
 //  Drives `windowWillClose(_:)` directly with a bare `Notification`
 //  (mirrors `CalyxWindowControllerFullScreenTests`'s established
@@ -55,10 +53,9 @@ final class CalyxWindowControllerNonLastWindowCloseTests: XCTestCase {
     // MARK: - Fixture
 
     /// sessionIDs registered with `SessionSurfaceMap.shared` by
-    /// `makeFixture()`, unregistered in `tearDown` (R8-G item G2,
-    /// r8-fix-spec.md: the single cleanup pattern this file now shares
-    /// with `SessionReconnectGiveUpTests`, whose original discipline
-    /// this mirrors).
+    /// `makeFixture()`, unregistered in `tearDown` (the single cleanup
+    /// pattern this file now shares with `SessionReconnectGiveUpTests`,
+    /// whose original discipline this mirrors).
     private var registeredSessionIDs: [String] = []
 
     override func tearDown() {
@@ -69,9 +66,9 @@ final class CalyxWindowControllerNonLastWindowCloseTests: XCTestCase {
         super.tearDown()
     }
 
-    /// Two-pane, single-tab, single-group window (R8-G item G2,
-    /// r8-fix-spec.md: shared with `SessionReconnectGiveUpTests`, see
-    /// `TwoPaneSessionFixture`'s own header comment): `trackedLeafID`
+    /// Two-pane, single-tab, single-group window (shared with
+    /// `SessionReconnectGiveUpTests`, see `TwoPaneSessionFixture`'s own
+    /// header comment): `trackedLeafID`
     /// carries a `SessionRef` (registered in both `tab.sessionRefs` and
     /// `SessionSurfaceMap.shared`); `siblingLeafID` is an ordinary,
     /// untracked pane, present only so the fixture isn't a degenerate
@@ -82,8 +79,7 @@ final class CalyxWindowControllerNonLastWindowCloseTests: XCTestCase {
         return fixture
     }
 
-    /// R8-G item G3 (r8-fix-spec.md; verified behavior-neutral):
-    /// subclasses `ConfirmQuitMockAppDelegate` (R6-J) instead of
+    /// Subclasses `ConfirmQuitMockAppDelegate` instead of
     /// `AppDelegate` directly, consolidating this file's mock with the
     /// rest of the suite's shared base -- purely for its
     /// `removeWindowController` no-op override (test-process safety);
@@ -100,12 +96,12 @@ final class CalyxWindowControllerNonLastWindowCloseTests: XCTestCase {
         }
     }
 
-    /// R6-D (sweep finding, r5-verdicts.md): against the CURRENT code,
-    /// `windowWillClose`'s destroy loop never calls `killSessionIfPersistent`/
+    /// Against the CURRENT code, `windowWillClose`'s destroy loop never
+    /// calls `killSessionIfPersistent`/
     /// `detachSessionIfPersistent`/`SessionCloseKillPolicy` at all, it
     /// destroys every surface directly, leaving `SessionSurfaceMap` and
     /// `tab.sessionRefs` untouched regardless of whether the app is
-    /// terminating. This is the PRIMARY RED-proving assertion: with the
+    /// terminating. This is the PRIMARY assertion pinning the fix: with the
     /// app NOT terminating (`isApplicationTerminating == false`, the
     /// default, a red-button close on one of several open windows),
     /// closing must run the normal close policy and unregister/clear the
@@ -135,7 +131,7 @@ final class CalyxWindowControllerNonLastWindowCloseTests: XCTestCase {
                     "for an explicit, non-quit window close")
     }
 
-    /// Regression guard (r6-fix-spec.md R6-D), NOT a RED-proving test:
+    /// Regression guard:
     /// while the app IS actually terminating (`isApplicationTerminating
     /// == true`, mirroring `markAllControllersClosingForShutdown` having
     /// run, which also sets the window's own `isClosingForShutdown`),
@@ -144,7 +140,7 @@ final class CalyxWindowControllerNonLastWindowCloseTests: XCTestCase {
     /// This assertion passes against BOTH the current code (which never
     /// touches either at all) and the intended fix (which must
     /// deliberately skip the close-policy call in this branch), it
-    /// exists to catch a future regression where the R6-D fix accidentally
+    /// exists to catch a future regression where the fix accidentally
     /// starts running kill/detach unconditionally, not to prove the fix
     /// is currently missing.
     func test_windowWillClose_terminatingClose_preservesSessionRefsIntoSnapshot() {
@@ -164,25 +160,22 @@ final class CalyxWindowControllerNonLastWindowCloseTests: XCTestCase {
                         "...and must preserve tab.sessionRefs too, so the next launch can restore/reattach it")
     }
 
-    // MARK: - R8-C: one canonical termination discriminator
+    // MARK: - One canonical termination discriminator
 
-    /// R8-C (r8-fix-spec.md; consolidates r7-verdicts.md's I1/A2/C2
-    /// dormant discriminator-mismatch finding): windowWillClose's outer
-    /// loop gates on isAppActuallyTerminating (app-level:
-    /// AppDelegate.isApplicationTerminating), but killSessionIfPersistent's
-    /// inner SessionCloseKillPolicy call
+    /// windowWillClose's outer loop gates on isAppActuallyTerminating
+    /// (app-level: AppDelegate.isApplicationTerminating), but
+    /// killSessionIfPersistent's inner SessionCloseKillPolicy call
     /// passes isTerminating: isClosingForShutdown, this window's own,
     /// narrower flag. No production call path sets isClosingForShutdown
-    /// true while the app is genuinely not terminating today (see
-    /// r7-verdicts.md R7-V2, REFUTED for that reason), but the mismatch
-    /// itself is real: with isClosingForShutdown true and the app NOT
-    /// terminating, the outer gate correctly decides to run the close
-    /// policy, but the inner policy independently reads its own
-    /// isClosingForShutdown (true) as "terminating" and refuses to
-    /// kill, leaving the persistent session's mapping in place even
-    /// though the outer gate already decided otherwise. This test locks
-    /// the invariant that both layers must read the SAME discriminator,
-    /// so this mismatch cannot silently resurface on a future call path.
+    /// true while the app is genuinely not terminating today, but the
+    /// mismatch itself is real: with isClosingForShutdown true and the
+    /// app NOT terminating, the outer gate correctly decides to run the
+    /// close policy, but the inner policy independently reads its own
+    /// isClosingForShutdown (true) as "terminating" and refuses to kill,
+    /// leaving the persistent session's mapping in place even though the
+    /// outer gate already decided otherwise. This test locks the
+    /// invariant that both layers must read the SAME discriminator, so
+    /// this mismatch cannot silently resurface on a future call path.
     func test_windowWillClose_isClosingForShutdownTrueButAppNotTerminating_stillKillsPersistentSession() {
         let fixture = makeFixture()
         let mock = NoTerminateAppDelegate()

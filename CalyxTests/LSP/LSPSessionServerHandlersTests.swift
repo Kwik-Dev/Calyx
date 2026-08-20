@@ -31,10 +31,9 @@
 //    - `clearServerMessages()`
 //    - `consumePendingApplyEdit(id:)`
 //
-//  TDD phase: RED. None of these handlers (nor the `ServerLogEntry` and
-//  `PendingApplyEdit` value types) exist yet on `LSPSession`. This file is
-//  expected to fail to compile until the swift-specialist implements the
-//  surface under `Calyx/Features/LSP/LSPSession.swift`.
+//  These handlers, and the `ServerLogEntry` and
+//  `PendingApplyEdit` value types, live on `LSPSession` under
+//  `Calyx/Features/LSP/LSPSession.swift`.
 //
 //  Spec entry points:
 //    - window/showMessage:         https://microsoft.github.io/language-server-protocol/specifications/lsp/3.18/specification/#window_showMessage

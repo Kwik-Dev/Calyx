@@ -2,7 +2,7 @@
 //  SessionBrowserModelTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for `SessionBrowserModel`: the UI-independent logic
+//  Covers `SessionBrowserModel`: the UI-independent logic
 //  layer behind the session browser window (`refresh()`'s row
 //  construction + orphan detection, `attach(_:)`/`kill(_:)`'s actions).
 //  Exercised with a fake `SessionDaemonClientProtocol` and a real,

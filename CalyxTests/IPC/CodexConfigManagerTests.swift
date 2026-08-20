@@ -355,7 +355,7 @@ final class CodexConfigManagerTests: XCTestCase {
         }
     }
 
-    // Contract changed (Round 3): dotfiles-managed setups commonly symlink
+    // Contract: dotfiles-managed setups commonly symlink
     // ~/.codex/config.toml to a repo elsewhere, and blanket symlink
     // rejection silently broke IPC configuration for that setup. Calyx
     // now follows the link and writes through to the real target file,
@@ -387,7 +387,7 @@ final class CodexConfigManagerTests: XCTestCase {
         XCTAssertEqual(destination, realFile)
     }
 
-    // Round 3 fix: resolveConfigPath now follows a multi-hop *dangling*
+    // resolveConfigPath follows a multi-hop *dangling*
     // symlink chain (link -> link -> not-yet-existing file) all the way
     // to its final destination, rather than stopping at the first
     // intermediate link. Same shared ConfigFileUtils primitive as every
@@ -612,7 +612,7 @@ final class CodexConfigManagerTests: XCTestCase {
                       "The managed block's END marker line must survive disableIPC")
     }
 
-    // MARK: - Regression (Phase 2 fix): terminator = table header, not blank line
+    // MARK: - Regression: terminator = table header, not blank line
 
     func test_disableIPC_noBlankLineBeforeHooksArrayOfTablesBlock_survives() throws {
         // Regression: the section terminator is "any table header line"

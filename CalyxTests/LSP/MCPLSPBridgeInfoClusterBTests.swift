@@ -2,7 +2,7 @@
 //  MCPLSPBridgeInfoClusterBTests.swift
 //  Calyx
 //
-//  TDD red-phase tests for the eight "information cluster B" MCP tools the
+//  Tests for the eight "information cluster B" MCP tools the
 //  LSP bridge will ship on top of the 35 tools (10 core + 11 extended +
 //  7 hierarchy/moniker + 7 information-cluster-A) already routed through
 //  `MCPLSPBridge`.
@@ -35,10 +35,9 @@
 //          start_line, start_column, end_line, end_column,
 //          color: { red, green, blue, alpha }                 (range + color)
 //
-//  TDD phase: RED. The bridge currently advertises 35 tools and routes only
-//  those. These tests are expected to fail at runtime — the catalogue
-//  assertion sees 35 names instead of 43, and every `handleToolCall` for one
-//  of the new tools surfaces as `MCPLSPBridgeError.unknownTool`.
+//  The bridge must advertise 43 tools and route all of them: the
+//  catalogue assertion pins that count, and every `handleToolCall` for
+//  an unrouted tool surfaces as `MCPLSPBridgeError.unknownTool`.
 //
 //  Strategy notes:
 //    - The fake LSP-server driver and helpers are file-private here to avoid

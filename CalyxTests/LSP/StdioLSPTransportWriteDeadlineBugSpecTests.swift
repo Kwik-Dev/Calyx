@@ -44,8 +44,7 @@
 //  TDD GATE: this test MUST FAIL against the current source. The
 //  helper `computeWriteDeadline(payloadSize:)` is intentionally not
 //  yet exposed — referencing it from the test produces a compile
-//  error, which is the unambiguous RED signal. After the GREEN fix
-//  surfaces it as
+//  error. With the fix surfacing it as
 //
 //      internal static func computeWriteDeadline(payloadSize: Int) -> TimeInterval
 //
@@ -89,10 +88,10 @@ final class StdioLSPTransportWriteDeadlineBugSpecTests: XCTestCase {
     ///        `transportClosed`.
     ///
     /// Current code FAILS to compile against this test because
-    /// `StdioLSPTransport.computeWriteDeadline(payloadSize:)` does
-    /// not exist — the policy is baked into a private static `let`
+    /// Pins `StdioLSPTransport.computeWriteDeadline(payloadSize:)`:
+    /// before it, the policy was baked into a private static `let`
     /// (`writeDeadlineSeconds: TimeInterval = 3.0`) with no size
-    /// parameter. That compile failure IS the RED phase.
+    /// parameter.
     func test_writeDeadline_scalesWithPayloadSize() {
         // --- Small payload: roughly the legacy 3 s floor ---------
         //

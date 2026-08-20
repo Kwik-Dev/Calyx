@@ -14,7 +14,7 @@
 //  (`QuickTerminalControllerRequestHideTests` already covers that, but
 //  assumes without proving that the override actually calls it).
 //
-//  Added after the initial implementation, not as a new red phase: this
+//  Added after the initial implementation: this
 //  override already exists and is already correct (see
 //  `QuickTerminalWindow.swift`'s own doc comment on
 //  `calyxPerformClose(_:)`). Both tests below are regression guards

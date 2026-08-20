@@ -2,7 +2,7 @@
 //  SessionBrowserRowDetachedLabelTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (session browser badge wording): the session browser's
+//  Session browser badge wording: the session browser's
 //  "Orphaned" badge (SessionBrowserRowView, SessionBrowserView.swift) is
 //  internal jargon. The state it represents (a running session with no
 //  live ghostty surface attached in this process -- no SessionSurfaceMap
@@ -13,17 +13,14 @@
 //  vocabulary.
 //
 //  Scope: user-visible STRING ONLY. `SessionBrowserRow.isOrphan` and
-//  every other internal name keep their current spelling this cycle (a
+//  every other internal name keep their current spelling (a
 //  follow-up can rename the internal API separately); this file pins
 //  only the wording the user actually reads.
 //
-//  Held-out compile-RED (mirrors SessionPersistenceActorTerminationSaveTests'
-//  convention for this codebase): `SessionBrowserRow.orphanBadgeLabel`
-//  does not exist yet. This file fails to compile until the Green phase
-//  adds it and switches SessionBrowserRowView's inline `Text("Orphaned")`
-//  literal (SessionBrowserView.swift) to read this constant instead.
-//  That compile failure IS this file's RED evidence: there is no
-//  existing test pinning the badge's literal text today (the string
+//  Under test: `SessionBrowserRow.orphanBadgeLabel`, which
+//  SessionBrowserRowView reads in place of the inline `Text("Orphaned")`
+//  literal it used to carry (SessionBrowserView.swift).
+//  Nothing else pins the badge's literal text (the string
 //  lives only in SwiftUI view code -- this codebase's test style is
 //  direct-query against logic layers, not SwiftUI snapshot/view
 //  inspection, see SessionBrowserModelTests' own header), so a
@@ -35,7 +32,7 @@
 //    /// User-visible label for the isOrphan badge (SessionBrowserRowView).
 //    /// Kept separate from the SwiftUI view so this string is testable
 //    /// without a snapshot/view-inspection dependency. Internal name
-//    /// (isOrphan) is unchanged this cycle -- only the user-visible
+//    /// (isOrphan) is unchanged -- only the user-visible
 //    /// wording moves from "Orphaned" to "Detached".
 //    static let orphanBadgeLabel = "Detached"
 //

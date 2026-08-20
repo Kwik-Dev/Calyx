@@ -21,9 +21,8 @@
 //    - WorkDoneProgressBegin / Report / End (kind-discriminated three-way enum)
 //    - ProgressToken (Int | String union)
 //
-//  TDD phase: RED. None of these types exist yet. This file is expected to
-//  fail to compile until the swift-specialist implements the foundation
-//  types under `Calyx/Features/LSP/LSPTypes/`.
+//  The foundation types under test live
+//  under `Calyx/Features/LSP/LSPTypes/`.
 //
 
 import XCTest

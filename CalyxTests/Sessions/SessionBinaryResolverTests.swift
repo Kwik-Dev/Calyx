@@ -2,10 +2,10 @@
 //  SessionBinaryResolverTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for SessionBinaryResolver: a single injectable
+//  Covers SessionBinaryResolver: a single injectable
 //  resolver contract that SessionSpawnPlanner and SessionDaemonClient
 //  must both consume, so they always agree on which calyx-session
-//  binary they're talking about (fix round, item 4).
+//  binary they're talking about.
 //
 //  Coverage:
 //  - Given the same resolver instance, SessionDaemonClient's resolved

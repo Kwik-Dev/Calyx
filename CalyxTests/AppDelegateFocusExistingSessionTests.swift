@@ -2,10 +2,8 @@
 //  AppDelegateFocusExistingSessionTests.swift
 //  CalyxTests
 //
-//  TDD Red phase for round-6 fixes R6-D (stale-mapping fallback) and
-//  R6-E (tab-activation completeness), both in `AppDelegate
-//  .focusWindowForExistingSession(sessionID:)` (r6-fix-spec.md; A2/sweep
-//  finding evidence in r5-verdicts.md).
+//  Covers the stale-mapping fallback and tab-activation completeness,
+//  both in `AppDelegate.focusWindowForExistingSession(sessionID:)`.
 //
 //  Drives the PUBLIC `attachWindow(sessionID:cwd:)` entry point (matching
 //  `AppDelegateAttachWindowTests`'s existing convention) rather than
@@ -33,14 +31,14 @@
 //  `AppDelegateAttachWindowTests
 //  .test_attachWindow_forAlreadyRegisteredSessionID_neverReachesWindowCreation`,
 //  but asserts the OPPOSITE outcome (creation hook DOES fire), per
-//  R6-D's explicit "unregister the stale mapping and proceed with a
+//  the explicit "unregister the stale mapping and proceed with a
 //  fresh attach instead of silently returning" contract. That existing,
 //  currently-green test's fixture never gives the mapped surfaceID a
-//  genuine owning controller either, so once R6-D lands, implementing it
-//  WILL require updating that test's fixture to include a real owning
+//  genuine owning controller either, so implementing it WILL require
+//  updating that test's fixture to include a real owning
 //  controller (making it a genuinely LIVE mapping, not a stale one).
-//  Flagged here, and in this round's handoff, rather than silently left
-//  for the implementer to discover.
+//  Flagged here rather than silently left
+//  for the next reader to discover.
 //
 
 import XCTest
@@ -50,10 +48,9 @@ import AppKit
 @MainActor
 final class AppDelegateFocusExistingSessionTests: XCTestCase {
 
-    // MARK: - R6-D: stale-mapping fallback
+    // MARK: - Stale-mapping fallback
 
-    /// R6-D (r6-fix-spec.md, sweep finding in r5-verdicts.md): against
-    /// the CURRENT code, `attachWindow`'s guard
+    /// Against the CURRENT code, `attachWindow`'s guard
     /// (`SessionSurfaceMap.shared.surfaceID(for: sessionID) != nil`)
     /// unconditionally returns once it calls `focusWindowForExistingSession`,
     /// regardless of whether that method actually found a controller.
@@ -87,7 +84,7 @@ final class AppDelegateFocusExistingSessionTests: XCTestCase {
                     "controller owns")
     }
 
-    // MARK: - R6-E: tab-activation completeness
+    // MARK: - Tab-activation completeness
 
     private struct TwoTabFixture {
         let controller: CalyxWindowController
@@ -102,7 +99,7 @@ final class AppDelegateFocusExistingSessionTests: XCTestCase {
     /// is a BACKGROUND tab whose sole leaf carries a `SessionRef`,
     /// registered in `SessionSurfaceMap.shared`, the "session's live
     /// surface exists, but in a tab that isn't currently showing" case
-    /// A2/R6-E covers.
+    /// this section covers.
     private func makeTwoTabFixture() -> TwoTabFixture {
         let registryB = SurfaceRegistry()
         let trackedLeafID = UUID()
@@ -132,7 +129,7 @@ final class AppDelegateFocusExistingSessionTests: XCTestCase {
         )
     }
 
-    /// R6-E (A2, r6-fix-spec.md): against the CURRENT code,
+    /// Against the CURRENT code,
     /// `focusWindowForExistingSession` only calls `wc.showWindow(nil)`.
     /// It never activates the tab/group containing the mapped surface,
     /// so if that surface lives in a BACKGROUND tab, the user sees

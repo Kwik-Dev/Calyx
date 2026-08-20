@@ -8,10 +8,8 @@
 //  injectable `LSPCommandRunner` so tests never touch the real shell,
 //  `brew`, `npm`, `rustup`, etc.
 //
-//  TDD phase: RED. None of the installer types exist yet. This file is
-//  expected to fail to compile until the swift-specialist creates
-//  `Calyx/Features/LSP/LSPInstaller.swift` (all 7 types must live in the
-//  same file in the implementation):
+//  The installer types under test all live in the one file
+//  `Calyx/Features/LSP/LSPInstaller.swift`:
 //    - LSPCommandRunner            (protocol)
 //    - CommandResult               (struct)
 //    - MockCommandRunner           (actor, test seam)

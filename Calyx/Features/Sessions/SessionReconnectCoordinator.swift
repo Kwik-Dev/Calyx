@@ -42,7 +42,7 @@ enum SessionReconnectDecision: Sendable, Equatable {
     /// last-window quit cascade's timing consistent with every other
     /// session-ending path (a prior design that left the pane open only
     /// deferred that same cascade to an unpredictable later moment,
-    /// per review finding, and could not rely on ghostty rendering
+    /// and could not rely on ghostty rendering
     /// anything informative in the meantime). Carries no payload: the
     /// caller already has `surfaceID` in hand and resolves whatever
     /// else it needs (sessionID, tab) itself via `SessionSurfaceMap`.
@@ -97,8 +97,7 @@ final class SessionReconnectCoordinator {
     /// `SessionSettings.persistentSessionsEnabled`, which only affects
     /// `SessionSpawnPlanner`'s decision for *new* surfaces.
     ///
-    /// `isRemote` (P5 remote sessions, retires the former "ACCEPTED V1
-    /// LIMITATION" this comment used to document): `daemonClient
+    /// `isRemote` (remote sessions): `daemonClient
     /// .sessionStateBounded(id:)` queries the LOCAL calyx-session daemon
     /// only, so it can never meaningfully answer for a REMOTE session --
     /// the local daemon simply has no record of a session whose daemon
@@ -169,7 +168,7 @@ final class SessionReconnectCoordinator {
     }
 
     #if DEBUG
-    /// Test seam (reconnect-flashing-bug RED phase): directly seeds
+    /// Test seam: directly seeds
     /// `attemptCounts[sessionID]`, letting a controller-level test set
     /// up "N prior consecutive failures already recorded" without a
     /// live daemon round-trip through `childExited(surfaceID:)`. DO NOT

@@ -2,7 +2,7 @@
 //  CalyxMCPServerCommandEventTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for CalyxMCPServer's new POST /command-event endpoint,
+//  Covers CalyxMCPServer's new POST /command-event endpoint,
 //  mirroring CalyxMCPServerAgentEventTests' structure for /agent-event.
 //
 //  Coverage:
@@ -684,9 +684,10 @@ final class CalyxMCPServerCommandEventTests: XCTestCase {
     // that settles the row and expires the pending approval. Without
     // the .start recording, ghostty would settle the row itself right
     // here, and the later Calyx end would return false against an
-    // already-.done row (settlePaneCommandFinished's own
-    // not-already-.done guard), so the approval expiry -- gated on
-    // that same return value -- would be silently suppressed.
+    // already-.done row (AgentStateResolver
+    // .resolvePaneCommandFinished's own not-already-.done guard), so
+    // the approval expiry -- gated on that same return value -- would
+    // be silently suppressed.
 
     func test_routeCommandEvent_phaseStartThenGhosttyRace_phaseEndSettlesRowAndExpiresApproval() async throws {
         let store = CommandLogStore()

@@ -2,7 +2,7 @@
 //  TabSessionRefsPruningTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for Tab.pruneSessionRefs() (fix round, item 8):
+//  Covers Tab.pruneSessionRefs():
 //  partial-restore cleanup. AppDelegate.restoreTabSurfaces's partial
 //  failure path and fallbackCreateSurface's whole-tree-failed path both
 //  leave tab.sessionRefs holding entries keyed by leaf UUIDs that no

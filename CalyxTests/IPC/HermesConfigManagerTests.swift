@@ -1,7 +1,7 @@
 // HermesConfigManagerTests.swift
 // CalyxTests
 //
-// TDD red-phase tests for `HermesConfigManager`.
+// Tests for `HermesConfigManager`.
 //
 // Coverage:
 // - `enableIPC` upsert behavior for `~/.hermes/config.yaml` (Case A: append, Case B: insert as child)
@@ -12,7 +12,7 @@
 // - `disableIPC` removal preserving user content
 // - Strict managed-block detection (BEGIN + END + `calyx-ipc:` all required)
 // - Security: invalid UTF-8 rejection
-// - Round 3: symlink following (writes through to the real target file,
+// - Symlink following (writes through to the real target file,
 //   dangling-link target creation), consistent with the other 6 config
 //   managers
 // - `isIPCEnabled` true/false for various structural states
@@ -389,7 +389,7 @@ final class HermesConfigManagerTests: XCTestCase {
         }
     }
 
-    // Contract changed (Round 3): dotfiles-managed setups commonly symlink
+    // Contract: dotfiles-managed setups commonly symlink
     // ~/.hermes/config.yaml to a repo elsewhere, and blanket symlink
     // rejection silently broke IPC configuration entirely for that
     // (legitimate, self-authored) setup — the same fix as the other 6
@@ -452,7 +452,7 @@ final class HermesConfigManagerTests: XCTestCase {
                        "The now-resolved symlink must remain a symlink, not become a regular file")
     }
 
-    // Round 3 fix: resolveConfigPath now follows a multi-hop *dangling*
+    // resolveConfigPath follows a multi-hop *dangling*
     // symlink chain (link -> link -> not-yet-existing file) all the way
     // to its final destination, rather than stopping at the first
     // intermediate link. Same shared ConfigFileUtils primitive as every
@@ -767,7 +767,7 @@ final class HermesConfigManagerTests: XCTestCase {
         }
     }
 
-    // Contract changed (Round 3): see the enableIPC symlink tests above —
+    // Contract: see the enableIPC symlink tests above —
     // disableIPC now follows the link and removes the managed block from
     // the real target file, leaving the link itself intact.
     func test_disableIPC_symlinkFollowedToRealFile_removesSuccessfullyAndKeepsLinkIntact() throws {

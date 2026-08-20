@@ -23,10 +23,9 @@
 //    - LRU eviction: when `maxConcurrentSessions` is exceeded the oldest
 //      session is shut down.
 //
-//  TDD phase: RED. None of `LSPService`, `LSPServiceConfig`,
-//  `LSPServiceError`, `LSPSessionFactory`, `LSPSessionInfo` exist yet —
-//  this file is expected to fail to compile (unresolved identifiers)
-//  until the swift-specialist creates `Calyx/Features/LSP/LSPService.swift`.
+//  `LSPService`, `LSPServiceConfig`,
+//  `LSPServiceError`, `LSPSessionFactory`, and `LSPSessionInfo` live in
+//  `Calyx/Features/LSP/LSPService.swift`.
 //
 
 import XCTest

@@ -2,8 +2,8 @@
 //  SessionSpawnPlannerHostPropagationTests.swift
 //  CalyxTests
 //
-//  P5 (remote sessions) RED phase, BUG 3 (five-angle convergence review
-//  finding), contract 3a (planner level): SpawnPlan.persistent carries
+//  Remote sessions, planner level. THE DEFECT:
+//  SpawnPlan.persistent carries
 //  only `sessionID`/`command` -- even though SessionSpawnPlanner.plan(for:)
 //  already correctly branches on `context.host` (SessionSpawnPlannerRemoteHostTests,
 //  already green) and synthesizes the right remote command, the RESULT it
@@ -27,28 +27,20 @@
 //  `case .persistent(let sessionID, let command):`/
 //  `case .persistent(_, let command):` pattern match at once (verified:
 //  a 2-element tuple pattern against a 3-element case is a compiler
-//  error, not silently accepted). The Green phase must update EVERY one
-//  of the following existing call sites to bind (or discard via `_`) the
-//  new third element:
+//  error, not silently accepted). EVERY one
+//  of the following call sites binds (or discards via `_`) the
+//  third element:
 //    - SessionSpawnPlanner.swift: both `return .persistent(...)` sites
 //    - CalyxWindowController.swift ~660 (createManagedSurface)
 //    - CalyxTests/Sessions/SessionSpawnPlannerTests.swift (3 matches)
 //    - CalyxTests/Sessions/SessionSpawnPlannerRemoteHostTests.swift (3 matches)
 //    - CalyxTests/Sessions/SessionBinaryResolverTests.swift (1 match)
-//  None of those files are touched by this RED phase -- they are
-//  currently green and must stay compiling unchanged from THIS file's
-//  perspective; the arity change is deferred entirely to the Green
-//  phase, which fixes all of the above atomically alongside the enum
-//  definition itself.
+//  None of those files are touched by this file -- the arity change
+//  lands atomically across all of them alongside the enum definition
+//  itself.
 //
-//  Held-out compile-RED file per this codebase's established convention:
-//  `SpawnPlan.persistent`'s third `host` element does not exist yet --
-//  every 3-element pattern match in this file fails to compile against
-//  today's 2-element case. Expected to FAIL TO COMPILE until the Green
-//  phase adds it. That compile failure IS this file's RED evidence. Must
-//  be excluded from the build while running the rest of the round's RED
-//  suite (a compile failure anywhere fails the whole CalyxTests target)
-//  and verified separately for its own specific compiler errors.
+//  Under test: `SpawnPlan.persistent`'s third `host` element, matched
+//  by every 3-element pattern in this file.
 //
 //  Reuses SessionSpawnPlannerRemoteHostTests' exact FakeBinaryResolver/
 //  SessionSettings._testUseSuite conventions.

@@ -6,8 +6,7 @@
 //  15 languages Calyx ships with to their launch command, auto-install
 //  command, prerequisite package managers, and detection rules.
 //
-//  TDD phase: RED. None of the registry types exist yet. This file is
-//  expected to fail to compile until the swift-specialist implements them
+//  The registry types under test live
 //  under `Calyx/Features/LSP/LSPServerRegistry.swift`.
 //
 //  Types under test (all 4 must live in the same file in the implementation):

@@ -27,9 +27,7 @@
 //  advertises the relevant provider in its `ServerCapabilities`. The
 //  dispatcher therefore refuses to route methods the server can serve.
 //
-//  This test MUST FAIL against the current implementation (Red phase).
-//  After the fix extends `staticProvider` to cover the LSP 3.18 surface
-//  it will pass.
+//  Pins `staticProvider` covering the full LSP 3.18 surface.
 //
 //  Spec references:
 //    - ServerCapabilities (LSP 3.18):

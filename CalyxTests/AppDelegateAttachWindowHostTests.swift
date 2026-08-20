@@ -2,8 +2,8 @@
 //  AppDelegateAttachWindowHostTests.swift
 //  CalyxTests
 //
-//  P5 (remote sessions) RED phase, BUG 3 (five-angle convergence review
-//  finding), contract 3c (attachWindow level): AppDelegate.attachWindow
+//  Remote sessions, attachWindow level. THE DEFECT:
+//  AppDelegate.attachWindow
 //  (~369-425) builds its placeholder Tab with
 //  `sessionRefs: [placeholderLeafID: SessionRef(sessionID: sessionID)]` --
 //  host always nil, with no way for a caller (e.g. a future session
@@ -71,13 +71,8 @@
 //  default) leaves production behavior unchanged; every existing test
 //  using `_attachWindowCreationHookForTesting` alone is unaffected.
 //
-//  Held-out compile-RED file per this codebase's established convention:
-//  neither `attachWindow`'s `host` parameter nor
-//  `_attachWindowPlaceholderTabObserverForTesting` exist yet. Expected to
-//  FAIL TO COMPILE until the Green phase adds both. That compile failure
-//  IS this file's RED evidence. Must be excluded from the build while
-//  running the rest of the round's RED suite and verified separately for
-//  its own specific compiler errors.
+//  Under test: `attachWindow`'s `host` parameter and
+//  `_attachWindowPlaceholderTabObserverForTesting`.
 //
 //  Reuses AppDelegateAttachWindowTests' exact makeController()-less,
 //  direct-AppDelegate-construction style (no live ghostty app needed:

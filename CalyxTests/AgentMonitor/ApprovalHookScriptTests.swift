@@ -2,7 +2,7 @@
 //  ApprovalHookScriptTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for ApprovalHookScript: the `calyx-approval-hook` script
+//  Covers ApprovalHookScript: the `calyx-approval-hook` script
 //  installed alongside `calyx-agent-hook` (see AgentHookScriptTests.swift,
 //  which this mirrors). Unlike calyx-agent-hook's fire-and-forget async
 //  POST, this script is invoked *synchronously* by a PermissionRequest

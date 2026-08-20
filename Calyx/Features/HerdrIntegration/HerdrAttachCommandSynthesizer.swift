@@ -32,7 +32,7 @@
 // assignment" position -- it's just `exec`'s own next argument, and
 // `exec`'s own builtin argument parsing treats it as the program to
 // run, not as an environment assignment. That reproduces this
-// codebase's own ROUND 1 HOME-stamp failure verbatim (see
+// codebase's own HOME-stamp failure verbatim (see
 // `SessionCommandSynthesizerRuntimeStateDirFlagsTests`'s header),
 // confirmed empirically against the real `exec -l` wrapper before this
 // function was written this way. Routing through the hardcoded absolute

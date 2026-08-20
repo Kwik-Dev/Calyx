@@ -54,7 +54,7 @@
 //  `requestHide()` call intercepts teardown here too -- tests 4 and 6
 //  below pin that routing.
 //
-//  History, preserved from this file's RED phase: before this change,
+//  History: before this change,
 //  `init` registered only a `.ghosttyConfigChange` observer -- no
 //  `.ghosttyCloseSurface` observer existed, which was bug 2's root
 //  cause ("no production caller" for `handleSurfaceClosed()`) -- and
@@ -66,14 +66,14 @@
 //  let window = quickWindow else { return }` would have short-circuited
 //  it immediately.
 //
-//  This file's RED phase deliberately landed only
+//  This file's first version deliberately landed only
 //  `processCloseSurface(surfaceView:)` as an empty no-op, plus the
 //  `#if DEBUG` seams `_setTabForTesting`/`_tabForTesting`;
 //  `handleCloseSurfaceNotification` and its `init` registration were
 //  withheld at that point, since pre-wiring the observer then would
 //  have started implementing the fix itself and risked a double
 //  registration once the real fix added its own. Tests 1-3 below
-//  therefore proved RED via the notification genuinely going nowhere in
+//  therefore failed via the notification genuinely going nowhere in
 //  this class at that point; tests 4-6 called
 //  `processCloseSurface(surfaceView:)` directly, bypassing the
 //  not-yet-wired notification layer entirely -- the same direct-call
@@ -91,46 +91,43 @@
 //  `CalyxWindowControllerCloseSurfaceTerminationDiscriminatorTests`'s
 //  header spells out for the converse, owned case).
 //
-//  RED ledger (ran 2026-08-07, `xcodebuild ... -only-testing:
-//  CalyxTests/QuickTerminalControllerSurfaceClosedTests`, 6 tests
-//  executed: 3 passed, 3 failed with 6 individual XCTAssert failures,
-//  against the empty-stub `processCloseSurface(surfaceView:)` that the
-//  History section above describes):
+//  What each test pins, against the empty-stub
+//  `processCloseSurface(surfaceView:)` the History section above
+//  describes:
 //   - `test_ghosttyCloseSurfaceNotification_forOwnedSurface_clearsTabAndDestroysRegistryEntry`
-//     was RED-proving: FAILED. `XCTAssertNil(controller._tabForTesting)`
-//     failed (still the installed `Tab`) and
-//     `XCTAssertFalse(registry.contains(surfaceID))` failed (still
-//     `true`) -- because at that point nothing in
+//     pins the fix: the stub left `controller._tabForTesting` as the
+//     installed `Tab` and left `registry.contains(surfaceID)` `true`,
+//     because at that point nothing in
 //     `QuickTerminalController` observed `.ghosttyCloseSurface` at all,
 //     so the post reached no code in this class whatsoever.
 //   - `test_ghosttyCloseSurfaceNotification_forForeignSurface_leavesTabAndRegistryUntouched`
-//     was NOT RED-proving (regression guard only): passed at the RED
-//     run, since "untouched" was what happened when nothing observed
+//     is a regression guard: it passed against the stub too,
+//     since "untouched" was what happened when nothing observed
 //     the notification at all -- indistinguishable, at that point, from
-//     correctly rejecting an unowned surface. It pins real teeth today,
-//     now that the observer is wired: a regression that clears `tab`
+//     correctly rejecting an unowned surface. It has real teeth now
+//     that the observer is wired: a regression that clears `tab`
 //     unconditionally, ignoring the ownership guard, would fail it.
 //   - `test_ghosttyCloseSurfaceNotification_whenNoTabInstalled_isSafeNoOp`
-//     was NOT RED-proving (regression guard only): passed at the RED
-//     run, same "nothing observed this notification yet" reason. It
-//     pins the literal safety property the task brief requires today:
+//     is a regression guard: it passed against the stub too, for the
+//     same "nothing observed this notification yet" reason. It
+//     pins the literal safety property required here:
 //     no crash when the real observer fires with `tab == nil`.
 //   - `test_processCloseSurface_whenVisible_routesTeardownThroughHideHookExactlyOnce`
-//     was RED-proving: FAILED. `XCTAssertEqual(hookCallCount, 1)` failed
-//     ("0" is not equal to "1") -- `processCloseSurface(surfaceView:)`
+//     pins the fix: the stub left `hookCallCount` at 0 rather than 1,
+//     because `processCloseSurface(surfaceView:)`
 //     was, at that point, an empty stub, so it never reached
 //     `handleSurfaceClosed()` and never fired the hide hook.
-//   - `test_processCloseSurface_whenNotVisible_doesNotInvokeHideHook` was
-//     NOT RED-proving (regression guard only): passed at the RED run --
+//   - `test_processCloseSurface_whenNotVisible_doesNotInvokeHideHook` is
+//     a regression guard: it passed against the stub too --
 //     the empty stub never invoked the hook regardless of `visible`,
 //     which happened to already satisfy "must not invoke it while not
 //     visible". It pins `requestHide()`'s own `guard visible else {
-//     return }` today, now reached through `handleSurfaceClosed()`.
+//     return }`, now reached through `handleSurfaceClosed()`.
 //   - `test_processCloseSurface_calledTwiceForSameSurface_secondCallIsCleanNoOp`
-//     was RED-proving: FAILED on all three assertions --
-//     `XCTAssertEqual(hookCallCount, 1)` ("0" is not equal to "1"),
-//     `XCTAssertNil(controller._tabForTesting)` (still non-nil), and
-//     `XCTAssertFalse(registry.contains(surfaceID))` (still `true`) --
+//     pins the fix: all three of its assertions failed against the
+//     stub -- `hookCallCount` 0 rather than 1,
+//     `controller._tabForTesting` still non-nil, and
+//     `registry.contains(surfaceID)` still `true` --
 //     same root cause: the stub never tore anything down on either
 //     call.
 //
@@ -162,7 +159,7 @@ final class QuickTerminalControllerSurfaceClosedTests: XCTestCase {
         return (tab, surfaceID, surfaceView)
     }
 
-    // MARK: - Notification pipeline (RED-proving)
+    // MARK: - Notification pipeline (pins the fix)
 
     func test_ghosttyCloseSurfaceNotification_forOwnedSurface_clearsTabAndDestroysRegistryEntry() {
         let controller = QuickTerminalController()
@@ -186,7 +183,7 @@ final class QuickTerminalControllerSurfaceClosedTests: XCTestCase {
         )
     }
 
-    // MARK: - Notification pipeline (regression guards, NOT RED-proving)
+    // MARK: - Notification pipeline (regression guards)
 
     func test_ghosttyCloseSurfaceNotification_forForeignSurface_leavesTabAndRegistryUntouched() {
         let controller = QuickTerminalController()

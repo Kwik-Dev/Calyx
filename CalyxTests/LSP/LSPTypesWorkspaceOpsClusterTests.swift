@@ -46,9 +46,7 @@
 //
 //  Spec: https://microsoft.github.io/language-server-protocol/specifications/lsp/3.18/specification/
 //
-//  TDD phase: RED. None of these types exist yet. This file is expected to
-//  fail to compile until the swift-specialist implements them under
-//  `Calyx/Features/LSP/LSPTypes/`.
+//  The types under test live under `Calyx/Features/LSP/LSPTypes/`.
 //
 //  Re-uses already-defined types:
 //    - TextDocumentIdentifier

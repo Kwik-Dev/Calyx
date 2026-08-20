@@ -2,7 +2,7 @@
 //  AgentHookPermissionResponseTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for AgentHookPermissionResponse.body(kind:decision:):
+//  Covers AgentHookPermissionResponse.body(kind:decision:):
 //  the PermissionRequest hook stdout body Calyx writes back to a CLI
 //  agent to carry a human's approval decision into that CLI's own
 //  synchronous permission gate -- shape and field names follow the

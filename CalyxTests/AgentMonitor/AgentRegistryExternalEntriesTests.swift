@@ -10,9 +10,8 @@
 //
 //  Coverage:
 //  - AgentEntry.focusSurfaceID: defaults to nil, round-trips explicitly
-//  - upsertExternalEntry / removeExternalEntry / removeAllExternalEntries
-//    / hasExternalEntries: basic CRUD on the external store, isolated
-//    from `entries`
+//  - upsertExternalEntry / removeExternalEntry / hasExternalEntries:
+//    basic CRUD on the external store, isolated from `entries`
 //  - reset() clears `entries` but preserves `externalEntries` -- already
 //    true by construction given the separate-store design (reset()
 //    never references externalEntries at all); pinned anyway as a
@@ -89,7 +88,7 @@ final class AgentRegistryExternalEntriesTests: XCTestCase {
         XCTAssertEqual(entry.focusSurfaceID, focusID)
     }
 
-    // MARK: - upsertExternalEntry / removeExternalEntry / removeAllExternalEntries
+    // MARK: - upsertExternalEntry / removeExternalEntry
 
     func test_upsertExternalEntry_addsToExternalStore_leavesNativeEntriesEmpty() {
         let registry = AgentRegistry()
@@ -135,17 +134,6 @@ final class AgentRegistryExternalEntriesTests: XCTestCase {
         registry.removeExternalEntry(id: UUID())
 
         XCTAssertNotNil(registry.externalEntries[id], "Removing an unknown id must not touch other entries")
-    }
-
-    func test_removeAllExternalEntries_clearsEveryExternalEntry() {
-        let registry = AgentRegistry()
-        registry.upsertExternalEntry(externalEntry(id: UUID(), cwd: "/x/alpha"))
-        registry.upsertExternalEntry(externalEntry(id: UUID(), cwd: "/x/bravo"))
-        XCTAssertFalse(registry.externalEntries.isEmpty, "Precondition")
-
-        registry.removeAllExternalEntries()
-
-        XCTAssertTrue(registry.externalEntries.isEmpty)
     }
 
     func test_hasExternalEntries_reflectsExternalStoreEmptiness() {
@@ -207,7 +195,7 @@ final class AgentRegistryExternalEntriesTests: XCTestCase {
 
     func test_handleTitleChange_neverMutatesExternalEntry_evenOnSurfaceIDCollision() {
         let registry = AgentRegistry()
-        // C1 fix: handleTitleChange only creates a row while the server
+        // handleTitleChange only creates a row while the server
         // is running -- see that method's own doc comment.
         registry.markServerStarted()
         let collidingID = UUID()

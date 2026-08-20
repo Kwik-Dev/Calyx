@@ -195,8 +195,8 @@ final class CalyxMCPServerLoopbackBugSpecTests: XCTestCase {
     /// back, and asserting the `url` field is
     /// `http://127.0.0.1:<port>/mcp` and does NOT contain `localhost`.
     ///
-    /// Pre-fix: production writes `http://localhost:<port>/mcp` → RED.
-    /// Post-fix: production writes `http://127.0.0.1:<port>/mcp` → GREEN.
+    /// Pre-fix: production wrote `http://localhost:<port>/mcp`.
+    /// Post-fix: production writes `http://127.0.0.1:<port>/mcp`.
     func test_publishedURL_usesIPv4LoopbackLiteral_not_localhost() throws {
         // Arrange — pick a port outside the canonical scan window so
         // this test is independent of the second test's pre-bind.
@@ -270,8 +270,8 @@ final class CalyxMCPServerLoopbackBugSpecTests: XCTestCase {
     ///      `CalyxMCPServer.start`'s linear scan to fail on every
     ///      iteration.
     ///   2. The test calls `server.start(token:, preferredPort:)` with
-    ///      the canonical base. Pre-fix, this throws — the assertion
-    ///      `start did not throw` is the RED signal.
+    ///      the canonical base. Pre-fix, this threw, which the assertion
+    ///      `start did not throw` catches.
     ///   3. Post-fix, `start` falls back to `.any`, the kernel returns
     ///      an ephemeral port (typically far above 41839), and that
     ///      port is recorded in `server.port`.

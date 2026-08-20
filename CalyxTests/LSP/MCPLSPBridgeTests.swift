@@ -20,10 +20,8 @@
 //      (workspace, languageId) share a single `LSPSession` build (the
 //      LSPService cache). Different workspaces produce different sessions.
 //
-//  TDD phase: RED. Neither `MCPLSPTool` nor `MCPLSPBridge` exist yet —
-//  this file is expected to fail to compile (unresolved identifiers)
-//  until the swift-specialist creates
-//  `Calyx/Features/LSP/MCPLSPBridge.swift` (and likely a sibling file
+//  `MCPLSPTool` and `MCPLSPBridge` live in
+//  `Calyx/Features/LSP/MCPLSPBridge.swift` (with a sibling file
 //  declaring the individual `MCPLSPTool` types).
 //
 

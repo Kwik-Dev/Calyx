@@ -2,7 +2,7 @@
 //  RestoreHerdrPaneRefsTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for HerdrRestoreCommandPolicy (app-layer
+//  Covers HerdrRestoreCommandPolicy (app-layer
 //  wiring): the pure decision AppDelegate.restoreTabSurfaces' per-leaf
 //  branch (createSurfaceWithPwd, AppDelegate.swift) will consult once a
 //  leaf's HerdrPaneRef survives a snapshot restore, mirroring the
@@ -13,9 +13,8 @@
 //
 //  restoreTabSurfaces/createSurfaceWithPwd have NO herdr seam today (a
 //  full read of both functions in AppDelegate.swift found zero herdr
-//  references), so this is a NEW pure helper, not a test through an
-//  existing seam -- see this task's own handoff report for the exact
-//  call site the implementer must add.
+//  references), so this is a pure helper, not a test through an
+//  existing seam.
 //
 //  Mirrors HerdrChildExitedPolicy/HerdrHeuristicIngestionPolicy's own
 //  extraction shape: the caller resolves every raw domain lookup itself

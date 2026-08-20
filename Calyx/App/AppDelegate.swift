@@ -426,7 +426,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// .registerNotificationObservers`. `flashTitle`/`flashBorder` are
     /// left as `BellEffectHandlers`' no-op defaults: prepending a bell
     /// emoji to the alerted surface's title and flashing a border around
-    /// it are both out of scope for this pass -- `processRingBell` above
+    /// it are both out of scope here -- `processRingBell` above
     /// still correctly dispatches to them when `features` sets those
     /// bits, only their actual presentation is unimplemented.
     @objc private func handleRingBellNotification(_ notification: Notification) {
@@ -1125,6 +1125,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         center.addObserver(
             self, selector: #selector(handleBellFeaturesConfigChange(_:)), name: .ghosttyConfigChange, object: nil
         )
+        // Both of these name a surface and mutate the app-wide
+        // `AgentRegistry` singleton, so neither is window-scoped and
+        // neither may depend on a `CalyxWindowController` existing to
+        // relay it -- see each handler's own doc comment below.
+        center.addObserver(
+            self, selector: #selector(handleGhosttyCommandFinishedNotification(_:)),
+            name: .ghosttyCommandFinished, object: nil
+        )
+        center.addObserver(
+            self, selector: #selector(handleSurfaceDestroyedForAgentMonitor(_:)),
+            name: .calyxSurfaceDestroyed, object: nil
+        )
     }
 
     @objc private func handleNewTab(_ notification: Notification) {
@@ -1144,6 +1156,66 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func handleNewWindow(_ notification: Notification) {
         createNewWindow()
     }
+
+    /// ghostty's own OSC 133 C/D pane-exit signal
+    /// (`GHOSTTY_ACTION_COMMAND_FINISHED`, forwarded as
+    /// `.ghosttyCommandFinished`) -- feeds `AgentRegistry
+    /// .handleGhosttyCommandFinished`'s shell-integration-coverage
+    /// fallback. `userInfo["exit_code"]` is an `Int32?`
+    /// (`GhosttyActionRouter.commandFinishedExitCode`'s converted
+    /// payload), and a missing or non-`Int32` value there is itself a
+    /// legitimate "no exit code reported" reading, not a malformed
+    /// notification to bail out on -- so it is read directly rather than
+    /// through a `guard let ... else { return }`.
+    ///
+    /// Observed at app scope, not per window: the notification names a
+    /// surface and mutates an app-wide singleton, and the pane it names
+    /// need not belong to any main window at all. A QuickTerminal pane is
+    /// a real surface with a real Agents row (`QuickTerminalContentView`
+    /// holds the same `SplitContainerView` main windows use), and with
+    /// every main window closed -- an ordinary state on macOS, where
+    /// closing the last window does not terminate the app -- no
+    /// `CalyxWindowController` exists to relay anything. The signal fires
+    /// once per command with no replay, so a drop is permanent: the row
+    /// would keep whatever state it had. Filtering on window membership
+    /// would fail for a second reason too, since a pane in a background
+    /// tab has already been removed from the view hierarchy
+    /// (`SplitContainerView.updateRegistry` does `subviews.forEach {
+    /// $0.removeFromSuperview() }`), leaving its `view.window` nil.
+    @objc private func handleGhosttyCommandFinishedNotification(_ notification: Notification) {
+        guard let surfaceView = notification.object as? SurfaceView else { return }
+        guard let surfaceID = surfaceView.surfaceController?.id else { return }
+        let exitCode = notification.userInfo?["exit_code"] as? Int32
+
+        AgentRegistry.shared.handleGhosttyCommandFinished(surfaceID: surfaceID, exitCode: exitCode)
+    }
+
+    /// Relays `.calyxSurfaceDestroyed` (posted by `SurfaceRegistry
+    /// .destroySurface`) into `AgentRegistry`, retiring the destroyed
+    /// pane's row and its per-surface bookkeeping. App-scoped for the
+    /// same reason `handleGhosttyCommandFinishedNotification` above is: a
+    /// pane is torn down exactly once, and it can be torn down while no
+    /// main window exists at all.
+    @objc private func handleSurfaceDestroyedForAgentMonitor(_ notification: Notification) {
+        guard let surfaceID = notification.userInfo?["surfaceID"] as? UUID else { return }
+        AgentRegistry.shared.handleSurfaceDestroyed(surfaceID: surfaceID)
+    }
+
+    #if DEBUG
+    /// Test seam: `registerNotificationObservers` is `private`, and its
+    /// only production caller is `applicationDidFinishLaunching`, which
+    /// returns before reaching it in the unit-test host
+    /// (`LaunchEnvironmentPolicy.isUnitTestHost`). Lets a test register
+    /// this delegate's observers for real -- the same call production
+    /// makes, so the two cannot drift -- instead of asserting against a
+    /// narrower registration path nothing else runs. Callers must pair it
+    /// with `NotificationCenter.default.removeObserver(self)` so the
+    /// registration does not outlive the test. DO NOT use from production
+    /// code.
+    func _testRegisterNotificationObservers() {
+        registerNotificationObservers()
+    }
+    #endif
 
     // MARK: - Window Management
 

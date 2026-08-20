@@ -2,8 +2,6 @@
 //  AppDelegateFetchSessionsForAgentResumeTests.swift
 //  CalyxTests
 //
-//  TDD Red phase for round-6 fix R6-C (r6-fix-spec.md; CONFIRMED
-//  regression evidence in r5-verdicts.md's "R5-blocking" entry):
 //  `AppDelegate.fetchSessionsForAgentResume()` spins
 //  `RunLoop.current.run` in 10ms steps for up to 2.0s, synchronously,
 //  on the calling (main) thread, whenever `SessionSettings
@@ -70,9 +68,9 @@ final class AppDelegateFetchSessionsForAgentResumeTests: XCTestCase {
                 // Deliberately never resumed: this Task hangs for the
                 // rest of the process's life. Harmless here because
                 // `fetchSessionsForAgentResume` no longer spins
-                // synchronously waiting on it at all (R6-C); the shared
+                // synchronously waiting on it at all; the shared
                 // `agentResumeSessionsTask` it starts is itself bounded
-                // (R8-D, r8-fix-spec.md: `listAllSessionsBounded`'s own
+                // (`listAllSessionsBounded`'s own
                 // ~5s deadline), so even a real caller awaiting that
                 // task's value still gets a terminal `[:]` result rather
                 // than hanging forever.
@@ -80,7 +78,7 @@ final class AppDelegateFetchSessionsForAgentResumeTests: XCTestCase {
         }
     }
 
-    /// Primary RED-proving assertion (R6-C, r5-verdicts.md R5-blocking):
+    /// Primary assertion pinning the fix:
     /// against the CURRENT code, `fetchSessionsForAgentResume()`'s
     /// `RunLoop.current.run` spin blocks the calling thread for its full
     /// ~2.0s deadline before giving up and returning `[:]`, since the
@@ -103,7 +101,7 @@ final class AppDelegateFetchSessionsForAgentResumeTests: XCTestCase {
                           "daemon round-trip, it took \(elapsed)s against an unresponsive fake daemon, " +
                           "which only happens if it is still synchronously spinning the run loop waiting " +
                           "for a result it should instead be awaiting asynchronously")
-        // G5 (r8-fix-spec.md): fetchSessionsForAgentResume returns Void
+        // fetchSessionsForAgentResume returns Void
         // now (its old return value was always [:], never meaningful);
         // observe the shared task itself instead.
         XCTAssertNotNil(appDelegate.agentResumeSessionsTask,

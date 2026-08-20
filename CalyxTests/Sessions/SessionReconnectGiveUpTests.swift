@@ -2,14 +2,14 @@
 //  SessionReconnectGiveUpTests.swift
 //  CalyxTests
 //
-//  Controller-level coverage for the give-up redesign (review
-//  findings): `SessionReconnectDecision.giveUp` now closes the pane
+//  Controller-level coverage for the give-up redesign:
+//  `SessionReconnectDecision.giveUp` closes the pane
 //  DETERMINISTICALLY, with DETACH (not kill) semantics, instead of
 //  being left dangling for a later keypress to close.
 //
 //  Drives `CalyxWindowController.handleSessionReconnectDecision
 //  (surfaceID:decision:)` directly (made non-private for this purpose
-//  — see its P4 review-fix doc comment) with `.giveUp`, rather than
+//  — see its doc comment) with `.giveUp`, rather than
 //  exhausting `maxReconnectAttempts` through a live
 //  `SessionReconnectCoordinator` + daemon round-trip:
 //  `SessionReconnectCoordinatorTests` already fully covers the
@@ -29,10 +29,9 @@
 //  - A stale surfaceID (the pane was already closed some other way) is
 //    a safe no-op
 //
-//  ROUND-4 FIX ADDITIONS (RED phase, r4-fix-spec.md F1/F2/F4/F5):
-//  everything below this point is new coverage added for the round-4
-//  fix batch. The tests above (two-pane fixture) are untouched and
-//  their coverage/behavior is unchanged.
+//  FIX ADDITIONS (F1/F2/F4/F5): everything below this point is the
+//  coverage for those fixes. The tests above (two-pane fixture) are
+//  untouched and their coverage/behavior is unchanged.
 //
 //  - F1/T1: `.giveUp` on a pane that is last-pane-everywhere must NOT
 //    close the pane and must NOT consult the confirm-quit gate at all,
@@ -81,17 +80,17 @@
 //    otherwise unobservable in the test host, since `permissionGranted`
 //    is never set `true` under `XCTestCase`).
 //
-//  ROUND-6 FIX ADDITIONS (RED phase, r6-fix-spec.md R6-A): round-4's F4
-//  defer mechanism above is itself unsafe (r5-verdicts.md V1/V5):
-//  synchronous, nested replay with no shutdown awareness. Covers the
+//  ASYNCHRONOUS-DRAIN ADDITIONS: the defer mechanism above is itself
+//  unsafe: synchronous, nested replay with no shutdown awareness.
+//  Covers the
 //  unified, asynchronous-drain redesign: a deferred event must NOT be
-//  replayed while the app is actually terminating (V5); a replay landing
-//  during a second, already-active modal must re-defer, not apply early
-//  (item 4); and `handleCloseSurfaceNotification` must defer (not
-//  immediately tear down) a close_surface notification the same way
-//  (items 1/2, V2/V3). See each test's own doc comment for its specific
-//  CURRENT-code failure mode. (The V1 cancel-path case this round also
-//  fixed, tied to the close-path confirm-quit prompt's own
+//  replayed while the app is actually terminating; a replay landing
+//  during a second, already-active modal must re-defer, not apply early;
+//  and `handleCloseSurfaceNotification` must defer (not
+//  immediately tear down) a close_surface notification the same way.
+//  See each test's own doc comment for its specific
+//  failure mode against the pre-fix code. (The cancel-path case fixed
+//  alongside them, tied to the close-path confirm-quit prompt's own
 //  `windowShouldClose`-driven `closingTabIDs` bookkeeping, no longer has
 //  a production mechanism to exercise: the window-lifetime redesign
 //  deletes that prompt and `windowShouldClose` itself entirely, see
@@ -107,9 +106,9 @@ final class SessionReconnectGiveUpTests: XCTestCase {
 
     /// sessionIDs registered with `SessionSurfaceMap.shared` by
     /// `makeFixture()`, so `tearDown` can unregister exactly those
-    /// entries rather than nuking the whole shared singleton (review
-    /// finding: fixtures registered sessions here but never
-    /// unregistered them, leaking entries into other tests that share
+    /// entries rather than nuking the whole shared singleton (fixtures
+    /// used to register sessions here but never
+    /// unregister them, leaking entries into other tests that share
     /// the same process-wide singleton).
     private var registeredSessionIDs: [String] = []
 
@@ -121,7 +120,7 @@ final class SessionReconnectGiveUpTests: XCTestCase {
         super.tearDown()
     }
 
-    /// Two-pane fixture (R8-G item G2, r8-fix-spec.md: shared with
+    /// Two-pane fixture (shared with
     /// `CalyxWindowControllerNonLastWindowCloseTests`, see
     /// `TwoPaneSessionFixture`'s own header comment): `trackedLeafID`
     /// carries a `SessionRef` (both in `tab.sessionRefs` and
@@ -154,7 +153,7 @@ final class SessionReconnectGiveUpTests: XCTestCase {
 
         XCTAssertNil(fixture.tab.sessionRefs[fixture.trackedLeafID],
                     "giveUp must clear tab.sessionRefs for the given-up leaf, not leak it into the next " +
-                    "snapshot (a review finding: the prior 'leave the pane dangling' design never cleared " +
+                    "snapshot (the prior 'leave the pane dangling' design never cleared " +
                     "this)")
         XCTAssertNil(SessionSurfaceMap.shared.sessionID(for: fixture.trackedLeafID),
                     "giveUp must clear SessionSurfaceMap's entry for the given-up leaf")
@@ -418,7 +417,7 @@ final class SessionReconnectGiveUpTests: XCTestCase {
     /// F4 (V05, HIGH): while `AppDelegate.isConfirmingQuit` is true,
     /// `handleSessionReconnectDecision` must defer the decision instead
     /// of dropping it, and replay it once the gate clears, a dropped
-    /// `.giveUp` currently has no recovery path (see r4-verdicts.md V05).
+    /// `.giveUp` currently has no recovery path.
     /// `isConfirmingQuit` is driven via the `_setConfirmingQuitForTesting`
     /// test seam rather than a real `confirmQuitIfNeeded`/`NSAlert
     /// .runModal()`: this fixture has no live ghostty surfaces, so
@@ -457,11 +456,11 @@ final class SessionReconnectGiveUpTests: XCTestCase {
 
         appDelegate._setConfirmingQuitForTesting(false)
 
-        // R6-A (r6-fix-spec.md, r5-verdicts.md V1/V5): the drain is now
-        // scheduled on a fresh MainActor turn rather than replaying
-        // synchronously inside the didSet, so the replay's effect must
-        // be observed after pumping (via the shared `pumpRunLoop`
-        // helper, `CalyxTests/ReconnectFixture.swift`), not immediately.
+        // The drain is now scheduled on a fresh MainActor turn rather
+        // than replaying synchronously inside the didSet, so the replay's
+        // effect must be observed after pumping (via the shared
+        // `pumpRunLoop` helper, `CalyxTests/ReconnectFixture.swift`), not
+        // immediately.
         // The CONTRACT under test (a decision deferred while confirming quit
         // is eventually replayed once the gate clears, not permanently
         // lost) is unchanged; only the synchronization needed to observe
@@ -476,34 +475,33 @@ final class SessionReconnectGiveUpTests: XCTestCase {
                        "permanently lost")
     }
 
-    // MARK: - ROUND-6 FIX ADDITIONS (RED phase, r6-fix-spec.md R6-A)
+    // MARK: - Asynchronous-drain additions
     //
-    // r5-verdicts.md's V1/V5 CONFIRMED the round-4 defer mechanism above
-    // (F4) is itself unsafe: the `isConfirmingQuit` didSet replays
-    // deferred events SYNCHRONOUSLY, nested inside whatever call flipped
-    // the flag back to false (`confirmQuitIfNeeded`'s own bracket),
+    // The defer mechanism above (F4) is itself unsafe: the
+    // `isConfirmingQuit` didSet replays deferred events SYNCHRONOUSLY,
+    // nested inside whatever call flipped the flag back to false
+    // (`confirmQuitIfNeeded`'s own bracket),
     // BEFORE that caller's own post-modal bookkeeping (e.g.
     // `windowShouldClose`'s cancel-path `closingTabIDs.subtract`) has run,
-    // and with no awareness of real app termination. R6-A's fix is an
+    // and with no awareness of real app termination. The fix is an
     // asynchronous drain (a fresh MainActor turn, so the caller's stack
     // unwinds first) plus a shutdown-suppression check. Tests below pump
     // the main run loop with a bounded deadline rather than assuming a
     // synchronous effect, since the fix is expected to make the drain
     // genuinely asynchronous.
 
-    /// R6-A item 3 (shutdown suppression, r5-verdicts.md V5): while the
-    /// app is actually terminating (`AppDelegate.isApplicationTerminating`,
-    /// new this round, see its own doc comment in AppDelegate.swift; a
-    /// broader, app-wide signal than any one window's
-    /// `isClosingForShutdown`), a deferred decision must NOT be replayed
-    /// at all once the confirm-quit gate clears: `windowWillClose`'s
-    /// teardown during quit intentionally PRESERVES `sessionRefs` into
-    /// the snapshot (see `CalyxWindowControllerNonLastWindowCloseTests`),
-    /// so replaying a `.giveUp`/`.closePane` decision on top of that is
-    /// both unnecessary and dangerous (r5-verdicts.md V5: a replayed
-    /// decision's teardown can cascade into `window?.close()` ->
-    /// `removeWindowController` -> reentrant `NSApp.terminate` from
-    /// inside `applicationWillTerminate`).
+    /// Shutdown suppression: while the app is actually terminating
+    /// (`AppDelegate.isApplicationTerminating`, see its own doc comment
+    /// in AppDelegate.swift; a broader, app-wide signal than any one
+    /// window's `isClosingForShutdown`), a deferred decision must NOT be
+    /// replayed at all once the confirm-quit gate clears:
+    /// `windowWillClose`'s teardown during quit intentionally PRESERVES
+    /// `sessionRefs` into the snapshot (see
+    /// `CalyxWindowControllerNonLastWindowCloseTests`), so replaying a
+    /// `.giveUp`/`.closePane` decision on top of that is both unnecessary
+    /// and dangerous (a replayed decision's teardown can cascade into
+    /// `window?.close()` -> `removeWindowController` -> reentrant
+    /// `NSApp.terminate` from inside `applicationWillTerminate`).
     ///
     /// Against the CURRENT code, `isApplicationTerminating` does not
     /// exist as a concept the drain consults at all (it is a new,
@@ -531,14 +529,14 @@ final class SessionReconnectGiveUpTests: XCTestCase {
             Set([fixture.trackedLeafID, fixture.siblingLeafID]),
             "While the app is actually terminating, a decision deferred while isConfirmingQuit was true " +
             "must NOT be replayed once that gate clears, quit's own teardown already preserves tracking " +
-            "state into the snapshot; replaying on top of that is exactly r5-verdicts.md V5's hazard"
+            "state into the snapshot; replaying on top of that is exactly the hazard"
         )
         XCTAssertNotNil(SessionSurfaceMap.shared.sessionID(for: fixture.trackedLeafID),
                         "...and must leave SessionSurfaceMap's entry untouched, matching the preserve-not-" +
                         "teardown contract quit teardown relies on")
     }
 
-    /// R6-A item 4 (re-defer on back-to-back modals): a deferred decision
+    /// Re-defer on back-to-back modals: a deferred decision
     /// whose replay would land while `isConfirmingQuit` is ALREADY true
     /// again (a second confirm-quit modal already up, e.g. two closes
     /// racing) must re-defer via the SAME mechanism, not apply early or
@@ -589,7 +587,7 @@ final class SessionReconnectGiveUpTests: XCTestCase {
                        "not permanently dropped")
     }
 
-    /// R6-A items 1/2 (defer close_surface too, r5-verdicts.md V3/V2):
+    /// Defer close_surface too:
     /// `handleCloseSurfaceNotification` must defer (not immediately tear
     /// down) a `.ghosttyCloseSurface` notification for a tracked surface
     /// while `isConfirmingQuit` is true, and replay it once the gate
@@ -602,8 +600,8 @@ final class SessionReconnectGiveUpTests: XCTestCase {
     ///
     /// Against the CURRENT code, `handleCloseSurfaceNotification` has NO
     /// `isConfirmingQuit` guard at all. It tears the pane down
-    /// immediately, regardless of the gate. The primary RED-proving
-    /// assertion is therefore the first one below (still both panes
+    /// immediately, regardless of the gate. The primary assertion pinning
+    /// the fix is therefore the first one below (still both panes
     /// immediately after posting, while the gate is up): against today's
     /// code the pane is ALREADY gone at that point, so it fails.
     func test_handleCloseSurfaceNotification_deferredWhileConfirmingQuit_thenReplayedAfterGateClears() {
@@ -627,7 +625,7 @@ final class SessionReconnectGiveUpTests: XCTestCase {
             Set(fixture.tab.splitTree.allLeafIDs()),
             Set([fixture.trackedLeafID, fixture.siblingLeafID]),
             "A close_surface notification arriving while isConfirmingQuit is true must be deferred, not " +
-            "torn down immediately. This is the primary RED-proving assertion for this test"
+            "torn down immediately. This is the primary assertion pinning the fix for this test"
         )
 
         appDelegate._setConfirmingQuitForTesting(false)

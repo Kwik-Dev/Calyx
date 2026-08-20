@@ -241,9 +241,9 @@ struct AgentStatusView: View {
 
 /// Pure decision behind `AgentStatusView.content`'s placeholder branch,
 /// extracted so it's directly testable without mounting the view --
-/// mirrors `HerdrChildExitedPolicy`'s own extraction shape (herdr Stage
-/// 1): the caller resolves its own inputs (`AgentRegistry.shared
-/// .isServerRunning` / `.hasExternalEntries`) before calling in.
+/// mirrors `HerdrChildExitedPolicy`'s own extraction shape: the caller
+/// resolves its own inputs (`AgentRegistry.shared.isServerRunning` /
+/// `.hasExternalEntries`) before calling in.
 enum AgentSidebarGate {
 
     /// Whether the sidebar should render its entries list (`true`)

@@ -2,7 +2,7 @@
 //  CalyxWindowControllerPromptTitleTests.swift
 //  CalyxTests
 //
-//  TDD RED phase: GHOSTTY_ACTION_PROMPT_TITLE (GitHub issue #42,
+//  Covers GHOSTTY_ACTION_PROMPT_TITLE (GitHub issue #42,
 //  prompt_tab_title/prompt_surface_title keybinds). `GhosttyAction.swift`
 //  still buckets `GHOSTTY_ACTION_PROMPT_TITLE` under "Known but
 //  unimplemented" (returns `false`, so the keybind stays silently inert).

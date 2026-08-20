@@ -12,13 +12,12 @@ struct SessionRef: Codable, Equatable, Sendable {
     /// The calyx-session ULID (`SessionSpec.id` / `SessionInfo.id` on the
     /// Rust side), stable across ghostty surface re-creation.
     let sessionID: String
-    /// `nil` for a local session; populated once P5 (remote sessions)
-    /// lands.
+    /// `nil` for a local session; the ssh host for a remote one.
     let host: String?
     /// Per-agent-CLI session identifiers keyed by `AgentEntry.kind`
     /// (e.g. `"claude-code"`), so a resumed calyx-session can also offer
     /// to resume the CLI agent conversation that was running inside it.
-    /// `nil` until P4 wires agent resume.
+    /// `nil` when no agent session has been recorded.
     let agentSessions: [String: String]?
 
     init(sessionID: String, host: String? = nil, agentSessions: [String: String]? = nil) {

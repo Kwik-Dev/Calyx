@@ -2,18 +2,13 @@
 //  SSHHostCandidateProviderTests.swift
 //  CalyxTests
 //
-//  TDD Red phase, P5 (remote sessions), RED5 cycle (remote UI wiring),
-//  contract R1: `SSHHostCandidateProvider` -- the read side that turns
-//  SSHConfigParser.hostCandidates(from:) (cycle 1, pure string parsing,
-//  already green) into an actual list of remote-host candidates for the
-//  "New Remote Session..." picker (R2/R4), by reading ~/.ssh/config's
+//  Remote sessions, remote UI wiring: `SSHHostCandidateProvider` --
+//  the read side that turns SSHConfigParser.hostCandidates(from:) (pure
+//  string parsing) into an actual list of remote-host candidates for the
+//  "New Remote Session..." picker, by reading ~/.ssh/config's
 //  CONTENT through an injectable loader.
 //
-//  Held-out compile-RED file per this codebase's established convention
-//  (see SessionSpawnPlannerRemoteHostTests's header): `SSHHostCandidateProvider`
-//  does not exist anywhere in the codebase yet. Expected to FAIL TO
-//  COMPILE until the Green phase adds it; that compile failure IS this
-//  contract's RED evidence.
+//  Under test: `SSHHostCandidateProvider`.
 //
 //  DESIGN: mirrors SessionRootResolver's own HOME-resolution discipline
 //  by REUSING SessionRootResolverProtocol directly (never re-deriving

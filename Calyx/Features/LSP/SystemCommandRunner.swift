@@ -325,7 +325,7 @@ struct SystemCommandRunner: LSPCommandRunner {
         timeoutSeconds: TimeInterval
     ) async throws -> CommandResult {
         let cancellationBridge = ProcessCancellationBridge()
-        // R12-A item 1 (r12-fix-spec.md): a plain `withCheckedThrowingContinuation`
+        // A plain `withCheckedThrowingContinuation`
         // never observes Swift Task cancellation, so `task.cancel()` on a
         // caller awaiting `run(...)` used to reach nothing -- the spawned
         // `Process` kept running until it exited naturally or the
@@ -378,8 +378,8 @@ struct SystemCommandRunner: LSPCommandRunner {
                         // this process launched; `cancel()` found
                         // nothing registered yet, so terminate it here
                         // instead, through the same terminate-once lock
-                        // (R16-1, r16-fix-spec.md) rather than a second,
-                        // unsynchronized `process.terminate()` call site.
+                        // rather than a second, unsynchronized
+                        // `process.terminate()` call site.
                         cancellationBridge.terminate()
                     }
 

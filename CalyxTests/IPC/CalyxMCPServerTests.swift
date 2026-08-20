@@ -256,8 +256,7 @@ final class CalyxMCPServerTests: XCTestCase {
                                   "tools/list result must contain 'tools' array")
         XCTAssertEqual(tools.count, 85,
                        "tools/list must return 6 IPC + 70 LSP + 3 terminal_* + 6 Cockpit = 85 tools " +
-                       "(Round 7 removed ack_messages, P3 added the terminal_* surface, P4 added the ungated " +
-                       "Cockpit tools, P5 added the 3 gated ones)")
+                       "(no ack_messages; the 6 Cockpit tools are 3 ungated + 3 gated)")
 
         let toolNames = Set(tools.compactMap { $0["name"] as? String })
         let expectedIPCNames: Set<String> = [
@@ -697,7 +696,7 @@ final class CalyxMCPServerTests: XCTestCase {
         // The test passing without crash is itself a success
     }
 
-    // ==================== Round 5: bound-port recording (task #47) ====================
+    // ==================== bound-port recording ====================
     //
     // `start(token:preferredPort:)`'s canonical scan passes the *requested*
     // `tryPort` straight to `finishStart(boundPort:)` instead of the port
@@ -705,8 +704,8 @@ final class CalyxMCPServerTests: XCTestCase {
     // environments let the `requiredLocalEndpoint` bind with the literal
     // port 0 reach `.ready` (see `bindListener(onPort:)`'s doc comment,
     // which documents the opposite as the *intended* macOS behavior — the
-    // discrepancy is exactly what task #47 flagged as needing a real
-    // assertion rather than a comment). When that happens, `self.port`
+    // discrepancy needs a real assertion rather than a comment). When
+    // that happens, `self.port`
     // and `agent-endpoint.json`'s `port` both end up `0`, publishing an
     // unreachable endpoint to both MCP clients and calyx-agent-hook.
     //
@@ -716,7 +715,7 @@ final class CalyxMCPServerTests: XCTestCase {
     // test's `findFreeHighPort()` explicitly excludes it.
 
     /// Find a free loopback port via `CalyxMCPServer.askKernelForFreeLoopbackPort()`
-    /// — Round 5 review made that production method `internal` precisely
+    /// — that production method is `internal` precisely
     /// so this test suite no longer needs to maintain its own duplicate
     /// BSD-socket probe (see that method's doc comment). Retries if the
     /// kernel hands back a port inside the canonical `41830-41839` scan
@@ -778,7 +777,7 @@ final class CalyxMCPServerTests: XCTestCase {
         }
     }
 
-    // 20. RED (task #47): `preferredPort: 0` must record the actual
+    // 20. `preferredPort: 0` must record the actual
     // kernel-bound port — `server.port > 0`, `agent-endpoint.json`'s
     // `port` matching that same non-zero value, and the published port
     // reachable over a real HTTP `initialize` call — never the requested
@@ -848,7 +847,7 @@ final class CalyxMCPServerTests: XCTestCase {
         srv.stop()
     }
 
-    // 21. Regression (should stay GREEN both pre- and post-fix): a free
+    // 21. Regression (passes both pre- and post-fix): a free
     // high port passed as `preferredPort` must record exactly that port.
     // The canonical scan's first iteration binds it and `finishStart`
     // records `tryPort == preferredPort` — this is the common,
@@ -872,7 +871,7 @@ final class CalyxMCPServerTests: XCTestCase {
         srv.stop()
     }
 
-    // 22. RED: TCP-level split between the HTTP header segment and the
+    // 22. TCP-level split between the HTTP header segment and the
     // body segment. `handleConnection` passes whatever a *single*
     // `NWConnection.receive` call returns straight to `HTTPParser.parse`
     // without re-issuing `receive` for a request whose `Content-Length`
@@ -924,7 +923,7 @@ final class CalyxMCPServerTests: XCTestCase {
         srv.stop()
     }
 
-    // ==================== Round 5 review fixes ====================
+    // ==================== Request-size and deadline hardening ====================
 
     // Fix 1 (pre-auth DoS / integer overflow): a `Content-Length` near
     // `Int.max` must be rejected with 413 immediately, not crash the
@@ -1049,7 +1048,7 @@ final class CalyxMCPServerTests: XCTestCase {
         srv.stop()
     }
 
-    // Critical (Round 5 final review): the receive-deadline Task's 408
+    // The receive-deadline Task's 408
     // send calls `connection.cancel()`, which completes the
     // still-outstanding `receive()` call `receiveUntilComplete` had
     // re-issued while waiting for the (never-sent) body. That
@@ -1185,8 +1184,8 @@ final class CalyxMCPServerTests: XCTestCase {
     // Fix 5 (bindKernelAssignedListener port-readback symmetry): the
     // returned port must match the listener's own resolved
     // `nl.port?.rawValue`, not merely the pre-bind BSD-socket probe
-    // value — exercised directly now that Round 5 review made this
-    // method `internal` for testability.
+    // value — exercised directly now that this method is `internal`
+    // for testability.
     func test_bindKernelAssignedListener_recordsListenersActualResolvedPort() throws {
         let srv = CalyxMCPServer()
 
@@ -1310,8 +1309,7 @@ private func sendSplitInitializeRequestOverRawSocket(port: Int, token: String) t
 
 /// Reads a raw-socket response (already fully written to `fd` by the
 /// caller) until the peer closes, returning the complete decoded text
-/// — which, per the Round 5 final review's Critical finding, may
-/// contain *more than one* concatenated HTTP response if
+/// — which may contain *more than one* concatenated HTTP response if
 /// `CalyxMCPServer` double-sends on this connection. Callers that only
 /// care about the first response's status code should go through
 /// `readRawSocketStatusCode`; callers checking for a double-send (e.g.
@@ -1344,8 +1342,8 @@ private func readRawSocketFullResponseText(fd: Int32, errorDomain: String) throw
 ///
 /// Deliberately blind to whatever follows the first status line — a
 /// second, concatenated HTTP response would be silently absorbed here
-/// without failing anything (this is exactly why the Round 5 final
-/// review's Critical double-send bug went undetected by every test
+/// without failing anything (this is exactly why the double-send bug
+/// went undetected by every test
 /// built on this helper until `readRawSocketFullResponseText` was
 /// added alongside it). Callers that need to assert "at most one
 /// response" must use `readRawSocketFullResponseText` directly instead.
@@ -1434,7 +1432,7 @@ private func sendHeadersOnlyRequest(
     return fd
 }
 
-/// Used by the Round 5 review regression tests for the size gate (an
+/// Used by the regression tests for the size gate (an
 /// absurd `declaredBodyLength` must be rejected immediately, before the
 /// connection ever waits for a body) and the receive-only deadline (a
 /// `declaredBodyLength` within bounds, but never satisfied, must
@@ -1463,8 +1461,7 @@ private func sendHeadersOnlyOverRawSocket(
 /// response text instead of just the first status code. Used by
 /// `test_headersOnlyRequest_neverReceivesASecondResponseAfter408` to
 /// assert at most one HTTP response ever comes back on the connection
-/// — the Round 5 final review's Critical finding was exactly that
-/// `readRawSocketStatusCode`-based assertions alone cannot detect a
+/// — `readRawSocketStatusCode`-based assertions alone cannot detect a
 /// second, concatenated response following the first.
 private func sendHeadersOnlyOverRawSocketFullResponse(
     port: Int,

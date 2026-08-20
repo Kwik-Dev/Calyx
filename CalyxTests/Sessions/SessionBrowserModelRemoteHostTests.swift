@@ -2,22 +2,19 @@
 //  SessionBrowserModelRemoteHostTests.swift
 //  CalyxTests
 //
-//  TDD Red phase, P5 (remote sessions), RED5 cycle (remote UI wiring),
-//  contract R4: the session browser's own remote-host attach flow --
-//  SessionBrowserModel exposes remote host candidates (via R1's
-//  SSHHostCandidateProvider, injected) and, given a chosen host,
+//  Remote sessions, remote UI wiring: the session browser's own
+//  remote-host attach flow -- SessionBrowserModel exposes remote host
+//  candidates (via the injected SSHHostCandidateProvider) and, given a chosen host,
 //  produces the SAME host-carrying SessionSpawnContext as the palette's
 //  session.newRemote command (R2, SessionCommandPaletteNewRemoteTests).
 //  Mirrors SessionBrowserModel.attach(_:)'s existing onAttachRequested
-//  injectable-closure pattern (SessionBrowserModelTests, P4) rather than
+//  injectable-closure pattern (SessionBrowserModelTests) rather than
 //  driving any real AppKit/SwiftUI picker.
 //
-//  Held-out compile-RED file per this codebase's established convention:
-//  depends on R1's SSHHostCandidateProvider (also new -- see
-//  SSHHostCandidateProviderTests), plus remoteHostCandidates /
+//  Under test: SessionBrowserModel's remoteHostCandidates /
 //  refreshRemoteHostCandidates() / onRemoteSessionRequested /
-//  attachToRemoteHost(_:), none of which exist on SessionBrowserModel
-//  yet. Expected to FAIL TO COMPILE until the Green phase adds them.
+//  attachToRemoteHost(_:), on top of SSHHostCandidateProvider (see
+//  SSHHostCandidateProviderTests).
 //
 //  Coverage:
 //  - refreshRemoteHostCandidates() populates remoteHostCandidates from

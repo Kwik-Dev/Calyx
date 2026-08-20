@@ -25,8 +25,8 @@
 //  so any directory the user exported from their rc file is inherited
 //  automatically.
 //
-//  Both tests below MUST FAIL against the current hardcoded
-//  implementation (Red phase). After the fix lands they will pass.
+//  Both tests below pin the fixed behavior against the previously
+//  hardcoded implementation.
 //
 
 import XCTest

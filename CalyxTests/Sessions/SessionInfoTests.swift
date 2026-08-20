@@ -2,7 +2,7 @@
 //  SessionInfoTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for `SessionInfo`/`SessionLifecycleState`: the public
+//  Covers `SessionInfo`/`SessionLifecycleState`: the public
 //  Codable types that mirror `proto::SessionInfo`/`proto::SessionState`
 //  (the `ls --all --json` wire shape — see
 //  `calyx-session/crates/proto/src/control.rs`; `SessionLifecycleState`

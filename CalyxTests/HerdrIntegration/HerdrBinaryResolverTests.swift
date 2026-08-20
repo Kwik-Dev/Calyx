@@ -2,7 +2,7 @@
 //  HerdrBinaryResolverTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for HerdrBinaryResolver: resolving the optional,
+//  Covers HerdrBinaryResolver: resolving the optional,
 //  user-installed `herdr` binary. Unlike SessionBinaryResolverTests
 //  (calyx-session is a bundled resource), every tier here depends on
 //  either an injected environment or an injected candidate list --

@@ -1,7 +1,7 @@
 // CockpitAppAccess.swift
 // Calyx
 //
-// TDD Red-phase stub: the Cockpit MCP tool boundary's view onto the
+// The Cockpit MCP tool boundary's view onto the
 // live app -- pane enumeration, pane commands, splitting, tab creation,
 // and command-palette execution. `SplitDirection` is deliberately NOT
 // redeclared here: Calyx/Models/SplitTree.swift already defines a
@@ -11,13 +11,13 @@
 // so it's reused directly rather than introducing a second, colliding
 // `right`/`down` type that would just need translating back and forth.
 //
-// LiveCockpitAppAccess's real implementation (NSApp.delegate ->
-// AppDelegate.appSession walk, mirroring pane_list's own) is deferred
-// to a later Green phase -- see
+// LiveCockpitAppAccess implements it against the live app
+// (NSApp.delegate -> AppDelegate.appSession walk, mirroring pane_list's
+// own). It has no unit tests of its own: see
 // CalyxTests/Cockpit/CockpitAppAccessSeamTests.swift, which instead
 // drives the CalyxWindowController seams (performSplit,
-// normalizedCwdOverride, cockpitSendCommand) this type will eventually
-// call, since LiveCockpitAppAccess itself has no app to drive in this
+// normalizedCwdOverride, cockpitSendCommand) it calls, since
+// LiveCockpitAppAccess itself has no app to drive in this
 // unit-test host.
 
 import AppKit
@@ -88,11 +88,11 @@ protocol CockpitAppAccessing: AnyObject {
 /// fresh on every call (never cached as a stored property) since the
 /// delegate/its window list can change between two MCP tool calls.
 ///
-/// Not unit-tested this round -- driving it needs a live `AppDelegate`
+/// Not unit-tested -- driving it needs a live `AppDelegate`
 /// with real windows, which this project's unit-test host cannot safely
 /// construct (see CockpitAppAccessSeamTests.swift's header for why the
 /// `CalyxWindowController` seams this delegates to are tested directly
-/// instead). Covered end-to-end in P6.
+/// instead). Covered end-to-end instead.
 @MainActor
 final class LiveCockpitAppAccess: CockpitAppAccessing {
 
@@ -239,8 +239,8 @@ final class LiveCockpitAppAccess: CockpitAppAccessing {
     /// command id directly with no such filter upstream -- gates on
     /// `isAvailable()` via `cockpitExecutePaletteCommand`, throwing
     /// `.paletteCommandUnavailable` rather than ever running a handler
-    /// with unmet preconditions (crash risk). P5 re-checks again after
-    /// the human-approval gate; this base layer must never execute an
+    /// with unmet preconditions (crash risk). The gated MCP tools re-check
+    /// after the human-approval gate; this base layer must never execute an
     /// unavailable handler regardless.
     func executePaletteCommand(id: String) throws -> CockpitPaletteCommand {
         guard let appDelegate else { throw CockpitAccessError.appUnavailable }

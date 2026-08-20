@@ -7,9 +7,9 @@
 //  to the mirror and used to build the per-pane subscribe list, BEFORE a
 //  SEPARATE `events.subscribe` transport is ever opened), pane-set
 //  REBUILD triggers (including the anti-storm dedup against a
-//  (re)subscribe's own replay burst), the PER-STEP handshake deadline
-//  (A2), and EOF/failure DISCONNECT HANDLING with a reconnect budget
-//  bounded across cycles for this instance's whole lifetime (A5/A6). See
+//  (re)subscribe's own replay burst), the PER-STEP handshake deadline,
+//  and EOF/failure DISCONNECT HANDLING with a reconnect budget
+//  bounded across cycles for this instance's whole lifetime. See
 //  HerdrIntegrationCoordinator.swift's own header for the full frozen
 //  contract, and HerdrConnection.swift's own header for the measured
 //  wire facts this coordinator is built from.
@@ -58,10 +58,10 @@
 //  - EOF calls mirror.connectionLost(), then reconnects (a fresh 2-transport
 //    connect attempt) while the socket still probes alive
 //  - EOF stops entirely (no retry) once the socket no longer probes alive
-//  - A5/A6: the reconnect budget is bounded ACROSS cycles (not just within
+//  - Reconnect budget: bounded ACROSS cycles (not just within
 //    one), surviving a reconnect that completes its own connect sequence
 //    and then drops again before any event is ever pushed
-//  - A2, per step: a snapshot that hangs forever times out and gives up
+//  - Handshake deadline, per step: a snapshot that hangs forever times out and gives up
 //    plainly (no subscribe transport ever created), closing its own
 //    transport (BLOCKER-analog: proof the stuck step is actually
 //    unstuck, not merely abandoned) -- and a later start() still proceeds
@@ -137,7 +137,7 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
 
     /// `sleep` defaults to the SAME real-clock closure the coordinator's
     /// own initializer defaults to (`Task.sleep(for:)`), not a no-op --
-    /// A2's PER-STEP handshake deadline races every driven step against
+    /// The PER-STEP handshake deadline races every driven step against
     /// `handshakeTimeout` using this SAME closure, so a no-op default
     /// would resolve that race arm instantly, before a step this suite is
     /// actively driving (over several genuine actor hops) could ever win.
@@ -631,7 +631,7 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
     /// test already relies on, that every burst line queued before it on
     /// the SAME transport has already been fully absorbed into
     /// `pendingBurstPaneIDs` BEFORE the gate is opened. Every OTHER sleep
-    /// in this flow (the A2 handshake-timeout arms, and the rebuild
+    /// in this flow (the handshake-timeout arms, and the rebuild
     /// backoff) is left to resolve via real `Task.sleep`, exactly like
     /// every other test in this file that does not override `sleep`.
     func test_replayBurst_stalePanesBeyondSnapshot_rebuildsExactlyOnce_thenConverges() async {
@@ -876,7 +876,7 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
         )
     }
 
-    // MARK: - A5/A6: lifetime reconnect budget survives a healthy-looking-but-flapping cycle
+    // MARK: - Lifetime reconnect budget survives a healthy-looking-but-flapping cycle
 
     func test_reconnect_isBoundedAcrossCycles_evenWhenEachAttemptCompletesItsConnectSequence_thenGivesUpPermanently() async {
         let factory = SpyHerdrTransportFactory()
@@ -905,7 +905,7 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
         // Reconnect #1 (lifetime attempt 1 of 2): completes its FULL
         // connect sequence -- a real reconnect, not a bare connect
         // failure -- then drops again before any event is ever pushed,
-        // so it never earns the HEALTHY reset (A5).
+        // so it never earns the HEALTHY reset.
         guard let secondTransport = await driveConnectAttempt(factory: factory, baseIndex: 2, paneIDs: []) else {
             XCTFail("expected reconnect attempt #1")
             return
@@ -933,7 +933,7 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
         )
     }
 
-    /// The other half of A5's "healthy" bar: a connection that DOES
+    /// The other half of the "healthy" bar: a connection that DOES
     /// deliver at least one event after its subscribe ack completes must
     /// reset `totalReconnectAttempts` back to zero, so a later, unrelated
     /// cycle of disconnects gets a full fresh lifetime budget again. The
@@ -1012,7 +1012,7 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
         )
     }
 
-    // MARK: - A2: PER-STEP handshake deadline
+    // MARK: - PER-STEP handshake deadline
 
     func test_attemptConnect_snapshotHangsForever_timesOutAndGivesUpPlainly_closesItsTransport_thenAllowsFreshStart() async {
         let factory = SpyHerdrTransportFactory()
@@ -1049,7 +1049,7 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
 
         // Deliberately never respond -- the step hangs forever awaiting
         // its response. `await startTask` below must still return (never
-        // hang the TEST itself) because of the A2 per-step deadline.
+        // hang the TEST itself) because of the per-step deadline.
         await startTask
 
         let callCountAfterTimeout = await factory.callCount
@@ -1530,7 +1530,7 @@ final class HerdrIntegrationCoordinatorTests: XCTestCase {
         XCTAssertEqual(callCountAfter, 4, "existing behavior must survive a deallocated (weakly-held) observer")
     }
 
-    /// REPLAY BURST caveat (this section's own task brief): a replayed
+    /// REPLAY BURST caveat: a replayed
     /// `layout_updated` arriving WHILE this connection's own accumulating
     /// phase is still open must NOT be forwarded to the observer --
     /// forwarding every replayed layout_updated on every fresh

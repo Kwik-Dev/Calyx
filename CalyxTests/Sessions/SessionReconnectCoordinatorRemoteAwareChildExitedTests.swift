@@ -2,8 +2,8 @@
 //  SessionReconnectCoordinatorRemoteAwareChildExitedTests.swift
 //  CalyxTests
 //
-//  P5 (remote sessions) RED phase, BUG 2 (five-angle convergence review
-//  finding, CRITICAL): SessionReconnectCoordinator.childExited misreads
+//  Remote sessions. THE DEFECT:
+//  SessionReconnectCoordinator.childExited misreads
 //  a REMOTE session as exited. SessionDaemonClient.sessionState(id:)
 //  queries the LOCAL calyx-session daemon's `ls --all --json` ledger
 //  only; a remote session's id is NEVER present in that LOCAL ledger, so
@@ -13,8 +13,7 @@
 //  live local daemon, a remote pane's very first disconnect therefore
 //  closes the pane INSTANTLY, with zero reconnect attempts -- exactly
 //  the failure mode SessionReconnectCoordinator.childExited's own doc
-//  comment (lines ~100-111) currently documents as an "ACCEPTED V1
-//  LIMITATION". This round retires that limitation.
+//  comment used to document as an accepted limitation, now retired.
 //
 //  FIX CONTRACT: childExited must know remoteness. Threaded in as a new
 //  `isRemote: Bool = false` parameter -- defaulting to `false` keeps
@@ -58,11 +57,11 @@
 //        }
 //    }
 //
-//  Also retires the now-false "ACCEPTED V1 LIMITATION" doc comment on
+//  Also retires the now-false accepted-limitation doc comment on
 //  this method (SessionReconnectCoordinator.swift ~100-111), which
-//  explicitly describes exactly the bug this file's tests prove.
+//  explicitly described exactly the bug this file's tests prove.
 //
-//  NOT in scope for this file (per this round's brief): threading
+//  NOT in scope for this file: threading
 //  `isRemote` from CalyxWindowController.processChildExited via
 //  `tab.sessionRefs[surfaceID]?.host != nil` (the controller-level half
 //  of this fix) -- these are coordinator-level tests only, driving
@@ -70,16 +69,11 @@
 //  exactly like the existing SessionReconnectCoordinatorTests file this
 //  one sits alongside.
 //
-//  Held-out compile-RED file per this codebase's established convention:
-//  `childExited(surfaceID:isRemote:)`'s `isRemote` parameter does not
-//  exist yet -- every call in this file passing `isRemote:` explicitly
-//  fails to compile. Expected to FAIL TO COMPILE until the Green phase
-//  adds the parameter. That compile failure IS this file's RED evidence.
-//  Must be excluded from the build while running the rest of the round's
-//  RED suite and verified separately for its own specific compiler
-//  errors. (SessionReconnectCoordinatorTests itself is UNAFFECTED and
-//  stays green throughout, since the new parameter's default value keeps
-//  its every existing call compiling unchanged.)
+//  Under test: `childExited(surfaceID:isRemote:)`'s `isRemote`
+//  parameter, passed explicitly by every call in this file.
+//  (SessionReconnectCoordinatorTests is UNAFFECTED, since the
+//  parameter's default value keeps its every existing call compiling
+//  unchanged.)
 //
 //  Coverage:
 //  - isRemote: true + daemon configured to report .exited(code: 0) ->

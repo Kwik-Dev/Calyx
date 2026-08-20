@@ -2,7 +2,7 @@
 //  AppDelegateValidateMenuItemVisibilityTests.swift
 //  CalyxTests
 //
-//  TDD Red phase, BUG 1: `AppDelegate.validateMenuItem(_:)`
+//  The defect this file pins: `AppDelegate.validateMenuItem(_:)`
 //  (AppDelegate.swift:3227) has no `@objc`, and `AppDelegate`
 //  (AppDelegate.swift:11) does not conform to `NSMenuItemValidation`
 //  (confirmed by grep: no `extension AppDelegate` anywhere in `Calyx/`,
@@ -17,7 +17,7 @@
 //
 //  Coverage:
 //  - `AppDelegate.instancesRespond(to: "validateMenuItem:")`
-//    (RED-proving): the actual defect, checked at the class level via
+//    (pins the fix): the actual defect, checked at the class level via
 //    `NSObject.instancesRespond(to:)` -- pure ObjC-runtime introspection,
 //    no instance needed.
 //  - `validateMenuItem(_:)`'s state-mapping logic: a direct Swift-level
@@ -57,26 +57,22 @@
 //  to `SecureInput` (none). The `.on` branch (`global == true`) is
 //  deliberately NOT exercised here, since the only way to produce it is
 //  to WRITE `.global` and trigger the real side effect -- out of scope
-//  for this file, per the task brief's own instruction to prefer
-//  dropping coverage over risking the side effect.
+//  for this file: dropping coverage is preferable to risking the side
+//  effect.
 //
-//  RED ledger (ran 2026-08-07, `xcodebuild ... -only-testing:
-//  CalyxTests/AppDelegateValidateMenuItemVisibilityTests`, 2 tests
-//  executed: 1 passed, 1 failed):
+//  What each test pins:
 //   - `test_appDelegateClass_instancesRespondToValidateMenuItemSelector`
-//     is RED-proving: FAILED --
-//     "XCTAssertTrue failed - AppDelegate must expose validateMenuItem:
+//     pins the fix: AppDelegate must expose validateMenuItem:
 //     to the ObjC runtime (via @objc or NSMenuItemValidation
 //     conformance), or AppKit's menu validation pass never calls it at
 //     all, and the Secure Keyboard Entry item's checkmark never
-//     updates". `AppDelegate.instancesRespond(to:
-//     NSSelectorFromString("validateMenuItem:"))` is currently `false`,
-//     which is the whole defect.
+//     updates. `AppDelegate.instancesRespond(to:
+//     NSSelectorFromString("validateMenuItem:"))` returning `false` was
+//     the whole defect.
 //   - `test_validateMenuItem_reflectsSecureInputGlobalFalseAsOffState` is
-//     NOT RED-proving: PASSED. `validateMenuItem(_:)`'s existing body
-//     already performs the state-mapping assignment correctly (only its
-//     ObjC visibility is broken, covered above) -- this is a regression
-//     guard for that logic, kept passing.
+//     a regression guard: `validateMenuItem(_:)`'s body already
+//     performed the state-mapping assignment correctly (only its
+//     ObjC visibility was broken, covered above).
 //
 
 import XCTest
@@ -86,7 +82,7 @@ import AppKit
 @MainActor
 final class AppDelegateValidateMenuItemVisibilityTests: XCTestCase {
 
-    // MARK: - ObjC runtime visibility (RED-proving)
+    // MARK: - ObjC runtime visibility
 
     func test_appDelegateClass_instancesRespondToValidateMenuItemSelector() {
         XCTAssertTrue(

@@ -225,13 +225,13 @@ final class IPCStoreTests: XCTestCase {
     // ==================== 8. Receive Messages ====================
 
     func test_receiveMessages_returnsSentMessages() async throws {
-        // Contract updated for Round 7 (delete-on-read): a receiveMessages
+        // Contract (delete-on-read): a receiveMessages
         // call returns every message currently in the peer's inbox, and
         // deletes them from the inbox in the same call — a message it
         // returns will not be returned again by a later call. That
         // second half of the contract (and the sibling-peer/later-message
         // isolation it implies) has its own dedicated tests below, under
-        // "Round 7: delete-on-read (at-most-once)"; this test only covers
+        // "delete-on-read (at-most-once)"; this test only covers
         // the first receive returning what was sent.
         // Arrange
         let store = makeStore()
@@ -640,8 +640,8 @@ final class IPCStoreTests: XCTestCase {
 
     // Test 8
     func test_pinLifts_afterReceive_recipientThenPurged() async throws {
-        // Contract: Once the unread message is received (Round 7:
-        // receiveMessages deletes it from the inbox as it returns it), the
+        // Contract: Once the unread message is received
+        // (receiveMessages deletes it from the inbox as it returns it), the
         // pin is lifted. After the pin is lifted, the recipient's stale
         // lastSeen makes it purgeable on the next listPeers call.
         // Arrange
@@ -934,7 +934,7 @@ final class IPCStoreTests: XCTestCase {
                       "peerStatus should also tear down the inbox of an expired peer")
     }
 
-    // ==================== Round 3: inboxCount(for:) ====================
+    // ==================== inboxCount(for:) ====================
 
     // Unlike receiveMessages, inboxCount is a read-only query used to
     // refresh AgentRegistry's unread-message badge after a
@@ -969,15 +969,14 @@ final class IPCStoreTests: XCTestCase {
                        "inboxCount must be read-only: unlike receiveMessages, it must not bump lastSeen")
     }
 
-    // ==================== Round 3 fix (Round 7: simplified further) — inboxCount reflects current inbox size ====================
+    // ==================== inboxCount reflects current inbox size ====================
 
-    // Round 3 fixed a defect where the sidebar's unread badge stayed lit
-    // even after the agent had genuinely read its inbox. Round 7's
-    // delete-on-read change to receiveMessages made the original
-    // undelivered/delivered distinction this fix introduced moot:
-    // inboxCount now simply reports how many messages are currently
-    // sitting in the inbox, since receiveMessages removes every message
-    // it returns instead of merely marking it delivered.
+    // The delete-on-read change to receiveMessages made any
+    // undelivered/delivered distinction moot: inboxCount simply reports
+    // how many messages are currently sitting in the inbox, since
+    // receiveMessages removes every message it returns instead of merely
+    // marking it delivered. The sidebar's unread badge therefore cannot
+    // stay lit after the agent has genuinely read its inbox.
 
     func test_receiveMessages_immediatelyClearsInboxCount() async throws {
         // Arrange
@@ -1025,7 +1024,7 @@ final class IPCStoreTests: XCTestCase {
                        "same peer was already received")
     }
 
-    // ==================== Round 3: inboxCounts(for:) batch ====================
+    // ==================== inboxCounts(for:) batch ====================
 
     func test_inboxCounts_returnsCurrentCountPerPeer() async throws {
         let store = makeStore()
@@ -1053,9 +1052,9 @@ final class IPCStoreTests: XCTestCase {
         XCTAssertEqual(counts.values.first, 0)
     }
 
-    // ==================== Round 6: updatePeer (rename semantics) ====================
+    // ==================== updatePeer (rename semantics) ====================
     //
-    // register_peer's Round 6 fix (a surface with an already-bound, still-
+    // register_peer's rename fix (a surface with an already-bound, still-
     // alive peer gets that peer RENAMED rather than a second identity
     // minted) needs a way to update an existing peer's name/role in place
     // while preserving its identity (id, registeredAt). This is that
@@ -1101,7 +1100,7 @@ final class IPCStoreTests: XCTestCase {
         XCTAssertNil(result, "updatePeer must return nil for an id with no registered peer")
     }
 
-    // Round 6 review: `nil` for `name`/`role` means "leave this field
+    // `nil` for `name`/`role` means "leave this field
     // unchanged" — `CalyxMCPServer.handleRegisterPeer` relies on this so a
     // `register_peer` call that only supplies one of the two arguments
     // doesn't blank out the other.
@@ -1155,7 +1154,7 @@ final class IPCStoreTests: XCTestCase {
                              "unchanged — it's still a liveness-touching operation")
     }
 
-    // ==================== Round 7: delete-on-read (at-most-once) ====================
+    // ==================== Delete-on-read (at-most-once) ====================
     //
     // Message.delivered and ackMessages are gone entirely: a message is
     // now removed from the recipient's inbox by the SAME receiveMessages
@@ -1229,7 +1228,7 @@ final class IPCStoreTests: XCTestCase {
     // after receiveMessages" contract — including the stale delivered-flag
     // comment this test had carried over from before the rewrite.
 
-    // ==================== Round 7 review: requeue (undo a downstream failure) ====================
+    // ==================== requeue (undo a downstream failure) ====================
     //
     // requeue exists solely so CalyxMCPServer.handleReceiveMessages can
     // put messages back if it fails to serialize receiveMessages' result

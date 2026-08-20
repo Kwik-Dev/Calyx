@@ -2,7 +2,7 @@
 //  TabSnapshotHerdrRefsTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for herdr-pane-bridge persistence layer:
+//  Covers herdr-pane-bridge persistence layer:
 //  Tab.herdrPaneRefs ([UUID: HerdrPaneRef], leaf-UUID keyed, mirrors
 //  Tab.sessionRefs exactly) and TabSnapshot.herdrPaneRefs (an OPTIONAL
 //  field, mirroring TabSnapshot.sessionRefs's own "nil for a snapshot

@@ -2,7 +2,7 @@
 //  MCPLSPBridgeEditWorkspaceToolsTests.swift
 //  Calyx
 //
-//  TDD red-phase tests for the eleven "edit + workspace cluster" MCP tools the
+//  Tests for the eleven "edit + workspace cluster" MCP tools the
 //  LSP bridge will ship on top of the 43 tools (10 core + 11 extended +
 //  7 hierarchy/moniker + 7 information-cluster-A + 8 information-cluster-B)
 //  already routed through `MCPLSPBridge`.
@@ -53,10 +53,9 @@
 //      under `(workspace_root, language_id, section)` must be returned by a
 //      following `get` for the same triple.
 //
-//  TDD phase: RED. The bridge currently advertises 43 tools and routes only
-//  those. These tests are expected to fail at runtime — the catalogue
-//  assertion sees 43 names instead of 54, and every `handleToolCall` for one
-//  of the new tools surfaces as `MCPLSPBridgeError.unknownTool`.
+//  The bridge must advertise 54 tools and route all of them: the
+//  catalogue assertion pins that count, and every `handleToolCall` for
+//  an unrouted tool surfaces as `MCPLSPBridgeError.unknownTool`.
 //
 //  Strategy notes:
 //    - The fake LSP-server driver and helpers are file-private here to avoid

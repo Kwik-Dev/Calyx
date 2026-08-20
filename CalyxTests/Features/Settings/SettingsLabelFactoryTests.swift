@@ -2,10 +2,9 @@
 //  SettingsLabelFactoryTests.swift
 //  CalyxTests
 //
-//  TDD Red phase: tabbed Settings window restructure, description-label
-//  wrapping. Introduces SettingsLabelFactory, which does not exist yet --
-//  a held-out compile-RED file, same convention as SettingsPaneTests
-//  (see that file's header).
+//  Covers the tabbed Settings window restructure's description-label
+//  wrapping, through SettingsLabelFactory (same area as SettingsPaneTests,
+//  see that file's header).
 //
 //  ROOT CAUSE OF THE TRUNCATION BUG, confirmed by running actual AppKit
 //  code (not guessed from memory): NSTextField(labelWithString:) --

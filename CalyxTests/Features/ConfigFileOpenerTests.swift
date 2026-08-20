@@ -1,7 +1,7 @@
 // ConfigFileOpenerTests.swift
 // CalyxTests
 //
-// TDD red-phase tests for ConfigFileOpener protocol and openConfigFile(using:) logic.
+// Tests for ConfigFileOpener protocol and openConfigFile(using:) logic.
 // Tests use a mock to verify all code paths without touching the real filesystem.
 
 import Foundation

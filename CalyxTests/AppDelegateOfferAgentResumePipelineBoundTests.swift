@@ -2,15 +2,13 @@
 //  AppDelegateOfferAgentResumePipelineBoundTests.swift
 //  CalyxTests
 //
-//  TDD Red phase for round-8 fix R8-D item 1 (r8-fix-spec.md; CONFIRMED
-//  evidence in r7-verdicts.md's "Unbounded await (D1)" entry):
 //  createSurfaceWithPwd's reattach-path dispatch Task awaits
 //  agentResumeSessionsTask's value before calling offerAgentResume, but
-//  that shared task itself has no deadline of its own since R6-C
-//  removed the old 2.0s synchronous spin. With an unresponsive daemon,
+//  that shared task itself has no deadline of its own since the old
+//  2.0s synchronous spin was removed. With an unresponsive daemon,
 //  the dispatch Task never completes at all (bounded only by
-//  SystemCommandRunner's unrelated 600s subprocess watchdog, see
-//  r7-verdicts.md), leaking a suspended Task per restored
+//  SystemCommandRunner's unrelated 600s subprocess watchdog),
+//  leaking a suspended Task per restored
 //  persistent-session surface. The fix wraps the daemon call in a race
 //  against a short (a few seconds) deadline so the shared task always
 //  reaches a terminal state, completing with [:] on timeout.
@@ -30,7 +28,7 @@
 //  hanging the test process waiting on something with no signal at
 //  all. Waits via XCTWaiter with a generous, bounded timeout so the
 //  test itself cannot hang even if the production bound is still
-//  missing: a timed-out wait is exactly this test's RED result.
+//  missing: a timed-out wait is exactly this test's failure signal.
 //
 
 import XCTest
@@ -46,7 +44,7 @@ final class AppDelegateOfferAgentResumePipelineBoundTests: XCTestCase {
     override func setUp() {
         super.setUp()
         SessionSettings._testUseSuite(named: settingsSuiteName)
-        // R14-B (r14-fix-spec.md): overrides the general bound to 1s
+        // Overrides the general bound to 1s
         // via the DEBUG timeout seam so this test runs in milliseconds
         // instead of burning the real ~5s daemonQueryBoundTimeoutSeconds
         // default.
@@ -78,14 +76,13 @@ final class AppDelegateOfferAgentResumePipelineBoundTests: XCTestCase {
         }
     }
 
-    /// R8-D item 1 (r8-fix-spec.md; r7-verdicts.md "Unbounded await
-    /// (D1)"): against the CURRENT code, the per-surface dispatch Task
+    /// Against the CURRENT code, the per-surface dispatch Task
     /// createSurfaceWithPwd starts for a persistent-session leaf awaits
     /// agentResumeSessionsTask.value with no bound of its own, and the
     /// injected daemon's listAll() never resolves, so that Task never
     /// reaches offerAgentResume at all within any reasonable window.
     /// The completion hook therefore never fires, and the wait below
-    /// times out (RED). The fix must give agentResumeSessionsTask its
+    /// times out. The fix gives agentResumeSessionsTask its
     /// own short deadline so this pipeline always reaches a terminal
     /// state.
     func test_offerAgentResumePipeline_reachesTerminalState_evenWithUnresponsiveDaemon() {
@@ -149,13 +146,11 @@ final class AppDelegateOfferAgentResumePipelineBoundTests: XCTestCase {
         let restored = appDelegate.restoreTabSurfaces(tab: tab, app: dummyApp, window: window)
         XCTAssertTrue(restored, "Precondition: the single-leaf restore itself (the synchronous part) must succeed")
 
-        // R10-C item 5 (r10-fix-spec.md): originally raised from 8.0s
-        // to 15.0s, a generous margin over the real ~5s
+        // setUp overrides the real ~5s
         // SessionDaemonClientProtocol.daemonQueryBoundTimeoutSeconds
-        // default this pipeline is bounded by. R14-B (r14-fix-spec.md):
-        // setUp above now overrides that bound to 1s via the DEBUG-only
-        // timeout seam, so 3.0s is a generous margin instead -- this
-        // test no longer burns ~5s of real wall-clock time.
+        // bound this pipeline uses to 1s via the DEBUG-only timeout
+        // seam, so 3.0s is a generous margin -- this test does not burn
+        // ~5s of real wall-clock time.
         let waiterResult = XCTWaiter.wait(for: [completionExpectation], timeout: 3.0)
 
         XCTAssertEqual(waiterResult, .completed,

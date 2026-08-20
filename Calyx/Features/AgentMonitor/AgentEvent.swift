@@ -23,6 +23,23 @@ enum AgentSource: Sendable, Equatable {
     case external
 }
 
+extension AgentSource {
+    /// Whether a row from this source carries evidence the agent
+    /// reports about itself, rather than evidence Calyx inferred by
+    /// watching the pane. Only a self-reporting row can be aged out by
+    /// the staleness sweep or settled by a pane-exit signal: an
+    /// inferred row has no reliable last-event time and retires itself
+    /// through its own miss-streak bookkeeping instead. `.external`
+    /// rows are self-reported too, but they live in a separate store
+    /// the resolver never sees.
+    var isSelfReported: Bool {
+        switch self {
+        case .hooks, .mcpConnection, .external: return true
+        case .titleHeuristic: return false
+        }
+    }
+}
+
 // MARK: - AgentEntry
 
 struct AgentEntry: Identifiable, Sendable, Equatable {
@@ -39,8 +56,8 @@ struct AgentEntry: Identifiable, Sendable, Equatable {
     var kind: String
     var lastEventAt: Date
     /// Count of unread IPC messages waiting for the peer bound to this
-    /// surface, kept in sync by `AgentRegistry.updateInbox` /
-    /// `syncInboxCounts` from `IPCStore`'s current inbox count.
+    /// surface, kept in sync by `AgentRegistry.syncInboxCounts` from
+    /// `IPCStore`'s current inbox count.
     var unreadCount: Int = 0
     /// The Calyx surface (if any) an `.external` entry's row should
     /// focus when clicked -- an external entry's own `surfaceID` is not
@@ -175,7 +192,7 @@ struct AgentEvent: Sendable, Equatable {
     ///
     /// An event carrying a non-empty `subagentType` happened inside a
     /// child agent, so its name is left as the unmapped raw value (which
-    /// `AgentRegistry.resultingState` ignores) and its `sessionId` / `cwd`
+    /// `AgentStateResolver.resultingState` ignores) and its `sessionId` / `cwd`
     /// are dropped: recording a child's session ID into the pane's resume
     /// meta would make a later reattach offer `grok --resume <child>`.
     ///
@@ -198,7 +215,7 @@ struct AgentEvent: Sendable, Equatable {
     }
 
     /// Maps a Grok event value onto the event vocabulary
-    /// `AgentRegistry.resultingState` reads. An unmapped name is passed
+    /// `AgentStateResolver.resultingState` reads. An unmapped name is passed
     /// through verbatim so the registry ignores it rather than the
     /// decoder inventing a state change.
     private static func grokEventName(_ rawEventName: String, object: [String: Any]) -> String {

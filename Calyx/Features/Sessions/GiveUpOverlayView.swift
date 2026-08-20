@@ -3,10 +3,10 @@
 //
 // Persistent in-pane indication shown over a persistent-session surface
 // whose reconnect attempts were exhausted but whose pane could not be
-// closed because it is the last pane app-wide (R6-B, r6-fix-spec.md,
-// r5-verdicts.md V6). Ghostty's own child-exited text is suppressed for
-// every surface, and the child process is dead, so sendText goes
-// nowhere, this overlay is the only remaining in-app signal.
+// closed because it is the last pane app-wide. Ghostty's own
+// child-exited text is suppressed for every surface, and the child
+// process is dead, so sendText goes nowhere, this overlay is the only
+// remaining in-app signal.
 
 import AppKit
 

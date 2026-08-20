@@ -1,7 +1,7 @@
 // SessionTabTitleTests.swift
 // CalyxTests
 //
-// TDD Red phase for a user-reported defect: attaching a Detached session
+// Covers a user-reported defect: attaching a Detached session
 // from the session browser (AppDelegate.attachSessionAsNewTab, the
 // tab-based Attach path, and attachWindow's new-window path) creates a
 // placeholder Tab titled "Terminal" that stays that way until the
@@ -14,13 +14,9 @@
 // SessionTabTitle is a NEW pure helper (does not exist anywhere in the
 // codebase yet) proposed as the single place both attach call sites
 // (AppDelegate.attachWindow and .attachSessionAsNewTab) derive a
-// placeholder title from a cwd -- a held-out compile-RED file per this
-// codebase's established convention (see SettingsPaneTests's header):
-// the whole CalyxTests target fails to build until the Green phase adds
-// SessionTabTitle. That compile failure IS this file's RED evidence.
+// placeholder title from a cwd, through SessionTabTitle.
 // (AppDelegateAttachPlaceholderTitleTests.swift covers the two call
-// sites' actual wiring separately, without needing this type to exist,
-// so that file's RED evidence is a genuine assertion failure instead.)
+// sites' actual wiring separately.)
 //
 // ABBREVIATION STYLE: mirrors zsh's `%~` prompt abbreviation (also
 // NSString.abbreviatingWithTildeInPath's behavior) -- the home directory

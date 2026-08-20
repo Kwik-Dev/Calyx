@@ -2,8 +2,8 @@
 //  SessionBrowserRowAttachButtonLabelTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (user-reported, same round as the attach-as-tab routing
-//  fix, and completes that fix's scope): SessionBrowserView.swift's row
+//  A user-reported gap alongside the attach-as-tab routing
+//  fix, completing that fix's scope: SessionBrowserView.swift's row
 //  button is a literal, unconditional `Button("Attach") { model.attach(row) }`
 //  (SessionBrowserView.swift ~191) -- for a row that is ALREADY attached
 //  here (`row.isAttachedHere == true`), a clickable "Attach" button is
@@ -23,11 +23,10 @@
 //  Label text is a TEAM DECISION, not an implementer choice: exactly
 //  "Show" when attached, unchanged "Attach" otherwise.
 //
-//  No held-out/compile-RED file needed: `SessionBrowserRow.attachButtonLabel`
-//  already exists (see SessionBrowserModel.swift) as a RED-phase stub
-//  that always returns "Attach" regardless of `isAttachedHere` -- i.e.
-//  today's actual defect, preserved verbatim. The isAttachedHere==true
-//  row below is this file's genuine RED evidence; the isAttachedHere==false
+//  `SessionBrowserRow.attachButtonLabel`
+//  (see SessionBrowserModel.swift) returned "Attach" unconditionally,
+//  regardless of `isAttachedHere` -- the defect itself. The
+//  isAttachedHere==true row below pins the fix; the isAttachedHere==false
 //  row is a sanity/regression companion (passes both before and after
 //  the fix, same convention as AppDelegateAttachWindowTests' own
 //  regression companion).
@@ -54,7 +53,7 @@ final class SessionBrowserRowAttachButtonLabelTests: XCTestCase {
                        "-- clicking it reveals the already-live pane, it never attaches a second time")
     }
 
-    /// Sanity/regression companion: passes already (the RED-phase stub
+    /// Sanity/regression companion: passed even before the fix (the stub
     /// always returns "Attach"). Included so a future regression that
     /// over-broadens the label (e.g. always "Show") would be caught here.
     func test_attachButtonLabel_whenNotAttachedHere_isAttach() {

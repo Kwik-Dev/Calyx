@@ -15,7 +15,7 @@
 //  persistent -- so an explicit override an MCP caller passed to
 //  `tab_create` never reached the spawned shell.
 //
-//  This file was written during that bug's TDD red phase, driving
+//  This file was written for that bug, driving
 //  `performCreateNewTab` end-to-end via `resolveNewTabSpawnCwd
 //  (override:)`, an INSTANCE method with its own `?? activeTab?.pwd`
 //  fallback. Both are gone: `resolveNewTabSpawnCwd(override:)` became
@@ -136,8 +136,8 @@
 //  of test-only production surface this project's rules forbid.) See
 //  that file's own header for the full mechanism.
 //
-//  Coverage (table from the issue #43 investigation; a/c/e were the RED
-//  cases -- all now pass, and pin the fix against regression):
+//  Coverage (table from the issue #43 investigation; a/c/e were the
+//  failing cases -- all now pass, and pin the fix against regression):
 //  a. `persistentSessionsEnabled = false`,
 //     `performCreateNewTab(spawnCwd: "/tmp")` -> observed pwd must be
 //     `"/tmp"`. THE BUG: failed pre-fix, observing `nil`.
@@ -342,7 +342,7 @@ final class CockpitTabCreateCwdWiringTests: XCTestCase {
     }
 
     /// Same bug as test a, with a leading/trailing-whitespace-and-
-    /// newline-padded override (P3 final gate W2's shape, plausible from
+    /// newline-padded override (plausible from
     /// an agent-constructed payload built from raw shell output, e.g.
     /// `$(pwd)`) -- `Self.normalizedCwdOverride(_:)` trims before use
     /// (see its own doc comment and `CockpitAppAccessSeamTests.swift`'s

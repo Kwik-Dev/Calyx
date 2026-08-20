@@ -2,7 +2,7 @@
 //  CalyxWindowControllerCloseTabTests.swift
 //  CalyxTests
 //
-//  TDD RED phase, missing-observer investigation: `GhosttyActionRouter
+//  Missing observer: `GhosttyActionRouter
 //  .handleCloseTab` (GhosttyAction.swift) posts `.ghosttyCloseTab` for
 //  every `GHOSTTY_ACTION_CLOSE_TAB` action, but no observer has ever been
 //  registered for it — ghostty's default close_tab keybind (Cmd+Opt+W)
@@ -27,8 +27,8 @@
 //  `processCloseTab` is called directly, not via a posted
 //  `.ghosttyCloseTab` notification: its signature already carries the
 //  resolved `tab`/`group`, decoupled from notification routing (that
-//  routing, via `findTab(for:)`, is Green-phase work for the
-//  not-yet-written `handleCloseTabNotification`).
+//  routing, via `findTab(for:)`, belongs to
+//  `handleCloseTabNotification`).
 //
 //  Coverage-gap follow-up (code review): the mode tests above only ever
 //  call `processCloseTab` directly, never exercising
@@ -128,8 +128,7 @@ final class CalyxWindowControllerCloseTabTests: XCTestCase {
         )
     }
 
-    /// Regression/crash guard (r6-fix-spec.md-style "most important"
-    /// callout in the investigation): OTHER with MORE than 3 tabs, target
+    /// Regression/crash guard: OTHER with MORE than 3 tabs, target
     /// at index 0 (a different position than the "3 tabs, middle target"
     /// test above, so this is not a duplicate of it). By hand: starting
     /// tabs are [tab0..tab4] (5 tabs), target = tab0; OTHER must leave

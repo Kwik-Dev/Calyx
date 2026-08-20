@@ -2,7 +2,7 @@
 //  SessionSpawnPlannerTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for SessionSpawnPlanner.plan(for:): whether a new
+//  Covers SessionSpawnPlanner.plan(for:): whether a new
 //  terminal surface launches a plain shell (.passthrough) or a
 //  calyx-session-backed persistent shell (.persistent), gated by
 //  SessionSettings.persistentSessionsEnabled and the spawn context's
@@ -152,7 +152,7 @@ final class SessionSpawnPlannerTests: XCTestCase {
         }
 
         XCTAssertTrue(isValidULID(sessionID), "sessionID must be a 26-character Crockford base32 ULID, got \(sessionID)")
-        // Round-18 flags migration: the session root travels as the
+        // The session root travels as the
         // Rust CLI's own global --runtime-dir/--state-dir argv flags
         // now, prepended ahead of the attach subcommand, rather than as
         // a leading /usr/bin/env HOME=<root> env-assignment word -- see
@@ -163,14 +163,14 @@ final class SessionSpawnPlannerTests: XCTestCase {
                        "session root now travels as --runtime-dir/--state-dir argv words directly to the binary")
         XCTAssertFalse(command.contains("HOME="),
                        "The synthesized command must never contain a HOME= word anywhere -- stamping HOME " +
-                       "was the old mechanism the round-18 flags migration retires")
+                       "was the old mechanism the flags migration retires")
         let expectedRoot = SessionRootResolver().resolve()
         XCTAssertEqual(argv, ["--runtime-dir", expectedRoot + "/.calyx/run",
                               "--state-dir", expectedRoot + "/.calyx/state",
                               "attach", sessionID, "--create", "--cwd", "/Users/dev/repo"],
                        "The synthesized command must prepend the two global directory flags ahead of the " +
                        "attach subcommand, then attach/create the exact sessionID returned alongside it, " +
-                       "positionally (matching the P2 CLI's AttachArgs, not a --id flag), and carry the " +
+                       "positionally (matching the CLI's AttachArgs, not a --id flag), and carry the " +
                        "context's cwd intact through /bin/sh -c regardless of the escaping strategy used")
     }
 

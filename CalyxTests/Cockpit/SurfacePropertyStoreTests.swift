@@ -2,7 +2,7 @@
 //  SurfacePropertyStoreTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for SurfacePropertyStore: the app-wide per-surface
+//  Covers SurfacePropertyStore: the app-wide per-surface
 //  title/cwd tracker backing Cockpit's pane_list.
 //
 //  Coverage:
@@ -17,7 +17,7 @@
 //    different, already-tracked surface's recorded title
 //  - SurfaceRegistry.destroySurface's _testInsert-only (early-return)
 //    branch also prunes a recorded title, symmetric with the main
-//    destroy path (P3 review F4)
+//    destroy path
 //
 
 import XCTest
@@ -33,7 +33,7 @@ final class SurfacePropertyStoreTests: XCTestCase {
         store = SurfacePropertyStore()
     }
 
-    /// P3 final gate (S1): `store._stopObserving()` undoes each test's
+    /// `store._stopObserving()` undoes each test's
     /// own `startObserving()` call -- without it, every test's
     /// `SurfacePropertyStore` instance stays registered with
     /// `NotificationCenter` for the rest of the test process (a leaked
@@ -90,7 +90,7 @@ final class SurfacePropertyStoreTests: XCTestCase {
         XCTAssertNil(store.title(for: id), "a destroyed surface's recorded title must be pruned")
     }
 
-    /// P3 review (F4): `SurfaceRegistry.destroySurface`'s early-return
+    /// `SurfaceRegistry.destroySurface`'s early-return
     /// (`_testInsert`-only) branch must be symmetric with its main
     /// destroy path -- both must post `.calyxSurfaceDestroyed` so
     /// SurfacePropertyStore prunes a `_testInsert`-only surface's

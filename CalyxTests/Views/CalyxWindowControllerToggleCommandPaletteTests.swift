@@ -2,7 +2,7 @@
 //  CalyxWindowControllerToggleCommandPaletteTests.swift
 //  CalyxTests
 //
-//  TDD RED phase, second missing-observer investigation:
+//  Missing observer: 
 //  `GhosttyActionRouter.handleAction` still lists
 //  `GHOSTTY_ACTION_TOGGLE_COMMAND_PALETTE` in its "Known but unimplemented"
 //  group (`return false`, GhosttyAction.swift) -- ghostty's default

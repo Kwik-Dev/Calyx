@@ -2,7 +2,7 @@
 //  LSPSessionPersistenceWiringTests.swift
 //  Calyx
 //
-//  TDD red-phase tests for the LSPSession <-> LSPSessionPersistence and
+//  Tests for the LSPSession <-> LSPSessionPersistence and
 //  LSPService <-> LSPSessionPersistence wiring.
 //
 //  The forthcoming change adds a new trailing optional parameter to both
@@ -51,10 +51,9 @@
 //        * Two concurrent sessions on distinct workspaces produce two
 //          independent entries in the persistence store.
 //
-//  TDD phase: RED. The new `persistence:` parameter does not exist yet on
-//  `LSPSession.init(...)` or `LSPService.init(...)`, nor does
-//  `LSPService.availableSnapshots()`. This file is expected to fail to
-//  compile until the swift-specialist implements the wiring.
+//  Under test: the `persistence:` parameter on
+//  `LSPSession.init(...)` and `LSPService.init(...)`, plus
+//  `LSPService.availableSnapshots()`.
 //
 
 import XCTest

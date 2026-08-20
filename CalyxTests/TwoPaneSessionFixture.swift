@@ -2,8 +2,7 @@
 //  TwoPaneSessionFixture.swift
 //  CalyxTests
 //
-//  R8-G (r8-fix-spec.md, item G2; consolidates a r7-verdicts.md fixture-
-//  duplication finding): SessionReconnectGiveUpTests and
+//  SessionReconnectGiveUpTests and
 //  CalyxWindowControllerNonLastWindowCloseTests each built an identical
 //  two-pane, single-tab, single-group window fixture (trackedLeafID
 //  carrying a SessionRef registered in both tab.sessionRefs and
@@ -33,7 +32,7 @@ struct TwoPaneSessionFixture {
     let sessionID: String
 }
 
-/// - Parameter host: P5 (remote sessions) addition. `nil` (the default)
+/// - Parameter host: `nil` (the default)
 ///   matches every existing call site's local-session fixture exactly.
 ///   Non-nil carries a remote host on the fixture's `SessionRef`, for
 ///   tests asserting kill/close routing's remote-vs-local behavior.

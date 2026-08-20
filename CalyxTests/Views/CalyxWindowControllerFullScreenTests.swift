@@ -24,8 +24,7 @@
 //  we invoke the delegate callbacks directly with a stub `Notification` and
 //  manipulate the tracking properties to verify `windowSnapshot()`.
 //
-//  These tests target symbols that do NOT exist in the codebase yet. They are
-//  expected to FAIL compile until the TDD Green phase implements the feature.
+//  These tests target the fullscreen tracking properties named above.
 //
 
 import AppKit

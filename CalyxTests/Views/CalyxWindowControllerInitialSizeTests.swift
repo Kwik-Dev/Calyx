@@ -2,7 +2,7 @@
 //  CalyxWindowControllerInitialSizeTests.swift
 //  CalyxTests
 //
-//  TDD RED phase, missing-observer investigation: `GhosttyActionRouter
+//  Missing observer: `GhosttyActionRouter
 //  .handleInitialSize` (GhosttyAction.swift) posts `.ghosttyInitialSize`
 //  for every `GHOSTTY_ACTION_INITIAL_SIZE` action, but no observer has
 //  ever been registered for it — ghostty's requested initial window size
@@ -11,16 +11,16 @@
 //  intentional no-op stub, called directly here (this file only tests
 //  the guard/apply CONTRACT, not notification routing).
 //
-//  Two of the three tests below are regression guards, NOT RED-proving
+//  Two of the three tests below are regression guards
 //  (see `CalyxWindowControllerCloseWindowTests.swift`'s header for the
 //  general reasoning this codebase already establishes for that
 //  distinction): against a no-op stub, "the window size never changes"
 //  is trivially true, so the two "must NOT apply" tests below pass today
 //  by construction. They still have teeth against a future
 //  implementation that DROPS the corresponding guard. The third test
-//  ("single tab/pane, not restoring, MUST apply") is the RED-proving one:
-//  it expects the window to actually resize, which the current stub
-//  never does.
+//  ("single tab/pane, not restoring, MUST apply") is the one that pins
+//  the fix: it expects the window to actually resize, which the pre-fix
+//  stub never did.
 //
 //  `isRestoring` is `private` on `CalyxWindowController`
 //  (`init(window:windowSession:restoring:)` stores its `restoring`
@@ -117,7 +117,7 @@ final class CalyxWindowControllerInitialSizeTests: XCTestCase {
         controller.window?.contentView?.frame.size ?? .zero
     }
 
-    // MARK: - isRestoring guard (regression guard, not RED-proving)
+    // MARK: - isRestoring guard (regression guard)
 
     /// While `isRestoring == true` (the fixture never calls
     /// `activateRestoredSession()`), applying an initial size must be a
@@ -138,7 +138,7 @@ final class CalyxWindowControllerInitialSizeTests: XCTestCase {
         )
     }
 
-    // MARK: - Multiple-tabs guard (regression guard, not RED-proving)
+    // MARK: - Multiple-tabs guard (regression guard)
 
     /// With more than one tab open, applying an initial size must be a
     /// no-op — a second tab appearing later in the window's life must
@@ -165,7 +165,7 @@ final class CalyxWindowControllerInitialSizeTests: XCTestCase {
         )
     }
 
-    // MARK: - Single tab/pane, not restoring (RED-proving)
+    // MARK: - Single tab/pane, not restoring (pins the fix)
 
     /// With exactly one group/tab/pane and outside the restoring window,
     /// applyInitialSize MUST resize the window's content area to the
@@ -192,9 +192,9 @@ final class CalyxWindowControllerInitialSizeTests: XCTestCase {
         )
     }
 
-    // MARK: - One-shot guard (code review follow-up)
+    // MARK: - One-shot guard
 
-    /// Direct sequel to the RED-proving test above: once `applyInitialSize`
+    /// Direct sequel to the test above: once `applyInitialSize`
     /// has successfully resized the window once, a SECOND call (same
     /// single-pane shape, still not restoring -- e.g. a later
     /// `GHOSTTY_ACTION_INITIAL_SIZE` re-fire from a font-size change or a

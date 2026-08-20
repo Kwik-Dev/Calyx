@@ -2,7 +2,7 @@
 //  HistoryPersistenceToggleCoordinatorTests.swift
 //  CalyxTests
 //
-//  TDD Red phase, P6 RED2 (R-B3): the Sessions settings toggle for
+//  The Sessions settings toggle for
 //  historyPersistenceEnabled has no existing testable propagation seam
 //  to follow -- SettingsWindowController's existing toggle handlers
 //  (persistentSessionsDidChange, agentResumeDidChange, ...) each write
@@ -16,7 +16,7 @@
 //  retrofitting a #if DEBUG singleton-override property onto
 //  SettingsWindowController itself.
 //
-//  PROPOSED API (P6 RED2 investigation note): HistoryPersistenceToggleCoordinator
+//  THE API: HistoryPersistenceToggleCoordinator
 //  .historyPersistenceEnabledDidChange(_:daemonClient:) persists the new
 //  value to SessionSettings.historyPersistenceEnabled AND propagates it
 //  live to whatever daemon is currently running via
@@ -29,14 +29,10 @@
 //  this from a fire-and-forget Task, mirroring every other write-op
 //  call site in this codebase.
 //
-//  Held-out compile-RED (see SessionCommandSynthesizerRemoteAttachTests's
-//  header for this codebase's convention): HistoryPersistenceToggleCoordinator
-//  does not exist yet anywhere in the codebase, so this file fails to
-//  compile until the Green phase adds it (together with
+//  Under test: HistoryPersistenceToggleCoordinator, on top of
 //  SessionSettings.historyPersistenceEnabled and
-//  SessionDaemonClientProtocol.setHistoryEnabled(_:), both introduced by
-//  sibling RED files this same round). That compile failure IS this
-//  file's RED evidence.
+//  SessionDaemonClientProtocol.setHistoryEnabled(_:) (both covered by
+//  sibling files).
 //
 //  Coverage:
 //  - Flipping the setting on persists historyPersistenceEnabled = true

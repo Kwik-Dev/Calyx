@@ -2,8 +2,8 @@
 //  CalyxWindowControllerRemoteKillRoutingTests.swift
 //  CalyxTests
 //
-//  P5 (remote sessions) RED phase, BUG 1 (five-angle convergence review
-//  finding), contract 1b (controller level): CalyxWindowController
+//  Remote sessions, controller level. THE DEFECT:
+//  CalyxWindowController
 //  .killSessionIfPersistent (~:708-723) never consults SessionRef.host
 //  before dispatching its kill through SessionKillTracker.track --
 //  closing a remote pane always calls SessionDaemonClient.shared.kill(id:),
@@ -64,14 +64,9 @@
 //  .track dispatch above. `host` is `nil` for a local kill, non-nil for a
 //  remote kill. `nil` (the default) leaves production behavior unchanged.
 //
-//  Held-out compile-RED file per this codebase's established convention:
-//  neither the observer seam above, nor killSessionIfPersistent's
-//  host-routing branch, nor SessionDaemonClient.killRemote(host:sessionID:)
-//  (see SessionDaemonClientKillRemoteTests, contract 1a) exist yet.
-//  Expected to FAIL TO COMPILE until the Green phase adds them. That
-//  compile failure IS this file's RED evidence. Must be excluded from the
-//  build while running the rest of the round's RED suite and verified
-//  separately for its own specific compiler errors.
+//  Under test: the observer seam above, killSessionIfPersistent's
+//  host-routing branch, and SessionDaemonClient.killRemote(host:sessionID:)
+//  (see SessionDaemonClientKillRemoteTests).
 //
 //  Drives the real session.kill command-palette handler (exactly like
 //  SessionCommandPaletteTests) against TwoPaneSessionFixture, now with

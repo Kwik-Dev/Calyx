@@ -9,8 +9,7 @@
 //  - showCommandPalette defaults to false
 //  - showCommandPalette toggles correctly
 //
-//  Note: These tests MUST FAIL (Red phase) because `showCommandPalette`
-//  does not yet exist on WindowSession.
+//  `showCommandPalette` is a WindowSession property.
 //
 
 import XCTest

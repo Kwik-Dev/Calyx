@@ -3,8 +3,8 @@
 //  CalyxTests
 //
 //  Stress test for AwaitBridge<Value>'s exactly-once resume discipline,
-//  specifically the fix for the cancel()-races-resume() interleaving
-//  found in the P1 final review gate: an earlier version of
+//  specifically the fix for the cancel()-races-resume() interleaving:
+//  an earlier version of
 //  `cancel(resumingWith:)` split its work across two separate lock
 //  acquisitions (set `isCancelled`, unlock, THEN call `resume(with:)`,
 //  which re-locks), leaving a window in which a concurrent

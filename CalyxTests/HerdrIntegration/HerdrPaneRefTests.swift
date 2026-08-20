@@ -2,7 +2,7 @@
 //  HerdrPaneRefTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for HerdrPaneRef -- a Calyx-internal value type pairing
+//  Covers HerdrPaneRef -- a Calyx-internal value type pairing
 //  which herdr socket a pane lives on with that pane's own wire id
 //  ({socketPath, paneID}). This pairing is already treated as meaningful
 //  elsewhere in this codebase: HerdrStableID.make(socketPath:paneID:)

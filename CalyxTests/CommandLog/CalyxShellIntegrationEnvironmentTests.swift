@@ -2,7 +2,7 @@
 //  CalyxShellIntegrationEnvironmentTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (P4, command-log shell integration env injection).
+//  Covers command-log shell integration env injection.
 //  Mirrors GhosttyResourcesDirEnvironmentTests' real-process-environment
 //  save/restore convention (this codebase's established precedent for
 //  this exact kind of direct setenv/getenv mutation -- see
@@ -107,7 +107,7 @@ final class CalyxShellIntegrationEnvironmentTests: XCTestCase {
     }
 
     func test_apply_reapplyWhileZdotdirAlreadyOurs_doesNotClobberTheSavedOriginal() {
-        // Review finding: a re-`apply()` call (e.g. a second surface
+        // A re-`apply()` call (e.g. a second surface
         // launching, or a Settings toggle flip) while ZDOTDIR ALREADY
         // points at our own installed zsh dir (the previous apply()'s
         // own effect) must NOT re-capture that as "the original" --
@@ -150,7 +150,7 @@ final class CalyxShellIntegrationEnvironmentTests: XCTestCase {
     }
 
     func test_apply_reapplyWithoutRemove_doesNotDuplicateRootInXdgDataDirs() {
-        // Review finding: a re-`apply()` call (e.g. a second surface
+        // A re-`apply()` call (e.g. a second surface
         // launching, or a Settings toggle flip) without an intervening
         // `remove()` must not append root a second time -- ZDOTDIR
         // already got this same re-apply idempotency; XDG_DATA_DIRS is
@@ -196,7 +196,7 @@ final class CalyxShellIntegrationEnvironmentTests: XCTestCase {
         // normal case (current value still points at our own installed
         // dir) -- proven first so the negative assertion below is caused
         // specifically by the deliberate mismatch, not by remove() being
-        // a no-op in general (true of today's RED-phase stub either way).
+        // a no-op in general.
         setenv(originalZdotdirVariableName, "/Users/alice/.config/zsh", 1)
         setenv(zdotdirVariableName, expectedZdotdir, 1)
         CalyxShellIntegrationEnvironment.remove(rootDirectory: root)
@@ -213,7 +213,7 @@ final class CalyxShellIntegrationEnvironmentTests: XCTestCase {
     }
 
     func test_remove_unconditionallyUnsetsCalyxZshZdotdirEvenWhenZdotdirNoLongerOurs() {
-        // Review finding: CALYX_ZSH_ZDOTDIR is purely our own internal
+        // CALYX_ZSH_ZDOTDIR is purely our own internal
         // bookkeeping variable -- remove() must clear it as part of
         // undoing everything apply() might have set, regardless of
         // whether the ZDOTDIR-restore branch itself even ran.
@@ -256,7 +256,7 @@ final class CalyxShellIntegrationEnvironmentTests: XCTestCase {
     }
 
     func test_remove_whenStrippingRootLeavesExactlyTheFishDefault_unsetsXdgDataDirsEntirely() {
-        // Review finding: apply() initializes XDG_DATA_DIRS to
+        // apply() initializes XDG_DATA_DIRS to
         // "<root>:/usr/local/share:/usr/share" when it was unset --
         // remove() can't know statefully (across process launches)
         // whether a given apply() initialized vs. appended, so it

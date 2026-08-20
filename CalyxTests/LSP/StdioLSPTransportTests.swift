@@ -2,7 +2,7 @@
 //  StdioLSPTransportTests.swift
 //  Calyx
 //
-//  RED-phase regression tests targeting four known defects in
+//  Regression tests targeting four known defects in
 //  `StdioLSPTransport`:
 //
 //    1. No `deinit` ever terminates the spawned child. Dropping the
@@ -245,9 +245,8 @@ final class StdioLSPTransportTests: XCTestCase {
         // Allow the stderr drain handler to read the 1MB burst.
         try await Task.sleep(nanoseconds: 1_000_000_000) // 1s
 
-        // RED-PHASE SIGNAL: `recentStderr()` does NOT exist on
-        // StdioLSPTransport yet. This call will not compile until the
-        // swift-specialist adds a bounded ring-buffer accessor.
+        // `recentStderr()` is StdioLSPTransport's bounded ring-buffer
+        // accessor.
         let tail = await transport.recentStderr()
 
         XCTAssertLessThanOrEqual(

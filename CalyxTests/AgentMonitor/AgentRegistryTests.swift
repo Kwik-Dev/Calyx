@@ -347,7 +347,7 @@ final class AgentRegistryTests: XCTestCase {
     }
 
     func test_notification_matchingSessionNilMessage_setsBlocked() {
-        // Contract updated post-review: the hooks config's
+        // The hooks config's
         // `matcher: "permission_prompt"` already restricts which
         // `Notification`s reach the registry at all, so a nil message is
         // trusted as blocked rather than left unchanged. The substring
@@ -504,7 +504,7 @@ final class AgentRegistryTests: XCTestCase {
     }
 
     func test_sessionMismatch_entryNotDoneButEventForwardMoving_replacesEntry() {
-        // Contract added post-review: a forward-moving event
+        // A forward-moving event
         // (UserPromptSubmit/PreToolUse/PostToolUse) for a different,
         // unseen session means a new Claude Code session is genuinely
         // under way on this pane — most likely because IPC was enabled
@@ -548,7 +548,7 @@ final class AgentRegistryTests: XCTestCase {
 
     func test_handleSurfaceDestroyed_removesTitleHeuristicEntry() {
         let registry = AgentRegistry()
-        // C1 fix: handleTitleChange only creates a row while the server
+        // handleTitleChange only creates a row while the server
         // is running -- see that method's own doc comment.
         registry.markServerStarted()
         let surfaceID = UUID()
@@ -566,7 +566,7 @@ final class AgentRegistryTests: XCTestCase {
 
     func test_handleTitleChange_unregisteredSurfaceWorkingTitle_createsTitleHeuristicEntry() {
         let registry = AgentRegistry()
-        // C1 fix: handleTitleChange only creates a row while the server
+        // handleTitleChange only creates a row while the server
         // is running -- see that method's own doc comment.
         registry.markServerStarted()
         let surfaceID = UUID()
@@ -580,13 +580,13 @@ final class AgentRegistryTests: XCTestCase {
     }
 
     func test_handleTitleChange_serverNotRunning_neverCreatesARow() {
-        // C1 fix / regression pin: the herdr-connected + IPC-disabled
-        // combination this fix targets -- an external (herdr) row keeps
-        // the Agents sidebar visible (AgentSidebarGate) even while
-        // isServerRunning is false, so without this guard a title-change
-        // notification arriving in that state would create a
-        // .titleHeuristic row with no way to ever retire (see
-        // handleTitleChange's own doc comment for the full reasoning).
+        // Regression pin for the herdr-connected + IPC-disabled
+        // combination: an external (herdr) row keeps the Agents sidebar
+        // visible (AgentSidebarGate) even while isServerRunning is
+        // false, so without the guard a title-change notification
+        // arriving in that state would create a .titleHeuristic row with
+        // no way to ever retire (see handleTitleChange's own doc comment
+        // for the full reasoning).
         let registry = AgentRegistry()
         XCTAssertFalse(registry.isServerRunning, "Precondition: a fresh registry has the server stopped")
         registry.upsertExternalEntry(AgentEntry(
@@ -619,7 +619,7 @@ final class AgentRegistryTests: XCTestCase {
 
     func test_titleHeuristicEntry_promotedToHooksOnSubsequentHookEvent() {
         let registry = AgentRegistry()
-        // C1 fix: handleTitleChange only creates a row while the server
+        // handleTitleChange only creates a row while the server
         // is running -- see that method's own doc comment.
         registry.markServerStarted()
         let surfaceID = UUID()
@@ -701,7 +701,7 @@ final class AgentRegistryTests: XCTestCase {
 
     func test_handleTitleChange_setsClaudeCodeKind() {
         let registry = AgentRegistry()
-        // C1 fix: handleTitleChange only creates a row while the server
+        // handleTitleChange only creates a row while the server
         // is running -- see that method's own doc comment.
         registry.markServerStarted()
         let surfaceID = UUID()
@@ -984,11 +984,11 @@ final class AgentRegistryTests: XCTestCase {
                        "A stale .blocked entry must never be swept")
     }
 
-    // MARK: - Round 3: handleScreenClassification (Herdr layer 2)
+    // MARK: - handleScreenClassification (Herdr layer 2)
 
     func test_handleScreenClassification_hooksEntryUnaffected_titleHeuristicEntryReflectsClassification() {
         let registry = AgentRegistry()
-        // C1 fix: handleTitleChange only creates a row while the server
+        // handleTitleChange only creates a row while the server
         // is running -- see that method's own doc comment.
         registry.markServerStarted()
         let hooksSurface = UUID()
@@ -1014,7 +1014,7 @@ final class AgentRegistryTests: XCTestCase {
 
     func test_handleScreenClassification_titleHeuristicEntry_reflectsWorkingThenNilBecomesIdle() {
         let registry = AgentRegistry()
-        // C1 fix: handleTitleChange only creates a row while the server
+        // handleTitleChange only creates a row while the server
         // is running -- see that method's own doc comment.
         registry.markServerStarted()
         let surfaceID = UUID()
@@ -1055,11 +1055,11 @@ final class AgentRegistryTests: XCTestCase {
                     "An unregistered surface with no recognized pattern must not create a row at all")
     }
 
-    // MARK: - Round 3: handleProgressReport (OSC 9;4)
+    // MARK: - handleProgressReport (OSC 9;4)
 
     func test_handleProgressReport_hooksEntryUnaffected_heuristicEntryReflectsActiveState() {
         let registry = AgentRegistry()
-        // C1 fix: handleTitleChange only creates a row while the server
+        // handleTitleChange only creates a row while the server
         // is running -- see that method's own doc comment.
         registry.markServerStarted()
         let hooksSurface = UUID()
@@ -1085,7 +1085,7 @@ final class AgentRegistryTests: XCTestCase {
         registry.reset()
     }
 
-    // MARK: - Round 3: hooksIssues
+    // MARK: - hooksIssues
 
     func test_setHooksIssues_reflectsValue_andResetClears() {
         let registry = AgentRegistry()
@@ -1134,9 +1134,9 @@ final class AgentRegistryTests: XCTestCase {
         registry.reset()
     }
 
-    // MARK: - Round 3: unread message badges (peer binding + updateInbox)
+    // MARK: - Unread message badges (peer binding + syncInboxCounts)
 
-    func test_handleHookEvent_preToolUseWithIpcSelfPeerID_learnsBindingReflectedViaUpdateInbox() {
+    func test_handleHookEvent_preToolUseWithIpcSelfPeerID_learnsBindingReflectedViaSyncInboxCounts() {
         let registry = AgentRegistry()
         let boundSurface = UUID()
         let peerID = UUID()
@@ -1152,16 +1152,16 @@ final class AgentRegistryTests: XCTestCase {
         let unboundSurface = UUID()
         registry.handleHookEvent(event("SessionStart", sessionID: "session-b"), surfaceID: unboundSurface)
 
-        registry.updateInbox(peerID: peerID, count: 3)
-        registry.updateInbox(peerID: UUID(), count: 99)  // an unknown / unbound peer
+        registry.syncInboxCounts([peerID: 3])
+        registry.syncInboxCounts([UUID(): 99])  // an unknown / unbound peer
 
         XCTAssertEqual(registry.entries[boundSurface]?.unreadCount, 3,
-                       "updateInbox must set unreadCount on the surface bound to this peer via PreToolUse")
+                       "syncInboxCounts must set unreadCount on the surface bound to this peer via PreToolUse")
         XCTAssertEqual(registry.entries[unboundSurface]?.unreadCount, 0,
                        "A peer with no bound surface must not affect any entry's unreadCount")
     }
 
-    func test_updateInbox_bindingForgottenOnHandleSurfaceDestroyed() {
+    func test_peerBinding_forgottenOnHandleSurfaceDestroyed() {
         let registry = AgentRegistry()
         let surfaceID = UUID()
         let peerID = UUID()
@@ -1170,9 +1170,9 @@ final class AgentRegistryTests: XCTestCase {
                        ipcSelfPeerID: peerID.uuidString),
             surfaceID: surfaceID
         )
-        registry.updateInbox(peerID: peerID, count: 5)
+        registry.syncInboxCounts([peerID: 5])
         XCTAssertEqual(registry.entries[surfaceID]?.unreadCount, 5,
-                       "updateInbox must set unreadCount for the bound surface")
+                       "syncInboxCounts must set unreadCount for the bound surface")
 
         registry.handleSurfaceDestroyed(surfaceID: surfaceID)
         XCTAssertNil(registry.entries[surfaceID], "Precondition: destroying the surface removes its entry")
@@ -1181,13 +1181,13 @@ final class AgentRegistryTests: XCTestCase {
         // inbox again: the old binding must have been forgotten, so the
         // fresh entry must not retroactively pick up the stale count.
         registry.handleHookEvent(event("SessionStart", sessionID: "session-c"), surfaceID: surfaceID)
-        registry.updateInbox(peerID: peerID, count: 9)
+        registry.syncInboxCounts([peerID: 9])
 
         XCTAssertEqual(registry.entries[surfaceID]?.unreadCount, 0,
                        "A destroyed surface's peer binding must not survive its re-registration")
     }
 
-    func test_updateInbox_bindingForgottenOnReset() {
+    func test_peerBinding_forgottenOnReset() {
         let registry = AgentRegistry()
         let surfaceID = UUID()
         let peerID = UUID()
@@ -1196,19 +1196,19 @@ final class AgentRegistryTests: XCTestCase {
                        ipcSelfPeerID: peerID.uuidString),
             surfaceID: surfaceID
         )
-        registry.updateInbox(peerID: peerID, count: 4)
+        registry.syncInboxCounts([peerID: 4])
         XCTAssertEqual(registry.entries[surfaceID]?.unreadCount, 4,
-                       "updateInbox must set unreadCount for the bound surface before reset")
+                       "syncInboxCounts must set unreadCount for the bound surface before reset")
 
         registry.reset()
         registry.handleHookEvent(event("SessionStart", sessionID: "session-d"), surfaceID: surfaceID)
-        registry.updateInbox(peerID: peerID, count: 8)
+        registry.syncInboxCounts([peerID: 8])
 
         XCTAssertEqual(registry.entries[surfaceID]?.unreadCount, 0,
                        "reset() must forget peer bindings so a re-registered surface doesn't inherit the old peer's count")
     }
 
-    // MARK: - Round 3 fix: register_peer PostToolUse binding + 1 peer = 1 surface
+    // MARK: - register_peer PostToolUse binding + 1 peer = 1 surface
 
     func test_handleHookEvent_postToolUseRegisterPeerResponse_learnsBinding() {
         let registry = AgentRegistry()
@@ -1220,7 +1220,7 @@ final class AgentRegistryTests: XCTestCase {
                        ipcSelfPeerID: peerID.uuidString),
             surfaceID: surfaceID
         )
-        registry.updateInbox(peerID: peerID, count: 2)
+        registry.syncInboxCounts([peerID: 2])
 
         XCTAssertEqual(registry.entries[surfaceID]?.unreadCount, 2,
                        "A register_peer PostToolUse's self-reported peer ID must bind the surface " +
@@ -1230,7 +1230,7 @@ final class AgentRegistryTests: XCTestCase {
     func test_bindSurface_newBindingForSamePeer_replacesOldSurfaceBinding() {
         // "1 peer = 1 surface": rebinding peerID to a new surface must
         // remove its previous surface's binding, not let both surfaces
-        // receive updateInbox for the same peer.
+        // receive that peer's inbox count.
         let registry = AgentRegistry()
         let peerID = UUID()
         let oldSurface = UUID()
@@ -1247,16 +1247,16 @@ final class AgentRegistryTests: XCTestCase {
             surfaceID: newSurface
         )
 
-        registry.updateInbox(peerID: peerID, count: 7)
+        registry.syncInboxCounts([peerID: 7])
 
         XCTAssertEqual(registry.entries[newSurface]?.unreadCount, 7,
-                       "The new surface must receive updateInbox for the rebound peer")
+                       "The new surface must receive the rebound peer's inbox count")
         XCTAssertEqual(registry.entries[oldSurface]?.unreadCount, 0,
-                       "The old surface's stale binding must no longer receive updateInbox for this peer")
+                       "The old surface's stale binding must no longer receive this peer's inbox count")
     }
 
     func test_bindSurface_doubleSteal_surfaceMovesToPeerThatHadADifferentSurface_endsAsCleanBijection() {
-        // The "double-steal" case (post-review follow-up): surface A
+        // The "double-steal" case: surface A
         // moves off its own old peer P1 AND onto peer P2, where P2 was
         // itself already bound to a different surface B — both
         // invalidation branches of bindSurface fire in the same call.
@@ -1287,14 +1287,14 @@ final class AgentRegistryTests: XCTestCase {
             surfaceID: surfaceA
         )
 
-        registry.updateInbox(peerID: peer2, count: 9)
-        registry.updateInbox(peerID: peer1, count: 99)
+        registry.syncInboxCounts([peer2: 9])
+        registry.syncInboxCounts([peer1: 99])
 
         XCTAssertEqual(registry.entries[surfaceA]?.unreadCount, 9,
-                       "A must receive updateInbox for P2, the peer it just rebound to")
+                       "A must receive P2's inbox count, the peer it just rebound to")
         XCTAssertEqual(registry.entries[surfaceB]?.unreadCount, 0,
                        "B's stale binding to P2 must be fully evicted — B must not receive P2's " +
-                       "updateInbox anymore")
+                       "inbox count anymore")
 
         XCTAssertEqual(Set(registry.boundPeerIDs), [peer2],
                        "Only P2 must remain bound after the double-steal: P1 (A's old peer) is fully " +
@@ -1302,7 +1302,7 @@ final class AgentRegistryTests: XCTestCase {
                        "bindSurface fired correctly in the same call")
     }
 
-    // MARK: - Round 3: boundPeerIDs / syncInboxCounts (batch badge sync)
+    // MARK: - boundPeerIDs / syncInboxCounts (batch badge sync)
 
     func test_boundPeerIDs_reflectsEveryCurrentlyBoundPeer() {
         let registry = AgentRegistry()
@@ -1361,7 +1361,7 @@ final class AgentRegistryTests: XCTestCase {
                        ipcSelfPeerID: peerID.uuidString),
             surfaceID: surfaceID
         )
-        registry.updateInbox(peerID: peerID, count: 4)
+        registry.syncInboxCounts([peerID: 4])
         XCTAssertEqual(registry.entries[surfaceID]?.unreadCount, 4)
 
         registry.syncInboxCounts([:])
@@ -1370,7 +1370,7 @@ final class AgentRegistryTests: XCTestCase {
                        "An empty/unrelated counts map must not zero out a surface's last known unreadCount")
     }
 
-    // MARK: - Round 3 fix: heuristic row retirement (miss-streak)
+    // MARK: - Heuristic row retirement (miss-streak)
 
     func test_handleScreenClassification_fiveConsecutiveNilMisses_removesHeuristicRow() {
         let registry = AgentRegistry()
@@ -1415,11 +1415,11 @@ final class AgentRegistryTests: XCTestCase {
 
     func test_handleScreenClassification_missStreakResetByTitleWorkingSignal() {
         let registry = AgentRegistry()
-        // C1 fix: handleTitleChange (called below, on an already-existing
+        // handleTitleChange (called below, on an already-existing
         // titleHeuristic row) only resets the miss streak while the
         // server is running -- see that method's own doc comment. The
         // row itself is created via handleScreenClassification, which
-        // this test's own C1-independent call site does not gate.
+        // does not gate row creation on the server running.
         registry.markServerStarted()
         let surfaceID = UUID()
         registry.handleScreenClassification(surfaceID: surfaceID, state: .working)
@@ -1515,9 +1515,9 @@ final class AgentRegistryTests: XCTestCase {
                         "the surface was promoted to .hooks")
     }
 
-    // MARK: - Round 3 fix: heuristic signal arbitration (blocked protection)
+    // MARK: - Heuristic signal arbitration (blocked protection)
 
-    func test_applyHeuristicState_blockedNotClearedByNonAuthoritativeProgressReport() {
+    func test_heuristicApply_blockedNotClearedByNonAuthoritativeProgressReport() {
         // Regression: a titleHeuristic row's .blocked state (set by a
         // screen classification that saw an approval prompt) must not be
         // cleared by a lower-confidence progress-report signal going
@@ -1534,7 +1534,7 @@ final class AgentRegistryTests: XCTestCase {
                        "A progress-report isActive=false must not clear a .blocked heuristic row")
     }
 
-    func test_applyHeuristicState_blockedNotClearedByNonAuthoritativeTitleChange() {
+    func test_heuristicApply_blockedNotClearedByNonAuthoritativeTitleChange() {
         // Regression: same protection against a title-heuristic signal
         // (spinner glyph, i.e. "still working") flapping a .blocked row
         // back to .working.
@@ -1549,7 +1549,7 @@ final class AgentRegistryTests: XCTestCase {
                        "A title-heuristic working signal must not clear a .blocked heuristic row")
     }
 
-    func test_applyHeuristicState_blockedClearedOnlyByAuthoritativeScreenNilResult() {
+    func test_heuristicApply_blockedClearedOnlyByAuthoritativeScreenNilResult() {
         // The complementary case: a screen classification's own miss
         // (nil, falling back to idle) — the authoritative source — DOES
         // clear .blocked, unlike the non-authoritative signals above.
@@ -1564,7 +1564,7 @@ final class AgentRegistryTests: XCTestCase {
                        "A screen classification's own non-blocked (nil -> idle) result must clear .blocked")
     }
 
-    func test_applyHeuristicState_sameStateWriteDoesNotRefreshLastEventAt() {
+    func test_heuristicApply_sameStateWriteDoesNotRefreshLastEventAt() {
         // (a) "don't write an identical state" — verified indirectly via
         // lastEventAt, since AgentEntry equality would otherwise make a
         // same-state no-op write unobservable.
@@ -1580,7 +1580,7 @@ final class AgentRegistryTests: XCTestCase {
                        "Writing the same state again must not refresh lastEventAt (no-op write)")
     }
 
-    // MARK: - Round 4 review: async-delivery race guard for a just-blocked entry
+    // MARK: - Async-delivery race guard for a just-blocked entry
 
     func test_handleHookEvent_lateArrivingPreToolUseWithin1_5sOfBlocked_doesNotOverwriteBlocked() {
         let registry = AgentRegistry()
@@ -1603,10 +1603,10 @@ final class AgentRegistryTests: XCTestCase {
                        "a stale async-delivery race, not genuine progress")
     }
 
-    // Round 4 review follow-up: pins down the *accepted trade-off* this
-    // guard makes — not just that it correctly ignores a genuinely stale,
-    // out-of-order `PreToolUse`, but that it also drops a *legitimate*,
-    // unrelated tool call's `PreToolUse` landing in the same window, since
+    // Pins down the *accepted trade-off* this guard makes — not just
+    // that it correctly ignores a genuinely stale, out-of-order
+    // `PreToolUse`, but that it also drops a *legitimate*, unrelated
+    // tool call's `PreToolUse` landing in the same window, since
     // `AgentRegistry` has no `tool_name`/call-identity field to tell the
     // two apart at this layer. Mechanically identical to the "late
     // arriving" race test above; kept separate because it documents a
@@ -1634,9 +1634,9 @@ final class AgentRegistryTests: XCTestCase {
                        "the very next PostToolUse/Stop/UserPromptSubmit regardless")
     }
 
-    // Round 4 review follow-up: pins the window's exact boundary contract
-    // (`<`, not `<=`) — a PreToolUse arriving at *exactly* 1.5s must clear
-    // blocked, not be dropped.
+    // Pins the window's exact boundary contract (`<`, not `<=`) — a
+    // PreToolUse arriving at *exactly* 1.5s must clear blocked, not be
+    // dropped.
     func test_handleHookEvent_preToolUseAtExactly1_5sBoundary_clearsBlocked() {
         let registry = AgentRegistry()
         let surfaceID = UUID()
@@ -1728,22 +1728,36 @@ final class AgentRegistryTests: XCTestCase {
                        "Stop must still clear blocked to idle immediately, unlike PreToolUse")
     }
 
-    // MARK: - Round 4 review: isSurfaceBound
-
-    func test_isSurfaceBound_reflectsBindingState() {
+    // The window is anchored to the moment the row entered .blocked, not
+    // to the row's last accepted write. A second blocking Notification
+    // re-stamps lastEventAt while leaving the row blocked, and anchoring
+    // there would slide the window forward and swallow a PreToolUse that
+    // is genuinely outside it.
+    func test_handleHookEvent_repeatedBlockingNotification_doesNotSlideTheRaceWindow() {
         let registry = AgentRegistry()
         let surfaceID = UUID()
+        let base = Date()
 
-        XCTAssertFalse(registry.isSurfaceBound(surfaceID), "An unbound surface must report false")
-
+        registry.handleHookEvent(event("SessionStart"), surfaceID: surfaceID, now: base)
         registry.handleHookEvent(
-            AgentEvent(hookEventName: "PreToolUse", sessionID: "session-1", cwd: nil, message: nil,
-                       ipcSelfPeerID: UUID().uuidString),
-            surfaceID: surfaceID
+            event("Notification", message: "needs your permission"), surfaceID: surfaceID, now: base
         )
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .blocked)
 
-        XCTAssertTrue(registry.isSurfaceBound(surfaceID),
-                      "A surface bound via a hook-derived ipcSelfPeerID must report true")
+        // The same permission prompt reported again while the row is
+        // already blocked. It changes no state, only lastEventAt.
+        registry.handleHookEvent(
+            event("Notification", message: "needs your permission"),
+            surfaceID: surfaceID, now: base.addingTimeInterval(1.0)
+        )
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .blocked)
+
+        registry.handleHookEvent(event("PreToolUse"), surfaceID: surfaceID, now: base.addingTimeInterval(2.0))
+
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .working,
+                       "2.0s have elapsed since the row entered blocked, outside the 1.5s window, so this " +
+                       "PreToolUse is genuine forward progress and must clear blocked no matter how many " +
+                       "blocking Notifications re-stamped lastEventAt in between")
     }
 
     // MARK: - handlePaneCommandFinished (shell integration pane-exit signal)
@@ -2254,6 +2268,198 @@ final class AgentRegistryTests: XCTestCase {
         XCTAssertEqual(registry.entries[surfaceID]?.state, .done)
     }
 
+    // MARK: - sweepStaleEntries: an unanswered ghostty deferral
+
+    // The deferral above is only safe while Calyx's own shell
+    // integration actually answers it. Its phase: end POST can be lost
+    // (the shell body swallows a failed POST), and then nothing settles
+    // the row at all: Calyx never reports the end, and ghostty's own
+    // signal already deferred to the report that never came. The row
+    // sits at whatever it was, red included, until the pane is
+    // destroyed.
+    //
+    // ghostty's signal and Calyx's phase: end describe the same command
+    // completing and so arrive within milliseconds of each other, which
+    // makes a deferral Calyx never answered evidence that Calyx's report
+    // was lost. The sweep settles on that evidence.
+
+    func test_sweepStaleEntries_unansweredGhosttyDeferral_settlesTheRowToDone() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        let started = Date()
+        // A long-running foreground command: Calyx's integration reported
+        // its phase: start five minutes before the command finished.
+        let finished = started.addingTimeInterval(5 * 60)
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID, now: started)
+        registry.handleHookEvent(event("UserPromptSubmit", sessionID: "session-a"), surfaceID: surfaceID, now: started)
+        registry.recordCalyxShellIntegrationReported(surfaceID: surfaceID, now: started)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .working, "Precondition: a live hooks row")
+
+        let ghosttySettled = registry.handleGhosttyCommandFinished(surfaceID: surfaceID, exitCode: 0, now: finished)
+
+        XCTAssertFalse(ghosttySettled,
+                       "Precondition: ghostty still defers to Calyx's own integration for this surface")
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .working,
+                       "Precondition: the deferred signal itself must leave the row alone")
+        XCTAssertEqual(registry.entries[surfaceID]?.lastEventAt, started,
+                       "Precondition: the deferred signal must not stamp the row either")
+
+        // Calyx's matching phase: end never arrives.
+        registry.sweepStaleEntries(now: finished.addingTimeInterval(90))
+
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .done,
+                       "A ghostty deferral Calyx never answered means Calyx's own end report was lost, so " +
+                       "the sweep must settle the row -- without this nothing settles it by either route " +
+                       "and the row stays stuck until the pane is destroyed")
+        XCTAssertEqual(registry.entries[surfaceID]?.lastEventAt, started,
+                       "The sweep never stamps lastEventAt: the timestamp still means when the agent last " +
+                       "reported, and this settle is Calyx's own inference, not a report")
+    }
+
+    // The ordering trap. On a fish Ctrl-Z, Calyx's own suspend report and
+    // ghostty's pane-exit signal race, and Calyx's can land FIRST. A
+    // deferral recorded after Calyx already answered would then have
+    // nothing left to clear it, and the sweep would retire a job that is
+    // merely stopped. The grace window on how recently Calyx reported is
+    // what makes the dangerous ordering safe.
+
+    func test_sweepStaleEntries_calyxSuspendReportBeforeGhosttySignal_neverSettlesTheSuspendedRow() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        let base = Date()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID, now: base)
+        registry.handleHookEvent(event("UserPromptSubmit", sessionID: "session-a"), surfaceID: surfaceID, now: base)
+        // fish's own $status cannot signal a suspend, so its integration
+        // reports one through the separate suspended flag instead.
+        let calyxSettled = registry.handlePaneCommandFinished(
+            surfaceID: surfaceID, exitCode: 0, suspended: true, now: base
+        )
+        XCTAssertFalse(calyxSettled, "Precondition: fish's suspended flag must not settle the row")
+        let before = registry.entries[surfaceID]
+        XCTAssertEqual(before?.state, .working, "Precondition: still working after the suspend report")
+
+        // ghostty's signal for the same Ctrl-Z lands a moment later.
+        let ghosttySettled = registry.handleGhosttyCommandFinished(
+            surfaceID: surfaceID, exitCode: 0, now: base.addingTimeInterval(1)
+        )
+        XCTAssertFalse(ghosttySettled, "Precondition: ghostty defers, as it always has for this surface")
+        XCTAssertEqual(registry.entries[surfaceID], before, "Precondition: the deferred signal changes nothing")
+
+        registry.sweepStaleEntries(now: base.addingTimeInterval(90))
+
+        XCTAssertNotEqual(registry.entries[surfaceID]?.state, .done,
+                          "Calyx answered this command already, milliseconds before ghostty's signal for it " +
+                          "arrived -- treating that signal as unanswered would retire a job the user merely " +
+                          "suspended and is about to resume with fg")
+        XCTAssertEqual(registry.entries[surfaceID], before,
+                       "The suspended row must come through the sweep exactly as it went in")
+    }
+
+    // The same ordering trap with a hook event in the middle. A hook
+    // event and Calyx's own report are two independent POSTs describing
+    // one moment, and the hook one says nothing about whether Calyx's
+    // shell integration spoke. Losing that memory here would let the
+    // ghostty signal right behind it be recorded as a deferral nothing
+    // can ever answer, and the sweep would settle a row on it.
+
+    func test_sweepStaleEntries_hookEventBetweenCalyxReportAndGhosttySignal_neverSettlesTheRow() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        let base = Date()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID, now: base)
+        // Calyx's own integration reports for the pane, and the agent's
+        // own hook event lands milliseconds behind it.
+        registry.recordCalyxShellIntegrationReported(surfaceID: surfaceID, now: base)
+        registry.handleHookEvent(
+            event("UserPromptSubmit", sessionID: "session-a"),
+            surfaceID: surfaceID, now: base.addingTimeInterval(0.05)
+        )
+        let before = registry.entries[surfaceID]
+        XCTAssertEqual(before?.state, .working, "Precondition: a live hooks row")
+
+        // ghostty's own signal for the same moment arrives last.
+        let ghosttySettled = registry.handleGhosttyCommandFinished(
+            surfaceID: surfaceID, exitCode: 0, now: base.addingTimeInterval(0.1)
+        )
+        XCTAssertFalse(ghosttySettled, "Precondition: ghostty defers for a surface Calyx has reported on")
+        XCTAssertEqual(registry.entries[surfaceID], before, "Precondition: the deferred signal changes nothing")
+
+        registry.sweepStaleEntries(now: base.addingTimeInterval(90))
+
+        XCTAssertNotEqual(registry.entries[surfaceID]?.state, .done,
+                          "Calyx spoke moments before ghostty's signal, so that signal is answered already " +
+                          "and must never be recorded as a deferral -- a hook event arriving in between " +
+                          "says nothing about when Calyx last reported and must not wipe it")
+        XCTAssertEqual(registry.entries[surfaceID], before,
+                       "The live row must come through the sweep exactly as it went in")
+    }
+
+    func test_sweepStaleEntries_calyxAnsweredTheGhosttyDeferral_doesNotReSettleOrChurnTheRow() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        let started = Date()
+        let finished = started.addingTimeInterval(5 * 60)
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID, now: started)
+        registry.handleHookEvent(event("UserPromptSubmit", sessionID: "session-a"), surfaceID: surfaceID, now: started)
+        registry.recordCalyxShellIntegrationReported(surfaceID: surfaceID, now: started)
+        XCTAssertFalse(registry.handleGhosttyCommandFinished(surfaceID: surfaceID, exitCode: 0, now: finished),
+                       "Precondition: ghostty defers")
+
+        // Calyx's own phase: end lands right behind it and is the one
+        // that settles the row, exactly as it does today.
+        let calyxSettled = registry.handlePaneCommandFinished(
+            surfaceID: surfaceID, exitCode: 0, now: finished.addingTimeInterval(0.05)
+        )
+        XCTAssertTrue(calyxSettled, "Precondition: Calyx's own end report settles the row")
+        let before = registry.entries[surfaceID]
+        XCTAssertEqual(before?.state, .done, "Precondition")
+
+        registry.sweepStaleEntries(now: finished.addingTimeInterval(90))
+
+        XCTAssertEqual(registry.entries[surfaceID], before,
+                       "Calyx answered the deferral, so the sweep has nothing left to act on -- it must not " +
+                       "re-settle the row or churn its timestamp")
+    }
+
+    func test_sweepStaleEntries_settlingAnUnansweredDeferral_leavesPendingApprovalsAlone() {
+        // Only a Calyx-sourced settle over /command-event expires a
+        // surface's pending approvals, and only because it can tell a
+        // suspend apart from a real exit. This settle is ghostty-sourced,
+        // so it must stay bound to the row's colour and never cancel an
+        // approval request an agent may still be waiting on.
+        let registry = AgentRegistry()
+        let inbox = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let started = Date()
+        let finished = started.addingTimeInterval(5 * 60)
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID, now: started)
+        registry.handleHookEvent(
+            event("Notification", sessionID: "session-a",
+                  message: "Claude needs your permission to run this command"),
+            surfaceID: surfaceID, now: started
+        )
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .blocked,
+                       "Precondition: the stuck-red row this fix exists for, which the sweep's own " +
+                       "working-only staleness clause would never reach")
+        let request = ApprovalRequest(
+            id: UUID(), source: .mcpTool(name: "pane_run"), targetSurfaceID: surfaceID,
+            payload: "ls", createdAt: started
+        )
+        inbox.submit(request)
+        XCTAssertEqual(inbox.pending.map(\.id), [request.id], "Precondition")
+
+        registry.recordCalyxShellIntegrationReported(surfaceID: surfaceID, now: started)
+        XCTAssertFalse(registry.handleGhosttyCommandFinished(surfaceID: surfaceID, exitCode: 0, now: finished),
+                       "Precondition: ghostty defers")
+
+        registry.sweepStaleEntries(now: finished.addingTimeInterval(90))
+
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .done,
+                       "Precondition: the unanswered deferral settles even a blocked row")
+        XCTAssertEqual(inbox.pending.map(\.id), [request.id],
+                       "A ghostty-sourced settle must never expire a pending approval")
+    }
+
     // MARK: - Readers after a pane-signaled done (must not undo the settle)
 
     // handlePaneCommandFinished makes .done reachable for an
@@ -2540,11 +2746,11 @@ final class AgentRegistryTests: XCTestCase {
                        "The row must stay idle, not be settled to done by ghostty's fallback signal")
     }
 
-    // MARK: - reset(): heuristicMissStreaks is cleared wholesale
+    // MARK: - reset(): AgentRegistry.evidence is cleared wholesale
 
-    func test_reset_clearsHeuristicMissStreaks() {
+    func test_reset_clearsAgentEvidence() {
         // The deliberate opposite of calyxShellIntegrationReportedSurfaces's
-        // own survival above: heuristicMissStreaks IS cleared by reset(),
+        // own survival above: AgentRegistry.evidence IS cleared by reset(),
         // so a leftover miss count from before a server restart can never
         // combine with fresh misses afterward to retire a row prematurely.
         let registry = AgentRegistry()
@@ -2560,13 +2766,13 @@ final class AgentRegistryTests: XCTestCase {
 
         // The creation branch deliberately never touches the miss-streak
         // bookkeeping, so recreating the row this way cannot itself launder
-        // a leftover streak -- only reset() clearing heuristicMissStreaks
+        // a leftover streak -- only reset() clearing AgentRegistry.evidence
         // can.
         registry.handleScreenClassification(surfaceID: surfaceID, state: .working)
         registry.handleScreenClassification(surfaceID: surfaceID, state: nil)
 
         XCTAssertNotNil(registry.entries[surfaceID],
-                        "reset() must clear heuristicMissStreaks -- otherwise this one fresh miss since the row " +
+                        "reset() must clear AgentRegistry.evidence -- otherwise this one fresh miss since the row " +
                         "was recreated would combine with the 4 leaked misses from before reset() and retire a " +
                         "row that has only actually missed once since it came back")
     }
@@ -2594,7 +2800,8 @@ final class AgentRegistryTests: XCTestCase {
     func test_sweepStaleEntries_leavesStaleWorkingTitleHeuristicEntryUnchanged() {
         // The other half of the same guard: a .titleHeuristic row must
         // never be swept -- it retires itself through its own miss-streak
-        // bookkeeping (heuristicMissStreaks) instead of through staleness.
+        // bookkeeping (AgentRegistry.evidence's screenMissStreak) instead
+        // of through staleness.
         let registry = AgentRegistry()
         let surfaceID = UUID()
         registry.handleScreenClassification(surfaceID: surfaceID, state: .working)
@@ -2624,7 +2831,7 @@ final class AgentRegistryTests: XCTestCase {
                        ipcSelfPeerID: peerID.uuidString),
             surfaceID: surfaceID
         )
-        registry.updateInbox(peerID: peerID, count: 3)
+        registry.syncInboxCounts([peerID: 3])
         let precondition = registry.entries[surfaceID]
         XCTAssertEqual(precondition?.state, .working, "Precondition: a live .hooks row")
         XCTAssertEqual(precondition?.unreadCount, 3, "Precondition: unread badge set via the bound peer")

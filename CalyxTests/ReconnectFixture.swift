@@ -2,7 +2,7 @@
 //  ReconnectFixture.swift
 //  CalyxTests
 //
-//  Round-18 cleanup: SessionReconnectAttemptResetTimingTests,
+//  SessionReconnectAttemptResetTimingTests,
 //  SessionReconnectEstablishGraceSeamTests, and
 //  SessionReconnectGracePositiveSignalSeamTests each carried an
 //  identical `pumpRunLoop(timeout:until:)` helper and an identical
@@ -55,7 +55,7 @@ struct ReconnectFixture {
 /// group regardless of which is active, so `performReconnect` still
 /// finds this tab.
 ///
-/// - Parameter host: P5 (remote sessions) addition. `nil` (the default)
+/// - Parameter host: `nil` (the default)
 ///   matches every existing call site's local-session fixture exactly.
 ///   Non-nil carries a remote host on the fixture's `SessionRef`, for
 ///   tests asserting `performReconnect`'s remote-vs-local command

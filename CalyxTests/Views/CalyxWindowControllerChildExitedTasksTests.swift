@@ -2,9 +2,7 @@
 //  CalyxWindowControllerChildExitedTasksTests.swift
 //  CalyxTests
 //
-//  TDD Red phase for round-16 fix R16-2 (r16-fix-spec.md; evidence in
-//  r15-candidates.md): `processChildExited`'s `Task`, tracked in
-//  `childExitedTasks` (added R14-B, addendum item 2, so
+//  `processChildExited`'s `Task`, tracked in `childExitedTasks` (added so
 //  `windowWillClose` could cancel it alongside its `diffTasks`/
 //  `expandTasks` siblings), never removes its own entry once it
 //  completes, unlike `expandTasks[hash]`'s Task (see
@@ -27,7 +25,7 @@
 //
 //  Drives `processChildExited(surfaceView:)` directly rather than
 //  posting the real `.ghosttyShowChildExited` notification: that method
-//  is not `private` (P4 round-16 fix RED phase, mirroring
+//  is not `private` (mirroring
 //  `handleSessionReconnectDecision`'s own precedent, see its doc
 //  comment) specifically so this test can do so without also having to
 //  attach the fixture's `SurfaceView` into the real window's view
@@ -72,7 +70,7 @@ final class CalyxWindowControllerChildExitedTasksTests: XCTestCase {
         return OrdinaryPaneFixture(controller: controller, surfaceView: surfaceView, leafID: leafID)
     }
 
-    /// R16-2 (r16-fix-spec.md): `processChildExited`'s `Task` must
+    /// `processChildExited`'s `Task` must
     /// remove its own `childExitedTasks[surfaceID]` entry once it
     /// completes, mirroring `expandTasks[hash]`'s self-removing Task
     /// (`expandCommit(hash:)`). Against the CURRENT code, the Task never
@@ -87,7 +85,7 @@ final class CalyxWindowControllerChildExitedTasksTests: XCTestCase {
         let task = fixture.controller._childExitedTasksForTesting[fixture.leafID]
         XCTAssertNotNil(task,
                         "processChildExited must insert a Task into childExitedTasks keyed by the " +
-                        "surface's id (R14-B addendum item 2) as a precondition for this test")
+                        "surface's id as a precondition for this test")
 
         await task?.value
 

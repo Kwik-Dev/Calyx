@@ -2,7 +2,7 @@
 //  SessionRefTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for SessionRef.isValidULID: the restore-path guard
+//  Covers SessionRef.isValidULID: the restore-path guard
 //  that rejects a persisted SessionRef.sessionID that isn't shaped like
 //  a genuine ULID, before it ever reaches calyx-session attach.
 //

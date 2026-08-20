@@ -2,7 +2,7 @@
 //  CalyxMCPServerTerminalToolsTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for the terminal_* MCP tool surface wired into
+//  Covers the terminal_* MCP tool surface wired into
 //  CalyxMCPServer: tools/list advertises the 3 terminal_* tools, and
 //  tools/call dispatches them through MCPCommandLogBridge via the
 //  injected commandLogStore -- mirroring CalyxMCPServerLSPIntegrationTests'

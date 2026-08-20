@@ -4,7 +4,6 @@
 // Source of truth for AI agent state in the Agents sidebar. One surface
 // (pane) maps to at most one AgentEntry.
 
-import Darwin
 import Foundation
 
 @MainActor
@@ -13,58 +12,25 @@ final class AgentRegistry {
 
     static let shared = AgentRegistry()
 
-    /// Case-insensitive notification message substrings that indicate a
-    /// blocked (permission / input needed) agent. This is a server-side
-    /// backstop for the `Notification` hook's `matcher: "permission_prompt"`
-    /// filter configured by `ClaudeHooksConfigManager`: when the message is
-    /// present but doesn't match, state is left unchanged (a `Notification`
-    /// unrelated to permissions/input shouldn't flip the row to blocked).
-    /// A `nil` message *does* flip to `.blocked` — see `resultingState`.
-    static let blockedNotificationPatterns: [String] = [
-        "needs your permission",
-        "waiting for your input",
-    ]
-
-    /// `.working` entries idle this long without a new hook event are
-    /// treated as crashed (see `sweepStaleEntries(now:)`).
-    private static let staleWorkingThreshold: TimeInterval = 15 * 60
-
-    /// Consecutive `nil` `handleScreenClassification` results (no known
-    /// blocked/working pattern recognized) that retire (remove) a
-    /// `.titleHeuristic` row — at the screen poll's 2-second interval,
-    /// 5 misses is ~10 seconds. See `heuristicMissStreaks`'s doc comment.
-    private static let heuristicMissRetirementThreshold = 5
-
-    /// Hook events that represent forward progress within a session, used
-    /// by the session-mismatch reconciliation in `handleHookEvent` — see
-    /// its doc comment. `PermissionRequest` (Codex, Phase 2) is
-    /// deliberately excluded: unlike `UserPromptSubmit`/`PreToolUse`/
-    /// `PostToolUse`, seeing one for an unrecognized session isn't good
-    /// evidence of a genuine new session Calyx missed the `SessionStart`
-    /// for — it's at least as likely a stale/mismatched permission prompt
-    /// from a session that's already ending, and replacing the entry on
-    /// that basis would incorrectly flip an active row to `.blocked`.
-    private static let forwardMovingEventNames: Set<String> = [
-        "UserPromptSubmit", "PreToolUse", "PostToolUse",
-    ]
-
     private(set) var entries: [UUID: AgentEntry] = [:]
 
     /// Rows describing agents Calyx learned about from an external
     /// source (herdr's own event stream) rather than its own hooks or
     /// title/screen heuristics. Deliberately a SEPARATE store from
     /// `entries`, never merged into it: mixing the two would require
-    /// auditing every source-arbitration site in `handleHookEvent` /
-    /// `handleTitleChange` / `handleScreenClassification` (each already
-    /// reasons carefully about `.hooks` vs. `.titleHeuristic`
-    /// precedence) and forking `reset()`'s clearing semantics, whereas
-    /// separate storage makes "herdr rows survive `AgentRegistry.reset()`"
-    /// true by construction -- `reset()` only ever clears `entries`, so
-    /// it leaves this store alone without needing to know it exists.
+    /// auditing every source-arbitration clause in `AgentStateResolver`
+    /// (`resolveHookRow`'s source, session, and terminal-state guards,
+    /// plus the `heuristicApply` sub-clause the screen, title, and
+    /// progress clauses share, which together decide `.hooks` vs.
+    /// `.titleHeuristic` precedence) and forking `reset()`'s clearing
+    /// semantics, whereas separate storage makes "herdr rows survive
+    /// `AgentRegistry.reset()`" true by construction -- `reset()` only
+    /// ever clears `entries`, so it leaves this store alone without
+    /// needing to know it exists.
     /// Populated/depopulated via `upsertExternalEntry` /
-    /// `removeExternalEntry` / `removeAllExternalEntries` below; queried
-    /// via `hasExternalEntries`. `sortedEntries` merges both stores for
-    /// sidebar display -- see that property's doc comment.
+    /// `removeExternalEntry` below; queried via `hasExternalEntries`.
+    /// `sortedEntries` merges both stores for sidebar display -- see
+    /// that property's doc comment.
     private(set) var externalEntries: [UUID: AgentEntry] = [:]
 
     /// Human-readable descriptions of agent CLI config write failures,
@@ -89,16 +55,18 @@ final class AgentRegistry {
     var integrationIssues: [String] { configIssues + hooksIssues }
 
     /// Surface → peer ID bindings learned from a `PreToolUse`/
-    /// `PostToolUse` hook event carrying `AgentEvent.ipcSelfPeerID` (see
-    /// `handleHookEvent` and `bindSurface`). Kept in sync with
+    /// `PostToolUse` hook event carrying `AgentEvent.ipcSelfPeerID`
+    /// (`AgentStateResolver.resolveHook` reads it off the event and
+    /// reports it as `AgentResolution.learnedPeerID`; `apply` performs
+    /// the bind through `bindSurface`). Kept in sync with
     /// `peerToSurface`, its reverse — see that property's doc comment.
     /// Cleared per-surface on `handleSurfaceDestroyed`, and wholesale on
     /// `reset()`.
     private var surfaceToPeer: [UUID: UUID] = [:]
 
-    /// Reverse of `surfaceToPeer`, giving `updateInbox` / `syncInboxCounts`
-    /// an O(1), deterministic peer → surface lookup instead of a linear
-    /// scan of `surfaceToPeer` for a matching value (which was also
+    /// Reverse of `surfaceToPeer`, giving `syncInboxCounts` an O(1),
+    /// deterministic peer → surface lookup instead of a linear scan of
+    /// `surfaceToPeer` for a matching value (which was also
     /// order-dependent if more than one surface had ever mapped to the
     /// same peer). `bindSurface` enforces "1 peer = 1 surface": binding a
     /// peer to a new surface removes its previous surface's binding, so
@@ -106,21 +74,21 @@ final class AgentRegistry {
     /// stale in either direction.
     private var peerToSurface: [UUID: UUID] = [:]
 
-    /// Per-surface count of consecutive `nil` `handleScreenClassification`
-    /// results for a `.titleHeuristic` entry — sparse (only surfaces with
-    /// at least one miss have a key). Reset to absent (0) by a "positive"
-    /// signal from any heuristic source (a `.blocked`/`.working` screen
-    /// classification, a `.working` title classification, or an
-    /// `isActive == true` progress report); incremented only by a `nil`
-    /// screen classification. Reaching
-    /// `heuristicMissRetirementThreshold` removes the row entirely —
-    /// without this, a `.titleHeuristic` row for a pane whose Claude Code
-    /// process has long since exited (title reverted, no more on-screen
-    /// patterns) would sit at `.idle` in the sidebar forever. Cleared
-    /// per-surface on `handleSurfaceDestroyed` and whenever a hook event
-    /// is processed for the surface (a `.hooks`-sourced entry doesn't use
-    /// this bookkeeping at all), and wholesale on `reset()`.
-    private var heuristicMissStreaks: [UUID: Int] = [:]
+    /// Per-surface accumulated evidence a row itself cannot carry -- see
+    /// `AgentEvidence`. Sparse (only a surface some clause has actually
+    /// recorded something for has a key): `apply(_:surfaceID:)` drops a
+    /// surface's key the moment its evidence goes back to `.isEmpty`.
+    /// Reaching `AgentStateResolver.heuristicMissRetirementThreshold`
+    /// removes the row entirely — without this, a `.titleHeuristic` row
+    /// for a pane whose Claude Code process has long since exited (title
+    /// reverted, no more on-screen patterns) would sit at `.idle` in the
+    /// sidebar forever. Cleared per-surface on `handleSurfaceDestroyed`,
+    /// and wholesale on `reset()`. A hook event or MCP connection also
+    /// clears what Calyx merely inferred for the surface, as fresh
+    /// self-reported presence supersedes it, while leaving what Calyx's
+    /// own shell integration reported alone
+    /// (`AgentEvidence.clearingInferredEvidence`).
+    private var evidence: [UUID: AgentEvidence] = [:]
 
     /// Whether `CalyxMCPServer` currently has its IPC listener running.
     /// `AgentStatusView` observes this (not `CalyxMCPServer.isRunning`
@@ -212,7 +180,7 @@ final class AgentRegistry {
         entries.removeAll()
         surfaceToPeer.removeAll()
         peerToSurface.removeAll()
-        heuristicMissStreaks.removeAll()
+        evidence.removeAll()
         configIssues = []
         hooksIssues = []
         isServerRunning = false
@@ -232,12 +200,6 @@ final class AgentRegistry {
     /// `id` with no external entry. Never touches `entries`.
     func removeExternalEntry(id: UUID) {
         externalEntries.removeValue(forKey: id)
-    }
-
-    /// Clears every external entry. Never touches `entries` -- unlike
-    /// `reset()`, this is scoped to `externalEntries` alone.
-    func removeAllExternalEntries() {
-        externalEntries.removeAll()
     }
 
     /// Whether `externalEntries` currently holds at least one row.
@@ -272,323 +234,62 @@ final class AgentRegistry {
     /// for the same kind and not already `.done` only refresh presence
     /// and preserve the current screen-classified state.
     func handleMCPConnection(surfaceID: UUID, kind: String, now: Date = Date()) {
-        heuristicMissStreaks.removeValue(forKey: surfaceID)
-
-        if var existing = entries[surfaceID] {
-            if existing.source == .hooks, existing.kind == kind, existing.state != .done {
-                return
-            }
-            if existing.source == .mcpConnection, existing.kind == kind, existing.state != .done {
-                existing.lastEventAt = now
-                entries[surfaceID] = existing
-                return
-            }
-
-            let initialState = existing.source == .titleHeuristic ? existing.state : .idle
-            entries[surfaceID] = AgentEntry(
+        apply(
+            AgentStateResolver.resolve(
+                .mcpConnection(kind: kind),
                 surfaceID: surfaceID,
-                sessionID: nil,
-                source: .mcpConnection,
-                state: initialState,
-                cwd: existing.cwd,
-                kind: kind,
-                lastEventAt: now,
-                unreadCount: existing.unreadCount
-            )
-            return
-        }
-
-        entries[surfaceID] = AgentEntry(
-            surfaceID: surfaceID,
-            sessionID: nil,
-            source: .mcpConnection,
-            state: .idle,
-            cwd: nil,
-            kind: kind,
-            lastEventAt: now
+                current: entries[surfaceID],
+                evidence: evidence[surfaceID] ?? AgentEvidence(),
+                context: context(for: surfaceID),
+                now: now
+            ),
+            surfaceID: surfaceID
         )
     }
 
     // MARK: - Hook Events
 
-    /// Applies a decoded hook event to the registry. See the state
-    /// transition table in the AgentMonitor design doc:
-    /// - `SessionStart` for a surface with no existing `.hooks` entry, or
-    ///   one from a different session, unconditionally upserts (state
-    ///   resets to `.idle`). `SessionStart` for the *same* session -- a
-    ///   resumed session re-sending `SessionStart` with the same
-    ///   `session_id` (e.g. `codex resume --last`) -- preserves the
-    ///   existing state and only refreshes `cwd` / `lastEventAt`, so a
-    ///   mid-session compact does not visibly flash a `.working`/
-    ///   `.blocked` row back to idle. `.done` is the one state this does
-    ///   not preserve: a same-session re-send there is a session that had
-    ///   already ended and is now live again, so it resets state to
-    ///   `.idle` instead.
-    /// - `SubagentStop` (and any event name this registry does not
-    ///   recognize) is fully ignored: it never registers a surface and
-    ///   never changes an existing entry's state.
-    /// - Within a matching session, `.done` is otherwise left alone by
-    ///   every event except the `SessionStart` re-send above: each hook
-    ///   is an independent fire-and-forget POST, so a turn's own `Stop`
-    ///   can be delivered after the exit path's `SessionEnd` already
-    ///   settled the row (the same out-of-order delivery risk the
-    ///   `PreToolUse` guard below protects `.blocked` against). `.done`
-    ///   is reachable not only from a real `SessionEnd` here but from
-    ///   `handlePaneCommandFinished`'s pane-exit signal too, which
-    ///   excludes a stop-signal exit code (a suspended, still-alive
-    ///   foreground job) -- so however a row reached `.done`, that's
-    ///   unambiguous evidence the session genuinely ended, and this guard
-    ///   refuses every same-session event with no exception: an event
-    ///   that raced its own session's exit and lost is indistinguishable,
-    ///   at this point, from a genuinely resumed session's fresh
-    ///   activity. Only that `SessionStart` re-send or a session mismatch
-    ///   (below) can move a `.done` row again.
-    /// - Every other recognized event only applies when the surface is
-    ///   unregistered, or still `.titleHeuristic`- or `.mcpConnection`-
-    ///   sourced and not already `.done` (promoting it to `.hooks`), or
-    ///   its `sessionID` matches the entry's. A `.done` `.titleHeuristic`/
-    ///   `.mcpConnection` row is left untouched by this branch instead of
-    ///   wholesale-replaced -- see the guard's own comment below for why.
-    ///   A session mismatch replaces the entry when the existing one is
-    ///   `.done` (a stale session that has already ended) or the incoming
-    ///   event is forward-moving (`UserPromptSubmit` / `PreToolUse` / `PostToolUse`
-    ///   — a new session already under way that Calyx never saw a
-    ///   `SessionStart` for, e.g. because IPC was enabled mid-session).
-    ///   Otherwise — a mismatched `Stop` / `SessionEnd` / `Notification` —
-    ///   the event is discarded, since those are as likely to be a stale
-    ///   session's event arriving out of order (e.g. `/clear`'s old-session
-    ///   `SessionEnd` landing after the new session's first event) as a
-    ///   genuine new session. A mismatched `PermissionRequest` gets one more
-    ///   rescue: it also replaces an `.idle` (not just `.done`) existing
-    ///   entry — see `resultingState`'s doc comment for why `PermissionRequest`
-    ///   isn't simply added to `forwardMovingEventNames` instead. A missed
-    ///   `SessionStart` (IPC enabled mid-session or Calyx restarted) can
-    ///   leave a stale-but-idle entry on a pane; without this rescue a
-    ///   subsequent approval prompt for the real new session is discarded
-    ///   and the sidebar never shows it as blocked. `.working` and
-    ///   `.blocked` entries remain protected from a mismatched
-    ///   `PermissionRequest`, exactly as before.
+    /// Applies a decoded hook event to the registry via
+    /// `AgentStateResolver.resolve(.hook(...))`, whose `resolveHook`
+    /// clause owns every precedence rule an event answers to: the
+    /// `SessionStart` re-send, the unrecognized event, the terminal
+    /// `.done` row, and the session mismatch. See also the state
+    /// transition table in the AgentMonitor design doc.
+    ///
     /// - Parameter kind: The agent CLI this event came from (Phase 2:
     ///   Codex / OpenCode alongside the default Claude Code), forwarded by
     ///   `CalyxMCPServer.routeAgentEvent`'s `X-Calyx-Agent-Kind` header.
     ///   Applied only when this call creates or replaces an entry —
-    ///   `makeEntry` below — so a same-session continuation event (the
-    ///   `SessionStart` re-send branch, and the "same session" update path
-    ///   at the bottom of this method) never overwrites an existing
-    ///   entry's `kind` with this parameter's default.
+    ///   `AgentStateResolver.resolveHook`'s own `makeEntry` — so a
+    ///   same-session continuation event (that clause's `SessionStart`
+    ///   re-send branch, and its "same session" update path) never
+    ///   overwrites an existing entry's `kind` with this parameter's
+    ///   default.
     /// - Parameter now: Injectable for tests (defaults to `Date()`).
     ///   Notably used by the same-session update path's PreToolUse race
-    ///   guard below, which compares `now` against `existing.lastEventAt`.
+    ///   guard in `AgentStateResolver.resolveHook`, which compares `now`
+    ///   against the moment the row entered `.blocked`
+    ///   (`AgentEvidence.blockedSince`).
     func handleHookEvent(
         _ event: AgentEvent,
         surfaceID: UUID,
         kind: String = AgentEntry.claudeCodeKind,
         now: Date = Date()
     ) {
-        // A hook event is real self-reported evidence the pane is a live
-        // agent session — any leftover heuristic miss-streak bookkeeping
-        // (relevant only to `.titleHeuristic` rows) for this surface is
-        // stale from here on, whether this event promotes an existing
-        // `.titleHeuristic` row to `.hooks` or the surface was never
-        // heuristic-tracked at all (a no-op removal either way).
-        heuristicMissStreaks.removeValue(forKey: surfaceID)
-
-        // Learn the surface -> peer binding from a calyx-ipc PreToolUse's
-        // or PostToolUse's self-reported peer ID, independent of (and
-        // alongside) whatever entry mutation this event triggers below —
-        // see `AgentEvent.ipcSelfPeerID`'s doc comment. Every other
-        // event's `ipcSelfPeerID` is `nil`, so this is a no-op for them.
-        if let ipcSelfPeerID = event.ipcSelfPeerID, let peerUUID = UUID(uuidString: ipcSelfPeerID) {
-            bindSurface(surfaceID, toPeer: peerUUID)
-        }
-
-        func makeEntry(state: AgentState) -> AgentEntry {
-            AgentEntry(
+        apply(
+            AgentStateResolver.resolve(
+                .hook(event, kind: kind),
                 surfaceID: surfaceID,
-                sessionID: event.sessionID,
-                source: .hooks,
-                state: state,
-                cwd: event.cwd,
-                kind: kind,
-                lastEventAt: now
-            )
-        }
-
-        if event.hookEventName == "SessionStart" {
-            if let existing = entries[surfaceID], existing.source == .hooks, existing.sessionID == event.sessionID {
-                var updated = existing
-                updated.cwd = event.cwd
-                updated.lastEventAt = now
-                // A resumed session is live again, not the same finished
-                // one -- see this method's doc comment.
-                if existing.state == .done {
-                    updated.state = .idle
-                }
-                entries[surfaceID] = updated
-            } else {
-                entries[surfaceID] = makeEntry(state: .idle)
-            }
-            return
-        }
-
-        guard let newState = Self.resultingState(for: event) else { return }
-
-        guard let existing = entries[surfaceID], existing.source == .hooks else {
-            // A `.done` row is never wholesale-replaced here, regardless
-            // of its source: `handlePaneCommandFinished`'s pane-exit
-            // signal makes `.done` reachable for an `.mcpConnection` entry
-            // too (OpenCode, Hermes), and replacing it the moment a stray
-            // resolved event arrives would silently undo that settle --
-            // see this method's doc comment. Only `handleMCPConnection`'s
-            // own fresh initialize moves such a row off `.done`.
-            guard entries[surfaceID]?.state != .done else { return }
-            // Unregistered surface, or a `.titleHeuristic` entry not yet
-            // promoted: register/promote using this event's session/cwd.
-            entries[surfaceID] = makeEntry(state: newState)
-            return
-        }
-
-        guard existing.sessionID == event.sessionID else {
-            let isForwardMoving = Self.forwardMovingEventNames.contains(event.hookEventName)
-            let isPermissionRequestIdleRescue =
-                event.hookEventName == "PermissionRequest" && existing.state == .idle
-            guard existing.state == .done || isForwardMoving || isPermissionRequestIdleRescue else { return }
-            entries[surfaceID] = makeEntry(state: newState)
-            return
-        }
-
-        // A `.done` row is terminal within a session -- see this method's
-        // doc comment for why a late same-session event must not move it
-        // again.
-        guard existing.state != .done else { return }
-
-        // Round 4 review: `calyx-agent-hook`'s command entries all run
-        // `"async": true`, so the script's POST to the server never blocks
-        // Claude Code — two hooks fired moments apart in the real event
-        // order (a tool call's own `PreToolUse`, then almost immediately
-        // after, a *different* tool call's permission dialog appearing)
-        // can land at the server out of that order. A `PreToolUse`
-        // arriving within 1.5s of the moment this entry became `.blocked`
-        // is treated as exactly that stale async-delivery race rather than
-        // genuine forward progress, and is dropped here — otherwise it
-        // would flash the row back to `.working` for a beat even though
-        // the permission dialog the user actually sees is still up.
-        // `PostToolUse` / `Stop` / `UserPromptSubmit` are deliberately not
-        // covered by this guard: each of those only fires once the prompt
-        // has *actually* been resolved (the tool ran, or the user typed a
-        // new message), so they must keep clearing `.blocked` immediately,
-        // exactly as before. 1.5s is comfortably longer than realistic
-        // same-session hook delivery jitter and comfortably shorter than
-        // the time an actual human takes to click through a dialog.
-        //
-        // Accepted trade-off: this guard cannot distinguish the stale race
-        // above from a *genuinely new*, unrelated tool call's `PreToolUse`
-        // landing in the same 1.5s window right after a rejection — that
-        // legitimate event is dropped too, same as the stale one. The row
-        // stays visibly stale for at most 1.5s either way, and the very
-        // next `PostToolUse`/`Stop`/`UserPromptSubmit` (none of which this
-        // guard touches) corrects it immediately, so this was judged an
-        // acceptable cost for closing the more common stale-`.blocked`
-        // flash.
-        if existing.state == .blocked,
-           event.hookEventName == "PreToolUse",
-           now.timeIntervalSince(existing.lastEventAt) < 1.5 {
-            return
-        }
-
-        // `cwd` is not re-derived here: `SessionStart` already established
-        // it for the session's lifetime, and a Claude Code session's
-        // working directory doesn't change mid-session.
-        var updated = existing
-        updated.state = newState
-        updated.lastEventAt = now
-        entries[surfaceID] = updated
-    }
-
-    /// The state a recognized hook event resolves to, independent of any
-    /// registry/session guard. `nil` means the event carries no actionable
-    /// state change: either the event type is not tracked (`SubagentStop`,
-    /// unknown names), or it's a `Notification` with a non-nil message that
-    /// doesn't match `blockedNotificationPatterns`.
-    ///
-    /// A `Notification` with a *nil* message resolves to `.blocked` rather
-    /// than `nil`: the `matcher: "permission_prompt"` filter configured by
-    /// `ClaudeHooksConfigManager` already restricts which `Notification`s
-    /// fire this hook at all, so trusting that filter and defaulting to
-    /// blocked favors "false blocked" (a harmless extra red dot) over
-    /// "false idle" (a permission prompt the user never notices) when the
-    /// message field is absent or unparseable. The substring check exists
-    /// only to guard against an older Claude Code build that ignores the
-    /// matcher and fires `Notification` for unrelated messages too.
-    ///
-    /// `PermissionRequest` always resolves to `.blocked`, unconditionally —
-    /// unlike `Notification` there's no message-substring backstop to
-    /// apply, since this event's hook payload carries no equivalent field:
-    /// `calyx-agent-hook` exiting 0 with no output already guarantees the
-    /// hook never influences the CLI's own approval decision, so firing it
-    /// at all is a reliable signal the agent is waiting on the user.
-    /// Originally Codex-only (Phase 2); Round 4 also subscribes Claude
-    /// Code to it (`ClaudeHooksConfigManager`), alongside
-    /// `Notification`("permission_prompt"), because `PermissionRequest`
-    /// fires in sync with the permission dialog appearing while
-    /// `Notification` can lag it by several seconds. It's deliberately
-    /// absent from `forwardMovingEventNames`: see that property's doc
-    /// comment.
-    private static func resultingState(for event: AgentEvent) -> AgentState? {
-        switch event.hookEventName {
-        case "UserPromptSubmit", "PreToolUse", "PostToolUse":
-            return .working
-        case "Stop":
-            return .idle
-        case "SessionEnd":
-            return .done
-        case "PermissionRequest":
-            return .blocked
-        case "Notification":
-            guard let message = event.message else { return .blocked }
-            let isBlocked = blockedNotificationPatterns.contains {
-                message.range(of: $0, options: .caseInsensitive) != nil
-            }
-            return isBlocked ? .blocked : nil
-        default:
-            return nil
-        }
+                current: entries[surfaceID],
+                evidence: evidence[surfaceID] ?? AgentEvidence(),
+                context: context(for: surfaceID),
+                now: now
+            ),
+            surfaceID: surfaceID
+        )
     }
 
     // MARK: - Pane Command Lifecycle (Shell Integration)
-
-    /// POSIX signals that can only stop (suspend) a process, never
-    /// terminate it -- unlike every other signal, delivering one of these
-    /// leaves the process alive, waiting to be resumed (e.g. `fg` after a
-    /// shell reports it stopped). A shell reports `128 + signal` as its
-    /// exit status for a job a signal stopped or killed, so `128 + <one
-    /// of these>` is treated as evidence the pane's foreground process is
-    /// still alive -- see `handlePaneCommandFinished`. That evidence is
-    /// not certain: a process that genuinely exits with status 146 (or
-    /// 145/149/150) is indistinguishable from a suspend by this check
-    /// alone. The mistake is deliberately one-directional -- a false
-    /// "still alive" only leaves a `.hooks`/`.mcpConnection` row live
-    /// rather than settling it, never the reverse of wrongly settling a
-    /// row (and expiring its pending approvals) out from under an agent
-    /// that is actually still running.
-    private static let stopSignals: Set<Int32> = [SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU]
-
-    /// Whether `exitCode` is a shell's `128 + signal` report for one of
-    /// `stopSignals` -- i.e. positive evidence the pane's foreground job
-    /// was merely suspended, not exited. `exitCode > 128` is checked
-    /// before subtracting so an adversarial `exitCode` near `Int32.min`
-    /// (accepted as-is by `CommandEvent.decode`) can never underflow the
-    /// subtraction and trap; it also doubles as the only arithmetically
-    /// possible range for a `128 + signal` report to begin with. `nil`
-    /// (no exit code reported) is never treated as a stop signal: this
-    /// check can only recognize a SPECIFIC known value, never infer one
-    /// it wasn't given -- see `handlePaneCommandFinished`'s doc comment
-    /// for why a `nil` code settles rather than being treated
-    /// conservatively.
-    private static func isStopSignalExitCode(_ exitCode: Int32?) -> Bool {
-        guard let exitCode, exitCode > 128 else { return false }
-        return stopSignals.contains(exitCode - 128)
-    }
 
     /// Surfaces Calyx's own shell integration has ever reported on --
     /// recorded by `recordCalyxShellIntegrationReported`, which
@@ -609,7 +310,8 @@ final class AgentRegistry {
     /// unpopulated at the exact moment such a race needs it populated.
     ///
     /// `handleGhosttyCommandFinished` defers entirely (returns `false`
-    /// without touching the row) once a surface is in this set: only
+    /// without touching the row, recording the deferral on the surface's
+    /// evidence instead) once a surface is in this set: only
     /// Calyx's own zsh/fish shell integration can tell a suspend apart
     /// from a real exit for that surface (zsh's `128 + signal`
     /// convention, or fish's own separate lingering-job check), so
@@ -647,30 +349,28 @@ final class AgentRegistry {
     /// duplicate event still proves Calyx's integration is live in that
     /// pane. See `calyxShellIntegrationReportedSurfaces`'s own doc
     /// comment for why recording on `.start` as well as `.end` matters.
-    func recordCalyxShellIntegrationReported(surfaceID: UUID) {
+    ///
+    /// Also routes the report through the resolver, which stamps
+    /// `AgentEvidence.lastCalyxReportAt` and answers any outstanding
+    /// ghostty deferral for the surface. That half is per-surface
+    /// evidence with a lifetime of one command, so it lives in
+    /// `evidence` rather than in the permanent set above, and the
+    /// resolver owns when it is set and cleared.
+    ///
+    /// - Parameter now: Injectable for tests (defaults to `Date()`).
+    func recordCalyxShellIntegrationReported(surfaceID: UUID, now: Date = Date()) {
         calyxShellIntegrationReportedSurfaces.insert(surfaceID)
-    }
-
-    /// Shared settle core for `handlePaneCommandFinished` and
-    /// `handleGhosttyCommandFinished`: settles a `.hooks`/`.mcpConnection`
-    /// entry not already `.done` to `.done`, excluding `suspended` and a
-    /// stop-signal `exitCode` (`isStopSignalExitCode`). Never touches an
-    /// unregistered surface, a `.titleHeuristic` entry, or
-    /// `externalEntries`. Neither caller-specific concept -- Calyx's own
-    /// `suspended` flag, or ghostty's `calyxShellIntegrationReportedSurfaces`
-    /// deferral -- lives here; each caller applies its own on top.
-    private func settlePaneCommandFinished(
-        surfaceID: UUID, exitCode: Int32?, suspended: Bool, now: Date
-    ) -> Bool {
-        guard var existing = entries[surfaceID] else { return false }
-        guard existing.source == .hooks || existing.source == .mcpConnection else { return false }
-        guard existing.state != .done else { return false }
-        guard !suspended, !Self.isStopSignalExitCode(exitCode) else { return false }
-
-        existing.state = .done
-        existing.lastEventAt = now
-        entries[surfaceID] = existing
-        return true
+        apply(
+            AgentStateResolver.resolve(
+                .calyxShellIntegrationReported,
+                surfaceID: surfaceID,
+                current: entries[surfaceID],
+                evidence: evidence[surfaceID] ?? AgentEvidence(),
+                context: context(for: surfaceID),
+                now: now
+            ),
+            surfaceID: surfaceID
+        )
     }
 
     /// Settles `surfaceID`'s entry to `.done` in response to the pane's
@@ -711,7 +411,7 @@ final class AgentRegistry {
     /// Settles only a `.hooks` or `.mcpConnection` entry not already
     /// `.done`. A `.titleHeuristic` row is left alone -- it retires
     /// itself through its own miss-streak bookkeeping
-    /// (`heuristicMissStreaks`) instead. An already-`.done` row is left
+    /// (`evidence`) instead. An already-`.done` row is left
     /// alone too (no `lastEventAt` churn), an unregistered surface stays
     /// unregistered (this never creates a row), and `externalEntries`
     /// (herdr rows, not keyed by a `SurfaceRegistry` UUID) is never
@@ -738,8 +438,17 @@ final class AgentRegistry {
     func handlePaneCommandFinished(
         surfaceID: UUID, exitCode: Int32? = nil, suspended: Bool = false, now: Date = Date()
     ) -> Bool {
-        recordCalyxShellIntegrationReported(surfaceID: surfaceID)
-        return settlePaneCommandFinished(surfaceID: surfaceID, exitCode: exitCode, suspended: suspended, now: now)
+        recordCalyxShellIntegrationReported(surfaceID: surfaceID, now: now)
+        let resolution = AgentStateResolver.resolve(
+            .paneCommandFinished(exitCode: exitCode, suspended: suspended, origin: .calyxShellIntegration),
+            surfaceID: surfaceID,
+            current: entries[surfaceID],
+            evidence: evidence[surfaceID] ?? AgentEvidence(),
+            context: context(for: surfaceID),
+            now: now
+        )
+        apply(resolution, surfaceID: surfaceID)
+        return resolution.didSettle
     }
 
     /// Settles `surfaceID`'s entry to `.done` in response to
@@ -747,28 +456,36 @@ final class AgentRegistry {
     /// pane-exit signal, forwarded via `.ghosttyCommandFinished`) -- a
     /// fallback for the shells Calyx's own `/command-event` shell
     /// integration does not cover (bash, elvish, nushell;
-    /// `ShellIntegrationInstaller` only installs zsh/fish bodies). Reuses
-    /// `handlePaneCommandFinished`'s own settle core
-    /// (`settlePaneCommandFinished`): the same `.hooks`/`.mcpConnection`-
-    /// only, not-already-`.done` guards, and the same
-    /// `isStopSignalExitCode` exclusion for a shell's `128 + signal`
+    /// `ShellIntegrationInstaller` only installs zsh/fish bodies). Routes
+    /// through `AgentStateResolver.resolve(.paneCommandFinished(...,
+    /// origin: .ghostty))`, sharing `handlePaneCommandFinished`'s own
+    /// `.hooks`/`.mcpConnection`-only, not-already-`.done` guards and the
+    /// same `isStopSignalExitCode` exclusion for a shell's `128 + signal`
     /// report.
     ///
     /// Unlike `handlePaneCommandFinished`, this has no `suspended`
     /// parameter: ghostty has no equivalent of zsh's `128 + signal`
     /// convention or fish's own separate lingering-job check, so it has
     /// no way to positively detect a suspend beyond the stop-signal exit
-    /// code the shared core already excludes. Because of that gap, this
-    /// method defers entirely -- returns `false` without touching the
-    /// row -- for any `surfaceID` already present in
-    /// `calyxShellIntegrationReportedSurfaces`: once Calyx's own
-    /// integration has ever reported on a surface, it alone is trusted to
-    /// tell a suspend apart from a real exit for that surface. The
-    /// mistake this asymmetry protects against is one-directional, same
-    /// as `isStopSignalExitCode`'s own: a false "still alive" from this
-    /// method only leaves a row live, whereas a false settle from a
-    /// source blind to suspends would wrongly expire a live agent's
-    /// pending approvals.
+    /// code the shared guards already exclude. Because of that gap, the
+    /// resolver's own `origin: .ghostty` clause defers entirely --
+    /// leaves the row untouched -- once `calyxShellIntegrationReportedSurfaces`
+    /// (surfaced to the resolver as `context(for:)`'s
+    /// `calyxShellIntegrationSeen`) already contains this surface: once
+    /// Calyx's own integration has ever reported on a surface, it alone
+    /// is trusted to tell a suspend apart from a real exit for that
+    /// surface. The mistake this asymmetry protects against is
+    /// one-directional, same as `isStopSignalExitCode`'s own: a false
+    /// "still alive" from this method only leaves a row live, whereas a
+    /// false settle from a source blind to suspends would wrongly expire
+    /// a live agent's pending approvals.
+    ///
+    /// The deferred signal is remembered rather than discarded
+    /// (`AgentEvidence.deferredGhosttyFinishAt`), so `sweepStaleEntries`
+    /// can settle the row when Calyx's own `/command-event` never
+    /// answers it: the shell integration body swallows a failed POST, and
+    /// without the memory a lost `phase: end` would leave the row stuck
+    /// forever, since ghostty deferred to a report that never came.
     ///
     /// Returns whether this call actually transitioned the row to
     /// `.done`. Never consulted to expire pending approvals -- that
@@ -777,87 +494,89 @@ final class AgentRegistry {
     /// not reachable from that call site.
     @discardableResult
     func handleGhosttyCommandFinished(surfaceID: UUID, exitCode: Int32?, now: Date = Date()) -> Bool {
-        guard !calyxShellIntegrationReportedSurfaces.contains(surfaceID) else { return false }
-        return settlePaneCommandFinished(surfaceID: surfaceID, exitCode: exitCode, suspended: false, now: now)
+        let resolution = AgentStateResolver.resolve(
+            .paneCommandFinished(exitCode: exitCode, suspended: false, origin: .ghostty),
+            surfaceID: surfaceID,
+            current: entries[surfaceID],
+            evidence: evidence[surfaceID] ?? AgentEvidence(),
+            context: context(for: surfaceID),
+            now: now
+        )
+        apply(resolution, surfaceID: surfaceID)
+        return resolution.didSettle
     }
 
-    // MARK: - Heuristic Signal Arbitration
+    // MARK: - Resolver Application
 
-    /// Single choke point every heuristic signal source
-    /// (`handleTitleChange` / `handleScreenClassification` /
-    /// `handleProgressReport`) routes an *update to an existing*
-    /// `.titleHeuristic` entry through, so the following invariants are
-    /// enforced exactly once rather than re-implemented (and risking
-    /// drifting out of sync) at each of the three call sites:
-    ///
-    /// - A `nil`/absent entry, or one that isn't `.titleHeuristic`-sourced
-    ///   (a `.hooks` entry is authoritative), is left untouched — this
-    ///   method never creates a row; each caller's own creation path
-    ///   (when it has one) handles that separately.
-    /// - `newState` identical to the entry's current `state` is never
-    ///   written: on Calyx's 2-second screen poll, most ticks reclassify
-    ///   the same steady state, and writing it back every time would
-    ///   needlessly churn `@Observable`'s change tracking (and the
-    ///   sidebar's redraw) for no actual change.
-    /// - `isAuthoritative` gates whether this signal may move the entry
-    ///   *away* from `.blocked`: only `handleScreenClassification`'s own
-    ///   non-blocked result (`isAuthoritative: true`) may — a
-    ///   `.titleHeuristic` row's `.blocked` state means the pane's
-    ///   on-screen text still shows an approval prompt, and a
-    ///   lower-confidence signal (a progress report going inactive, or a
-    ///   title reverting to idle/spinner) must not second-guess that and
-    ///   flip the row away while the prompt is still actually visible.
-    @discardableResult
-    private func applyHeuristicState(surfaceID: UUID, newState: AgentState, isAuthoritative: Bool) -> Bool {
-        guard let existing = entries[surfaceID], existing.source == .titleHeuristic else { return false }
-        guard isAuthoritative || existing.state != .blocked else { return true }
-        guard existing.state != newState else { return true }
-
-        var updated = existing
-        updated.state = newState
-        updated.lastEventAt = Date()
-        entries[surfaceID] = updated
-        return true
+    /// Applies an `AgentStateResolver.resolve` result to storage: the
+    /// surface's evidence, any peer binding the signal reported, then
+    /// the row itself. `evidence` and `entries` are both stored
+    /// properties of this `@Observable` class, so both writes are
+    /// guarded on the value actually changing, leaning on `AgentEvidence`
+    /// and `AgentEntry` both being `Equatable`: the screen poll resolves
+    /// every surface every two seconds and the staleness sweep every
+    /// minute, and the great majority of those resolutions change
+    /// neither, which an unguarded write would still publish as a
+    /// mutation. `evidence` also stays sparse, dropping `surfaceID`'s
+    /// key once it goes back to `.isEmpty`.
+    private func apply(_ r: AgentResolution, surfaceID: UUID) {
+        let newEvidence = r.evidence.isEmpty ? nil : r.evidence
+        if evidence[surfaceID] != newEvidence { evidence[surfaceID] = newEvidence }
+        if let peerID = r.learnedPeerID {
+            bindSurface(surfaceID, toPeer: peerID)
+        }
+        switch r.row {
+        case .keep: break
+        case .write(let row): if entries[surfaceID] != row { entries[surfaceID] = row }
+        case .remove: if entries[surfaceID] != nil { entries.removeValue(forKey: surfaceID) }
+        }
     }
 
-    /// Removes `surfaceID`'s heuristic miss-streak count (see
-    /// `heuristicMissStreaks`'s doc comment) — called by every "positive"
-    /// heuristic signal (a `.blocked`/`.working` screen classification, a
-    /// `.working` title classification, or an `isActive == true` progress
-    /// report).
-    private func resetHeuristicMissStreak(surfaceID: UUID) {
-        heuristicMissStreaks.removeValue(forKey: surfaceID)
+    /// Builds the registry-wide facts `AgentStateResolver.resolve` needs
+    /// alongside a surface's own row and evidence.
+    private func context(for surfaceID: UUID) -> ResolverContext {
+        ResolverContext(
+            isServerRunning: isServerRunning,
+            calyxShellIntegrationSeen: calyxShellIntegrationReportedSurfaces.contains(surfaceID)
+        )
     }
 
     // MARK: - Title Heuristic Fallback
 
-    /// Applies the second-layer title-based classifier. Only creates or
-    /// updates a `.titleHeuristic` entry — an existing `.hooks`-sourced
-    /// entry is authoritative and is left untouched. Routes an update to
-    /// an existing `.titleHeuristic` entry through `applyHeuristicState`
-    /// as a non-authoritative signal — see that method's doc comment.
+    /// Applies the second-layer title-based classifier via
+    /// `AgentStateResolver.resolve(.title(...))`. Only creates or updates
+    /// a `.titleHeuristic` entry — an existing `.hooks`-sourced entry is
+    /// authoritative and is left untouched, and an `.mcpConnection`
+    /// entry's state is owned by screen classification, not a title.
     ///
-    /// C1 fix: creating a NEW row additionally requires `isServerRunning`
-    /// — mirroring `pollScreenClassificationIfAgentsSidebarVisible`'s own
-    /// gate (a) in `CalyxWindowController`, which already refuses to feed
+    /// `ClaudeTitleHeuristic.classify` runs here, outside the resolver,
+    /// so `AgentSignal.title` can carry a non-optional `AgentState`:
+    /// `.screen` already spends `nil` on "a classification that
+    /// recognized nothing", and `ClaudeTitleHeuristic` is a per-CLI type
+    /// the shared resolver must stay free of -- see `AgentSignal.title`'s
+    /// own doc comment.
+    ///
+    /// Creating a NEW row additionally requires `isServerRunning` —
+    /// mirroring `pollScreenClassificationIfAgentsSidebarVisible`'s own
+    /// gate in `CalyxWindowController`, which already refuses to feed
     /// `handleScreenClassification` while the server is stopped, for
     /// exactly the same reason: classifying into the registry while IPC
     /// is off would only produce a row this app can't retire on its own.
     /// This call site (fed unconditionally by every pane's title change,
-    /// via `handleSetTitleNotification`) was the one heuristic-creation
-    /// path that never got that gate — with herdr connected, the Agents
-    /// sidebar stays visible (`AgentSidebarGate`) even while
-    /// `isServerRunning` is `false`, so a `.titleHeuristic` row created
-    /// here in that combination had NO way to ever retire: the miss-streak
-    /// sweep that would clean it up lives inside `handleScreenClassification`,
-    /// reachable only from that same isServerRunning-gated poll. Gating
-    /// creation the same way makes creation and retirement symmetric —
-    /// both now require the server to be running. Updating an EXISTING
-    /// `.titleHeuristic` entry is not separately guarded: no such entry
-    /// can exist while `isServerRunning` is `false` in the first place,
-    /// since `CalyxMCPServer.stop()` unconditionally clears `entries` via
-    /// `reset()` before flipping `isServerRunning` false, so the update
-    /// branch below is already unreachable in that state.
+    /// via `handleSetTitleNotification`) is otherwise the one
+    /// heuristic-creation path with no such gate of its own — with herdr
+    /// connected, the Agents sidebar stays visible (`AgentSidebarGate`)
+    /// even while `isServerRunning` is `false`, so a `.titleHeuristic`
+    /// row created here in that combination would have no way to ever
+    /// retire: the miss-streak sweep that would clean it up lives inside
+    /// `handleScreenClassification`, reachable only from that same
+    /// isServerRunning-gated poll. Gating creation the same way makes
+    /// creation and retirement symmetric — both require the server to be
+    /// running. Updating an EXISTING `.titleHeuristic` entry needs no
+    /// separate such guard: no such entry can exist while
+    /// `isServerRunning` is `false` in the first place, since
+    /// `CalyxMCPServer.stop()` unconditionally clears `entries` via
+    /// `reset()` before flipping `isServerRunning` false.
     ///
     /// Option considered and rejected: decoupling the retirement sweep
     /// from `isServerRunning` instead (running it whenever the sidebar is
@@ -866,29 +585,21 @@ final class AgentRegistry {
     /// poll that feeds it would let screen classification start creating
     /// rows while IPC is off too, reintroducing this exact asymmetry one
     /// layer over instead of fixing it.
-    func handleTitleChange(surfaceID: UUID, title: String) {
+    ///
+    /// - Parameter now: Injectable for tests (defaults to `Date()`).
+    func handleTitleChange(surfaceID: UUID, title: String, now: Date = Date()) {
         guard let classified = ClaudeTitleHeuristic.classify(title: title) else { return }
 
-        if classified == .working {
-            resetHeuristicMissStreak(surfaceID: surfaceID)
-        }
-
-        if let existing = entries[surfaceID] {
-            guard existing.source == .titleHeuristic else { return }
-            applyHeuristicState(surfaceID: surfaceID, newState: classified, isAuthoritative: false)
-            return
-        }
-
-        guard isServerRunning else { return }
-
-        entries[surfaceID] = AgentEntry(
-            surfaceID: surfaceID,
-            sessionID: nil,
-            source: .titleHeuristic,
-            state: classified,
-            cwd: nil,
-            kind: AgentEntry.claudeCodeKind,
-            lastEventAt: Date()
+        apply(
+            AgentStateResolver.resolve(
+                .title(classified),
+                surfaceID: surfaceID,
+                current: entries[surfaceID],
+                evidence: evidence[surfaceID] ?? AgentEvidence(),
+                context: context(for: surfaceID),
+                now: now
+            ),
+            surfaceID: surfaceID
         )
     }
 
@@ -914,83 +625,66 @@ final class AgentRegistry {
     // MARK: - Screen State Classification (Herdr Layer 2)
 
     /// Applies a `ScreenStateClassifier` result polled from a pane's
-    /// on-screen text. `.hooks`-sourced entries are left untouched (hooks
-    /// self-report is authoritative). An `.mcpConnection` entry uses the
-    /// screen result for state while retaining the row on `nil`: the MCP
-    /// initialize is independent evidence that the pane hosts an agent, so
-    /// an unrecognized idle screen must not retire it. A `.done`
-    /// `.mcpConnection` entry -- settled by `handlePaneCommandFinished`'s
-    /// pane-exit signal -- is left untouched rather than folded into that
-    /// `nil`-retains-the-row handling: the Agents sidebar polls screen
-    /// classification every two seconds, so without this guard a settled
-    /// row would revert off `.done` almost immediately. An existing
-    /// `.titleHeuristic` entry is updated as an *authoritative* signal
-    /// (`applyHeuristicState`) —
-    /// `.blocked` / `.working` reflected as-is (and resetting the
-    /// heuristic miss streak, since this is a "positive" signal), `nil`
-    /// falling back to `.idle` and counting as a miss: reaching
-    /// `heuristicMissRetirementThreshold` consecutive misses removes the
-    /// row entirely (see `heuristicMissStreaks`'s doc comment) rather
-    /// than leaving it parked at `.idle` forever. An unregistered surface
-    /// only gets a new `.titleHeuristic` entry when `state` is `.blocked`
-    /// or `.working`: a `nil` classification never creates a row for a
-    /// plain shell pane.
-    func handleScreenClassification(surfaceID: UUID, state: AgentState?) {
-        guard let existing = entries[surfaceID] else {
-            guard let state, state == .blocked || state == .working else { return }
-            entries[surfaceID] = AgentEntry(
+    /// on-screen text, via `AgentStateResolver.resolve(.screen(...))`.
+    /// `.hooks`-sourced entries are left untouched (hooks self-report is
+    /// authoritative). An `.mcpConnection` entry uses the screen result
+    /// for state while retaining the row on `nil`: the MCP initialize is
+    /// independent evidence that the pane hosts an agent, so an
+    /// unrecognized idle screen must not retire it -- and a `.done`
+    /// `.mcpConnection` entry is left untouched rather than folded into
+    /// that `nil`-retains-the-row handling, since the Agents sidebar
+    /// polls screen classification every two seconds and would otherwise
+    /// revert a just-settled row almost immediately. An existing
+    /// `.titleHeuristic` entry is updated as an *authoritative* signal --
+    /// `.blocked`/`.working` reflected as-is (resetting the heuristic
+    /// miss streak, since this is a "positive" signal), `nil` falling
+    /// back to `.idle` and counting as a miss, with enough consecutive
+    /// misses removing the row entirely rather than leaving it parked at
+    /// `.idle` forever. An unregistered surface only gets a new
+    /// `.titleHeuristic` entry when `state` is `.blocked` or `.working`:
+    /// a `nil` classification never creates a row for a plain shell
+    /// pane. See `AgentStateResolver.resolveScreen` for the full clause,
+    /// including the miss-streak asymmetry against `.title`/`.progress`.
+    ///
+    /// - Parameter now: Injectable for tests (defaults to `Date()`).
+    func handleScreenClassification(surfaceID: UUID, state: AgentState?, now: Date = Date()) {
+        apply(
+            AgentStateResolver.resolve(
+                .screen(state),
                 surfaceID: surfaceID,
-                sessionID: nil,
-                source: .titleHeuristic,
-                state: state,
-                cwd: nil,
-                kind: AgentEntry.claudeCodeKind,
-                lastEventAt: Date()
-            )
-            return
-        }
-        if existing.source == .mcpConnection {
-            guard existing.state != .done else { return }
-            let newState = state ?? .idle
-            guard existing.state != newState else { return }
-            var updated = existing
-            updated.state = newState
-            updated.lastEventAt = Date()
-            entries[surfaceID] = updated
-            return
-        }
-        guard existing.source == .titleHeuristic else { return }
-
-        if let state, state == .blocked || state == .working {
-            resetHeuristicMissStreak(surfaceID: surfaceID)
-            applyHeuristicState(surfaceID: surfaceID, newState: state, isAuthoritative: true)
-            return
-        }
-
-        let missCount = (heuristicMissStreaks[surfaceID] ?? 0) + 1
-        if missCount >= Self.heuristicMissRetirementThreshold {
-            entries.removeValue(forKey: surfaceID)
-            heuristicMissStreaks.removeValue(forKey: surfaceID)
-            return
-        }
-        heuristicMissStreaks[surfaceID] = missCount
-        applyHeuristicState(surfaceID: surfaceID, newState: .idle, isAuthoritative: true)
+                current: entries[surfaceID],
+                evidence: evidence[surfaceID] ?? AgentEvidence(),
+                context: context(for: surfaceID),
+                now: now
+            ),
+            surfaceID: surfaceID
+        )
     }
 
     /// Applies an OSC 9;4 progress-report signal
-    /// (`GHOSTTY_ACTION_PROGRESS_REPORT`) polled/observed for a pane.
-    /// `.hooks`-sourced entries are untouched. Only an existing
-    /// `.titleHeuristic` entry is affected (a progress report never
-    /// creates a row on its own — screen classification's blocked/working
-    /// patterns are the more conservative signal for that): it flips to
-    /// `.working` when `isActive` is `true` (a "positive" signal — see
-    /// `heuristicMissStreaks`) and `.idle` when `false`, routed through
-    /// `applyHeuristicState` as a non-authoritative signal.
-    func handleProgressReport(surfaceID: UUID, isActive: Bool) {
-        if isActive {
-            resetHeuristicMissStreak(surfaceID: surfaceID)
-        }
-        applyHeuristicState(surfaceID: surfaceID, newState: isActive ? .working : .idle, isAuthoritative: false)
+    /// (`GHOSTTY_ACTION_PROGRESS_REPORT`) polled/observed for a pane, via
+    /// `AgentStateResolver.resolve(.progress(...))`. `.hooks`-sourced
+    /// entries are untouched, and a progress report never creates a row
+    /// on its own — screen classification's blocked/working patterns are
+    /// the more conservative signal for that. Only an existing
+    /// `.titleHeuristic` entry is affected: it flips to `.working` when
+    /// `isActive` is `true` (a "positive" signal — see `evidence`'s doc
+    /// comment) and `.idle` when `false`, as a non-authoritative signal
+    /// that cannot clear `.blocked`.
+    ///
+    /// - Parameter now: Injectable for tests (defaults to `Date()`).
+    func handleProgressReport(surfaceID: UUID, isActive: Bool, now: Date = Date()) {
+        apply(
+            AgentStateResolver.resolve(
+                .progress(isActive: isActive),
+                surfaceID: surfaceID,
+                current: entries[surfaceID],
+                evidence: evidence[surfaceID] ?? AgentEvidence(),
+                context: context(for: surfaceID),
+                now: now
+            ),
+            surfaceID: surfaceID
+        )
     }
 
     // MARK: - Peer ↔ Surface Binding
@@ -1005,7 +699,7 @@ final class AgentRegistry {
     ///   so a rebind means its owning pane changed (e.g. IPC
     ///   re-registration after a restart), not that it's now shared.
     ///
-    /// Not `private` (Round 4): `handleHookEvent` below still calls this
+    /// Not `private`: `handleHookEvent` below still calls this
     /// for the `PreToolUse`/`PostToolUse` hook-derived binding it has
     /// always used, but `CalyxMCPServer` also calls it directly now, to
     /// bind a surface the moment its MCP connection's `initialize` (or an
@@ -1031,22 +725,11 @@ final class AgentRegistry {
         peerToSurface.removeValue(forKey: peerID)
     }
 
-    /// Whether `surfaceID` currently has a peer bound to it via
-    /// `bindSurface`. Read-only query (Round 4 review): `CalyxMCPServer`'s
-    /// `initialize` handler uses this to only auto-bind a surface that
-    /// isn't already bound, rather than unconditionally rebinding on every
-    /// MCP `initialize` — see that call site's own comment for why an
-    /// unconditional bind there is unsafe. `register_peer`'s own binding
-    /// remains unconditional and does not consult this.
-    func isSurfaceBound(_ surfaceID: UUID) -> Bool {
-        surfaceToPeer[surfaceID] != nil
-    }
-
     /// Returns the peer ID currently bound to `surfaceID` via `bindSurface`,
-    /// or `nil` if the surface has no binding. Round 6: unlike
-    /// `isSurfaceBound` (Bool-only), this hands back the actual peer id so
-    /// callers can look up whether that peer is still alive in
-    /// `IPCStore`. Two call sites in `CalyxMCPServer` rely on this:
+    /// or `nil` if the surface has no binding. Hands back the peer id
+    /// itself, not a bare "is it bound" flag, so callers can look up
+    /// whether that peer is still alive in `IPCStore`. Two call sites in
+    /// `CalyxMCPServer` rely on this:
     /// `handleJSONRPC`'s `initialize` case uses it to resolve a
     /// reconnecting surface's ONE true peer identity — reporting the same
     /// `peer_id` back instead of auto-registering a fresh one — and
@@ -1065,25 +748,16 @@ final class AgentRegistry {
         Array(peerToSurface.keys)
     }
 
-    /// Reflects `count` as the `unreadCount` of the surface bound to
-    /// `peerID` (learned from a `PreToolUse`/`PostToolUse` hook event
-    /// carrying an `AgentEvent.ipcSelfPeerID` — see `bindSurface`). A
-    /// no-op when no surface is bound to `peerID` yet.
-    func updateInbox(peerID: UUID, count: Int) {
-        guard let surfaceID = peerToSurface[peerID], var entry = entries[surfaceID] else { return }
-        entry.unreadCount = count
-        entries[surfaceID] = entry
-    }
-
-    /// Batch counterpart to `updateInbox`: applies `counts` (typically
-    /// `IPCStore.inboxCounts(for: boundPeerIDs)`) to every currently-
-    /// bound surface in one pass, via `peerToSurface`'s O(1) reverse
-    /// lookup. `CalyxMCPServer` calls this once at the end of every
-    /// `tools/call` request instead of each individual IPC tool handler
-    /// calling `updateInbox` separately — see that call site's doc
-    /// comment. A `peerID` in `counts` with no bound surface (already
-    /// possible for `updateInbox`, e.g. a stale/purged peer) is simply
-    /// skipped.
+    /// Applies `counts` (typically `IPCStore.inboxCounts(for: boundPeerIDs)`)
+    /// to every currently-bound surface in one pass, via
+    /// `peerToSurface`'s O(1) reverse lookup: each peer's count becomes
+    /// the `unreadCount` of the surface bound to it (a binding learned
+    /// from a `PreToolUse`/`PostToolUse` hook event carrying an
+    /// `AgentEvent.ipcSelfPeerID` -- see `bindSurface`). `CalyxMCPServer`
+    /// calls this once at the end of every `tools/call` request, batching
+    /// every IPC tool handler's badge update into a single pass -- see
+    /// that call site's doc comment. A `peerID` in `counts` with no bound
+    /// surface (e.g. a stale/purged peer) is simply skipped.
     func syncInboxCounts(_ counts: [UUID: Int]) {
         for (peerID, count) in counts {
             guard let surfaceID = peerToSurface[peerID], var entry = entries[surfaceID] else { continue }
@@ -1094,22 +768,28 @@ final class AgentRegistry {
 
     // MARK: - Staleness Sweep
 
-    /// Downgrades `.working` `.hooks`/`.mcpConnection` entries whose
-    /// `lastEventAt` is older than `staleWorkingThreshold` to `.idle`.
-    /// Guards against a
-    /// Claude Code process that exits non-gracefully (crash, `kill -9`,
-    /// terminal force-close) and so never sends the `Stop` hook — without
-    /// this sweep such a row stays frozen at `.working` forever.
-    /// `.blocked` entries are excluded: a permission prompt left
-    /// unanswered for a long time is a legitimate wait, not staleness.
+    /// Applies the sweep to every native row, per the rules in
+    /// `AgentStateResolver.resolveStaleSweep`: a `.working` row idle past
+    /// the staleness threshold is downgraded to `.idle`, and a row
+    /// holding a ghostty pane-exit signal Calyx's own shell integration
+    /// never answered is settled to `.done`. Neither can expire a
+    /// surface's pending approvals: that wiring lives in
+    /// `CalyxMCPServer.routeCommandEvent`, gated on
+    /// `handlePaneCommandFinished`'s return value, and this method
+    /// reports nothing to it.
     func sweepStaleEntries(now: Date = Date()) {
         for (surfaceID, entry) in entries {
-            guard entry.source == .hooks || entry.source == .mcpConnection else { continue }
-            guard entry.state == .working else { continue }
-            guard now.timeIntervalSince(entry.lastEventAt) > Self.staleWorkingThreshold else { continue }
-            var updated = entry
-            updated.state = .idle
-            entries[surfaceID] = updated
+            apply(
+                AgentStateResolver.resolve(
+                    .staleSweep,
+                    surfaceID: surfaceID,
+                    current: entry,
+                    evidence: evidence[surfaceID] ?? AgentEvidence(),
+                    context: context(for: surfaceID),
+                    now: now
+                ),
+                surfaceID: surfaceID
+            )
         }
     }
 
@@ -1118,7 +798,7 @@ final class AgentRegistry {
     func handleSurfaceDestroyed(surfaceID: UUID) {
         entries.removeValue(forKey: surfaceID)
         unbindSurface(surfaceID)
-        heuristicMissStreaks.removeValue(forKey: surfaceID)
+        evidence.removeValue(forKey: surfaceID)
         calyxShellIntegrationReportedSurfaces.remove(surfaceID)
     }
 

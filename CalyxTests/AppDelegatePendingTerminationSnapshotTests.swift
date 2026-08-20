@@ -2,7 +2,7 @@
 //  AppDelegatePendingTerminationSnapshotTests.swift
 //  CalyxTests
 //
-//  TDD Red phase (save-reliability C2 -- terminate-path snapshot capture).
+//  A save-reliability defect: terminate-path snapshot capture.
 //  ORIGINAL ROOT CAUSE (confirmed live-incident narrative: 3 windows
 //  genuinely open, sessions.json read back as {"windows":[]}), from
 //  BEFORE the window-lifetime redesign (see

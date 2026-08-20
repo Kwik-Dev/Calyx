@@ -2,20 +2,15 @@
 //  SessionCommandSynthesizerRemoteAttachTests.swift
 //  CalyxTests
 //
-//  TDD Red phase, P5 (remote sessions), cycle 1: remote attach command
-//  synthesis via ssh. Introduces two NEW symbols that do not exist yet
-//  anywhere in the codebase -- SessionCommandSynthesizer.remoteAttachCommand
-//  and SSHBinaryResolverProtocol/SSHBinaryResolver -- so this file is a
-//  held-out compile-RED file per this codebase's established convention
-//  (see SessionDaemonClientSessionStateBoundTimeoutSeamTests's header):
-//  it is expected to FAIL TO COMPILE until the Green phase adds both.
-//  That compile failure IS this file's RED evidence.
+//  Remote sessions: remote attach command
+//  synthesis via ssh, through SessionCommandSynthesizer.remoteAttachCommand
+//  and SSHBinaryResolverProtocol/SSHBinaryResolver.
 //
 //  DESIGN, TWO SHELL LAYERS:
 //  Exactly like attachCommand, ghostty wraps whatever `command` string we
 //  configure in its own `/bin/sh -c "exec <command>"` (see
 //  SessionCommandSynthesizer.swift's own header and
-//  SessionCommandSynthesizerRuntimeStateDirFlagsTests's full ROUND 1/2/3
+//  SessionCommandSynthesizerRuntimeStateDirFlagsTests's full
 //  ghostty-exec-wrapping saga -- this is the canonical copy of that
 //  narrative, not repeated here). remoteAttachCommand's synthesized
 //  string is parsed by THAT local shell first (LAYER 1), which execs the
@@ -241,7 +236,7 @@ final class SessionCommandSynthesizerRemoteAttachTests: XCTestCase {
         XCTAssertFalse(command.hasPrefix("exec "),
                        "A leading exec word PATH-searches as a literal nonexistent program under " +
                        "ghostty's own exec wrapping -- field-verified broken (\"exec: exec: not found\"), " +
-                       "see SessionCommandSynthesizerRuntimeStateDirFlagsTests's ROUND 2 narrative")
+                       "see SessionCommandSynthesizerRuntimeStateDirFlagsTests's header narrative")
         XCTAssertFalse(command.hasPrefix("/usr/bin/env"),
                        "A leading /usr/bin/env word is the retired HOME-stamp mechanism; the remote " +
                        "command must be program-first, exactly like attachCommand/reattachCommand")

@@ -2,7 +2,7 @@
 //  AppDelegateReassertHistoryPersistenceTests.swift
 //  CalyxTests
 //
-//  TDD Red phase, P6 RED2 (R-B4): the attach-spawned calyx-session
+//  The defect this file pins: the attach-spawned calyx-session
 //  daemon always starts with history OFF (DaemonConfig::history_enabled's
 //  bind-time default; see ControlMsg::SetHistoryEnabled's own doc
 //  comment -- a live, in-memory override, never persisted daemon-side),
@@ -11,7 +11,7 @@
 //  once per launch, against whatever daemon this launch attaches to or
 //  spawns.
 //
-//  PROPOSED HOOK POINT (P6 RED2 investigation note): AppDelegate
+//  HOOK POINT: AppDelegate
 //  .reassertHistoryPersistenceIfNeeded(), an async method mirroring
 //  fetchSessionsForAgentResume()'s existing shape and its
 //  _sessionDaemonClientForTesting seam (see AppDelegate.swift ~1444),
@@ -26,27 +26,23 @@
 //  AND historyPersistenceEnabled; calls
 //  client.setHistoryEnabled(true) exactly once when both are on.
 //
-//  CAVEAT flagged for the Green phase: the daemon that ends up serving
+//  CAVEAT: the daemon that ends up serving
 //  this launch's persistent-session panes is spawned on demand, per
 //  pane, by the FIRST `calyx-session attach --create` ghostty actually
 //  execs (crates/cli/src/commands/attach.rs's connect_or_spawn) -- a
 //  process this reassertion call has no synchronous handle on and does
-//  not wait for. `history.rs` (this round's CLI command, see its own
+//  not wait for. `history.rs` (the CLI command, see its own
 //  header) does not auto-spawn a daemon the way `attach` does, so a
 //  reassertion that runs before any pane has actually attached could
 //  race a not-yet-running daemon and silently no-op. This file's tests
 //  only cover the gating logic (which settings call the client and how
-//  many times), not that race; the Green phase should decide whether a
-//  bounded retry belongs here or whether best-effort (documented as
-//  such) is acceptable given this whole feature is opt-in/experimental.
+//  many times), not that race; whether a bounded retry belongs here or
+//  whether best-effort (documented as such) is acceptable is left open,
+//  given this whole feature is opt-in/experimental.
 //
-//  Held-out compile-RED (see SessionCommandSynthesizerRemoteAttachTests's
-//  header for this codebase's convention):
-//  reassertHistoryPersistenceIfNeeded() does not exist yet on
-//  AppDelegate, and SessionDaemonClientProtocol.setHistoryEnabled(_:)
-//  does not exist yet either (introduced by a sibling RED file this same
-//  round), so this file fails to compile until the Green phase adds
-//  both. That compile failure IS this file's RED evidence.
+//  Under test:
+//  AppDelegate.reassertHistoryPersistenceIfNeeded(), together with
+//  SessionDaemonClientProtocol.setHistoryEnabled(_:).
 //
 //  Coverage:
 //  - persistentSessionsEnabled AND historyPersistenceEnabled both on:

@@ -2,7 +2,7 @@
 //  SessionSurfaceMapTests.swift
 //  CalyxTests
 //
-//  TDD Red Phase for SessionSurfaceMap: the bidirectional
+//  Covers SessionSurfaceMap: the bidirectional
 //  session-ID <-> surface-UUID registry used to resolve
 //  reconnect/routing by calyx-session ID.
 //

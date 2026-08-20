@@ -3,8 +3,8 @@
 //  CalyxTests
 //
 //  Covers all 6 of MCPCockpitBridge's tools: the 3 ungated ones
-//  (pane_list, pane_split, tab_create, P4) and the 3 human-approval
-//  gated ones (pane_run, pane_send_keys, palette_execute, P5). Drives
+//  (pane_list, pane_split, tab_create) and the 3 human-approval
+//  gated ones (pane_run, pane_send_keys, palette_execute). Drives
 //  handleToolCall(name:arguments:) directly against a fake
 //  CockpitAppAccessing + a fresh, isolated SessionSurfaceMap (no
 //  CalyxMCPServer / HTTP layer involved).
@@ -29,18 +29,18 @@
 //    whitespace/newline-only) is rejected as .invalidArgument rather
 //    than silently falling back; a trailing-newline cwd is trimmed
 //    before validation/use, and a group_name with surrounding
-//    whitespace is trimmed before use (P4 review F1/F2/F3)
+//    whitespace is trimmed before use
 //  - an unrecognized tool name raises .unknownTool, distinguished from
 //    a stub that blanket-throws unknownTool for every name (see
 //    test_unknownTool_throws for how)
 //
-//  NOT covered (per team-lead scope): a "rejects unexpected extra
+//  NOT covered: a "rejects unexpected extra
 //  arguments" test -- MCPCommandLogBridge.handleListCommands only reads
 //  its own known keys and silently ignores anything else present in
 //  `arguments`; mirroring that (not adding a stricter rejection this
 //  bridge alone would enforce).
 //
-//  Gated tools (pane_run / pane_send_keys / palette_execute, P5):
+//  Gated tools (pane_run / pane_send_keys / palette_execute):
 //  - pane_run: a dead surface_id (access.paneExists false) fails fast
 //    with .paneNotFound BEFORE ever reaching the approval gate; default
 //    policy submits an ApprovalRequest and waits; .allowed executes via
@@ -91,7 +91,7 @@ private final class FakeCockpitAccess: CockpitAppAccessing {
     private(set) var recordedCreateTabCwd: String?
     private(set) var createTabCallCount = 0
 
-    // MARK: - P5 additions
+    // MARK: - Gated-tool additions
 
     var sendCommandResult: Result<Void, Error> = .success(())
     private(set) var recordedSendCommandSurfaceID: UUID?
@@ -209,8 +209,8 @@ final class MCPCockpitBridgeTests: XCTestCase {
 
     /// Drives `handleToolCall` expecting `.invalidArgument(name:
     /// expectedName, reason:)` -- pins only the `name` component;
-    /// `reason` is free-form human text GREEN can phrase however it
-    /// likes, so it's deliberately not compared.
+    /// `reason` is free-form human text the implementation can phrase
+    /// however it likes, so it's deliberately not compared.
     private func expectInvalidArgument(
         name expectedName: String,
         toolName: String,
@@ -476,7 +476,7 @@ final class MCPCockpitBridgeTests: XCTestCase {
                        "a \"~\" cwd must be tilde-expanded to an absolute path before reaching access.createTab")
     }
 
-    /// P4 review (F1/F2): a blank cwd (explicit but empty, or
+    /// A blank cwd (explicit but empty, or
     /// whitespace/newline-only) is a client bug -- reject loudly rather
     /// than silently falling back to the active tab's directory. A
     /// trailing newline on an otherwise-valid path (plausible from an
@@ -502,7 +502,7 @@ final class MCPCockpitBridgeTests: XCTestCase {
                        "a trailing-newline cwd must be trimmed before validation and before reaching access.createTab")
     }
 
-    /// P4 review (F3): same blank-rejection contract as cwd, applied to
+    /// Same blank-rejection contract as cwd, applied to
     /// group_name -- leading/trailing whitespace in a group name is
     /// never intentional from a tool call, so a non-blank value is
     /// trimmed before use too, not just checked for blankness.

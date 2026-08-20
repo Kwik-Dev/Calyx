@@ -2,7 +2,7 @@
 //  AppDelegateAttachPlaceholderTitleTests.swift
 //  CalyxTests
 //
-//  TDD Red phase for a user-reported defect: attaching a Detached
+//  Covers a user-reported defect: attaching a Detached
 //  session from the session browser opens a tab titled "Terminal" that
 //  stays that way until the reattached shell's next prompt emits an OSC
 //  title -- unlike a restore-at-launch tab, whose title is carried
@@ -36,14 +36,14 @@
 //  is already exercised for real by that existing, passing test, so
 //  running it again here for real is no new risk.
 //
-//  EXTENSION (overridden-HOME RED, E2E-proven + screenshot-confirmed):
+//  EXTENSION (overridden-HOME case, E2E-proven + screenshot-confirmed):
 //  both call sites derive the placeholder title via
 //  `SessionTabTitle.fromCwd(cwd, home: NSHomeDirectory())`, and
 //  `NSHomeDirectory()` does not follow a `HOME` environment override --
 //  it resolves via the user database, not the env var (mirrors why
 //  `SessionRootResolver.swift`'s own doc comment forbids
 //  `FileManager.homeDirectoryForCurrentUser` for the identical reason).
-//  So under an overridden `HOME` (the E2E harness, and by the P4
+//  So under an overridden `HOME` (the E2E harness, and by the
 //  root-resolver lesson any environment where HOME differs from the
 //  real user record), the tilde abbreviation never fires and a raw
 //  absolute path shows as the tab title. The cases below `setenv`

@@ -2,9 +2,8 @@
 //  SessionDaemonClientBoundedListTests.swift
 //  CalyxTests
 //
-//  TDD Red phase, round 10 (r10-fix-spec.md, R10-C item 2): the 5s
-//  daemon-round-trip bound currently lives ONLY inside AppDelegate's
-//  agent-resume path (listAllSessionsBounded, private, R8-D item 1).
+//  The 5s daemon-round-trip bound currently lives ONLY inside
+//  AppDelegate's agent-resume path (listAllSessionsBounded, private).
 //  SessionBrowserModel.refresh() awaits daemonClient.listAll()
 //  completely unbounded (SessionBrowserModel.swift:60), so a hung
 //  calyx-session daemon freezes the session browser forever -- the
@@ -15,13 +14,8 @@
 //  one timeout constant instead of each reimplementing (or, in the
 //  browser's case, omitting) it.
 //
-//  This test targets `SessionDaemonClient.listAllBounded()`, which does
-//  NOT exist in the codebase yet. Following this codebase's established
-//  convention for new-API RED tests (see
-//  CalyxWindowControllerFullScreenTests's header comment), it is
-//  expected to FAIL TO COMPILE until the TDD Green phase adds it --
-//  that compile failure IS this contract's round-10 RED evidence. Once
-//  Green implements `listAllBounded()`, this test exercises it against
+//  This test targets `SessionDaemonClient.listAllBounded()`.
+//  It exercises that method against
 //  a REAL SessionDaemonClient (not a protocol-level fake), with a
 //  never-completing LSPCommandRunner injected via the client's existing
 //  `commandRunner:` seam (mirrors SessionBinaryResolverTests' direct-
@@ -65,17 +59,17 @@ private struct FixedBinaryResolver: SessionBinaryResolverProtocol {
 final class SessionDaemonClientBoundedListTests: XCTestCase {
 
     override func tearDown() {
-        // R14-B (r14-fix-spec.md): test isolation, mirroring
+        // Test isolation, mirroring
         // SessionDaemonClientSessionStateBoundTimeoutSeamTests' own
         // tearDown -- no override must leak into a later test.
         SessionDaemonClientBoundTimeoutOverrides.daemonQueryBoundTimeoutSeconds = nil
         super.tearDown()
     }
 
-    /// R10-C item 2: against a never-completing commandRunner,
+    /// Against a never-completing commandRunner,
     /// listAllBounded() must still reach a terminal [] within a
-    /// generous margin over its own bound. R14-B (r14-fix-spec.md):
-    /// overrides `daemonQueryBoundTimeoutSeconds` to 1s via the DEBUG
+    /// generous margin over its own bound. Overrides
+    /// `daemonQueryBoundTimeoutSeconds` to 1s via the DEBUG
     /// timeout seam so this test runs in milliseconds instead of
     /// burning the real ~5s default.
     func test_listAllBounded_returnsEmptyWithinBound_whenCommandRunnerNeverCompletes() async {
