@@ -177,7 +177,7 @@ struct ConfigFileUtils: Sendable {
     }
 
     /// Maps `resolvedPath` to a stable lock-file path inside Calyx's own
-    /// `<AppSupportDirectory>/locks/` directory (created on first use),
+    /// `AppSupportDirectory.locksPath` directory (created on first use),
     /// rather than a sibling of `resolvedPath` itself — see
     /// `atomicWrite`'s doc comment for why the lock file lives outside
     /// the resolved config's own directory and is never deleted.
@@ -199,7 +199,7 @@ struct ConfigFileUtils: Sendable {
     /// resolved path actually block on it) without duplicating this
     /// hashing logic.
     static func lockFilePath(forResolvedPath resolvedPath: String) throws -> String {
-        let locksDir = (AppSupportDirectory.path as NSString).appendingPathComponent("locks")
+        let locksDir = AppSupportDirectory.locksPath
         if !FileManager.default.fileExists(atPath: locksDir) {
             try FileManager.default.createDirectory(atPath: locksDir, withIntermediateDirectories: true)
         }
