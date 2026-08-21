@@ -169,7 +169,7 @@ final class CalyxMCPServerGrokRoutingTests: XCTestCase {
                        "look like it still had a live agent in it")
     }
 
-    func test_grokSubagentEvent_isAccepted_andLeavesTheHostRowAlone() async {
+    func test_grokSubagentEvent_isAccepted_updatesHostStateButLeavesItsIdentityAlone() async {
         let surfaceID = UUID()
         await postAgentEvent(surfaceID: surfaceID, body: """
         {"hookEventName":"session_start","sessionId":"grok-session-1","cwd":"/repo"}
@@ -181,8 +181,8 @@ final class CalyxMCPServerGrokRoutingTests: XCTestCase {
         """)
 
         XCTAssertEqual(registry.entries.count, 1, "A subagent must never mint a row of its own")
-        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle,
-                       "A child agent's tool call is not the host session's state")
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .working,
+                       "The host row stays .working while its subagent runs")
         XCTAssertEqual(registry.entries[surfaceID]?.sessionID, "grok-session-1",
                        "The host row must keep its own session ID; adopting the child's would make a " +
                        "later reattach offer to resume the subagent instead of the conversation")

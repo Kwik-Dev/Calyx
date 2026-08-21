@@ -147,6 +147,38 @@ struct AgentEvent: Sendable, Equatable {
     /// through `decode(from:)`'s single construction site.
     var ipcSelfPeerID: String? = nil
 
+    /// The child agent's own identity for an event fired inside a
+    /// subagent -- claude-code's `agent_id` (present on every hook event
+    /// fired inside a subagent, including `PreToolUse`/`PostToolUse`),
+    /// Grok's own child `sessionId` (Grok has no `agent_id` field at all;
+    /// see `decodeGrokShaped`), or Codex's `agent_id` (present only on
+    /// `SubagentStart`/`SubagentStop`, per Codex's own docs that its
+    /// other subagent hooks reuse the parent session's id). `nil` for
+    /// every main-thread event. `isSubagentEvent` is `agentID != nil` and
+    /// nothing else -- see that property's doc comment for why
+    /// `agentType` must never be folded into the predicate.
+    var agentID: String? = nil
+    /// The child agent's type name (claude-code's `agent_type`, Grok's
+    /// `subagentType`). Also present, WITHOUT `agentID`, on a claude-code
+    /// main-thread event whose session was started with `claude --agent
+    /// foo` -- so `agentType` alone never means "this is a subagent
+    /// event".
+    var agentType: String? = nil
+    /// The tool name a `PreToolUse`/`PostToolUse` event names, mirrored
+    /// here (independent of `ipcSelfPeerID`'s own tool-name matching) so
+    /// `SubagentRegistry` can show a child row's most recently used tool
+    /// without re-parsing the raw payload.
+    var toolName: String? = nil
+
+    /// Whether this event fired inside a subagent rather than the main
+    /// thread. The ONLY subagent predicate in the codebase: `agentType`
+    /// alone is not sufficient, because claude-code also sets it (without
+    /// `agentID`) on a main-thread event whose session was started with
+    /// `claude --agent foo` -- folding `agentType` into this check would
+    /// permanently freeze that session's parent row, since every one of
+    /// its events would then read as a child's.
+    var isSubagentEvent: Bool { agentID != nil }
+
     /// Decodes a hook's stdin JSON payload. `hook_event_name` is mandatory;
     /// all other fields are optional. Unknown fields are tolerated.
     ///
@@ -172,7 +204,10 @@ struct AgentEvent: Sendable, Equatable {
             sessionID: object["session_id"] as? String,
             cwd: object["cwd"] as? String,
             message: object["message"] as? String,
-            ipcSelfPeerID: extractIPCSelfPeerID(hookEventName: hookEventName, object: object)
+            ipcSelfPeerID: extractIPCSelfPeerID(hookEventName: hookEventName, object: object),
+            agentID: object["agent_id"] as? String,
+            agentType: object["agent_type"] as? String,
+            toolName: object["tool_name"] as? String
         )
     }
 
@@ -191,10 +226,30 @@ struct AgentEvent: Sendable, Equatable {
     /// field Grok guarantees; everything else is optional.
     ///
     /// An event carrying a non-empty `subagentType` happened inside a
-    /// child agent, so its name is left as the unmapped raw value (which
-    /// `AgentStateResolver.resultingState` ignores) and its `sessionId` / `cwd`
-    /// are dropped: recording a child's session ID into the pane's resume
-    /// meta would make a later reattach offer `grok --resume <child>`.
+    /// child agent. Grok has no `agent_id` field, so `agentID` is derived
+    /// from `subagentId` when present, falling back to `sessionId`. Grok
+    /// names the child differently depending on which event fires:
+    /// `subagent_start` carries the PARENT's `sessionId` and names the
+    /// child only through `subagentId`, while every other child-scoped
+    /// event (`pre_tool_use`, `post_tool_use`, `session_end`, etc.)
+    /// carries the CHILD's own `sessionId` and no `subagentId` at all.
+    /// Preferring `subagentId` when it is present yields one stable key,
+    /// the child's own session id, across every event of that child's
+    /// life -- without the fallback, `subagent_start` would key the
+    /// child on the parent's session id instead, and no later event
+    /// would ever match that key. `sessionID` / `cwd` are still stripped
+    /// from the shared field either way: recording a child's session ID
+    /// into the pane's resume meta would make a later reattach offer
+    /// `grok --resume <child>`. The structural guard against a child
+    /// event touching the host pane's row is `AgentEvent.isSubagentEvent`,
+    /// checked in `AgentStateResolver.resolveHookRow`, so the event name
+    /// is mapped through the same `grokEventName` table every other
+    /// event uses -- `SubagentRegistry` needs a mapped name to derive the
+    /// child's own state.
+    ///
+    /// A non-empty `subagentType` with neither `subagentId` nor
+    /// `sessionId` carries no usable identity for the child, so the event
+    /// name is left unmapped (as it always was) and nothing acts on it.
     ///
     /// No `ipcSelfPeerID` is extracted here: Grok binds its peer through
     /// the MCP `initialize` surface header rather than through tool
@@ -202,15 +257,23 @@ struct AgentEvent: Sendable, Equatable {
     private static func decodeGrokShaped(object: [String: Any]) -> AgentEvent? {
         guard let rawEventName = object["hookEventName"] as? String else { return nil }
 
-        let subagentType = object["subagentType"] as? String
-        let isSubagentEvent = !(subagentType ?? "").isEmpty
+        let rawSubagentType = object["subagentType"] as? String
+        let subagentType = (rawSubagentType?.isEmpty == false) ? rawSubagentType : nil
+        let agentID = subagentType != nil
+            ? (object["subagentId"] as? String ?? object["sessionId"] as? String)
+            : nil
+        let hasIdentity = subagentType != nil && agentID != nil
 
         return AgentEvent(
-            hookEventName: isSubagentEvent ? rawEventName : grokEventName(rawEventName, object: object),
-            sessionID: isSubagentEvent ? nil : object["sessionId"] as? String,
-            cwd: isSubagentEvent ? nil : object["cwd"] as? String,
+            hookEventName: hasIdentity || subagentType == nil
+                ? grokEventName(rawEventName, object: object) : rawEventName,
+            sessionID: subagentType != nil ? nil : object["sessionId"] as? String,
+            cwd: subagentType != nil ? nil : object["cwd"] as? String,
             message: object["message"] as? String,
-            ipcSelfPeerID: nil
+            ipcSelfPeerID: nil,
+            agentID: agentID,
+            agentType: subagentType,
+            toolName: object["toolName"] as? String
         )
     }
 
@@ -238,6 +301,11 @@ struct AgentEvent: Sendable, Equatable {
             return "Stop"
         case "session_end":
             return "SessionEnd"
+        case "subagent_start":
+            return "SubagentStart"
+        case "subagent_stop", "subagent_end":
+            // subagent_end is documented as an alias of subagent_stop.
+            return "SubagentStop"
         case "notification":
             return (object["notificationType"] as? String) == grokPermissionNotificationType
                 ? "PermissionRequest" : "Notification"

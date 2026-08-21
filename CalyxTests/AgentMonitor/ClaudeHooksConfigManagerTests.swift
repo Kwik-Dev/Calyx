@@ -9,7 +9,7 @@
 //  preservation of unrelated content.
 //
 //  Coverage:
-//  - installHooks on an empty/new file writes all 8 target events, each
+//  - installHooks on an empty/new file writes all 10 target events, each
 //    with a command entry (type=command, timeout, async=true)
 //  - PreToolUse / PostToolUse / PermissionRequest use matcher
 //    "*"; Notification uses matcher "permission_prompt"
@@ -44,16 +44,21 @@ final class ClaudeHooksConfigManagerTests: XCTestCase {
     private static let expectedEvents = [
         "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
         "Notification", "Stop", "SessionEnd", "PermissionRequest",
+        "SubagentStart", "SubagentStop",
     ]
 
     // PermissionRequest's matcher is unified with
     // PreToolUse/PostToolUse's "*" (previously omitted entirely) — see
-    // ClaudeHooksConfigManager.targetEvents' doc comment.
+    // ClaudeHooksConfigManager.targetEvents' doc comment. SubagentStart /
+    // SubagentStop's matcher tests the agent type, so they share the
+    // same unfiltered "*" too.
     private static let expectedMatcherByEvent: [String: String] = [
         "PreToolUse": "*",
         "PostToolUse": "*",
         "PermissionRequest": "*",
         "Notification": "permission_prompt",
+        "SubagentStart": "*",
+        "SubagentStop": "*",
     ]
 
     // MARK: - Lifecycle
@@ -111,7 +116,7 @@ final class ClaudeHooksConfigManagerTests: XCTestCase {
     // that blocks the tool call until Calyx's own /approval-request
     // long-poll resolves -- every other event still gets exactly one
     // command entry.
-    func test_installHooks_newFile_writesAllEightEventsWithCommandEntry() throws {
+    func test_installHooks_newFile_writesAllTenEventsWithCommandEntry() throws {
         try ClaudeHooksConfigManager.installHooks(scriptPath: scriptPath, approvalScriptPath: approvalScriptPath, configPath: configPath)
 
         let dict = try readConfigDict()
@@ -142,7 +147,7 @@ final class ClaudeHooksConfigManagerTests: XCTestCase {
         }
     }
 
-    // The loop in test_installHooks_newFile_writesAllEightEventsWithCommandEntry
+    // The loop in test_installHooks_newFile_writesAllTenEventsWithCommandEntry
     // above already covers PermissionRequest's matcher value via
     // expectedMatcherByEvent; this test additionally pins down that its
     // group holds exactly two Calyx-owned command entries (monitor +
@@ -512,7 +517,7 @@ final class ClaudeHooksConfigManagerTests: XCTestCase {
     }
 
     func test_removeHooks_dropsEmptyEventKeysAndHooksKeyWhenAllEmpty() throws {
-        // The 8 events installHooks writes only ever contain Calyx's own
+        // The 10 events installHooks writes only ever contain Calyx's own
         // entry in a fresh install, so removing them should leave neither
         // a dangling "EventName": [] nor an empty "hooks": {} behind.
         try ClaudeHooksConfigManager.installHooks(scriptPath: scriptPath, approvalScriptPath: approvalScriptPath, configPath: configPath)
@@ -762,7 +767,7 @@ final class ClaudeHooksConfigManagerTests: XCTestCase {
 
         try ClaudeHooksConfigManager.installHooks(scriptPath: scriptPath, approvalScriptPath: approvalScriptPath, configPath: homeSettingsPath)
 
-        // The real dotfiles-managed file received Calyx's 8 events...
+        // The real dotfiles-managed file received Calyx's 10 events...
         let realData = try Data(contentsOf: URL(fileURLWithPath: dotfilesSettingsPath))
         let realDict = try XCTUnwrap(try JSONSerialization.jsonObject(with: realData) as? [String: Any])
         for eventName in Self.expectedEvents {

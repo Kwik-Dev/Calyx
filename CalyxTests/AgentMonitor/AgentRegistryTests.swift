@@ -420,6 +420,138 @@ final class AgentRegistryTests: XCTestCase {
                        "A same-session Stop arriving after SessionEnd must not roll a done row back to idle")
     }
 
+    // MARK: - A child event under a settled or absent parent row creates no child
+
+    /// `calyx-agent-hook` POSTs are independent fire-and-forget `curl`
+    /// processes, so a child's own event can complete its POST AFTER the
+    /// parent's terminal event, even though the child fired first. Once
+    /// the parent has settled `.done`, nothing will ever sweep a child
+    /// created under it: the CLI has exited, so no further Stop/
+    /// SessionEnd/SessionStart will arrive, `resolveStaleSweep` never
+    /// touches children, and a `.done` row itself needs no more writes.
+    func test_handleHookEvent_subagentEvent_afterParentSettledDoneViaSessionEnd_createsNoChild() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("SessionEnd", sessionID: "session-a"), surfaceID: surfaceID)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .done, "Precondition: the parent settled done")
+
+        registry.handleHookEvent(
+            AgentEvent(hookEventName: "SubagentStart", sessionID: "session-a", cwd: nil, message: nil,
+                       agentID: "sub-1", agentType: "explore"),
+            surfaceID: surfaceID
+        )
+
+        XCTAssertTrue(registry.subagentRegistry.children(of: surfaceID).isEmpty,
+                       "A subagent event arriving after the parent settled done must create no child")
+    }
+
+    func test_handleHookEvent_subagentEvent_afterParentSettledDoneViaPaneCommandFinished_createsNoChild() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handlePaneCommandFinished(surfaceID: surfaceID)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .done, "Precondition: the parent settled done")
+
+        registry.handleHookEvent(
+            AgentEvent(hookEventName: "SubagentStart", sessionID: "session-a", cwd: nil, message: nil,
+                       agentID: "sub-1", agentType: "explore"),
+            surfaceID: surfaceID
+        )
+
+        XCTAssertTrue(registry.subagentRegistry.children(of: surfaceID).isEmpty,
+                       "A subagent event arriving after the parent settled done via the pane-exit signal " +
+                       "must create no child")
+    }
+
+    func test_handleHookEvent_subagentEvent_surfaceWithNoRowAtAll_createsNoChild() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        XCTAssertNil(registry.entries[surfaceID], "Precondition: no row at all for this surface")
+
+        registry.handleHookEvent(
+            AgentEvent(hookEventName: "SubagentStart", sessionID: "session-a", cwd: nil, message: nil,
+                       agentID: "sub-1", agentType: "explore"),
+            surfaceID: surfaceID
+        )
+
+        XCTAssertTrue(registry.subagentRegistry.children(of: surfaceID).isEmpty,
+                       "A subagent event for a surface with no row at all must create no child")
+    }
+
+    func test_handleHookEvent_parentScopedSweepEvent_stillClearsChildrenEvenWithNoRow() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(
+            AgentEvent(hookEventName: "SubagentStart", sessionID: "session-a", cwd: nil, message: nil,
+                       agentID: "sub-1", agentType: "explore"),
+            surfaceID: surfaceID
+        )
+        XCTAssertEqual(registry.subagentRegistry.children(of: surfaceID).count, 1, "Precondition: a live child")
+        registry.handleSurfaceDestroyed(surfaceID: surfaceID)
+        XCTAssertNil(registry.entries[surfaceID], "Precondition: the surface now has no row at all")
+
+        registry.handleHookEvent(event("SessionEnd", sessionID: "session-a"), surfaceID: surfaceID)
+
+        XCTAssertTrue(registry.subagentRegistry.children(of: surfaceID).isEmpty,
+                       "A parent-scoped sweep event must still clear children even with no row, so the sweep " +
+                       "path is not caught by the child-creation guard")
+    }
+
+    func test_handleHookEvent_subagentEvent_underLiveParentRow_stillCreatesAndUpdatesChild() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle, "Precondition: a live, non-done parent row")
+
+        registry.handleHookEvent(
+            AgentEvent(hookEventName: "SubagentStart", sessionID: "session-a", cwd: nil, message: nil,
+                       agentID: "sub-1", agentType: "explore"),
+            surfaceID: surfaceID
+        )
+        XCTAssertEqual(registry.subagentRegistry.children(of: surfaceID).count, 1,
+                       "A subagent event under a live parent row must still create a child")
+        XCTAssertEqual(registry.subagentRegistry.children(of: surfaceID).first?.state, .working)
+
+        registry.handleHookEvent(
+            AgentEvent(hookEventName: "PreToolUse", sessionID: "session-a", cwd: nil, message: nil,
+                       agentID: "sub-1", agentType: nil, toolName: "Bash"),
+            surfaceID: surfaceID
+        )
+
+        let child = registry.subagentRegistry.children(of: surfaceID).first
+        XCTAssertEqual(child?.lastToolName, "Bash", "A subagent event under a live parent row must still update the child")
+    }
+
+    /// The corollary of the guard above: `handleMCPConnection` replacing
+    /// a `.done` row with a live one must not surface a phantom child
+    /// left over from the previous session. Nothing special is needed
+    /// for this -- the guard already blocks every subagent event that
+    /// arrives while the row reads `.done`, so no child can ever exist
+    /// to surface once the row revives.
+    func test_handleMCPConnection_reviveFromDone_neverSurfacesAPhantomChildFromThePreviousSession() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handlePaneCommandFinished(surfaceID: surfaceID)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .done, "Precondition: the parent settled done")
+
+        registry.handleHookEvent(
+            AgentEvent(hookEventName: "SubagentStart", sessionID: "session-a", cwd: nil, message: nil,
+                       agentID: "sub-1", agentType: "explore"),
+            surfaceID: surfaceID
+        )
+        XCTAssertTrue(registry.subagentRegistry.children(of: surfaceID).isEmpty,
+                       "Precondition: a subagent event after done creates no child")
+
+        registry.handleMCPConnection(surfaceID: surfaceID, kind: AgentEntry.claudeCodeKind)
+
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle, "Precondition: the row revived live")
+        XCTAssertTrue(registry.subagentRegistry.children(of: surfaceID).isEmpty,
+                       "A row revived from .done must never surface a phantom child from the previous session")
+    }
+
     // MARK: - SubagentStop ignored
 
     func test_subagentStop_unregisteredSurface_isIgnored() {

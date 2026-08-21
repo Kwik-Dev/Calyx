@@ -70,20 +70,39 @@ enum OpenCodePluginManager: Sendable {
       }
 
       // session.created's info.parentID marks a subagent's own child
-      // session. Once seen, every later event for that session ID is
-      // ignored too, so a subagent run never steals its parent pane's row.
-      // Entries are removed on the child session's own session.deleted so
-      // this set doesn't grow without bound over a long-lived process.
+      // session. Every later event for that session ID is translated
+      // into a subagent event instead of forwarded as-is: the child's
+      // own session.created posts SubagentStart, and everything in
+      // between is forwarded with agent_id set to the child's session id
+      // in place of session_id. The server-side guard that keeps a child
+      // from ever stealing its parent's row (AgentEvent.isSubagentEvent,
+      // checked in CalyxMCPServer.routeAgentEvent and AgentStateResolver
+      // .resolveHookRow) is what makes sending these at all safe. A
+      // child's own session.idle posts SubagentStop and removes the
+      // entry: a subagent session going idle is OpenCode reporting that
+      // child's work is over, since a subagent never takes another turn.
+      // The child's own session.deleted does the same, as a second,
+      // independent end signal -- both are what keep this set from
+      // growing without bound over a long-lived process.
       const childSessions = new Set();
 
       // Session IDs with a permission.asked that hasn't yet seen its
-      // permission.replied. Suppresses session.idle -> Stop for a pending
-      // session so a Stop racing ahead of the reply can't overwrite the
-      // blocked row with idle while the prompt is still awaiting a reply.
-      // Also cleared on the session's own session.deleted (mirroring
-      // childSessions' cleanup above), so a session that ends with an
-      // outstanding, never-answered prompt doesn't leak an entry here for
-      // the lifetime of the plugin process.
+      // permission.replied. Suppresses session.idle -> Stop (and the
+      // childSessions session.idle -> SubagentStop retirement below) for
+      // a pending session so a Stop racing ahead of the reply can't
+      // overwrite the blocked row with idle while the prompt is still
+      // awaiting a reply. Tracked uniformly for a child session's own
+      // sessionID too: a child's permission.asked reaches the parent row
+      // through the same resultingState(for:) mapping AgentStateResolver
+      //'s subagent branch and SubagentRegistry both reuse, so a child's
+      // session.idle can race its own permission.replied exactly the way
+      // a parent's can, and needs the same guard. Entries are removed
+      // when the owning session ends: on the session's own
+      // session.deleted, and for a child session, also on its own
+      // session.idle (mirroring childSessions' retirement above) -- a
+      // session that ends with an outstanding, never-answered prompt
+      // doesn't leak an entry here for the lifetime of the plugin
+      // process.
       const pendingPermissions = new Set();
 
       let cachedEndpoint = null;
@@ -113,6 +132,28 @@ enum OpenCodePluginManager: Sendable {
         );
       }
 
+      async function postEvent(bodyJSON) {
+        try {
+          const endpoint = await loadEndpoint();
+
+          await fetch(`http://127.0.0.1:${endpoint.port}/agent-event`, {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${endpoint.token}`,
+              "X-Calyx-Surface-ID": calyxPaneID,
+              "X-Calyx-Agent-Kind": "opencode",
+              "Content-Type": "application/json",
+            },
+            body: bodyJSON,
+            signal: AbortSignal.timeout(2000),
+          });
+        } catch {
+          // Server unreachable, agent-endpoint.json missing/malformed,
+          // request timeout, etc. — never let a failed POST affect
+          // OpenCode itself.
+        }
+      }
+
       return {
         event: async ({ event }) => {
           const hookEventName = EVENT_MAP[event.type];
@@ -128,14 +169,13 @@ enum OpenCodePluginManager: Sendable {
             const parentID = properties.info && properties.info.parentID;
             if (parentID) {
               childSessions.add(sessionID);
+              await postEvent(JSON.stringify({
+                hook_event_name: "SubagentStart",
+                agent_id: sessionID,
+                cwd: directory,
+              }));
               return;
             }
-          }
-          if (childSessions.has(sessionID)) {
-            if (event.type === "session.deleted") {
-              childSessions.delete(sessionID);
-            }
-            return;
           }
 
           if (event.type === "permission.asked") {
@@ -148,29 +188,30 @@ enum OpenCodePluginManager: Sendable {
             return;
           }
 
-          try {
-            const endpoint = await loadEndpoint();
-
-            await fetch(`http://127.0.0.1:${endpoint.port}/agent-event`, {
-              method: "POST",
-              headers: {
-                "Authorization": `Bearer ${endpoint.token}`,
-                "X-Calyx-Surface-ID": calyxPaneID,
-                "X-Calyx-Agent-Kind": "opencode",
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                hook_event_name: hookEventName,
-                session_id: sessionID,
+          if (childSessions.has(sessionID)) {
+            if (event.type === "session.deleted" || event.type === "session.idle") {
+              childSessions.delete(sessionID);
+              pendingPermissions.delete(sessionID);
+              await postEvent(JSON.stringify({
+                hook_event_name: "SubagentStop",
+                agent_id: sessionID,
                 cwd: directory,
-              }),
-              signal: AbortSignal.timeout(2000),
-            });
-          } catch {
-            // Server unreachable, agent-endpoint.json missing/malformed,
-            // request timeout, etc. — never let a failed POST affect
-            // OpenCode itself.
+              }));
+              return;
+            }
+            await postEvent(JSON.stringify({
+              hook_event_name: hookEventName,
+              agent_id: sessionID,
+              cwd: directory,
+            }));
+            return;
           }
+
+          await postEvent(JSON.stringify({
+            hook_event_name: hookEventName,
+            session_id: sessionID,
+            cwd: directory,
+          }));
         },
       };
     };

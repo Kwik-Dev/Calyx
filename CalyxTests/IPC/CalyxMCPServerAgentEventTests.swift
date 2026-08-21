@@ -1368,4 +1368,126 @@ final class CalyxMCPServerAgentEventTests: XCTestCase {
                       "ack_messages must return the same 'Unknown tool: ack_messages' error any other " +
                       "unrecognized tool name gets — got: \(text)")
     }
+
+    // MARK: - A subagent event's sessionID never reaches recordAgentSession
+
+    // A process-boundary stand-in for AgentSessionMetaBridge's daemon
+    // client (mirrors AgentSessionMetaBridgeTests' own
+    // FakeMetaBridgeDaemonClient) -- records every setMeta call so this
+    // suite can assert none happened for a subagent event, kind by kind,
+    // without a real calyx-session daemon.
+    private final class FakeAgentEventDaemonClient: SessionDaemonClientProtocol, @unchecked Sendable {
+        private(set) var metaSetCalls: [(id: String, key: String, value: String)] = []
+        func sessionState(id: String) async -> SessionQueryResult { .unreachable }
+        func kill(id: String) async {}
+        func listAll() async -> [SessionInfo] { [] }
+        func setMeta(id: String, key: String, value: String) async {
+            metaSetCalls.append((id, key, value))
+        }
+    }
+
+    /// Wires `server.agentSessionMetaBridge` to a fresh fake daemon client
+    /// and a `SessionSurfaceMap` that tracks `surfaceID` under a
+    /// calyx-session ID, so `recordAgentSession` would actually reach
+    /// `setMeta` for an ordinary (non-subagent) event -- the precondition
+    /// every case below relies on to prove a subagent event's own silence
+    /// is caused by `isSubagentEvent`, not by an untracked surface.
+    private func trackedAgentSessionMetaBridge(surfaceID: UUID) -> (bridge: AgentSessionMetaBridge, daemon: FakeAgentEventDaemonClient) {
+        let daemon = FakeAgentEventDaemonClient()
+        let surfaceMap = SessionSurfaceMap()
+        surfaceMap.register(sessionID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", surfaceID: surfaceID)
+        return (AgentSessionMetaBridge(daemonClient: daemon, surfaceMap: surfaceMap), daemon)
+    }
+
+    private func subagentEventBody(kind: String) -> String {
+        switch kind {
+        case AgentEntry.grokKind:
+            return """
+            {"hookEventName":"pre_tool_use","sessionId":"child-session-9","subagentType":"explore","toolName":"read_file"}
+            """
+        default:
+            return """
+            {"hook_event_name":"PreToolUse","session_id":"parent-session","agent_id":"sub-1","agent_type":"explore"}
+            """
+        }
+    }
+
+    func test_routeAgentEvent_subagentEventSessionID_neverReachesRecordAgentSession_acrossKinds() async {
+        for kind in [AgentEntry.claudeCodeKind, AgentEntry.codexKind, AgentEntry.grokKind] {
+            let registry = AgentRegistry()
+            server.agentRegistry = registry
+            let surfaceID = UUID()
+            let (bridge, daemon) = trackedAgentSessionMetaBridge(surfaceID: surfaceID)
+            server.agentSessionMetaBridge = bridge
+
+            // Precondition: an ORDINARY (non-subagent) event for this
+            // surface/kind DOES reach recordAgentSession, so the silence
+            // asserted below is caused by isSubagentEvent, not by the
+            // tracked-surface setup being wrong.
+            let ordinaryResponse = await server.route(request: agentEventRequest(
+                token: testToken, surfaceIDHeader: surfaceID.uuidString,
+                body: validAgentEventBody(sessionID: "session-\(kind)", cwd: "/repo"), kindHeader: kind
+            ))
+            XCTAssertEqual(ordinaryResponse.statusCode, 204, "[\(kind)] precondition request must succeed")
+            XCTAssertEqual(daemon.metaSetCalls.count, 1,
+                           "[\(kind)] precondition: an ordinary event must reach recordAgentSession")
+
+            let subagentResponse = await server.route(request: agentEventRequest(
+                token: testToken, surfaceIDHeader: surfaceID.uuidString,
+                body: Data(subagentEventBody(kind: kind).utf8), kindHeader: kind
+            ))
+            XCTAssertEqual(subagentResponse.statusCode, 204, "[\(kind)] a subagent event must still be accepted")
+
+            XCTAssertEqual(daemon.metaSetCalls.count, 1,
+                           "[\(kind)] a subagent event must never call recordAgentSession -- no new setMeta call")
+        }
+    }
+
+    // MARK: - Body presence (routeAgentEvent has no route-level size cap of its own -- see its doc comment)
+
+    func test_routeAgentEvent_missingBody_stillReturns400_notThe413Path() async {
+        let request = agentEventRequest(token: testToken, surfaceIDHeader: UUID().uuidString, body: nil)
+
+        let response = await server.route(request: request)
+
+        XCTAssertEqual(response.statusCode, 400, "A missing body must still be 400, not fall through to 413")
+    }
+
+    func test_routeAgentEvent_normalSizedBody_stillReturns204() async {
+        let registry = AgentRegistry()
+        server.agentRegistry = registry
+        let surfaceID = UUID()
+
+        let response = await server.route(request: agentEventRequest(
+            token: testToken, surfaceIDHeader: surfaceID.uuidString,
+            body: validAgentEventBody(sessionID: "session-1", cwd: "/Users/dev/repo")
+        ))
+
+        XCTAssertEqual(response.statusCode, 204, "The new body-size cap must not affect an ordinary-sized request")
+    }
+
+    func test_routeAgentEvent_payloadOverTheOldSharedCap_stillReturns204() async {
+        // A payload over the 256 KiB cap `routeCommandEvent` and
+        // `routeApprovalRequest` still share, but well under the
+        // transport's own 1 MiB `HTTPParser.maxBodySize` ceiling -- a
+        // real Read/Write hook payload embedding a few-hundred-KB file's
+        // contents through calyx-agent-hook's verbatim stdin forwarding.
+        // `routeAgentEvent` has no route-level cap of its own (see its
+        // doc comment), so this must pass.
+        let registry = AgentRegistry()
+        server.agentRegistry = registry
+        let surfaceID = UUID()
+
+        let largePayload = """
+        {"hook_event_name":"SessionStart","session_id":"s1","cwd":"/repo","padding":"\(String(repeating: "a", count: 500_000))"}
+        """
+        let request = agentEventRequest(
+            token: testToken, surfaceIDHeader: surfaceID.uuidString, body: Data(largePayload.utf8)
+        )
+
+        let response = await server.route(request: request)
+
+        XCTAssertEqual(response.statusCode, 204,
+                        "/agent-event must accept a payload over the 256 KiB the other two routes cap at")
+    }
 }

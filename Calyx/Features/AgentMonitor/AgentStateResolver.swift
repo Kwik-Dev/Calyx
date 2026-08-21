@@ -583,6 +583,41 @@ enum AgentStateResolver {
     /// whether it promotes an existing `.titleHeuristic` row, replaces a
     /// row, or changes nothing at all.
     ///
+    /// A subagent event (`AgentEvent.isSubagentEvent`, `agentID != nil`)
+    /// must never create, replace, or promote a row of its own -- a
+    /// child shares its parent's row, it never gets one. This branch
+    /// runs FIRST, before every other clause including `SessionStart`,
+    /// because no event name is an exception to that rule: a child
+    /// starting its own session says nothing about the parent's, so a
+    /// subagent-scoped `SessionStart` must never reach the block below
+    /// that treats `SessionStart` as answering to no precedence at all.
+    /// Running first also means a child PreToolUse (which maps to
+    /// `.working`) structurally cannot reach either the `makeEntry`
+    /// creation branch (no current row) or the forward-moving
+    /// replacement branch (session mismatch): both would otherwise be
+    /// reachable for a child event whose sessionID a CLI adapter may
+    /// have stripped or never carried in the first place. Only an
+    /// existing, matching-source, non-terminal `.hooks` row's `state`
+    /// and `lastEventAt` are ever written; sessionID/cwd/kind are left
+    /// exactly as they were.
+    ///
+    /// A child may report onto the parent row only what its OWN
+    /// activity or wait says about the pane: `.working` (it is doing
+    /// something) or `.blocked` (it is waiting on the user). It can
+    /// never report the parent's own turn ending or the parent's own
+    /// session ending, since only the parent's own event can say
+    /// either is true -- a child finishing tells us nothing about
+    /// whether the parent's turn, or session, is over. Concretely,
+    /// this excludes `resultingState(for:)`'s `.idle` (`Stop`) and
+    /// `.done` (`SessionEnd`) results from ever reaching the parent
+    /// row when the event is subagent-scoped: a Grok child's own
+    /// `SessionEnd` teardown, or an OpenCode child's own `Stop`
+    /// (mapped from `session.idle`), must never settle or idle a
+    /// still-working parent. The same reasoning excludes `SessionStart`
+    /// itself, which maps to no `resultingState(for:)` result at all:
+    /// a child beginning a fresh session of its own must never replace,
+    /// revive, or otherwise touch the parent row.
+    ///
     /// `SessionStart` is resolved before the event is mapped to a state,
     /// for two reasons. It maps to no state of its own, so mapping first
     /// would swallow it entirely. And it is the one event that answers
@@ -633,6 +668,25 @@ enum AgentStateResolver {
                 kind: kind,
                 lastEventAt: now
             )
+        }
+
+        if event.isSubagentEvent {
+            guard let existing = current, existing.source == .hooks, existing.state != .done else {
+                return .keep(evidence: clearedEvidence)
+            }
+            guard let newState = resultingState(for: event), newState == .working || newState == .blocked else {
+                return .keep(evidence: clearedEvidence)
+            }
+            if existing.state == .blocked,
+               event.hookEventName == "PreToolUse",
+               let blockedSince,
+               now.timeIntervalSince(blockedSince) < preToolUseRaceWindow {
+                return .keep(evidence: clearedEvidence)
+            }
+            var updated = existing
+            updated.state = newState
+            updated.lastEventAt = now
+            return .write(updated, evidence: clearedEvidence)
         }
 
         if event.hookEventName == "SessionStart" {
@@ -1066,7 +1120,7 @@ enum AgentStateResolver {
     /// `Notification` can lag it by several seconds. It's deliberately
     /// absent from `forwardMovingEventNames`: see that property's doc
     /// comment.
-    private static func resultingState(for event: AgentEvent) -> AgentState? {
+    static func resultingState(for event: AgentEvent) -> AgentState? {
         switch event.hookEventName {
         case "UserPromptSubmit", "PreToolUse", "PostToolUse":
             return .working

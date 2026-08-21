@@ -376,6 +376,20 @@ final class CalyxMCPServer {
         return trimmed
     }
 
+    /// Deliberately has no route-level body-size cap of its own, unlike
+    /// `routeCommandEvent` and `routeApprovalRequest`. `calyx-agent-hook`
+    /// forwards a hook's stdin verbatim, and a `PreToolUse`/`PostToolUse`
+    /// event legitimately embeds a whole file's contents in `tool_input`/
+    /// `tool_response`, so this route cannot be bounded more tightly than
+    /// the transport without silently discarding real hook traffic (a
+    /// `Read`/`Write` of a file anywhere from a few hundred KiB up to the
+    /// transport's own ceiling). The other two routes cap tighter than
+    /// the transport on purpose, because their payloads are bounded and
+    /// structured. `HTTPParser.parse`'s own `maxBodySize` gate (1 MiB)
+    /// already bounds every route ahead of any handler running, so a
+    /// second cap here would either discard legitimate events (set below
+    /// 1 MiB) or never trigger (set at or above it) -- there is no useful
+    /// value to pick.
     private func routeAgentEvent(request: HTTPRequest) async -> HTTPResponse {
         guard let authToken = bearerToken(from: request.headers), authToken == token else {
             return HTTPParser.response(statusCode: 401, body: nil)
@@ -385,7 +399,11 @@ final class CalyxMCPServer {
             return HTTPParser.response(statusCode: 400, body: nil)
         }
 
-        guard let body = request.body, let event = AgentEvent.decode(from: body) else {
+        guard let body = request.body else {
+            return HTTPParser.response(statusCode: 400, body: nil)
+        }
+
+        guard let event = AgentEvent.decode(from: body) else {
             return HTTPParser.response(statusCode: 400, body: nil)
         }
 
@@ -395,8 +413,11 @@ final class CalyxMCPServer {
         // present) into the calyx-session daemon's per-session meta so
         // a later reattach can offer to resume this conversation. A
         // no-op inside the bridge itself when `surfaceID` has no
-        // tracked calyx-session (an ordinary, non-persistent pane).
-        if let agentSessionID = event.sessionID {
+        // tracked calyx-session (an ordinary, non-persistent pane). A
+        // subagent event's sessionID must never reach this: recording a
+        // child's session ID would make a later reattach offer to resume
+        // the CHILD's transcript instead of the parent's.
+        if !event.isSubagentEvent, let agentSessionID = event.sessionID {
             await agentSessionMetaBridge.recordAgentSession(
                 surfaceID: surfaceID, agentKind: kind, agentSessionID: agentSessionID
             )

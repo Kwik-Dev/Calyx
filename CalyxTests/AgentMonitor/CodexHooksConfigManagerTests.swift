@@ -10,7 +10,7 @@
 //  the BEGIN/END managed-block conventions of HermesConfigManagerTests.
 //
 //  Coverage:
-//  - installHooks on an empty/new file writes all 7 target events, each as
+//  - installHooks on an empty/new file writes all 9 target events, each as
 //    a `[[hooks.X]]` + `[[hooks.X.hooks]]` pair with type="command",
 //    command = '"<scriptPath>" codex', timeout = 5, wrapped in BEGIN/END
 //    markers -- SessionEnd included, so a Codex session ending reaches
@@ -54,6 +54,7 @@ final class CodexHooksConfigManagerTests: XCTestCase {
     private static let expectedEvents = [
         "SessionStart", "UserPromptSubmit", "PreToolUse",
         "PostToolUse", "PermissionRequest", "Stop", "SessionEnd",
+        "SubagentStart", "SubagentStop",
     ]
 
     private static let beginLine = "# BEGIN CALYX AGENT HOOKS (managed by Calyx, do not edit)"
@@ -107,7 +108,7 @@ final class CodexHooksConfigManagerTests: XCTestCase {
 
     // MARK: - installHooks: fresh file
 
-    func test_installHooks_newFile_writesAllSevenEventPairsWithCommandEntry() throws {
+    func test_installHooks_newFile_writesAllNineEventPairsWithCommandEntry() throws {
         try CodexHooksConfigManager.installHooks(scriptPath: scriptPath, approvalScriptPath: approvalScriptPath, configPath: configPath)
 
         let content = readConfig()
@@ -122,11 +123,11 @@ final class CodexHooksConfigManagerTests: XCTestCase {
         }
 
         XCTAssertEqual(occurrences(of: expectedCommandLine, in: content), Self.expectedEvents.count,
-                       "Each of the 7 events must still get its own exact monitor command entry")
+                       "Each of the 9 events must still get its own exact monitor command entry")
         XCTAssertEqual(occurrences(of: "type = \"command\"", in: content), Self.expectedEvents.count + 1,
-                       "7 monitor entries plus PermissionRequest's extra synchronous approval entry")
+                       "9 monitor entries plus PermissionRequest's extra synchronous approval entry")
         XCTAssertEqual(occurrences(of: "timeout = 5", in: content), Self.expectedEvents.count,
-                       "Only the 7 monitor entries use timeout = 5")
+                       "Only the 9 monitor entries use timeout = 5")
 
         // PermissionRequest alone gets a second [[hooks.PermissionRequest]]
         // pair for the new synchronous approval entry; PreToolUse keeps
@@ -204,6 +205,26 @@ final class CodexHooksConfigManagerTests: XCTestCase {
         XCTAssertTrue(content.contains(expectedSessionEndBlock),
                       "SessionEnd's exact contiguous TOML block must match the other monitor events' shape: " +
                       "type = \"command\", the same command = '\"<scriptPath>\" codex' entry, and timeout = 5")
+    }
+
+    // SubagentStart / SubagentStop must get the exact same monitor-entry
+    // shape every other event gets: type = "command", the same
+    // command = '"<scriptPath>" codex' entry, and timeout = 5.
+    func test_installHooks_subagentStartAndStop_matchExactCommandShapeOfOtherEvents() throws {
+        try CodexHooksConfigManager.installHooks(scriptPath: scriptPath, approvalScriptPath: approvalScriptPath, configPath: configPath)
+        let content = readConfig()
+
+        for eventName in ["SubagentStart", "SubagentStop"] {
+            let expectedBlock = """
+            [[hooks.\(eventName)]]
+            [[hooks.\(eventName).hooks]]
+            type = "command"
+            \(expectedCommandLine)
+            timeout = 5
+            """
+            XCTAssertTrue(content.contains(expectedBlock),
+                          "\(eventName)'s exact contiguous TOML block must match the other monitor events' shape")
+        }
     }
 
     // MARK: - installHooks: preserves existing content

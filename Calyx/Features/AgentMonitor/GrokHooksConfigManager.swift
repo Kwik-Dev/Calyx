@@ -67,7 +67,7 @@ struct GrokHooksConfigManager: Sendable {
     /// grok` for the approval gate. The event keys are `SessionStart`,
     /// `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
     /// `PostToolUseFailure`, `Stop`, `StopFailure`, `StopCancelled`,
-    /// `SessionEnd`, and `Notification`.
+    /// `SessionEnd`, `Notification`, `SubagentStart`, and `SubagentStop`.
     ///
     /// `PreToolUse` carries both handlers, the agent hook first: Grok
     /// runs handlers in config order until one returns `deny`, so the
@@ -153,10 +153,11 @@ struct GrokHooksConfigManager: Sendable {
 
     /// One event key per state ping, with the `timeout` that key states
     /// explicitly. Grok's hook default is 5 seconds, ample for a loopback
-    /// POST, so only `Stop` overrides it: Grok defaults `Stop` and
-    /// `SubagentStop` to 600 seconds because those gates commonly run
-    /// builds, and this handler is a fire-and-forget POST sitting on the
-    /// turn's critical path.
+    /// POST, so only `Stop` and `SubagentStop` override it: Grok defaults
+    /// both to 600 seconds because those gates commonly run builds (or,
+    /// for `SubagentStop`, simply take a while), and this handler is a
+    /// fire-and-forget POST sitting on the turn's (or the child's own
+    /// exit) critical path.
     private static let statePingEvents: [(key: String, timeout: Int?)] = [
         ("SessionStart", nil),
         ("UserPromptSubmit", nil),
@@ -166,6 +167,8 @@ struct GrokHooksConfigManager: Sendable {
         ("StopFailure", nil),
         ("StopCancelled", nil),
         ("SessionEnd", nil),
+        ("SubagentStart", nil),
+        ("SubagentStop", 10),
     ]
 
     private static let notificationEventKey = "Notification"

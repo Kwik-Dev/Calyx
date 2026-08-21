@@ -14,7 +14,7 @@ import Foundation
 
 struct ClaudeHooksConfigManager: Sendable {
 
-    /// The 8 hook events Calyx installs a command entry for, and the
+    /// The 10 hook events Calyx installs a command entry for, and the
     /// `matcher` each uses (`nil` means no `"matcher"` key is written —
     /// Claude Code treats an absent matcher as "always run").
     ///
@@ -39,11 +39,13 @@ struct ClaudeHooksConfigManager: Sendable {
         ("Stop", nil),
         ("SessionEnd", nil),
         ("PermissionRequest", "*"),
+        ("SubagentStart", "*"),
+        ("SubagentStop", "*"),
     ]
 
     // MARK: - Public API
 
-    /// Merges Calyx's 8 hook entries into `configPath`'s `"hooks"` section,
+    /// Merges Calyx's 10 hook entries into `configPath`'s `"hooks"` section,
     /// preserving the user's own existing hook entries and unrelated
     /// top-level keys. Idempotent: re-running replaces Calyx's own prior
     /// entries rather than duplicating them.
@@ -173,7 +175,7 @@ struct ClaudeHooksConfigManager: Sendable {
     }
 
     /// Whether Calyx's own command entry is present for at least one of the
-    /// 8 target events. Returns `false` (rather than throwing) when
+    /// 10 target events. Returns `false` (rather than throwing) when
     /// `configPath`'s symlink chain can't be resolved — this is a
     /// read-only status check, and every other unreadable/invalid-file
     /// case here already resolves to `false` the same way.
