@@ -1,8 +1,10 @@
 # Subagent Row Verification
 
 End-to-end verification procedure for the Agents sidebar's subagent
-(parent/child) rows. Items 1 and 2 are automated; items 3 onward require
-Calyx running with real agent CLIs and are run manually.
+(parent/child) rows. Items 1 and 2 are automated. Items 3 onward each
+record what `SubagentSidebarPipelineTests` already pins automatically,
+driven by payloads captured from real CLI runs, and what genuinely still
+needs a human looking at the screen.
 
 A child row exists only while a CLI reports the child. Calyx keeps no
 history of one, so every item below checks both that a child appears and
@@ -133,6 +135,11 @@ a tool name that changes as the child works.
 
 Result:
 
+Row-list behavior automated by `SubagentSidebarPipelineTests`
+(`test_claudeCode_threeConcurrentChildren_orderAndIndependentRetirement`),
+driven through the real hook script and real server. Chevron and badge
+appearance on screen still needs a human.
+
 ## 4. Claude Code: children retire themselves
 
 Let the three children finish.
@@ -142,6 +149,10 @@ and badge disappear with the last one. The parent row returns to exactly
 its pre-run appearance.
 
 Result:
+
+Automated by the same test: each child retires independently down to
+`childCount: 0`. The disclosure control disappearing on screen still
+needs a human.
 
 ## 5. Claude Code: an approval inside a child
 
@@ -154,6 +165,10 @@ on.
 
 Result:
 
+Automated by `test_grok_childScopedPermissionRequest_blocksParentAndOnlyThatChild`.
+The event name drives the same resolver path for every kind, so this
+covers the rule. The red dot on screen still needs a human.
+
 ## 6. Codex
 
 Repeat items 3 through 5 in a Codex pane.
@@ -164,6 +179,10 @@ and `SubagentStop`. This is the known, accepted limit of what Codex
 reports, not a Calyx defect.
 
 Result:
+
+NOT automated. Codex carries `agent_id` only on `SubagentStart` and
+`SubagentStop`, so pinning its child rows needs a real Codex capture
+that has not been taken. Manual.
 
 ## 7. Grok, including the behavior change
 
@@ -179,6 +198,13 @@ leaving a stale finished child behind: Grok's `SessionEnd` carries
 `subagentType` for a child session.
 
 Result:
+
+Automated by `test_grok_subagentSequence_oneChildAndParentStaysWorking`,
+which replays the captured 7-event sequence verbatim: one child (not
+two) from `subagent_start` plus the child's first tool event, the parent
+held `.working` while the child runs, the child's own `session_end`
+neither resurrecting it nor settling the parent, and only the parent's
+`session_end` settling the row. Colors on screen still need a human.
 
 ## 8. OpenCode, including the behavior change
 
@@ -199,6 +225,10 @@ generic `event` handler never sees them. A child's own session lifecycle
 
 Result:
 
+NOT automated. OpenCode ingests through its plugin rather than the
+`/bin/sh` hook script the pipeline tests drive, so it needs its own
+pipeline. Manual.
+
 ## 9. pi and herdr are untouched
 
 Open a pi pane and a herdr-hosted pane and let each run a task.
@@ -208,6 +238,12 @@ no badge, no explanatory text, no dimming.
 
 Result:
 
+The row-list half is automated by
+`test_noChildrenAtAll_rowListIdenticalToHardcodedEmptyChildStore`, which
+compares the real (empty) child store against a hardcoded empty one and
+requires identical output. Confirming the panes look unchanged on screen
+still needs a human.
+
 ## 10. A killed CLI takes its children with it
 
 Force-quit an agent CLI mid-run with children showing, then close the pane.
@@ -216,6 +252,13 @@ Expected: the children disappear with the pane. No child outlives the row
 it belonged to.
 
 Result:
+
+The row-list half is automated by
+`test_forceQuit_paneExitSweepsChildren_lateChildEventCreatesNothing`,
+which settles through `handlePaneCommandFinished` and proves a late child
+event creates nothing under the settled row. The real force-quit path
+(ghostty's own pane-exit signal, then closing the pane) still needs a
+human.
 
 ## Operational note
 

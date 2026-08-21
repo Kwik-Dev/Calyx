@@ -1,0 +1,633 @@
+//
+//  SubagentSidebarPipelineTests.swift
+//  CalyxTests
+//
+//  Raises docs/subagent-verification.md's manual GUI checklist (items 3
+//  through 10) into automated coverage, wherever the check does not
+//  genuinely require looking at pixels. Driven the same way as
+//  AgentHookPipelineIntegrationTests: a real /bin/sh calyx-agent-hook
+//  script, run as a real child Process, piping real captured stdin JSON
+//  into a real CalyxMCPServer bound to a real loopback port, landing in a
+//  real AgentRegistry (and its SubagentRegistry). Assertions are made on
+//  AgentSidebarRows.build's own output -- what the sidebar actually
+//  renders -- rather than on any view.
+//
+//  Claude Code and Grok payload shapes below are the exact field names,
+//  event values, and (where given) IDs captured from real CLI runs, per
+//  the wire contract in docs/subagent-verification.md. Session/cwd
+//  strings the capture didn't pin to a specific value follow this test
+//  target's own existing placeholder convention (e.g. "parent-session"),
+//  matching AgentHookPipelineIntegrationTests.
+//
+//  Coverage:
+//  - Claude Code: PreToolUse(Agent) -> SubagentStart(Explore) ->
+//    PreToolUse(Bash, child-scoped) -> SubagentStop, asserting the row
+//    list at every step
+//  - Grok: the full 7-event capture, including the parent-keyed
+//    subagent_start and the proof that it resolves to the SAME child as
+//    the session-keyed events around it (not a second, orphaned one),
+//    the parent staying .working throughout, and the child's own
+//    session_end neither resurrecting the child nor settling the parent
+//  - Three concurrent Claude Code children: count, children(of:) order
+//    under expansion, and independent retirement
+//  - A child-scoped PermissionRequest (Grok's real notification /
+//    permission_prompt shape, scoped to one child's own session)
+//    blocking the parent and only that one child
+//  - A pane with no children at all renders identically to
+//    AgentSidebarRows.build fed a hardcoded empty child closure
+//  - Force-quit: handlePaneCommandFinished's pane-exit settle sweeps
+//    every child, and a late child event for that now-.done surface
+//    creates nothing
+//
+
+import XCTest
+@testable import Calyx
+
+@MainActor
+final class SubagentSidebarPipelineTests: XCTestCase {
+
+    // MARK: - Properties
+
+    private var server: CalyxMCPServer!
+    private var registry: AgentRegistry!
+    private var tempHome: String!
+    private var appSupportDir: String!
+    private var scriptPath: String!
+    private let testToken = "subagent-sidebar-test-token"
+
+    // MARK: - Lifecycle
+
+    override func setUp() async throws {
+        try await super.setUp()
+        tempHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString).path
+        appSupportDir = tempHome + "/Library/Application Support/Calyx"
+        try FileManager.default.createDirectory(atPath: appSupportDir, withIntermediateDirectories: true)
+
+        registry = AgentRegistry()
+        server = CalyxMCPServer()
+        server.agentRegistry = registry
+        server.agentEndpointDirectory = appSupportDir
+        try server.start(token: testToken, preferredPort: Int.random(in: 49_152...65_000))
+
+        scriptPath = try AgentHookScript.install(toDirectory: appSupportDir + "/bin")
+    }
+
+    override func tearDown() {
+        server.stop()
+        server = nil
+        registry = nil
+        if let tempHome {
+            try? FileManager.default.removeItem(atPath: tempHome)
+        }
+        tempHome = nil
+        super.tearDown()
+    }
+
+    // MARK: - Helpers (mirrors AgentHookPipelineIntegrationTests)
+
+    @discardableResult
+    private func runHookScript(stdinJSON: String, surfaceID: UUID?, kindArgument: String? = nil) throws -> Int32 {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        var arguments: [String] = [scriptPath]
+        if let kindArgument {
+            arguments.append(kindArgument)
+        }
+        process.arguments = arguments
+
+        let inheritedPath = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin:/usr/local/bin"
+        var env = ["HOME": tempHome!, "PATH": inheritedPath]
+        if let surfaceID {
+            env["CALYX_SURFACE_ID"] = surfaceID.uuidString
+        }
+        process.environment = env
+
+        let stdinPipe = Pipe()
+        process.standardInput = stdinPipe
+
+        try process.run()
+        stdinPipe.fileHandleForWriting.write(Data(stdinJSON.utf8))
+        stdinPipe.fileHandleForWriting.closeFile()
+        process.waitUntilExit()
+        return process.terminationStatus
+    }
+
+    private func waitForEntry(
+        surfaceID: UUID,
+        timeout: TimeInterval = 2.0,
+        matching predicate: @escaping (AgentEntry) -> Bool = { _ in true }
+    ) async -> AgentEntry? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let entry = registry.entries[surfaceID], predicate(entry) { return entry }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        if let entry = registry.entries[surfaceID], predicate(entry) { return entry }
+        return nil
+    }
+
+    /// Polls `registry.subagentRegistry.children(of:)` until `predicate`
+    /// is satisfied or `timeout` elapses, returning `nil` on timeout --
+    /// the same nil-on-no-match contract as `waitForEntry`, so a caller
+    /// asserting an absence (e.g. "this agentID is gone") can tell a real
+    /// negative apart from a network delay by using a deliberately short
+    /// timeout, exactly as `AgentHookPipelineIntegrationTests` already
+    /// does for its own absence assertions.
+    private func waitForChildren(
+        of parentSurfaceID: UUID,
+        timeout: TimeInterval = 2.0,
+        matching predicate: @escaping ([SubagentEntry]) -> Bool
+    ) async -> [SubagentEntry]? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let children = registry.subagentRegistry.children(of: parentSurfaceID)
+            if predicate(children) { return children }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        let children = registry.subagentRegistry.children(of: parentSurfaceID)
+        return predicate(children) ? children : nil
+    }
+
+    /// Builds the exact row list `AgentStatusView.content`'s `ForEach`
+    /// renders, from the live registry.
+    private func rows(expanded: Set<UUID>) -> [AgentSidebarRows.Row] {
+        AgentSidebarRows.build(
+            entries: registry.sortedEntries,
+            children: { registry.subagentRegistry.children(of: $0) },
+            expanded: expanded
+        )
+    }
+
+    // MARK: - Claude Code: the full captured sequence, row list at every step
+
+    /// Replays the exact 4-event Claude Code capture in
+    /// docs/subagent-verification.md's wire contract table: one `Task`
+    /// launching an `Explore` subagent that runs one `Bash` command,
+    /// every event sharing the parent's own `session_id`.
+    func test_claudeCode_subagentSequence_rowListAtEachStep() async throws {
+        let surfaceID = UUID()
+        let sessionID = "parent-session"
+        let cwd = "/Users/dev/repo"
+        let agentID = "a5bfac2e378042079"
+
+        // Event 1: PreToolUse, no agent_id, no agent_type, tool_name "Agent".
+        let event1 = """
+        {"session_id":"\(sessionID)","cwd":"\(cwd)","hook_event_name":"PreToolUse","tool_name":"Agent"}
+        """
+        XCTAssertEqual(try runHookScript(stdinJSON: event1, surfaceID: surfaceID), 0)
+        let afterEvent1 = await waitForEntry(surfaceID: surfaceID)
+        XCTAssertEqual(afterEvent1?.state, .working, "Precondition: the parent's own Agent PreToolUse creates the row")
+        XCTAssertEqual(afterEvent1?.kind, AgentEntry.claudeCodeKind)
+
+        let rowsAfterEvent1 = rows(expanded: [surfaceID])
+        XCTAssertEqual(rowsAfterEvent1.count, 1, "No child exists yet: one parent row only")
+        guard case .parent(_, let childCount1, _) = rowsAfterEvent1[0] else {
+            return XCTFail("Row 0 must be the parent")
+        }
+        XCTAssertEqual(childCount1, 0, "After event 1: childCount 0")
+
+        // Event 2: SubagentStart, agent_id present, agent_type "Explore", no tool_name.
+        let event2 = """
+        {"session_id":"\(sessionID)","cwd":"\(cwd)","hook_event_name":"SubagentStart",\
+        "agent_id":"\(agentID)","agent_type":"Explore"}
+        """
+        XCTAssertEqual(try runHookScript(stdinJSON: event2, surfaceID: surfaceID), 0)
+        let childrenAfterEvent2 = await waitForChildren(of: surfaceID) { $0.count == 1 }
+        XCTAssertEqual(childrenAfterEvent2?.count, 1, "After event 2: one child must exist")
+
+        let collapsedAfterEvent2 = rows(expanded: [])
+        XCTAssertEqual(collapsedAfterEvent2.count, 1, "Collapsed: only the parent row, even with a child present")
+        guard case .parent(let parentEntry2, let childCount2, let isExpanded2) = collapsedAfterEvent2[0] else {
+            return XCTFail("Row 0 must be the parent")
+        }
+        XCTAssertEqual(childCount2, 1, "After event 2: childCount 1")
+        XCTAssertFalse(isExpanded2)
+        XCTAssertEqual(parentEntry2.state, .working, "SubagentStart maps to no state; the parent stays as event 1 left it")
+
+        let expandedAfterEvent2 = rows(expanded: [surfaceID])
+        XCTAssertEqual(expandedAfterEvent2.count, 2, "Expanded: the parent row plus its one child row")
+        guard case .parent = expandedAfterEvent2[0] else {
+            return XCTFail("Row 0 must still be the parent")
+        }
+        guard case .child(let child2) = expandedAfterEvent2[1] else {
+            return XCTFail("Row 1 must be the child, directly after its parent")
+        }
+        XCTAssertEqual(child2.agentID, agentID)
+        XCTAssertEqual(child2.agentType, "Explore")
+
+        // Event 3: PreToolUse inside the child, tool_name "Bash".
+        let event3 = """
+        {"session_id":"\(sessionID)","cwd":"\(cwd)","hook_event_name":"PreToolUse",\
+        "agent_id":"\(agentID)","agent_type":"Explore","tool_name":"Bash"}
+        """
+        XCTAssertEqual(try runHookScript(stdinJSON: event3, surfaceID: surfaceID), 0)
+        let childrenAfterEvent3 = await waitForChildren(of: surfaceID) { $0.first?.lastToolName == "Bash" }
+        XCTAssertEqual(childrenAfterEvent3?.first?.lastToolName, "Bash", "After event 3: the child's lastToolName is Bash")
+
+        let expandedAfterEvent3 = rows(expanded: [surfaceID])
+        guard case .child(let child3) = expandedAfterEvent3[safe: 1] else {
+            return XCTFail("Row 1 must still be the child row")
+        }
+        XCTAssertEqual(child3.lastToolName, "Bash")
+
+        // Event 4: SubagentStop, agent_id present, agent_type "Explore", no tool_name.
+        let event4 = """
+        {"session_id":"\(sessionID)","cwd":"\(cwd)","hook_event_name":"SubagentStop",\
+        "agent_id":"\(agentID)","agent_type":"Explore"}
+        """
+        XCTAssertEqual(try runHookScript(stdinJSON: event4, surfaceID: surfaceID), 0)
+        let childrenAfterEvent4 = await waitForChildren(of: surfaceID) { $0.isEmpty }
+        XCTAssertEqual(childrenAfterEvent4?.isEmpty, true, "After event 4: no children remain")
+
+        let rowsAfterEvent4 = rows(expanded: [surfaceID])
+        XCTAssertEqual(rowsAfterEvent4.count, 1, "Back to one parent row with no child rows, even while still expanded")
+        guard case .parent(_, let childCount4, _) = rowsAfterEvent4[0] else {
+            return XCTFail("Row 0 must be the parent")
+        }
+        XCTAssertEqual(childCount4, 0, "After event 4: childCount 0")
+    }
+
+    // MARK: - Grok: the full captured 7-event sequence
+
+    /// Replays the exact 7-event Grok capture in
+    /// docs/subagent-verification.md's wire contract table verbatim,
+    /// including the real parent and child session IDs the capture
+    /// pinned. Proves events 2 and 3 resolve to ONE child (the bug the
+    /// real capture exposed: `subagent_start` alone carries the
+    /// PARENT's `sessionId`), that the parent stays `.working` for the
+    /// child's whole run, that the child is gone after event 5, and that
+    /// the child's own `session_end` (event 6) neither resurrects it nor
+    /// settles the parent -- only the parent's own `session_end` (event
+    /// 7) does that.
+    func test_grok_subagentSequence_oneChildAndParentStaysWorking() async throws {
+        let surfaceID = UUID()
+        let parentSessionID = "01a02092-04e6-73a1-9d04-e1bd11dcd4fa"
+        let childSessionID = "01a02092-1cc5-7e53-be01-6b4de101b378"
+
+        // Event 1: pre_tool_use (parent), toolName "spawn_subagent".
+        let event1 = """
+        {"hookEventName":"pre_tool_use","sessionId":"\(parentSessionID)","toolName":"spawn_subagent"}
+        """
+        XCTAssertEqual(try runHookScript(stdinJSON: event1, surfaceID: surfaceID, kindArgument: "grok"), 0)
+        let afterEvent1 = await waitForEntry(surfaceID: surfaceID)
+        XCTAssertEqual(afterEvent1?.state, .working, "Precondition: the parent's own pre_tool_use creates the row")
+        XCTAssertEqual(afterEvent1?.kind, AgentEntry.grokKind)
+        let lastEventAtAfterEvent1 = try XCTUnwrap(afterEvent1?.lastEventAt)
+
+        // Event 2: subagent_start, sessionId is the PARENT's, subagentId names the child.
+        let event2 = """
+        {"hookEventName":"subagent_start","sessionId":"\(parentSessionID)",\
+        "subagentId":"\(childSessionID)","subagentType":"general-purpose"}
+        """
+        XCTAssertEqual(try runHookScript(stdinJSON: event2, surfaceID: surfaceID, kindArgument: "grok"), 0)
+        let childrenAfterEvent2 = await waitForChildren(of: surfaceID) { $0.count == 1 }
+        XCTAssertEqual(childrenAfterEvent2?.count, 1, "After event 2: one child, keyed by the child's own session id")
+        XCTAssertEqual(childrenAfterEvent2?.first?.agentID, childSessionID)
+
+        // Event 3: pre_tool_use (child), sessionId is the CHILD's own, no subagentId.
+        let event3 = """
+        {"hookEventName":"pre_tool_use","sessionId":"\(childSessionID)",\
+        "subagentType":"general-purpose","toolName":"run_terminal_command"}
+        """
+        XCTAssertEqual(try runHookScript(stdinJSON: event3, surfaceID: surfaceID, kindArgument: "grok"), 0)
+        let childrenAfterEvent3 = await waitForChildren(of: surfaceID) { $0.first?.lastToolName == "run_terminal_command" }
+        // The one-child proof: count stays 1 AND the tool name from event 3
+        // landed on the SAME child event 2 created -- if subagent_start's
+        // parent-keyed sessionId had instead minted a phantom child keyed
+        // to the parent, event 3 would either create a SECOND child (count
+        // 2) or update nothing at all (lastToolName staying nil), never
+        // this.
+        XCTAssertEqual(childrenAfterEvent3?.count, 1, "Events 2 and 3 must resolve to exactly one child, not two")
+        XCTAssertEqual(childrenAfterEvent3?.first?.agentID, childSessionID)
+        XCTAssertEqual(childrenAfterEvent3?.first?.lastToolName, "run_terminal_command")
+        XCTAssertEqual(childrenAfterEvent3?.first?.state, .working)
+        let parentAfterEvent3 = try XCTUnwrap(registry.entries[surfaceID])
+        XCTAssertEqual(parentAfterEvent3.state, .working, "The parent row stays .working while the child runs")
+
+        // Event 4: pre_tool_use (parent again), toolName "get_command_or_subagent_output".
+        let event4 = """
+        {"hookEventName":"pre_tool_use","sessionId":"\(parentSessionID)",\
+        "toolName":"get_command_or_subagent_output"}
+        """
+        XCTAssertEqual(try runHookScript(stdinJSON: event4, surfaceID: surfaceID, kindArgument: "grok"), 0)
+        let afterEvent4 = await waitForEntry(surfaceID: surfaceID) { $0.lastEventAt > lastEventAtAfterEvent1 }
+        XCTAssertEqual(afterEvent4?.state, .working)
+        let lastEventAtAfterEvent4 = try XCTUnwrap(afterEvent4?.lastEventAt)
+        XCTAssertEqual(registry.subagentRegistry.children(of: surfaceID).count, 1, "Event 4 must not touch the child")
+
+        // Event 5: subagent_stop, sessionId and subagentId both the child's.
+        let event5 = """
+        {"hookEventName":"subagent_stop","sessionId":"\(childSessionID)",\
+        "subagentId":"\(childSessionID)","subagentType":"general-purpose"}
+        """
+        XCTAssertEqual(try runHookScript(stdinJSON: event5, surfaceID: surfaceID, kindArgument: "grok"), 0)
+        let childrenAfterEvent5 = await waitForChildren(of: surfaceID) { $0.isEmpty }
+        XCTAssertEqual(childrenAfterEvent5?.isEmpty, true, "After event 5: the child is gone")
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .working, "The child stopping must not settle the parent")
+
+        // Event 6: session_end for the CHILD's own session (sessionId child, no subagentId).
+        let event6 = """
+        {"hookEventName":"session_end","sessionId":"\(childSessionID)","subagentType":"general-purpose"}
+        """
+        XCTAssertEqual(try runHookScript(stdinJSON: event6, surfaceID: surfaceID, kindArgument: "grok"), 0)
+        // Event 6 is a genuine no-op on both stores: nothing to poll for
+        // positively, so this asserts the absence of the two things it
+        // must NOT do, over a short timeout rather than the full default.
+        let resurrectedChild = await waitForChildren(of: surfaceID, timeout: 0.5) { !$0.isEmpty }
+        XCTAssertNil(resurrectedChild, "The child's own session_end must not resurrect a child row")
+        let settledByEvent6 = await waitForEntry(surfaceID: surfaceID, timeout: 0.5) { $0.state == .done }
+        XCTAssertNil(settledByEvent6, "The child's own session_end must not settle the parent")
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .working, "The parent must still be .working after event 6")
+
+        // Event 7: session_end for the PARENT's own session.
+        let event7 = """
+        {"hookEventName":"session_end","sessionId":"\(parentSessionID)"}
+        """
+        XCTAssertEqual(try runHookScript(stdinJSON: event7, surfaceID: surfaceID, kindArgument: "grok"), 0)
+        let afterEvent7 = await waitForEntry(surfaceID: surfaceID) { $0.state == .done }
+        XCTAssertEqual(afterEvent7?.state, .done, "Only the parent's own session_end settles the parent")
+        XCTAssertGreaterThan(try XCTUnwrap(afterEvent7?.lastEventAt), lastEventAtAfterEvent4)
+    }
+
+    // MARK: - Three concurrent Claude Code children
+
+    /// Three `Task` calls in parallel: `childCount` reaches 3, expanded
+    /// rows appear after their parent in `children(of:)`'s sorted-by-
+    /// agentID order regardless of arrival order, none appear when
+    /// collapsed, and each child retires independently until the
+    /// chevron condition (`childCount > 0`) goes false.
+    func test_claudeCode_threeConcurrentChildren_orderAndIndependentRetirement() async throws {
+        let surfaceID = UUID()
+        let sessionID = "parent-session"
+        let cwd = "/Users/dev/repo"
+
+        let sessionStart = """
+        {"session_id":"\(sessionID)","cwd":"\(cwd)","hook_event_name":"SessionStart"}
+        """
+        XCTAssertEqual(try runHookScript(stdinJSON: sessionStart, surfaceID: surfaceID), 0)
+        _ = await waitForEntry(surfaceID: surfaceID)
+
+        // Sent out of sorted order deliberately, so an order assertion
+        // below cannot pass by coincidence of send order.
+        func subagentStart(_ agentID: String) -> String {
+            """
+            {"session_id":"\(sessionID)","cwd":"\(cwd)","hook_event_name":"SubagentStart",\
+            "agent_id":"\(agentID)","agent_type":"Explore"}
+            """
+        }
+        for agentID in ["agent-c", "agent-a", "agent-b"] {
+            XCTAssertEqual(try runHookScript(stdinJSON: subagentStart(agentID), surfaceID: surfaceID), 0)
+        }
+        let childrenAfterAll = await waitForChildren(of: surfaceID) { $0.count == 3 }
+        XCTAssertEqual(childrenAfterAll?.count, 3, "childCount must reach 3")
+
+        let collapsed = rows(expanded: [])
+        XCTAssertEqual(collapsed.count, 1, "Collapsed: only the parent row appears")
+        guard case .parent(_, let childCount, let isExpanded) = collapsed[0] else {
+            return XCTFail("Row 0 must be the parent")
+        }
+        XCTAssertEqual(childCount, 3)
+        XCTAssertFalse(isExpanded)
+
+        let expanded = rows(expanded: [surfaceID])
+        XCTAssertEqual(expanded.count, 4, "Expanded: the parent row plus 3 child rows")
+        let childIDsInOrder: [String] = expanded.dropFirst().compactMap { row in
+            if case .child(let child) = row { return child.agentID }
+            return nil
+        }
+        XCTAssertEqual(childIDsInOrder, ["agent-a", "agent-b", "agent-c"],
+                       "Expanded child rows must appear in children(of:)'s sorted-by-agentID order, " +
+                       "not send order")
+
+        // Retire agent-a first.
+        let stopA = """
+        {"session_id":"\(sessionID)","cwd":"\(cwd)","hook_event_name":"SubagentStop",\
+        "agent_id":"agent-a","agent_type":"Explore"}
+        """
+        XCTAssertEqual(try runHookScript(stdinJSON: stopA, surfaceID: surfaceID), 0)
+        let childrenAfterA = await waitForChildren(of: surfaceID) { $0.count == 2 }
+        XCTAssertEqual(childrenAfterA?.map(\.agentID).sorted(), ["agent-b", "agent-c"],
+                       "Exactly agent-b and agent-c remain, independent of agent-a's own retirement")
+
+        // Retire agent-b next.
+        let stopB = """
+        {"session_id":"\(sessionID)","cwd":"\(cwd)","hook_event_name":"SubagentStop",\
+        "agent_id":"agent-b","agent_type":"Explore"}
+        """
+        XCTAssertEqual(try runHookScript(stdinJSON: stopB, surfaceID: surfaceID), 0)
+        let childrenAfterB = await waitForChildren(of: surfaceID) { $0.count == 1 }
+        XCTAssertEqual(childrenAfterB?.map(\.agentID), ["agent-c"], "Only agent-c remains")
+
+        let rowsBeforeLast = rows(expanded: [surfaceID])
+        guard case .parent(_, let childCountBeforeLast, _) = rowsBeforeLast[0] else {
+            return XCTFail("Row 0 must be the parent")
+        }
+        XCTAssertEqual(childCountBeforeLast, 1, "The chevron condition (childCount > 0) still holds with one child left")
+
+        // Retire agent-c last.
+        let stopC = """
+        {"session_id":"\(sessionID)","cwd":"\(cwd)","hook_event_name":"SubagentStop",\
+        "agent_id":"agent-c","agent_type":"Explore"}
+        """
+        XCTAssertEqual(try runHookScript(stdinJSON: stopC, surfaceID: surfaceID), 0)
+        let childrenAfterC = await waitForChildren(of: surfaceID) { $0.isEmpty }
+        XCTAssertEqual(childrenAfterC?.isEmpty, true)
+
+        let rowsAfterLast = rows(expanded: [surfaceID])
+        XCTAssertEqual(rowsAfterLast.count, 1, "The chevron condition goes false: no child rows, even while expanded")
+        guard case .parent(_, let childCountAfterLast, _) = rowsAfterLast[0] else {
+            return XCTFail("Row 0 must be the parent")
+        }
+        XCTAssertEqual(childCountAfterLast, 0)
+    }
+
+    // MARK: - A child-scoped PermissionRequest blocks the parent and only that child
+
+    /// Grok's real `notification` / `notificationType: "permission_prompt"`
+    /// shape (`GrokHooksConfigManager` installs `Notification`'s hook
+    /// matcher as exactly `"permission_prompt"`, and
+    /// `AgentEventGrokDecodeTests` pins that this notificationType alone
+    /// -- never the message -- decides `PermissionRequest`), scoped to one
+    /// child's own session per the same child-identity rule event 3 in
+    /// the 7-event capture already exercises (child-scoped events carry
+    /// the child's own `sessionId`, no `subagentId`). Asserts the parent
+    /// row goes `.blocked`, that one child goes `.blocked` too, and that
+    /// its sibling is left in its own, different state.
+    func test_grok_childScopedPermissionRequest_blocksParentAndOnlyThatChild() async throws {
+        let surfaceID = UUID()
+        let parentSessionID = "parent-session-perm"
+        let child1SessionID = "child-session-1"
+        let child2SessionID = "child-session-2"
+
+        let parentStart = """
+        {"hookEventName":"pre_tool_use","sessionId":"\(parentSessionID)","toolName":"spawn_subagent"}
+        """
+        XCTAssertEqual(try runHookScript(stdinJSON: parentStart, surfaceID: surfaceID, kindArgument: "grok"), 0)
+        _ = await waitForEntry(surfaceID: surfaceID)
+
+        func subagentStart(sessionID: String) -> String {
+            """
+            {"hookEventName":"subagent_start","sessionId":"\(parentSessionID)",\
+            "subagentId":"\(sessionID)","subagentType":"general-purpose"}
+            """
+        }
+        XCTAssertEqual(
+            try runHookScript(stdinJSON: subagentStart(sessionID: child1SessionID), surfaceID: surfaceID, kindArgument: "grok"),
+            0
+        )
+        XCTAssertEqual(
+            try runHookScript(stdinJSON: subagentStart(sessionID: child2SessionID), surfaceID: surfaceID, kindArgument: "grok"),
+            0
+        )
+        let childrenAfterStarts = await waitForChildren(of: surfaceID) { $0.count == 2 }
+        XCTAssertEqual(childrenAfterStarts?.count, 2, "Precondition: both children exist, both .working")
+        XCTAssertTrue(childrenAfterStarts?.allSatisfy { $0.state == .working } ?? false)
+
+        // Child-scoped permission prompt: sessionId is child1's own, no
+        // subagentId -- the same identity rule the Grok capture's own
+        // child-scoped events (2 and 3 in the other test) already follow.
+        let permissionPrompt = """
+        {"hookEventName":"notification","sessionId":"\(child1SessionID)",\
+        "subagentType":"general-purpose","notificationType":"permission_prompt"}
+        """
+        XCTAssertEqual(try runHookScript(stdinJSON: permissionPrompt, surfaceID: surfaceID, kindArgument: "grok"), 0)
+
+        let afterPrompt = await waitForEntry(surfaceID: surfaceID) { $0.state == .blocked }
+        XCTAssertEqual(afterPrompt?.state, .blocked, "The parent row must go .blocked")
+
+        let children = registry.subagentRegistry.children(of: surfaceID)
+        let blockedChild = children.first { $0.agentID == child1SessionID }
+        let otherChild = children.first { $0.agentID == child2SessionID }
+        XCTAssertEqual(blockedChild?.state, .blocked, "Only the child the prompt named goes .blocked")
+        XCTAssertEqual(otherChild?.state, .working, "The sibling child is left in its own, unrelated state")
+    }
+
+    // MARK: - No children at all: identical to a hardcoded empty child store
+
+    /// A pane whose CLI reports no children (pi, hermes, herdr) must
+    /// produce a row list identical to the same entries fed a hardcoded
+    /// empty child closure: same count, same order, every childCount
+    /// zero, no `.child` rows. `AgentSidebarRows.Row` is not `Equatable`,
+    /// so both lists are mapped to a comparable tuple shape before
+    /// comparison.
+    func test_noChildrenAtAll_rowListIdenticalToHardcodedEmptyChildStore() async throws {
+        let surfaceA = UUID()
+        let surfaceB = UUID()
+
+        let sessionStartA = """
+        {"session_id":"session-a","cwd":"/Users/dev/repo-a","hook_event_name":"SessionStart"}
+        """
+        let sessionStartB = """
+        {"session_id":"session-b","cwd":"/Users/dev/repo-b","hook_event_name":"SessionStart"}
+        """
+        XCTAssertEqual(try runHookScript(stdinJSON: sessionStartA, surfaceID: surfaceA), 0)
+        XCTAssertEqual(try runHookScript(stdinJSON: sessionStartB, surfaceID: surfaceB), 0)
+        _ = await waitForEntry(surfaceID: surfaceA)
+        _ = await waitForEntry(surfaceID: surfaceB)
+        XCTAssertEqual(registry.entries.count, 2, "Precondition: both rows exist, neither has ever been sent a child event")
+
+        func fingerprint(_ row: AgentSidebarRows.Row) -> String {
+            switch row {
+            case .parent(let entry, let childCount, let isExpanded):
+                return "parent:\(entry.surfaceID):\(childCount):\(isExpanded)"
+            case .child(let child):
+                return "child:\(child.id)"
+            }
+        }
+
+        let expanded: Set<UUID> = [surfaceA, surfaceB]
+        let realRows = AgentSidebarRows.build(
+            entries: registry.sortedEntries,
+            children: { registry.subagentRegistry.children(of: $0) },
+            expanded: expanded
+        )
+        let hardcodedEmptyRows = AgentSidebarRows.build(
+            entries: registry.sortedEntries,
+            children: { _ in [] },
+            expanded: expanded
+        )
+
+        XCTAssertEqual(realRows.count, 2, "No child was ever reported: two parent rows, no child rows")
+        XCTAssertEqual(realRows.map(fingerprint), hardcodedEmptyRows.map(fingerprint),
+                       "A pane a CLI never reports children for must render exactly as it did " +
+                       "before this feature: identical to AgentSidebarRows.build fed an empty child store")
+        for row in realRows {
+            guard case .parent(_, let childCount, _) = row else {
+                return XCTFail("No row may be a .child row when nothing ever reported a child")
+            }
+            XCTAssertEqual(childCount, 0)
+        }
+    }
+
+    // MARK: - Force-quit: pane-exit settle sweeps children; a late child event creates nothing
+
+    /// `handlePaneCommandFinished`'s pane-exit signal settles the row and
+    /// sweeps every child of it (mirroring `AgentRegistry.apply`'s own
+    /// `.write` case: `row.state == .done` triggers
+    /// `subagentRegistry.handleSurfaceDestroyed`). A late child event
+    /// delivered afterward, for the same now-`.done` surface, must create
+    /// nothing: `AgentRegistry.handleHookEvent`'s own guard only tracks a
+    /// child under a live (non-`.done`) row.
+    func test_forceQuit_paneExitSweepsChildren_lateChildEventCreatesNothing() async throws {
+        let surfaceID = UUID()
+        let sessionID = "parent-session"
+        let cwd = "/Users/dev/repo"
+
+        let sessionStart = """
+        {"session_id":"\(sessionID)","cwd":"\(cwd)","hook_event_name":"SessionStart"}
+        """
+        XCTAssertEqual(try runHookScript(stdinJSON: sessionStart, surfaceID: surfaceID), 0)
+        _ = await waitForEntry(surfaceID: surfaceID)
+
+        func subagentStart(_ agentID: String) -> String {
+            """
+            {"session_id":"\(sessionID)","cwd":"\(cwd)","hook_event_name":"SubagentStart",\
+            "agent_id":"\(agentID)","agent_type":"Explore"}
+            """
+        }
+        XCTAssertEqual(try runHookScript(stdinJSON: subagentStart("agent-x"), surfaceID: surfaceID), 0)
+        XCTAssertEqual(try runHookScript(stdinJSON: subagentStart("agent-y"), surfaceID: surfaceID), 0)
+        let childrenBeforeQuit = await waitForChildren(of: surfaceID) { $0.count == 2 }
+        XCTAssertEqual(childrenBeforeQuit?.count, 2, "Precondition: two children showing before the force-quit")
+
+        let didSettle = registry.handlePaneCommandFinished(surfaceID: surfaceID)
+
+        XCTAssertTrue(didSettle, "The pane-exit signal must settle the row")
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .done)
+        XCTAssertTrue(registry.subagentRegistry.children(of: surfaceID).isEmpty,
+                      "No child may outlive the row it belonged to")
+
+        // Sanity barrier: a live-parent+child flow on a second surface,
+        // proving the pipeline is up and would have delivered the late
+        // event below had the .done guard not dropped it.
+        let sanitySurfaceID = UUID()
+        let sanitySessionStart = """
+        {"session_id":"sanity-session","cwd":"\(cwd)","hook_event_name":"SessionStart"}
+        """
+        XCTAssertEqual(try runHookScript(stdinJSON: sanitySessionStart, surfaceID: sanitySurfaceID), 0)
+        _ = await waitForEntry(surfaceID: sanitySurfaceID)
+        let sanitySubagentStart = """
+        {"session_id":"sanity-session","cwd":"\(cwd)","hook_event_name":"SubagentStart",\
+        "agent_id":"sanity-agent","agent_type":"Explore"}
+        """
+        XCTAssertEqual(try runHookScript(stdinJSON: sanitySubagentStart, surfaceID: sanitySurfaceID), 0)
+        let sanityChildren = await waitForChildren(of: sanitySurfaceID) { $0.count == 1 }
+        XCTAssertEqual(sanityChildren?.count, 1,
+                       "Precondition: the pipeline is up and does deliver a child event when a live row exists")
+
+        // Late child event for the now-.done surface.
+        let lateSubagentStart = subagentStart("agent-late")
+        XCTAssertEqual(try runHookScript(stdinJSON: lateSubagentStart, surfaceID: surfaceID), 0)
+
+        let lateChild = await waitForChildren(of: surfaceID, timeout: 0.5) { !$0.isEmpty }
+        XCTAssertNil(lateChild, "A child is only ever tracked under a live row: a late event for a .done surface creates nothing")
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .done, "The already-settled row must not be revived")
+    }
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? {
+        indices.contains(index) ? self[index] : nil
+    }
+}
