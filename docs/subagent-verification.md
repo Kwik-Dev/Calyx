@@ -308,6 +308,16 @@ event creates nothing under the settled row. The real force-quit path
 (ghostty's own pane-exit signal, then closing the pane) still needs a
 human.
 
+## Manual run
+
+The maintainer ran the built app and confirmed the feature works. That
+run covered the Claude Code path end to end, which is the one every
+other kind's row shape is derived from.
+
+Codex remains uncaptured (see its section above), and the per-item
+appearance details below record what each check is for rather than a
+per-item transcript of that session.
+
 ## Operational note
 
 Adding hook subscriptions does not reach a CLI session that is already
