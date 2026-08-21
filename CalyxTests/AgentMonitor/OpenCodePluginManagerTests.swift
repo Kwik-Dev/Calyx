@@ -12,10 +12,15 @@
 //  - scriptBody invariants: CALYX_SURFACE_ID env guard (`return {}`),
 //    agent-endpoint.json reference, X-Calyx-Agent-Kind: opencode header,
 //    hook_event_name field, AbortSignal.timeout, catch-silenced errors,
-//    parentID-based child-session exclusion, the 7 OpenCode event ->
-//    Claude Code hook_event_name mappings, pendingPermissions suppressing
-//    a racing session.idle, pendingPermissions and childSessions cleanup
-//    on session.deleted, and the mtime-cached endpoint file read
+//    the 7 OpenCode event -> Claude Code hook_event_name mappings,
+//    pendingPermissions suppressing a racing session.idle,
+//    pendingPermissions cleanup on session.deleted, and the mtime-cached
+//    endpoint file read
+//  - childSessions translation (replacing the old suppression): a child
+//    session's own session.created posts SubagentStart, its own
+//    session.deleted posts SubagentStop, every event in between is
+//    forwarded with agent_id set to the child session id, and the POST
+//    body for a child event never carries session_id
 //  - remove deletes an installed plugin (and throws if an existing file
 //    can't be deleted), no-ops when absent
 //  - isInstalled reflects install state
@@ -239,6 +244,59 @@ final class OpenCodePluginManagerTests: XCTestCase {
         for mapping in expectedMappings {
             assertMapping(mapping.event, mapsTo: mapping.hookEventName, in: body)
         }
+    }
+
+    // MARK: - childSessions translation (subagent rows)
+    //
+    // Replaces the old suppression contract (a child session's events
+    // never reached the server at all -- see git history for the removed
+    // "childSessions.has(sessionID)) { ... return; }" tests) now that the
+    // structural guard "a child never owns a row" lives server-side
+    // (AgentEvent.isSubagentEvent / CalyxMCPServer.routeAgentEvent). The
+    // plugin now translates a child session's events into subagent
+    // events instead of discarding them.
+
+    /// Every `body: JSON.stringify({ ... })` object literal in
+    /// `scriptBody`, as raw source text -- assumes a flat (no nested
+    /// braces) object literal, which every body this plugin builds is.
+    private func jsonStringifyBodies(in script: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: #"JSON\.stringify\(\{([\s\S]*?)\}\)"#) else { return [] }
+        let range = NSRange(script.startIndex..<script.endIndex, in: script)
+        return regex.matches(in: script, range: range).compactMap { match in
+            guard let bodyRange = Range(match.range(at: 1), in: script) else { return nil }
+            return String(script[bodyRange])
+        }
+    }
+
+    func test_scriptBody_containsSubagentStartAndSubagentStopLiterals() {
+        let body = OpenCodePluginManager.scriptBody
+        XCTAssertTrue(body.contains("SubagentStart"),
+                     "The plugin must be able to post SubagentStart for a child session's own session.created")
+        XCTAssertTrue(body.contains("SubagentStop"),
+                     "The plugin must be able to post SubagentStop for a child session's own session.deleted")
+    }
+
+    func test_scriptBody_everyBodyCarryingAgentId_neverAlsoCarriesSessionId() {
+        let bodies = jsonStringifyBodies(in: OpenCodePluginManager.scriptBody)
+        XCTAssertFalse(bodies.isEmpty, "Precondition: scriptBody must build at least one POST body")
+
+        let agentIDBodies = bodies.filter { $0.contains("agent_id") }
+        XCTAssertFalse(agentIDBodies.isEmpty,
+                       "At least one POST body must carry agent_id -- the child-event translation path")
+        for body in agentIDBodies {
+            XCTAssertFalse(body.contains("session_id"),
+                           "A child event's POST body must never carry session_id, or a later reattach " +
+                           "could offer to resume the child instead of the parent conversation. Body: \(body)")
+        }
+    }
+
+    func test_scriptBody_atLeastOneBodyStillCarriesPlainSessionId() {
+        // Non-regression: the parent (non-child) path must keep sending
+        // session_id exactly as it does today.
+        let bodies = jsonStringifyBodies(in: OpenCodePluginManager.scriptBody)
+        XCTAssertTrue(bodies.contains { $0.contains("session_id") && !$0.contains("agent_id") },
+                      "The ordinary (non-child) event path must still send a body carrying session_id " +
+                      "with no agent_id")
     }
 
     // MARK: - remove()

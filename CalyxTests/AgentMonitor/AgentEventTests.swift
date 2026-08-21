@@ -341,6 +341,172 @@ final class AgentEventTests: XCTestCase {
     // no longer one of the tool names AgentEvent extracts a self peer ID
     // for either.
 
+    // MARK: - Subagent fields (agent_id / agent_type / tool_name)
+    //
+    // agent_id is the only subagent predicate in the codebase
+    // (isSubagentEvent == (agentID != nil)): agent_type alone also
+    // appears on a main-thread event when the session was started with
+    // `claude --agent foo`, so it must never be read as "this is a
+    // subagent event" on its own.
+
+    func test_decode_claudeCodeSubagentStart_populatesAgentIDAndAgentType() throws {
+        let data = json("""
+        {
+            "session_id": "abc-123",
+            "cwd": "/Users/dev/repo",
+            "hook_event_name": "SubagentStart",
+            "agent_id": "sub-001",
+            "agent_type": "general-purpose"
+        }
+        """)
+
+        let event = try XCTUnwrap(AgentEvent.decode(from: data))
+
+        XCTAssertEqual(event.hookEventName, "SubagentStart")
+        XCTAssertEqual(event.agentID, "sub-001")
+        XCTAssertEqual(event.agentType, "general-purpose")
+        XCTAssertTrue(event.isSubagentEvent, "A SubagentStart event with agent_id must be a subagent event")
+    }
+
+    func test_decode_claudeCodeSubagentStop_populatesAgentIDAndAgentType() throws {
+        let data = json("""
+        {
+            "session_id": "abc-123",
+            "cwd": "/Users/dev/repo",
+            "hook_event_name": "SubagentStop",
+            "agent_id": "sub-001",
+            "agent_type": "general-purpose",
+            "stop_hook_active": false
+        }
+        """)
+
+        let event = try XCTUnwrap(AgentEvent.decode(from: data))
+
+        XCTAssertEqual(event.hookEventName, "SubagentStop")
+        XCTAssertEqual(event.agentID, "sub-001")
+        XCTAssertEqual(event.agentType, "general-purpose")
+        XCTAssertTrue(event.isSubagentEvent)
+    }
+
+    // Codex's subagent hooks reuse the PARENT session's own session_id
+    // (per Codex's own docs), and carry turn_id / agent_transcript_path /
+    // last_assistant_message / stop_hook_active -- none of which
+    // AgentEvent models, so this also pins that they're tolerated rather
+    // than rejected.
+    func test_decode_codexSubagentStart_populatesAgentIDAndAgentType_toleratesUnmodelledFields() throws {
+        let data = json("""
+        {
+            "session_id": "codex-parent-session",
+            "cwd": "/Users/dev/repo",
+            "hook_event_name": "SubagentStart",
+            "agent_id": "sub-777",
+            "agent_type": "reviewer",
+            "turn_id": "turn-42",
+            "agent_transcript_path": "/Users/dev/.codex/sessions/sub-777.jsonl"
+        }
+        """)
+
+        let event = try XCTUnwrap(AgentEvent.decode(from: data))
+
+        XCTAssertEqual(event.hookEventName, "SubagentStart")
+        XCTAssertEqual(event.agentID, "sub-777")
+        XCTAssertEqual(event.agentType, "reviewer")
+        XCTAssertTrue(event.isSubagentEvent)
+    }
+
+    func test_decode_codexSubagentStop_populatesAgentIDAndAgentType_toleratesUnmodelledFields() throws {
+        let data = json("""
+        {
+            "session_id": "codex-parent-session",
+            "cwd": "/Users/dev/repo",
+            "hook_event_name": "SubagentStop",
+            "agent_id": "sub-777",
+            "agent_type": "reviewer",
+            "turn_id": "turn-42",
+            "agent_transcript_path": "/Users/dev/.codex/sessions/sub-777.jsonl",
+            "last_assistant_message": "Done reviewing the diff.",
+            "stop_hook_active": false
+        }
+        """)
+
+        let event = try XCTUnwrap(AgentEvent.decode(from: data))
+
+        XCTAssertEqual(event.hookEventName, "SubagentStop")
+        XCTAssertEqual(event.agentID, "sub-777")
+        XCTAssertEqual(event.agentType, "reviewer")
+        XCTAssertTrue(event.isSubagentEvent)
+    }
+
+    func test_decode_minimalPayload_hookEventNameAndAgentIDOnly_decodesAsSubagentEvent() throws {
+        let data = json("""
+        { "hook_event_name": "PreToolUse", "agent_id": "sub-1" }
+        """)
+
+        let event = try XCTUnwrap(AgentEvent.decode(from: data))
+
+        XCTAssertEqual(event.agentID, "sub-1")
+        XCTAssertTrue(event.isSubagentEvent, "agent_id alone, with every other field absent, must still decode as a subagent event")
+    }
+
+    // agent_type ALSO appears on a main-thread event when the session was
+    // started with `claude --agent foo`, WITHOUT agent_id. Reading
+    // agent_type alone as "this is a subagent" would kill that session's
+    // parent row permanently, so isSubagentEvent must stay false here.
+    func test_decode_agentTypeWithoutAgentID_isNotASubagentEvent() throws {
+        let data = json("""
+        {
+            "session_id": "main-session",
+            "cwd": "/Users/dev/repo",
+            "hook_event_name": "UserPromptSubmit",
+            "agent_type": "reviewer"
+        }
+        """)
+
+        let event = try XCTUnwrap(AgentEvent.decode(from: data))
+
+        XCTAssertEqual(event.agentType, "reviewer")
+        XCTAssertNil(event.agentID)
+        XCTAssertFalse(event.isSubagentEvent,
+                       "agent_type alone (no agent_id) is a claude --agent main-thread session, not a subagent")
+    }
+
+    func test_decode_neitherAgentIDNorAgentType_isNotASubagentEvent() throws {
+        let data = json("""
+        { "session_id": "main-session", "cwd": "/Users/dev/repo", "hook_event_name": "UserPromptSubmit" }
+        """)
+
+        let event = try XCTUnwrap(AgentEvent.decode(from: data))
+
+        XCTAssertNil(event.agentID)
+        XCTAssertNil(event.agentType)
+        XCTAssertFalse(event.isSubagentEvent)
+    }
+
+    func test_decode_toolName_mapsToToolNameProperty() throws {
+        let data = json("""
+        {
+            "session_id": "abc-123",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"}
+        }
+        """)
+
+        let event = try XCTUnwrap(AgentEvent.decode(from: data))
+
+        XCTAssertEqual(event.toolName, "Bash")
+    }
+
+    func test_decode_toolName_absentDecodesAsNil() throws {
+        let data = json("""
+        { "session_id": "abc-123", "hook_event_name": "Stop" }
+        """)
+
+        let event = try XCTUnwrap(AgentEvent.decode(from: data))
+
+        XCTAssertNil(event.toolName)
+    }
+
     func test_decode_preToolUse_nonCalyxIPCToolAndMissingToolInput_ipcSelfPeerIDIsNil() throws {
         // Sanity: a calyx-ipc send_message PreToolUse must actually
         // extract a peer ID — otherwise the nil assertions below would be

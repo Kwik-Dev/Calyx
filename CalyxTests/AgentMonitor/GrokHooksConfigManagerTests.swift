@@ -43,6 +43,7 @@ final class GrokHooksConfigManagerTests: XCTestCase {
     private let expectedEventKeys: Set<String> = [
         "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure",
         "Stop", "StopFailure", "StopCancelled", "SessionEnd", "Notification",
+        "SubagentStart", "SubagentStop",
     ]
 
     // MARK: - Lifecycle
@@ -126,7 +127,7 @@ final class GrokHooksConfigManagerTests: XCTestCase {
 
     // MARK: - Event registration
 
-    func test_installHooks_registersExactlyTheTenObservedEvents() throws {
+    func test_installHooks_registersExactlyTheTwelveObservedEvents() throws {
         let hooks = try installAndReadHooksObject()
 
         XCTAssertEqual(Set(hooks.keys), expectedEventKeys,
@@ -244,10 +245,34 @@ final class GrokHooksConfigManagerTests: XCTestCase {
                        "it states its own short deadline instead of inheriting that default")
     }
 
-    func test_installHooks_noStatePingOtherThanStopStatesATimeout() throws {
+    // SubagentStop also defaults to 600 seconds in Grok, for the same
+    // reason Stop does -- and a fire-and-forget POST reporting a child's
+    // exit must not sit on that child's own exit path for up to 10
+    // minutes. Same explicit-timeout treatment as Stop, same value.
+    func test_installHooks_subagentStopCarriesAnExplicitTimeoutOfTen() throws {
         let hooks = try installAndReadHooksObject()
 
-        for event in stateOnlyEventKeys.subtracting(["Stop"]).sorted() {
+        let subagentStopHandlers = try handlers(hooks, "SubagentStop")
+        XCTAssertEqual(subagentStopHandlers.count, 1)
+        XCTAssertEqual(subagentStopHandlers[0]["timeout"] as? Int, 10,
+                       "Grok defaults SubagentStop to 600 seconds like Stop; a fire-and-forget POST must " +
+                       "not sit on the child's own exit path for up to 10 minutes")
+    }
+
+    func test_installHooks_subagentStartStatesNoExplicitTimeout() throws {
+        let hooks = try installAndReadHooksObject()
+
+        let subagentStartHandlers = try handlers(hooks, "SubagentStart")
+        XCTAssertEqual(subagentStartHandlers.count, 1)
+        XCTAssertNil(subagentStartHandlers[0]["timeout"],
+                     "SubagentStart is not one of the two events Grok defaults to 600 seconds, so it " +
+                     "keeps the ordinary 5-second observe default")
+    }
+
+    func test_installHooks_noStatePingOtherThanStopOrSubagentStopStatesATimeout() throws {
+        let hooks = try installAndReadHooksObject()
+
+        for event in stateOnlyEventKeys.subtracting(["Stop", "SubagentStop"]).sorted() {
             for handler in try handlers(hooks, event) {
                 XCTAssertNil(handler["timeout"],
                              "[\(event)] inherits Grok's 5-second observe default, which is ample for a " +

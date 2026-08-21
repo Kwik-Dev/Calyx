@@ -17,6 +17,16 @@ struct AgentStatusView: View {
     /// drift the moment row height, spacing, or padding change.
     @State private var rowsHeight: CGFloat = 0
 
+    /// SurfaceIDs of parent rows currently disclosing their children.
+    /// View-local, never persisted into `WindowSession` /
+    /// `SessionSnapshot`: a child's own existence is never persisted
+    /// either (`SubagentRegistry` holds it only as long as the CLI
+    /// keeps reporting it), so there is nothing durable to key a
+    /// persisted disclosure state to. Keyed by surfaceID rather than,
+    /// say, row position, so a row's disclosure state stays with it
+    /// when `sortedEntries` reorders rows on a state change.
+    @State private var expandedParents: Set<UUID> = []
+
     /// Resolves the pane's own recorded title (`SurfacePropertyStore
     /// .title(for:)`, threaded down from `CalyxWindowController`), passed
     /// down to each `AgentRowView` for its primary label. Required, not
@@ -99,9 +109,47 @@ struct AgentStatusView: View {
                                     // spacing to throw off the minHeight math
                                     // below.
                                     VStack(spacing: 0) {
+                                        // Keyed by surfaceID so a click on a
+                                        // .external row (whose own
+                                        // surfaceID is never a resolvable
+                                        // SurfaceRegistry id) still resolves
+                                        // a child's focus target through the
+                                        // parent's own focusSurfaceID --
+                                        // the same resolution AgentRowView
+                                        // itself performs for the parent row.
+                                        let entriesByID = Dictionary(
+                                            entries.map { ($0.surfaceID, $0) }, uniquingKeysWith: { _, latest in latest }
+                                        )
                                         VStack(spacing: 4) {
-                                            ForEach(entries) { entry in
-                                                AgentRowView(entry: entry, now: context.date, paneTitle: paneTitle, paneCwd: paneCwd)
+                                            ForEach(AgentSidebarRows.build(
+                                                entries: entries,
+                                                children: { AgentRegistry.shared.subagentRegistry.children(of: $0) },
+                                                expanded: expandedParents
+                                            )) { row in
+                                                switch row {
+                                                case .parent(let entry, let childCount, let isExpanded):
+                                                    AgentRowView(
+                                                        entry: entry, now: context.date, paneTitle: paneTitle, paneCwd: paneCwd,
+                                                        childCount: childCount, isExpanded: isExpanded,
+                                                        onToggleExpanded: { toggleExpanded(entry.surfaceID) }
+                                                    )
+                                                case .child(let child):
+                                                    // AgentSidebarRows.build only ever emits a .child
+                                                    // row immediately after its own parent's .parent
+                                                    // row, and that parent came from this same
+                                                    // `entries` array, so this lookup always succeeds
+                                                    // in practice -- the `if let` degrades to omitting
+                                                    // the row rather than trapping should that ever
+                                                    // not hold.
+                                                    if let parent = entriesByID[child.parentSurfaceID] {
+                                                        AgentSubRowView(
+                                                            child: child, now: context.date,
+                                                            focusTarget: AgentRowFocusTarget.resolve(
+                                                                source: parent.source, surfaceID: parent.surfaceID, focusSurfaceID: parent.focusSurfaceID
+                                                            )
+                                                        )
+                                                    }
+                                                }
                                             }
                                         }
                                         .padding(.horizontal, 8)
@@ -124,6 +172,16 @@ struct AgentStatusView: View {
                     }
                 }
             }
+        }
+    }
+
+    // MARK: - Disclosure
+
+    private func toggleExpanded(_ surfaceID: UUID) {
+        if expandedParents.contains(surfaceID) {
+            expandedParents.remove(surfaceID)
+        } else {
+            expandedParents.insert(surfaceID)
         }
     }
 
@@ -318,6 +376,59 @@ enum AgentRowFocusTarget {
     }
 }
 
+// MARK: - Sidebar Rows
+
+/// Pure flattening of the parent/child agent tree into the single flat
+/// list `AgentStatusView.content`'s `ForEach` renders -- mirrors
+/// `AgentSidebarGate` / `AgentRowFocusTarget`'s own extraction shape.
+/// Flat is required, not stylistic: `.accessibilityElement(children:
+/// .combine)` makes one row exactly one VoiceOver stop, so a child row
+/// nested inside its parent's view would be swallowed into the parent's
+/// own announcement instead of becoming its own stop. Children must be
+/// SwiftUI siblings of their parent, which this function makes possible
+/// by returning both as elements of the same array.
+enum AgentSidebarRows {
+
+    /// One rendered row: either a pane's own row, carrying how many
+    /// children it currently has and whether it's disclosed, or one of
+    /// those children. `childCount` is carried on `.parent` even when
+    /// collapsed, so the caller can still draw the count badge without
+    /// re-deriving it from `children(_:)`.
+    enum Row: Identifiable {
+        case parent(AgentEntry, childCount: Int, isExpanded: Bool)
+        case child(SubagentEntry)
+
+        var id: String {
+            switch self {
+            case .parent(let entry, _, _): return entry.id.uuidString
+            case .child(let child): return child.id
+            }
+        }
+    }
+
+    /// Builds the flat row list: one `.parent` row per entry in
+    /// `entries` order, immediately followed by that parent's own
+    /// `.child` rows (in `children(_:)` order) when its surfaceID is in
+    /// `expanded`. A collapsed parent contributes only its `.parent`
+    /// row -- its children are still counted (`childCount`) but not
+    /// emitted. An `expanded` entry naming a surfaceID with no
+    /// corresponding `AgentEntry` is a no-op: this function only ever
+    /// iterates `entries`, so a phantom surfaceID never produces a row.
+    static func build(entries: [AgentEntry], children: (UUID) -> [SubagentEntry], expanded: Set<UUID>) -> [Row] {
+        var rows: [Row] = []
+        rows.reserveCapacity(entries.count)
+        for entry in entries {
+            let kids = children(entry.surfaceID)
+            let isExpanded = expanded.contains(entry.surfaceID)
+            rows.append(.parent(entry, childCount: kids.count, isExpanded: isExpanded))
+            if isExpanded {
+                rows.append(contentsOf: kids.map(Row.child))
+            }
+        }
+        return rows
+    }
+}
+
 // MARK: - Agent Row View
 
 private struct AgentRowView: View {
@@ -336,6 +447,19 @@ private struct AgentRowView: View {
     /// line fallback when `entry.cwd` is `nil`/empty. Passed down from
     /// `AgentStatusView`'s own `paneCwd`.
     let paneCwd: (UUID) -> String?
+    /// How many children `AgentSidebarRows.build` currently counts for
+    /// this row's surfaceID. `0` renders the row exactly as it rendered
+    /// before subagent rows existed: no chevron, no badge, no layout
+    /// shift -- the first-class appearance for a CLI (pi, hermes, herdr)
+    /// that never reports children.
+    let childCount: Int
+    /// Whether this row's children are currently disclosed, per
+    /// `AgentStatusView.expandedParents`. Drives the chevron's rotation.
+    let isExpanded: Bool
+    /// Flips this row's disclosure state. A separate hit target from the
+    /// row body's own tap gesture (which focuses the pane) -- see the
+    /// chevron `Button` in `rowContent` below.
+    let onToggleExpanded: () -> Void
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.controlActiveState) private var controlActiveState
@@ -347,14 +471,7 @@ private struct AgentRowView: View {
         return fmt
     }()
 
-    private var dotColor: Color {
-        switch entry.state {
-        case .blocked: return .red
-        case .working: return .yellow
-        case .done:    return .blue
-        case .idle:    return .green
-        }
-    }
+    private var dotColor: Color { AgentRowDisplay.dotColor(for: entry.state) }
 
     /// The row's primary label: the pane's own recorded title. Delegates
     /// to `AgentRowDisplay.primaryLabel(source:surfaceID:focusSurfaceID:
@@ -472,36 +589,106 @@ private struct AgentRowView: View {
 
     private func rowContent(title: String, tooltip: String) -> some View {
         HStack(spacing: 8) {
-            // State dot
-            Circle()
-                .fill(dotColor)
-                .frame(width: 8, height: 8)
+            // The row's own content, combined into a single VoiceOver
+            // stop -- kept in its own HStack, separate from the
+            // disclosure chevron below, because `.accessibilityElement
+            // (children: .combine)` replaces EVERY descendant with one
+            // element: putting the chevron `Button` inside this HStack
+            // would make `AccessibilityID.Sidebar.agentRowDisclosure`
+            // unreachable and leave VoiceOver with no way to operate it,
+            // exactly the "must work for everyone" failure the count
+            // badge already avoids via `.accessibilityValue` below.
+            HStack(spacing: 8) {
+                // State dot
+                Circle()
+                    .fill(dotColor)
+                    .frame(width: 8, height: 8)
 
-            // Name + agent kind
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(size: 12.5, weight: .semibold, design: .rounded))
-                    .lineLimit(1)
-                Text(cwdLabel)
+                // Name + agent kind
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.system(size: 12.5, weight: .semibold, design: .rounded))
+                        .lineLimit(1)
+                    Text(cwdLabel)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Text(subtitle)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                Spacer()
+
+                if entry.unreadCount > 0 {
+                    UnreadCountBadge(count: entry.unreadCount)
+                }
+
+                Text(Self.relativeDateFormatter.localizedString(for: entry.lastEventAt, relativeTo: now))
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Text(subtitle)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+
+                // Absent entirely for childCount == 0, so a row for a
+                // CLI that never reports children (pi, hermes, herdr)
+                // renders identically to before subagent rows existed --
+                // no badge, no layout shift.
+                if childCount > 0 {
+                    Text("\(childCount)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background {
+                            Capsule().fill(Color.secondary.opacity(0.18))
+                        }
+                }
             }
+            // `.combine` merges this row's own Text children into a single
+            // accessibility element whose content VoiceOver announces once --
+            // unlike `.contain`, which keeps each child individually
+            // accessible inside a labelled container and would announce the
+            // row's content once for the container and again as separate
+            // stops for every child. The explicit `.accessibilityLabel`
+            // below then replaces that merged content with `tooltip`
+            // (title/cwd/subtitle), and `.accessibilityValue` separately
+            // surfaces the unread count `UnreadCountBadge` draws, so this
+            // inner element is exactly one VoiceOver stop carrying both.
+            //
+            // The relative last-event time is deliberately left out of
+            // both: this row sits inside a
+            // `TimelineView(.periodic(from: .now, by: 1))` that re-renders
+            // every second, so a value that changed every second would
+            // re-announce while VoiceOver focus sits on the row.
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier(AccessibilityID.Sidebar.agentRow(id: entry.id))
+            .accessibilityLabel(tooltip)
+            .accessibilityValue(AgentRowDisplay.unreadAccessibilityValue(count: entry.unreadCount))
 
-            Spacer()
-
-            if entry.unreadCount > 0 {
-                UnreadCountBadge(count: entry.unreadCount)
+            // Disclosure: a separate hit target from the row body's own
+            // .onTapGesture (which focuses the pane) -- an Agents row's
+            // click already means "focus this pane", so the chevron must
+            // not also carry that meaning -- and its own, reachable
+            // VoiceOver stop, per the comment above. Absent entirely for
+            // childCount == 0.
+            if childCount > 0 {
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        onToggleExpanded()
+                    }
+                }) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(isExpanded ? .degrees(90) : .zero)
+                        .frame(width: 16, height: 16)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier(AccessibilityID.Sidebar.agentRowDisclosure(id: entry.surfaceID))
+                .accessibilityLabel(isExpanded ? "Collapse subagents" : "Expand subagents")
             }
-
-            Text(Self.relativeDateFormatter.localizedString(for: entry.lastEventAt, relativeTo: now))
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
         }
         .contentShape(Rectangle())
         .padding(.horizontal, 14)
@@ -514,26 +701,139 @@ private struct AgentRowView: View {
             }
         }
         .opacity(controlActiveState == .key ? 1.0 : 0.5)
-        // `.combine` merges this row's own Text children into a single
-        // accessibility element whose content VoiceOver announces once --
-        // unlike `.contain`, which keeps each child individually
-        // accessible inside a labelled container and would announce the
-        // row's content once for the container and again as separate
-        // stops for every child. The explicit `.accessibilityLabel`
-        // below then replaces that merged content with `tooltip`
-        // (title/cwd/subtitle), and `.accessibilityValue` separately
-        // surfaces the unread count `UnreadCountBadge` draws, so the row
-        // is exactly one VoiceOver stop carrying both.
-        //
-        // The relative last-event time is deliberately left out of
-        // both: this row sits inside a
-        // `TimelineView(.periodic(from: .now, by: 1))` that re-renders
-        // every second, so a value that changed every second would
-        // re-announce while VoiceOver focus sits on the row.
+    }
+}
+
+// MARK: - Agent Sub Row View
+
+/// One child row, a sibling of its parent's own `AgentRowView` in the
+/// same flat `ForEach` -- see `AgentSidebarRows`'s doc comment for why
+/// flat is required rather than nesting this inside the parent. Shows
+/// the child's lifecycle state (the same dot colors `AgentRowView`
+/// uses) plus whatever `agentType` / `lastToolName` the CLI has
+/// reported for it; a `nil` value on either simply omits that line
+/// rather than rendering an "N/A" placeholder, since a child carries no
+/// pane of its own for those fields to ever legitimately resolve to a
+/// missing value the way a parent row's title/cwd can.
+private struct AgentSubRowView: View {
+    let child: SubagentEntry
+    /// See `AgentRowView.now`'s own doc comment -- supplied by the same
+    /// enclosing `TimelineView`.
+    let now: Date
+    /// The surface a click on this row should focus -- resolved once by
+    /// the caller via `AgentRowFocusTarget.resolve(source:surfaceID:
+    /// focusSurfaceID:)` on the PARENT's own source/surfaceID/
+    /// focusSurfaceID, since a child shares its parent's surface rather
+    /// than owning one of its own. `nil` renders this row
+    /// non-interactive, mirroring `AgentRowView.body`'s own branch for
+    /// the identical case.
+    let focusTarget: UUID?
+
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.controlActiveState) private var controlActiveState
+    @State private var isHovering = false
+
+    /// Same formatter configuration as `AgentRowView`'s own
+    /// `relativeDateFormatter` -- kept as a separate instance since that
+    /// one is `private` to `AgentRowView`.
+    private static let relativeDateFormatter: RelativeDateTimeFormatter = {
+        let fmt = RelativeDateTimeFormatter()
+        fmt.unitsStyle = .short
+        return fmt
+    }()
+
+    private var dotColor: Color { AgentRowDisplay.dotColor(for: child.state) }
+
+    private var typeLine: String? {
+        guard let agentType = child.agentType, !agentType.isEmpty else { return nil }
+        return agentType
+    }
+
+    private var toolLine: String? {
+        guard let toolName = child.lastToolName, !toolName.isEmpty else { return nil }
+        return toolName
+    }
+
+    /// This row's tooltip / accessibility label: the child's state
+    /// (always present, via `AgentRowDisplay.stateLabel(for:)`)
+    /// followed by `typeLine` and `toolLine`, each omitted (not "N/A")
+    /// when `nil`. The state is always included, unlike `typeLine` /
+    /// `toolLine`, so this string is never empty even for a CLI whose
+    /// subagent hooks are lifecycle-only (codex) and report neither an
+    /// agent type nor a tool name.
+    private var tooltip: String {
+        ([AgentRowDisplay.stateLabel(for: child.state), typeLine, toolLine] as [String?])
+            .compactMap { $0 }
+            .joined(separator: "\n")
+    }
+
+    var body: some View {
+        Group {
+            if let focusTarget {
+                rowContent
+                    .onAssumeInsideHover($isHovering)
+                    .onTapGesture {
+                        NotificationCenter.default.post(
+                            name: .calyxFocusSurface,
+                            object: nil,
+                            userInfo: ["surfaceID": focusTarget]
+                        )
+                    }
+            } else {
+                rowContent
+            }
+        }
+        .help(tooltip)
+        .onChange(of: focusTarget) { _, newValue in
+            if newValue == nil { isHovering = false }
+        }
+    }
+
+    private var rowContent: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(dotColor)
+                .frame(width: 8, height: 8)
+
+            VStack(alignment: .leading, spacing: 2) {
+                if let typeLine {
+                    Text(typeLine)
+                        .font(.system(size: 11.5, weight: .medium, design: .rounded))
+                        .lineLimit(1)
+                }
+                if let toolLine {
+                    Text(toolLine)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer()
+
+            Text(Self.relativeDateFormatter.localizedString(for: child.lastEventAt, relativeTo: now))
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+        }
+        .contentShape(Rectangle())
+        .padding(.leading, 32)
+        .padding(.trailing, 14)
+        .padding(.vertical, 6)
+        .frame(minHeight: 32)
+        .background {
+            if isHovering {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.white.opacity(reduceTransparency ? 0.08 : 0.05))
+            }
+        }
+        .opacity(controlActiveState == .key ? 1.0 : 0.5)
+        // See AgentRowView.rowContent's own `.accessibilityElement`
+        // comment: `.combine` makes this row one VoiceOver stop, and the
+        // relative last-event time is left out of the merged content for
+        // the same re-announce-every-second reason.
         .accessibilityElement(children: .combine)
-        .accessibilityIdentifier(AccessibilityID.Sidebar.agentRow(id: entry.id))
+        .accessibilityIdentifier(AccessibilityID.Sidebar.agentSubRow(id: child.id))
         .accessibilityLabel(tooltip)
-        .accessibilityValue(AgentRowDisplay.unreadAccessibilityValue(count: entry.unreadCount))
     }
 }
 
@@ -557,6 +857,35 @@ enum AgentRowDisplay {
     static func primaryLabel(title: String?) -> String {
         guard let title, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "N/A" }
         return title
+    }
+
+    /// The state dot color shared by a parent row (`AgentRowView`) and
+    /// its child rows (`AgentSubRowView`) -- extracted here so both draw
+    /// from the same mapping rather than each keeping its own copy of
+    /// this switch.
+    static func dotColor(for state: AgentState) -> Color {
+        switch state {
+        case .blocked: return .red
+        case .working: return .yellow
+        case .done:    return .blue
+        case .idle:    return .green
+        }
+    }
+
+    /// A human-readable name for `state`, the CLI-reported fact
+    /// `dotColor(for:)` also draws from -- unlike `agentType` /
+    /// `lastToolName`, `state` always has a value, so
+    /// `AgentSubRowView` folds this into its tooltip/accessibility
+    /// label to guarantee that text is never empty even when a CLI
+    /// (e.g. codex, whose subagent hooks are lifecycle-only) reports
+    /// neither an agent type nor a tool name for a child.
+    static func stateLabel(for state: AgentState) -> String {
+        switch state {
+        case .blocked: return "Blocked"
+        case .working: return "Working"
+        case .done:    return "Done"
+        case .idle:    return "Idle"
+        }
     }
 
     /// The Agents sidebar row's primary label, composed end to end from

@@ -32,7 +32,7 @@ Calyx requires macOS 26 Tahoe or later. Direct downloads update through Sparkle;
 
 ### See which agent needs you
 
-The Agents Sidebar shows every connected agent as working, blocked, idle, or done. Unread badges and click-to-focus navigation replace the loop of checking terminal tabs one by one.
+The Agents Sidebar shows every connected agent as working, blocked, idle, or done, and expands a pane into the subagents it is currently running. Unread badges and click-to-focus navigation replace the loop of checking terminal tabs one by one.
 
 ### Approve tool calls from one inbox
 
@@ -51,6 +51,7 @@ Calyx exposes panes, commands, captured output, browser tabs, language servers, 
 ### Agent supervision
 
 - **Agents Sidebar** -- live status for Claude Code, Codex, OpenCode, Hermes, Grok, and pi, with every row named after its own pane (title, working directory, agent), unread badges, last-seen timestamps, and click-to-focus navigation
+- **Subagent Rows** -- a pane running subagents discloses them as indented child rows, for the CLIs that report subagents (Claude Code, Codex, OpenCode, Grok); each row carries the child's state, and the child's current tool wherever its CLI reports one (Claude Code and Grok; Codex and OpenCode report lifecycle only). Children exist only while the CLI reports them, and a pane whose CLI reports no subagents at all (pi, Hermes, herdr) looks exactly as it always did. Because a CLI reads its hook configuration once at session start, subagent rows appear in sessions started after Calyx installs the hooks, not in one already running
 - **Approval Inbox** -- one opt-in queue across every pane for Claude Code and Codex permission prompts, for the tool calls of always-approve Grok sessions, and for every pi tool call, with Allow, Deny, and per-pane or global session-scoped approval; Claude Code and Codex queue a request only where the CLI would have prompted you itself and fall back to the agent's own prompt, while an unanswered Grok or pi request is denied
 - **Approval Queue Navigation** -- inspect and decide pending requests in any order, with a preview menu on the position label for jumping straight to one, and automatic navigation to the nearest remaining request
 - **Agent Cockpit** -- MCP tools for listing, creating, and splitting panes; commands and keystrokes remain approval-gated unless auto-approve is enabled

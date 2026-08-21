@@ -25,11 +25,18 @@
 //    the only type that fires while a permission UI is actually
 //    waiting. Its `message` is display text that changes between
 //    releases, so the type is what gets matched, never the message.
-//  - Events that can fire inside a subagent carry `subagentType`. Those
-//    must not touch the host pane's row at all: the event name is left
-//    as the unmapped raw value (so `resultingState` ignores it) and
-//    `sessionID` / `cwd` are stripped, because a recorded child session
-//    ID would make a later reattach offer `grok --resume <child>`.
+//  - Events that can fire inside a subagent carry a non-empty
+//    `subagentType`. Those must never touch the host pane's row: the
+//    structural guard is `AgentEvent.isSubagentEvent` (`agentID != nil`),
+//    which `AgentStateResolver.resolveHookRow` checks before ever mapping
+//    an event to a state. So the event name IS now mapped (through the
+//    same `grokEventName` table every other event uses), `subagentType`
+//    becomes `agentType`, and the child's own `sessionId` becomes
+//    `agentID` -- `sessionID` / `cwd` are still stripped from the event,
+//    because a recorded child session ID would make a later reattach
+//    offer `grok --resume <child>`. A non-empty `subagentType` with no
+//    `sessionId` carries no identity at all, so that case keeps the event
+//    name unmapped, exactly as before.
 //  - The Grok branch never extracts `ipcSelfPeerID`: Grok's peer binding
 //    is established through the MCP `initialize` surface header instead.
 //
@@ -232,9 +239,9 @@ final class AgentEventGrokDecodeTests: XCTestCase {
                        "to PermissionRequest")
     }
 
-    // MARK: - subagentType stripping
+    // MARK: - subagentType -> agentType/agentID, event name mapped, session/cwd stripped
 
-    func test_decode_grokSubagentPreToolUse_keepsRawNameAndStripsSessionAndCwd() throws {
+    func test_decode_grokSubagentPreToolUse_mapsAgentTypeAndAgentID_stripsSessionAndCwd() throws {
         let event = try XCTUnwrap(AgentEvent.decode(from: json("""
         {
             "hookEventName": "pre_tool_use",
@@ -245,25 +252,76 @@ final class AgentEventGrokDecodeTests: XCTestCase {
         }
         """)))
 
-        XCTAssertEqual(event.hookEventName, "pre_tool_use",
-                       "A subagent's event must keep its unmapped raw name so resultingState ignores it: " +
-                       "a child agent's tool call is not the host pane's state")
+        XCTAssertEqual(event.hookEventName, "PreToolUse",
+                       "The event name is now mapped through the same table every other event uses -- " +
+                       "the structural guard against a child event touching the host row is " +
+                       "isSubagentEvent, checked in AgentStateResolver, not an unmapped name")
+        XCTAssertEqual(event.agentType, "explore", "subagentType becomes agentType")
+        XCTAssertEqual(event.agentID, "child-session-9",
+                       "The child's own sessionId becomes agentID -- the identity SubagentRegistry keys on")
+        XCTAssertTrue(event.isSubagentEvent)
         XCTAssertNil(event.sessionID,
-                     "The child session ID must be stripped, or routeAgentEvent records it into the " +
-                     "pane's resume meta and a later reattach offers grok --resume <child>")
-        XCTAssertNil(event.cwd, "The child's cwd must be stripped for the same reason")
+                     "The child session ID must still be stripped from the shared field, or routeAgentEvent " +
+                     "records it into the pane's resume meta and a later reattach offers grok --resume <child>")
+        XCTAssertNil(event.cwd, "The child's cwd must still be stripped for the same reason")
+        XCTAssertEqual(event.toolName, "read_file")
     }
 
-    func test_decode_grokSubagentStop_endTurn_stillKeepsRawName() throws {
+    func test_decode_grokSubagentSessionStart_mapsToSessionStart() throws {
+        let event = try XCTUnwrap(AgentEvent.decode(from: json("""
+        {"hookEventName":"session_start","sessionId":"child-session-1","subagentType":"explore"}
+        """)))
+
+        XCTAssertEqual(event.hookEventName, "SessionStart",
+                       "A subagent-scoped session_start goes through the same mapping as any other event")
+        XCTAssertEqual(event.agentType, "explore")
+        XCTAssertEqual(event.agentID, "child-session-1",
+                       "The child's own sessionId becomes agentID")
+        XCTAssertTrue(event.isSubagentEvent)
+        XCTAssertNil(event.sessionID, "The child session ID must still be stripped from the shared field")
+    }
+
+    func test_decode_grokSubagentEvent_stopWithEndTurn_mapsToStop() throws {
         let event = try XCTUnwrap(AgentEvent.decode(from: json("""
         {"hookEventName":"stop","sessionId":"child-1","cwd":"/repo","reason":"end_turn","subagentType":"explore"}
         """)))
 
-        XCTAssertEqual(event.hookEventName, "stop",
-                       "subagentType outranks the reason filter: a child's genuine turn end is still not " +
-                       "the session's")
+        XCTAssertEqual(event.hookEventName, "Stop",
+                       "A subagent event now goes through the same reason-based stop mapping as any " +
+                       "other event -- SubagentRegistry needs a mapped name to derive the child's own state")
+        XCTAssertEqual(event.agentType, "explore")
+        XCTAssertEqual(event.agentID, "child-1")
         XCTAssertNil(event.sessionID)
         XCTAssertNil(event.cwd)
+    }
+
+    func test_decode_grokSubagentStart_mapsToSubagentStart() throws {
+        let event = try XCTUnwrap(AgentEvent.decode(from: json("""
+        {"hookEventName":"subagent_start","sessionId":"child-session-1","subagentType":"explore"}
+        """)))
+
+        XCTAssertEqual(event.hookEventName, "SubagentStart")
+        XCTAssertEqual(event.agentType, "explore")
+        XCTAssertEqual(event.agentID, "child-session-1")
+        XCTAssertTrue(event.isSubagentEvent)
+    }
+
+    func test_decode_grokSubagentStop_mapsToSubagentStop() throws {
+        let event = try XCTUnwrap(AgentEvent.decode(from: json("""
+        {"hookEventName":"subagent_stop","sessionId":"child-session-1","subagentType":"explore"}
+        """)))
+
+        XCTAssertEqual(event.hookEventName, "SubagentStop")
+        XCTAssertEqual(event.agentID, "child-session-1")
+    }
+
+    func test_decode_grokSubagentEnd_isAnAliasOfSubagentStop() throws {
+        let event = try XCTUnwrap(AgentEvent.decode(from: json("""
+        {"hookEventName":"subagent_end","sessionId":"child-session-1","subagentType":"explore"}
+        """)))
+
+        XCTAssertEqual(event.hookEventName, "SubagentStop", "subagent_end is documented as an alias of subagent_stop")
+        XCTAssertEqual(event.agentID, "child-session-1")
     }
 
     func test_decode_grokEmptySubagentType_isNotTreatedAsASubagent() throws {
@@ -276,6 +334,136 @@ final class AgentEventGrokDecodeTests: XCTestCase {
                        "map and keep its identity")
         XCTAssertEqual(event.sessionID, "main-1")
         XCTAssertEqual(event.cwd, "/repo")
+        XCTAssertNil(event.agentID)
+        XCTAssertFalse(event.isSubagentEvent)
+    }
+
+    func test_decode_grokSubagentTypeWithNoSessionId_hasNoIdentity_eventNameStaysUnmapped() throws {
+        let event = try XCTUnwrap(AgentEvent.decode(from: json("""
+        {"hookEventName":"pre_tool_use","subagentType":"explore","toolName":"read_file"}
+        """)))
+
+        XCTAssertNil(event.agentID,
+                     "A non-empty subagentType with no sessionId carries no usable identity for the child")
+        XCTAssertFalse(event.isSubagentEvent)
+        XCTAssertEqual(event.hookEventName, "pre_tool_use",
+                       "With no identity to key a child on, the event name is left unmapped so nothing acts on it")
+        XCTAssertEqual(event.agentType, "explore")
+    }
+
+    // MARK: - subagentId: subagent_start names the child only through this field
+
+    func test_decode_grokSubagentStart_agentIDIsSubagentID_notSessionId() throws {
+        // Captured from a real grok -p run: subagent_start carries the
+        // PARENT's sessionId and names the child only through subagentId.
+        let event = try XCTUnwrap(AgentEvent.decode(from: json("""
+        {
+            "hookEventName": "subagent_start",
+            "sessionId": "01a02092-04e6-73a1-9d04-e1bd11dcd4fa",
+            "subagentId": "01a02092-1cc5-7e53-be01-6b4de101b378",
+            "subagentType": "general-purpose"
+        }
+        """)))
+
+        XCTAssertEqual(event.hookEventName, "SubagentStart")
+        XCTAssertEqual(event.agentID, "01a02092-1cc5-7e53-be01-6b4de101b378",
+                       "subagent_start carries the parent's sessionId; the child is named only through " +
+                       "subagentId, so agentID must come from that field, not sessionId")
+    }
+
+    func test_decode_grokChildPreToolUse_agentIDFallsBackToSessionId() throws {
+        // Captured from the same run: every other child-scoped event
+        // carries the CHILD's own sessionId and no subagentId.
+        let event = try XCTUnwrap(AgentEvent.decode(from: json("""
+        {
+            "hookEventName": "pre_tool_use",
+            "sessionId": "01a02092-1cc5-7e53-be01-6b4de101b378",
+            "subagentType": "general-purpose",
+            "toolName": "run_terminal_command"
+        }
+        """)))
+
+        XCTAssertEqual(event.agentID, "01a02092-1cc5-7e53-be01-6b4de101b378",
+                       "With no subagentId present, agentID falls back to the child's own sessionId")
+        XCTAssertEqual(event.toolName, "run_terminal_command")
+    }
+
+    func test_decode_grokSubagentStop_subagentIdAndSessionIdAgree() throws {
+        // Captured from the same run: subagent_stop carries both fields,
+        // set to the same value.
+        let event = try XCTUnwrap(AgentEvent.decode(from: json("""
+        {
+            "hookEventName": "subagent_stop",
+            "sessionId": "01a02092-1cc5-7e53-be01-6b4de101b378",
+            "subagentId": "01a02092-1cc5-7e53-be01-6b4de101b378",
+            "subagentType": "general-purpose"
+        }
+        """)))
+
+        XCTAssertEqual(event.hookEventName, "SubagentStop")
+        XCTAssertEqual(event.agentID, "01a02092-1cc5-7e53-be01-6b4de101b378")
+    }
+
+    func test_decode_grokSubagentStartAndChildPreToolUse_shareTheSameAgentID() throws {
+        // The fact the whole fix is about: subagent_start (parent's
+        // sessionId + child's subagentId) and the child's later
+        // pre_tool_use (child's own sessionId, no subagentId) must key
+        // to the same agentID, or SubagentRegistry creates two rows for
+        // one child.
+        let start = try XCTUnwrap(AgentEvent.decode(from: json("""
+        {
+            "hookEventName": "subagent_start",
+            "sessionId": "01a02092-04e6-73a1-9d04-e1bd11dcd4fa",
+            "subagentId": "01a02092-1cc5-7e53-be01-6b4de101b378",
+            "subagentType": "general-purpose"
+        }
+        """)))
+        let toolUse = try XCTUnwrap(AgentEvent.decode(from: json("""
+        {
+            "hookEventName": "pre_tool_use",
+            "sessionId": "01a02092-1cc5-7e53-be01-6b4de101b378",
+            "subagentType": "general-purpose",
+            "toolName": "run_terminal_command"
+        }
+        """)))
+
+        XCTAssertEqual(start.agentID, toolUse.agentID,
+                       "subagent_start and every later child event must key to the same agentID, or " +
+                       "SubagentRegistry creates a phantom child row that never matches a later event")
+    }
+
+    func test_decode_grokChildSessionEnd_isASubagentEvent_keyedOnChildId() throws {
+        let event = try XCTUnwrap(AgentEvent.decode(from: json("""
+        {
+            "hookEventName": "session_end",
+            "sessionId": "01a02092-1cc5-7e53-be01-6b4de101b378",
+            "subagentType": "general-purpose"
+        }
+        """)))
+
+        XCTAssertEqual(event.hookEventName, "SessionEnd")
+        XCTAssertEqual(event.agentID, "01a02092-1cc5-7e53-be01-6b4de101b378")
+        XCTAssertTrue(event.isSubagentEvent)
+    }
+
+    func test_decode_grokSubagentTypeWithNoSubagentIdNorSessionId_hasNoIdentity() throws {
+        let event = try XCTUnwrap(AgentEvent.decode(from: json("""
+        {"hookEventName":"pre_tool_use","subagentType":"general-purpose","toolName":"read_file"}
+        """)))
+
+        XCTAssertNil(event.agentID,
+                     "Neither subagentId nor sessionId is present, so there is no usable identity for the child")
+        XCTAssertFalse(event.isSubagentEvent)
+        XCTAssertEqual(event.hookEventName, "pre_tool_use",
+                       "With no identity to key a child on, the event name is left unmapped so nothing acts on it")
+    }
+
+    func test_decode_grokToolName_mapsToToolNameProperty() throws {
+        let event = try XCTUnwrap(AgentEvent.decode(from: json("""
+        {"hookEventName":"pre_tool_use","sessionId":"s1","toolName":"read_file"}
+        """)))
+
+        XCTAssertEqual(event.toolName, "read_file")
     }
 
     // MARK: - No peer-ID extraction on the Grok branch

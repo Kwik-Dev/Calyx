@@ -33,6 +33,12 @@ final class AgentRegistry {
     /// that property's doc comment.
     private(set) var externalEntries: [UUID: AgentEntry] = [:]
 
+    /// Child rows (subagents) reported under a pane's own row, keyed by
+    /// parent surface. A storage side effect, not a row-state decision --
+    /// `handleHookEvent` forwards every event to it after resolving the
+    /// parent row itself. See `SubagentRegistry`'s own doc comment.
+    let subagentRegistry = SubagentRegistry()
+
     /// Human-readable descriptions of agent CLI config write failures,
     /// one domain of the persistent warning banner `integrationIssues`
     /// combines. Set wholesale by `setConfigIssues` (called by
@@ -186,6 +192,7 @@ final class AgentRegistry {
         isServerRunning = false
         sweepTask?.cancel()
         sweepTask = nil
+        subagentRegistry.reset()
     }
 
     // MARK: - External Entries (Herdr)
@@ -287,6 +294,21 @@ final class AgentRegistry {
             ),
             surfaceID: surfaceID
         )
+        // A child is only ever tracked under a live row: read the row
+        // AFTER apply() above so this decision uses its post-event state,
+        // mirroring AgentStateResolver.resolveHookRow's own
+        // `existing.state != .done` guard. Without this, a subagent
+        // event whose fire-and-forget POST completes after the parent
+        // already settled `.done` (or never had a row at all) would
+        // create a child nothing can ever remove: the CLI has exited, so
+        // no further parent-scoped event will arrive to sweep it. The
+        // no-agentID parent sweep path (Stop/SessionEnd/SessionStart)
+        // must still run even for a surface with no row at all, so only
+        // a subagent-identified event is gated here.
+        if event.isSubagentEvent, entries[surfaceID].map({ $0.state == .done }) ?? true {
+            return
+        }
+        subagentRegistry.handleHookEvent(event, parentSurfaceID: surfaceID, now: now)
     }
 
     // MARK: - Pane Command Lifecycle (Shell Integration)
@@ -519,6 +541,18 @@ final class AgentRegistry {
     /// neither, which an unguarded write would still publish as a
     /// mutation. `evidence` also stays sparse, dropping `surfaceID`'s
     /// key once it goes back to `.isEmpty`.
+    ///
+    /// Also sweeps `subagentRegistry`'s children of `surfaceID` whenever
+    /// this resolution leaves the surface without a live row: the row
+    /// was removed, or the row's state became `.done`. Every settle path
+    /// funnels through here -- a hook-reported `SessionEnd`, a pane-exit
+    /// signal (`handlePaneCommandFinished`), and the staleness sweep's
+    /// deferred-ghostty settle (`resolveStaleSweep`) alike -- so a child
+    /// can never outlive a parent row that stopped reporting, regardless
+    /// of which route settled it. A `.working`-to-`.idle` staleness
+    /// downgrade is deliberately excluded: `.idle` is still a live row,
+    /// and that downgrade is Calyx's own inference about a row it hasn't
+    /// heard from, not a report that the agent finished.
     private func apply(_ r: AgentResolution, surfaceID: UUID) {
         let newEvidence = r.evidence.isEmpty ? nil : r.evidence
         if evidence[surfaceID] != newEvidence { evidence[surfaceID] = newEvidence }
@@ -526,9 +560,14 @@ final class AgentRegistry {
             bindSurface(surfaceID, toPeer: peerID)
         }
         switch r.row {
-        case .keep: break
-        case .write(let row): if entries[surfaceID] != row { entries[surfaceID] = row }
-        case .remove: if entries[surfaceID] != nil { entries.removeValue(forKey: surfaceID) }
+        case .keep:
+            break
+        case .write(let row):
+            if entries[surfaceID] != row { entries[surfaceID] = row }
+            if row.state == .done { subagentRegistry.handleSurfaceDestroyed(parentSurfaceID: surfaceID) }
+        case .remove:
+            if entries[surfaceID] != nil { entries.removeValue(forKey: surfaceID) }
+            subagentRegistry.handleSurfaceDestroyed(parentSurfaceID: surfaceID)
         }
     }
 
@@ -800,6 +839,7 @@ final class AgentRegistry {
         unbindSurface(surfaceID)
         evidence.removeValue(forKey: surfaceID)
         calyxShellIntegrationReportedSurfaces.remove(surfaceID)
+        subagentRegistry.handleSurfaceDestroyed(parentSurfaceID: surfaceID)
     }
 
     // MARK: - Sorting Helpers

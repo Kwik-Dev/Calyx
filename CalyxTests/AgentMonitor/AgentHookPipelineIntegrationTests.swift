@@ -31,6 +31,11 @@
 //    AgentRegistry's existing SessionEnd -> .done mapping. Whether Codex
 //    itself is configured to fire a SessionEnd event at all is pinned
 //    separately by CodexHooksConfigManagerTests
+//  - A subagent event delivered while the surface already has a live
+//    parent row lands as a child in AgentRegistry.subagentRegistry
+//    without creating, replacing, or mutating that parent row
+//  - A subagent event for a surface with no row at all creates no child
+//    and never mints a parent row
 //
 
 import XCTest
@@ -295,5 +300,118 @@ final class AgentHookPipelineIntegrationTests: XCTestCase {
                        "SessionEnd -> .done mapping already does for any other kind")
         XCTAssertEqual(afterEnd?.sessionID, sessionID)
         XCTAssertEqual(afterEnd?.kind, AgentEntry.codexKind, "the settled .done row must still be the codex row")
+    }
+
+    // MARK: - A subagent event under a live parent row lands as a child, untouched parent
+
+    /// End to end through the real `/bin/sh` hook script, the real
+    /// server, and the real registry: a subagent event delivered while
+    /// the surface already has a live (non-`.done`) row must land as a
+    /// child in `AgentRegistry.subagentRegistry` without creating,
+    /// replacing, or mutating the parent row -- mirroring real usage,
+    /// where Claude Code always fires a SessionStart for the pane before
+    /// any subagent it spawns can fire its own SubagentStart.
+    func test_realHookScript_subagentEvent_underLiveParentRow_landsAsChild_parentRowUntouched() async throws {
+        let surfaceID = UUID()
+        let sessionID = "parent-session"
+        let cwd = "/Users/dev/repo"
+
+        let sessionStartStdin = """
+        {"session_id":"\(sessionID)","cwd":"\(cwd)","hook_event_name":"SessionStart"}
+        """
+        let startExitCode = try runHookScript(stdinJSON: sessionStartStdin, surfaceID: surfaceID)
+        XCTAssertEqual(startExitCode, 0, "the hook script must always exit 0")
+        let parentBeforeResult = await waitForEntry(surfaceID: surfaceID)
+        let parentBefore = try XCTUnwrap(
+            parentBeforeResult,
+            "Precondition: the parent must have a live row before the subagent event fires"
+        )
+        XCTAssertEqual(parentBefore.state, .idle, "Precondition: SessionStart registers the row as idle")
+
+        let subagentStdin = """
+        {"session_id":"\(sessionID)","cwd":"\(cwd)","hook_event_name":"SubagentStart",\
+        "agent_id":"sub-001","agent_type":"general-purpose"}
+        """
+        let subagentExitCode = try runHookScript(stdinJSON: subagentStdin, surfaceID: surfaceID)
+        XCTAssertEqual(subagentExitCode, 0, "the hook script must always exit 0")
+
+        // Give the real network round-trip a moment, the same way
+        // waitForEntry does for a parent row, but this time polling the
+        // subagent store instead.
+        let deadline = Date().addingTimeInterval(2.0)
+        var children: [SubagentEntry] = []
+        while Date() < deadline {
+            children = registry.subagentRegistry.children(of: surfaceID)
+            if !children.isEmpty { break }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+
+        XCTAssertEqual(children.count, 1, "The real SubagentStart POST must land in the subagent store")
+        XCTAssertEqual(children.first?.agentID, "sub-001")
+        XCTAssertEqual(children.first?.agentType, "general-purpose")
+
+        let parentAfter = try XCTUnwrap(
+            registry.entries[surfaceID],
+            "The subagent event must not remove the parent row"
+        )
+        XCTAssertEqual(parentAfter.sessionID, parentBefore.sessionID,
+                       "The subagent event must not replace the parent row's sessionID")
+        XCTAssertEqual(parentAfter.cwd, parentBefore.cwd,
+                       "The subagent event must not replace the parent row's cwd")
+        XCTAssertEqual(parentAfter.kind, parentBefore.kind,
+                       "The subagent event must not replace the parent row's kind")
+        XCTAssertEqual(registry.entries.count, 1,
+                       "The subagent event must not create a second row for this surface")
+    }
+
+    // MARK: - A subagent event with no row at all creates no child
+
+    /// Pins the new guard directly, end to end through the real script
+    /// and server: a subagent event delivered to a surface with no row
+    /// at all -- the CLI's own SessionStart POST has not landed, or
+    /// never will -- must create no child. A child is only ever tracked
+    /// under a live row; one tracked under a surface with no row would
+    /// be invisible (the sidebar only renders children beneath an
+    /// existing parent row) and nothing would ever clean it up.
+    func test_realHookScript_subagentEvent_surfaceWithNoRowAtAll_createsNoChild() async throws {
+        let surfaceID = UUID()
+        let stdin = """
+        {"session_id":"parent-session","cwd":"/Users/dev/repo","hook_event_name":"SubagentStart",\
+        "agent_id":"sub-001","agent_type":"general-purpose"}
+        """
+
+        let exitCode = try runHookScript(stdinJSON: stdin, surfaceID: surfaceID)
+
+        XCTAssertEqual(exitCode, 0, "the hook script must always exit 0")
+
+        // Assert an absence over a real network round-trip: run a
+        // live-parent+child flow on a second surface first, as a sanity
+        // barrier proving the pipeline is actually up and would have
+        // delivered the event above had the guard not dropped it.
+        let sanitySurfaceID = UUID()
+        let sanitySessionStartStdin = """
+        {"session_id":"sanity-session","cwd":"/Users/dev/repo","hook_event_name":"SessionStart"}
+        """
+        _ = try runHookScript(stdinJSON: sanitySessionStartStdin, surfaceID: sanitySurfaceID)
+        _ = await waitForEntry(surfaceID: sanitySurfaceID)
+        let sanitySubagentStdin = """
+        {"session_id":"sanity-session","cwd":"/Users/dev/repo","hook_event_name":"SubagentStart",\
+        "agent_id":"sub-sanity","agent_type":"general-purpose"}
+        """
+        _ = try runHookScript(stdinJSON: sanitySubagentStdin, surfaceID: sanitySurfaceID)
+        let sanityDeadline = Date().addingTimeInterval(2.0)
+        var sanityChildren: [SubagentEntry] = []
+        while Date() < sanityDeadline {
+            sanityChildren = registry.subagentRegistry.children(of: sanitySurfaceID)
+            if !sanityChildren.isEmpty { break }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertEqual(sanityChildren.count, 1,
+                       "Precondition: the pipeline is up and does deliver a child event when a live row exists")
+
+        XCTAssertTrue(registry.subagentRegistry.children(of: surfaceID).isEmpty,
+                      "A subagent event for a surface with no row at all must create no child")
+        XCTAssertNil(registry.entries[surfaceID],
+                     "A subagent event alone must never mint a parent row for the surface")
     }
 }
