@@ -116,18 +116,26 @@ since a subagent takes no further turn.
 
 ### Codex
 
-NOT captured. Three attempts did not produce a `SubagentStart`. The first
-two failed to launch (a stdin wait, then a git-repo check). On the third
-the model stated it had delegated, but no subagent hook fired, and the
-probe's own hooks did not load either, so that run cannot distinguish
-between the model not actually delegating, `codex exec` not emitting
-subagent hooks, and the probe's profile not being applied.
+NOT captured, after four attempts. Two failed to launch (a stdin wait,
+then a git-repo check). A third ran but loaded no probe hooks: Codex
+merges hooks from `config.toml` only, and neither `--profile` nor `-c`
+layers them, which a control run confirmed (an injected `PreToolUse`
+hook never fired while the ones already in `config.toml` fired twice).
+
+The fourth put the probe directly in `config.toml`, the one place Codex
+reads hooks from, with the file restored byte for byte afterwards. Even
+then no `SubagentStart` or `SubagentStop` fired, while `PreToolUse` and
+`PostToolUse` fired repeatedly from that same file. The reasonable
+reading is that `codex exec` did not spawn a subagent for that prompt at
+all, so the events had nothing to report. Whether it can spawn one in
+this mode is unresolved.
 
 Codex therefore rests on its documentation alone: `agent_id` and
 `agent_type` on `SubagentStart` and `SubagentStop`, and the parent's
-session id elsewhere. Grok's capture showed documentation can be
-incomplete, so treat this as the least verified path here and capture a
-real run before relying on it.
+session id elsewhere. Both other CLIs that were captured contradicted
+their own documentation in some way, so treat this as the least verified
+path here. Capture a real Codex subagent run, most likely from the
+interactive TUI rather than `exec`, before relying on it.
 
 ### Grok
 
