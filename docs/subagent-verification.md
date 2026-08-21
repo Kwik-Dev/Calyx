@@ -92,6 +92,43 @@ payloads.
 It also answers a question Claude Code's docs leave open: a subagent's
 hooks carry the PARENT's `session_id`, not a child's.
 
+### OpenCode
+
+One `opencode run` delegating to a subagent, with a probe plugin logging
+every bus event. Parent session `ses_fde19ee2...`, child `ses_fde19d51...`:
+
+| event | count | what it carried |
+|---|---|---|
+| `session.created` | 2 | the parent with no `info.parentID`, then the child with `info.parentID` set to the parent |
+| `session.idle` | 2 | the CHILD's first, then the parent's |
+| `session.deleted` | 0 | never fired |
+| `tool.execute.before` / `.after` | 0 | never fired, confirming they are plugin hooks rather than bus events |
+
+Confirms the child-identification premise: `session.created`'s
+`info.parentID` is what marks a child, and it really is populated.
+
+It also corrected two things that documentation alone would not have
+caught. `session.deleted` does not fire in a normal run, so retiring a
+child on that signal alone leaves every finished child listed until the
+parent's whole turn ends, and the sets keyed on it are never cleaned. A
+child's own `session.idle` is what actually reports that child is over,
+since a subagent takes no further turn.
+
+### Codex
+
+NOT captured. Three attempts did not produce a `SubagentStart`. The first
+two failed to launch (a stdin wait, then a git-repo check). On the third
+the model stated it had delegated, but no subagent hook fired, and the
+probe's own hooks did not load either, so that run cannot distinguish
+between the model not actually delegating, `codex exec` not emitting
+subagent hooks, and the probe's profile not being applied.
+
+Codex therefore rests on its documentation alone: `agent_id` and
+`agent_type` on `SubagentStart` and `SubagentStop`, and the parent's
+session id elsewhere. Grok's capture showed documentation can be
+incomplete, so treat this as the least verified path here and capture a
+real run before relying on it.
+
 ### Grok
 
 One `spawn_subagent` running one shell command. Parent session
@@ -225,9 +262,12 @@ generic `event` handler never sees them. A child's own session lifecycle
 
 Result:
 
-NOT automated. OpenCode ingests through its plugin rather than the
-`/bin/sh` hook script the pipeline tests drive, so it needs its own
-pipeline. Manual.
+Partly verified. A real subagent run was captured (see the wire contract
+section above) and corrected how a child retires. The plugin's own
+translation is pinned by `OpenCodePluginManagerTests`, but the ingestion
+path is the plugin rather than the `/bin/sh` hook script the pipeline
+tests drive, so the end-to-end row behavior in the sidebar is still
+manual.
 
 ## 9. pi and herdr are untouched
 

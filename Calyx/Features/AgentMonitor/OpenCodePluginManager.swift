@@ -72,28 +72,34 @@ enum OpenCodePluginManager: Sendable {
       // session.created's info.parentID marks a subagent's own child
       // session. Every later event for that session ID is translated
       // into a subagent event instead of forwarded as-is: the child's
-      // own session.created posts SubagentStart, its own session.deleted
-      // posts SubagentStop, and everything in between is forwarded with
-      // agent_id set to the child's session id in place of session_id.
-      // The server-side guard that keeps a child from ever stealing its
-      // parent's row (AgentEvent.isSubagentEvent, checked in
-      // CalyxMCPServer.routeAgentEvent and AgentStateResolver
-      // .resolveHookRow) is what makes sending these at all safe. Entries
-      // are removed on the child session's own session.deleted so this
-      // set doesn't grow without bound over a long-lived process.
+      // own session.created posts SubagentStart, and everything in
+      // between is forwarded with agent_id set to the child's session id
+      // in place of session_id. The server-side guard that keeps a child
+      // from ever stealing its parent's row (AgentEvent.isSubagentEvent,
+      // checked in CalyxMCPServer.routeAgentEvent and AgentStateResolver
+      // .resolveHookRow) is what makes sending these at all safe. A
+      // child's own session.idle posts SubagentStop and removes the
+      // entry: a subagent session going idle is OpenCode reporting that
+      // child's work is over, since a subagent never takes another turn.
+      // The child's own session.deleted does the same, as a second,
+      // independent end signal -- both are what keep this set from
+      // growing without bound over a long-lived process.
       const childSessions = new Set();
 
       // Session IDs with a permission.asked that hasn't yet seen its
-      // permission.replied. Suppresses session.idle -> Stop for a pending
-      // session so a Stop racing ahead of the reply can't overwrite the
-      // blocked row with idle while the prompt is still awaiting a reply.
-      // Tracked uniformly for a child session's own sessionID too: a
-      // child's permission.asked reaches the parent row through the same
-      // resultingState(for:) mapping AgentStateResolver's subagent branch
-      // and SubagentRegistry both reuse, so a child's session.idle can
-      // race its own permission.replied exactly the way a parent's can,
-      // and needs the same guard. Also cleared on the session's own
-      // session.deleted (mirroring childSessions' cleanup above), so a
+      // permission.replied. Suppresses session.idle -> Stop (and the
+      // childSessions session.idle -> SubagentStop retirement below) for
+      // a pending session so a Stop racing ahead of the reply can't
+      // overwrite the blocked row with idle while the prompt is still
+      // awaiting a reply. Tracked uniformly for a child session's own
+      // sessionID too: a child's permission.asked reaches the parent row
+      // through the same resultingState(for:) mapping AgentStateResolver
+      //'s subagent branch and SubagentRegistry both reuse, so a child's
+      // session.idle can race its own permission.replied exactly the way
+      // a parent's can, and needs the same guard. Entries are removed
+      // when the owning session ends: on the session's own
+      // session.deleted, and for a child session, also on its own
+      // session.idle (mirroring childSessions' retirement above) -- a
       // session that ends with an outstanding, never-answered prompt
       // doesn't leak an entry here for the lifetime of the plugin
       // process.
@@ -183,8 +189,9 @@ enum OpenCodePluginManager: Sendable {
           }
 
           if (childSessions.has(sessionID)) {
-            if (event.type === "session.deleted") {
+            if (event.type === "session.deleted" || event.type === "session.idle") {
               childSessions.delete(sessionID);
+              pendingPermissions.delete(sessionID);
               await postEvent(JSON.stringify({
                 hook_event_name: "SubagentStop",
                 agent_id: sessionID,

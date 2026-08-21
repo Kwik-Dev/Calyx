@@ -299,6 +299,110 @@ final class OpenCodePluginManagerTests: XCTestCase {
                       "with no agent_id")
     }
 
+    // MARK: - child session.idle retirement (SubagentStop)
+    //
+    // A subagent session going idle is OpenCode reporting that child's
+    // work is over -- a subagent does not take another turn. The child's
+    // own session.idle must retire it exactly like its own session.deleted
+    // does, since a captured real subagent run never emits session.deleted
+    // at all: session.idle is what actually fires.
+
+    func test_scriptBody_childSessionOwnSessionIdlePostsSubagentStop() {
+        let body = OpenCodePluginManager.scriptBody
+        guard let childSessionsCheckRange = body.range(of: "if (childSessions.has(sessionID)) {") else {
+            XCTFail("scriptBody must guard on childSessions.has(sessionID)")
+            return
+        }
+        let windowEnd = body.index(
+            childSessionsCheckRange.upperBound, offsetBy: 260, limitedBy: body.endIndex
+        ) ?? body.endIndex
+        let window = body[childSessionsCheckRange.upperBound..<windowEnd]
+        XCTAssertTrue(window.contains("session.idle"),
+                     "The childSessions branch must check for the child's own session.idle, not just " +
+                     "session.deleted, since a real subagent run never fires session.deleted at all")
+        XCTAssertTrue(window.contains("SubagentStop"),
+                     "A child session's own session.idle must post SubagentStop, mirroring session.deleted")
+    }
+
+    func test_scriptBody_childSessionIdleRemovesFromChildSessionsAndPendingPermissions() {
+        let body = OpenCodePluginManager.scriptBody
+        guard let childSessionsCheckRange = body.range(of: "if (childSessions.has(sessionID)) {") else {
+            XCTFail("scriptBody must guard on childSessions.has(sessionID)")
+            return
+        }
+        // Narrow window: only the retirement branch (session.deleted ||
+        // session.idle), not the plain forwarding branch below it.
+        guard let subagentStopRange = body.range(
+            of: "SubagentStop", range: childSessionsCheckRange.upperBound..<body.endIndex
+        ) else {
+            XCTFail("scriptBody must post SubagentStop somewhere inside the childSessions branch")
+            return
+        }
+        let windowStart = childSessionsCheckRange.upperBound
+        let windowEnd = subagentStopRange.lowerBound
+        let window = body[windowStart..<windowEnd]
+        XCTAssertTrue(window.contains("childSessions.delete(sessionID)"),
+                     "Retiring a child on its own session.idle must remove it from childSessions")
+        XCTAssertTrue(window.contains("pendingPermissions.delete(sessionID)"),
+                     "Retiring a child on its own session.idle must remove it from pendingPermissions")
+    }
+
+    func test_scriptBody_pendingPermissionsSuppressionPrecedesChildSessionsBranch() {
+        // The pendingPermissions.has(sessionID) suppression for
+        // session.idle must be checked (and return early) before the
+        // childSessions.has(sessionID) branch is ever reached, so a child
+        // with an outstanding, unanswered permission.asked can't be
+        // retired by a session.idle racing its own permission.replied.
+        let body = OpenCodePluginManager.scriptBody
+        guard let idleGuardRange = body.range(
+            of: "event.type === \"session.idle\" && pendingPermissions.has(sessionID)"
+        ) else {
+            XCTFail("scriptBody must guard session.idle on pendingPermissions.has(sessionID)")
+            return
+        }
+        guard let childSessionsCheckRange = body.range(of: "if (childSessions.has(sessionID)) {") else {
+            XCTFail("scriptBody must guard on childSessions.has(sessionID)")
+            return
+        }
+        XCTAssertTrue(idleGuardRange.upperBound < childSessionsCheckRange.lowerBound,
+                     "pendingPermissions suppression of session.idle must be checked before the " +
+                     "childSessions retirement branch, so a pending child's session.idle returns early " +
+                     "instead of retiring it")
+    }
+
+    func test_scriptBody_parentSessionIdleMapsToStopAndCarriesSessionIdNotAgentId() {
+        // Non-regression: only a child session's session.idle is
+        // translated into SubagentStop. A parent's own session.idle must
+        // still be forwarded as an ordinary Stop event with session_id.
+        assertMapping("session.idle", mapsTo: "Stop", in: OpenCodePluginManager.scriptBody)
+
+        let bodies = jsonStringifyBodies(in: OpenCodePluginManager.scriptBody)
+        XCTAssertTrue(
+            bodies.contains { $0.contains("hookEventName") && $0.contains("session_id") && !$0.contains("agent_id") },
+            "The non-child (parent) event path must post hookEventName with session_id and no agent_id, " +
+            "covering a parent's own session.idle -> Stop"
+        )
+    }
+
+    func test_scriptBody_childSessionDeletedStillPostsSubagentStop() {
+        // Non-regression: session.deleted remains a legitimate end signal
+        // alongside the new session.idle retirement path, even though a
+        // real captured subagent run never produced one.
+        let body = OpenCodePluginManager.scriptBody
+        guard let childSessionsCheckRange = body.range(of: "if (childSessions.has(sessionID)) {") else {
+            XCTFail("scriptBody must guard on childSessions.has(sessionID)")
+            return
+        }
+        let windowEnd = body.index(
+            childSessionsCheckRange.upperBound, offsetBy: 260, limitedBy: body.endIndex
+        ) ?? body.endIndex
+        let window = body[childSessionsCheckRange.upperBound..<windowEnd]
+        XCTAssertTrue(window.contains("session.deleted"),
+                     "The childSessions branch must still check for the child's own session.deleted")
+        XCTAssertTrue(window.contains("SubagentStop"),
+                     "A child session's own session.deleted must still post SubagentStop")
+    }
+
     // MARK: - remove()
 
     func test_remove_missingFileIsNoop_andDeletesAnInstalledPlugin() throws {
