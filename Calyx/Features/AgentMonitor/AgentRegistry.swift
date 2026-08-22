@@ -375,21 +375,29 @@ final class AgentRegistry {
     /// regardless of `CommandLogStore.ingest`'s acceptance: a rejected
     /// duplicate event still proves Calyx's integration is live in that
     /// pane. See `calyxShellIntegrationReportedSurfaces`'s own doc
-    /// comment for why recording on `.start` as well as `.end` matters.
+    /// comment for why recording on `.start` as well as `.end` matters --
+    /// that reasoning is unaffected by `phase` below, which governs only
+    /// what the resolver does with the report, not whether this set is
+    /// updated.
     ///
-    /// Also routes the report through the resolver, which stamps
-    /// `AgentEvidence.lastCalyxReportAt` and answers any outstanding
-    /// ghostty deferral for the surface. That half is per-surface
-    /// evidence with a lifetime of one command, so it lives in
-    /// `evidence` rather than in the permanent set above, and the
-    /// resolver owns when it is set and cleared.
+    /// Also routes the report through the resolver, tagged with `phase`.
+    /// Only `.commandEnd` stamps `AgentEvidence.lastCalyxCommandEndAt`
+    /// and answers any outstanding ghostty deferral for the surface --
+    /// `AgentStateResolver.resolveCalyxShellIntegrationReported` owns
+    /// that decision; a `.commandStart` report leaves the surface's
+    /// evidence untouched, since a command merely starting answers no
+    /// question about whether any job has finished. That evidence has a
+    /// lifetime of one command, so it lives in `evidence` rather than in
+    /// the permanent set above.
     ///
     /// - Parameter now: Injectable for tests (defaults to `Date()`).
-    func recordCalyxShellIntegrationReported(surfaceID: UUID, now: Date = Date()) {
+    func recordCalyxShellIntegrationReported(
+        surfaceID: UUID, phase: CalyxShellReportPhase, now: Date = Date()
+    ) {
         calyxShellIntegrationReportedSurfaces.insert(surfaceID)
         apply(
             AgentStateResolver.resolve(
-                .calyxShellIntegrationReported,
+                .calyxShellIntegrationReported(phase: phase),
                 surfaceID: surfaceID,
                 current: entries[surfaceID],
                 evidence: evidence[surfaceID] ?? AgentEvidence(),
@@ -465,7 +473,7 @@ final class AgentRegistry {
     func handlePaneCommandFinished(
         surfaceID: UUID, exitCode: Int32? = nil, suspended: Bool = false, now: Date = Date()
     ) -> Bool {
-        recordCalyxShellIntegrationReported(surfaceID: surfaceID, now: now)
+        recordCalyxShellIntegrationReported(surfaceID: surfaceID, phase: .commandEnd, now: now)
         let resolution = AgentStateResolver.resolve(
             .paneCommandFinished(exitCode: exitCode, suspended: suspended, origin: .calyxShellIntegration),
             surfaceID: surfaceID,

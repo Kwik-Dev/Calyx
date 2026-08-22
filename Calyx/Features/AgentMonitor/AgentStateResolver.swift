@@ -25,11 +25,12 @@ enum AgentSignal: Sendable {
     case hook(AgentEvent, kind: String)
     case mcpConnection(kind: String)
     case paneCommandFinished(exitCode: Int32?, suspended: Bool, origin: PaneCommandOrigin)
-    /// Calyx's own shell integration reported something for the surface,
-    /// either phase. Carries no row effect of its own: it exists so the
-    /// resolver, not the registry, owns when an outstanding ghostty
-    /// deferral is answered.
-    case calyxShellIntegrationReported
+    /// Calyx's own shell integration reported something for the surface.
+    /// Carries no row effect of its own: it exists so the resolver, not
+    /// the registry, owns when an outstanding ghostty deferral is
+    /// answered. Only `.commandEnd` answers it -- see
+    /// `CalyxShellReportPhase` and `resolveCalyxShellIntegrationReported`.
+    case calyxShellIntegrationReported(phase: CalyxShellReportPhase)
     case screen(AgentState?)
     /// Pre-classified: `AgentRegistry.handleTitleChange` constructs this
     /// only when `ClaudeTitleHeuristic.classify` returns non-nil, so a
@@ -53,6 +54,18 @@ enum AgentSignal: Sendable {
 /// ever reported on the surface.
 enum PaneCommandOrigin: Sendable, Equatable {
     case calyxShellIntegration, ghostty
+}
+
+/// The phase of a `CommandEvent` Calyx's own shell integration reported,
+/// in the resolver's own vocabulary -- kept separate from
+/// `CommandEvent.Phase` (`Features/CommandLog/CommandEvent.swift`) so
+/// this resolver stays free of the CommandLog feature; `CalyxMCPServer
+/// .routeCommandEvent` converts at the boundary. A deferral answers a
+/// question only a command's own END can answer -- "did the pane's
+/// foreground job actually finish?" -- so only `.commandEnd` carries
+/// that answer to `resolveCalyxShellIntegrationReported`.
+enum CalyxShellReportPhase: Sendable, Equatable {
+    case commandStart, commandEnd
 }
 
 // MARK: - Evidence & Context
@@ -93,17 +106,18 @@ struct AgentEvidence: Sendable, Equatable {
     /// this the row could never settle by either route.
     var deferredGhosttyFinishAt: Date? = nil
 
-    /// When Calyx's own shell integration last reported anything for
-    /// the surface, start or end. Read only to decide whether a ghostty
-    /// deferral arriving right now is worth recording: a suspend that
-    /// Calyx just reported is answered already, and recording a
-    /// deferral for it would let the sweep settle a job that is merely
-    /// stopped.
-    var lastCalyxReportAt: Date? = nil
+    /// When Calyx's own shell integration last reported a command's END
+    /// for the surface. Read only to decide whether a ghostty deferral
+    /// arriving right now is worth recording: a suspend that Calyx just
+    /// reported is answered already, and recording a deferral for it
+    /// would let the sweep settle a job that is merely stopped. A
+    /// `.commandStart` report never stamps this -- see
+    /// `resolveCalyxShellIntegrationReported`.
+    var lastCalyxCommandEndAt: Date? = nil
 
     var isEmpty: Bool {
         screenMissStreak == 0 && blockedSince == nil
-            && deferredGhosttyFinishAt == nil && lastCalyxReportAt == nil
+            && deferredGhosttyFinishAt == nil && lastCalyxCommandEndAt == nil
     }
 
     /// The evidence after a positive heuristic signal: a
@@ -362,8 +376,9 @@ enum AgentStateResolver {
     /// `isStopSignalExitCode`.
     private static let stopSignals: Set<Int32> = [SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU]
 
-    /// How recently Calyx's own shell integration must have reported for
-    /// a ghostty deferral arriving now to count as already answered, and
+    /// How recently Calyx's own shell integration must have reported a
+    /// command's END (`AgentEvidence.lastCalyxCommandEndAt`) for a
+    /// ghostty deferral arriving now to count as already answered, and
     /// so not be recorded at all. The two signals for one command arrive
     /// within milliseconds of each other in either order, and it is the
     /// order where Calyx reports FIRST that needs this: without it a
@@ -408,8 +423,8 @@ enum AgentStateResolver {
                 exitCode: exitCode, suspended: suspended, origin: origin,
                 current: current, evidence: evidence, context: context, now: now
             )
-        case .calyxShellIntegrationReported:
-            resolution = resolveCalyxShellIntegrationReported(evidence: evidence, now: now)
+        case .calyxShellIntegrationReported(let phase):
+            resolution = resolveCalyxShellIntegrationReported(phase: phase, evidence: evidence, now: now)
         case .screen(let state):
             resolution = resolveScreen(
                 state, surfaceID: surfaceID, current: current, evidence: evidence, now: now
@@ -506,17 +521,29 @@ enum AgentStateResolver {
 
     // MARK: Calyx Shell Integration Report Signal
 
-    /// Records that Calyx's own shell integration reported for the
-    /// surface, and answers any outstanding ghostty deferral in the same
-    /// step. Touches no row: the report's phase alone says nothing about
-    /// whether the pane's foreground job exited, which is what
+    /// Records that Calyx's own shell integration reported the END of a
+    /// command for the surface, and answers any outstanding ghostty
+    /// deferral in the same step. Touches no row: even a command's own
+    /// end report says nothing about whether the pane's foreground JOB
+    /// exited (a suspend also reaches `phase: end`), which is what
     /// `.paneCommandFinished` decides.
+    ///
+    /// A `.commandStart` report answers nothing -- a command merely
+    /// STARTING says nothing about whether any earlier command, or this
+    /// one, has finished -- so it leaves `evidence` completely
+    /// untouched: neither stamping `lastCalyxCommandEndAt` nor clearing
+    /// `deferredGhosttyFinishAt`. A deferral can only be answered by the
+    /// fact it is a question about: did the foreground job end.
     private static func resolveCalyxShellIntegrationReported(
+        phase: CalyxShellReportPhase,
         evidence: AgentEvidence,
         now: Date
     ) -> AgentResolution {
+        guard phase == .commandEnd else {
+            return .keep(evidence: evidence)
+        }
         var updated = evidence
-        updated.lastCalyxReportAt = now
+        updated.lastCalyxCommandEndAt = now
         updated.deferredGhosttyFinishAt = nil
         return .keep(evidence: updated)
     }
@@ -858,10 +885,13 @@ enum AgentStateResolver {
     /// `resolveStaleSweep` can settle the row if Calyx never answers it
     /// -- see that clause and the field's own doc comment. The one case
     /// that records nothing is a deferral arriving within
-    /// `calyxReportGraceWindow` of Calyx's own last report: Calyx has
-    /// already spoken for this command, and on a fish Ctrl-Z it can
-    /// speak FIRST, so recording here would leave a deferral behind that
-    /// the report meant to clear it already went past.
+    /// `calyxReportGraceWindow` of Calyx's own last command-END report
+    /// (`AgentEvidence.lastCalyxCommandEndAt`): Calyx has already spoken
+    /// for this command, and on a fish Ctrl-Z it can speak FIRST, so
+    /// recording here would leave a deferral behind that the report
+    /// meant to clear it already went past. A `.commandStart` report
+    /// never stamps that field, so it can never win this grace window on
+    /// its own -- only a genuine end report can.
     ///
     /// Every path with `origin == .calyxShellIntegration` clears the
     /// deferral instead, settling or not: this signal is the answer a
@@ -884,7 +914,7 @@ enum AgentStateResolver {
     ) -> AgentResolution {
         if origin == .ghostty, context.calyxShellIntegrationSeen {
             var updated = evidence
-            let calyxJustReported = evidence.lastCalyxReportAt.map {
+            let calyxJustReported = evidence.lastCalyxCommandEndAt.map {
                 now.timeIntervalSince($0) < calyxReportGraceWindow
             } ?? false
             if !calyxJustReported {

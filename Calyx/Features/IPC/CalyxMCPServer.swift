@@ -435,7 +435,7 @@ final class CalyxMCPServer {
     /// can't resolve (an unknown calyx-session ID -- a detached
     /// persistent session that keeps emitting after its pane closed,
     /// normal steady-state) is a silent 204 drop, NOT a 400 -> resolved,
-    /// `agentRegistry.recordCalyxShellIntegrationReported(surfaceID:)`
+    /// `agentRegistry.recordCalyxShellIntegrationReported(surfaceID:phase:)`
     /// runs unconditionally, for BOTH a `.start` and an `.end` event and
     /// regardless of whether `commandLogStore.ingest(event, surfaceID:)`
     /// below accepts or rejects it: a rejected duplicate still proves
@@ -443,7 +443,13 @@ final class CalyxMCPServer {
     /// `.start` too, not just `.end`, matters because ghostty's own OSC
     /// 133 D can otherwise arrive first for the same command -- see
     /// `AgentRegistry.calyxShellIntegrationReportedSurfaces`'s own doc
-    /// comment for the full race and its rationale. Then
+    /// comment for the full race and its rationale. `event.phase`
+    /// (`CommandEvent.Phase`) is converted to the resolver's own
+    /// `CalyxShellReportPhase` at this boundary -- only a `.commandEnd`
+    /// report answers an outstanding ghostty deferral
+    /// (`AgentStateResolver.resolveCalyxShellIntegrationReported`); a
+    /// `.commandStart` report only proves the integration is live, which
+    /// is exactly what the unconditional recording above is for. Then
     /// `commandLogStore.ingest(event, surfaceID:)` runs. A `phase: end`
     /// event `ingest` actually accepted (its own return value -- NOT a
     /// duplicate/late end `CommandLogStore` silently drops, see that
@@ -493,7 +499,8 @@ final class CalyxMCPServer {
         // and `AgentRegistry.calyxShellIntegrationReportedSurfaces`'s for
         // why a `.start` recording, not just `.end`, is needed to win a
         // same-command race against ghostty's own OSC 133 D.
-        agentRegistry.recordCalyxShellIntegrationReported(surfaceID: surfaceID)
+        let shellReportPhase: CalyxShellReportPhase = event.phase == .end ? .commandEnd : .commandStart
+        agentRegistry.recordCalyxShellIntegrationReported(surfaceID: surfaceID, phase: shellReportPhase)
 
         let accepted = commandLogStore.ingest(event, surfaceID: surfaceID)
         if event.phase == .end, accepted,

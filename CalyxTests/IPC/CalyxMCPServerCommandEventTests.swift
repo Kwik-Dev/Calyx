@@ -787,4 +787,85 @@ final class CalyxMCPServerCommandEventTests: XCTestCase {
         XCTAssertEqual(inbox.pending.map(\.id), [request.id],
                        "a suspend must not expire pending approvals -- the agent that asked is still alive")
     }
+
+    // MARK: - A later command's phase: start must not erase an earlier, unresolved ghostty deferral
+
+    // `AgentRegistry.recordCalyxShellIntegrationReported` -- what this
+    // endpoint calls unconditionally for BOTH a phase: start and a
+    // phase: end -- routes through `AgentStateResolver
+    // .resolveCalyxShellIntegrationReported`, which only clears
+    // `AgentEvidence.deferredGhosttyFinishAt` for a `.commandEnd`
+    // report: a `.commandStart` report must leave an outstanding
+    // deferral untouched. A NEW command's own `phase: start` must
+    // therefore never erase the still-unresolved deferral a PREVIOUS
+    // command's lost `phase: end` and ghostty pane-exit signal left
+    // behind on the same surface.
+    func test_routeCommandEvent_laterPhaseStart_mustNotEraseEarlierUnresolvedGhosttyDeferral() async throws {
+        let store = CommandLogStore()
+        server.commandLogStore = store
+        let registry = AgentRegistry()
+        server.agentRegistry = registry
+        let surfaceID = UUID()
+
+        // A live, blocked .hooks row -- the visible state a lost end
+        // report must not leave stuck red.
+        registry.handleHookEvent(
+            AgentEvent(hookEventName: "SessionStart", sessionID: "session-a", cwd: "/Users/dev/repo", message: nil),
+            surfaceID: surfaceID
+        )
+        registry.handleHookEvent(
+            AgentEvent(hookEventName: "PermissionRequest", sessionID: "session-a", cwd: "/Users/dev/repo", message: nil),
+            surfaceID: surfaceID
+        )
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .blocked, "Precondition: a blocked hooks row")
+
+        // The first command's own phase: start, driven through the real
+        // endpoint -- this is what puts the surface in
+        // calyxShellIntegrationReportedSurfaces. A `.commandStart`
+        // report stamps no evidence of its own (see
+        // AgentStateResolver.resolveCalyxShellIntegrationReported).
+        let firstStartResponse = await server.route(request: commandEventRequest(
+            token: testToken, surfaceIDHeader: surfaceID.uuidString,
+            body: commandStartBody(cmdID: "cmd-first", command: "make build", cwd: "/Users/dev/repo")
+        ))
+        XCTAssertEqual(firstStartResponse.statusCode, 204)
+
+        // The first command's own ghostty pane-exit signal, arriving
+        // outside the 2s grace window of that report, so it records a
+        // deferral rather than being swallowed as already-answered.
+        let reportedAround = Date()
+        let ghosttySettled = registry.handleGhosttyCommandFinished(
+            surfaceID: surfaceID, exitCode: 0, now: reportedAround.addingTimeInterval(5)
+        )
+        XCTAssertFalse(ghosttySettled, "Precondition: ghostty defers to Calyx's own integration for this surface")
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .blocked,
+                       "Precondition: the deferred signal itself must leave the row alone")
+
+        // Sanity: nothing has settled the row yet, this early.
+        registry.sweepStaleEntries(now: reportedAround.addingTimeInterval(15))
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .blocked,
+                       "Precondition: the deferral is not yet old enough to settle on its own")
+
+        // A brand new command starts on the same pane. Its own phase:
+        // start, through the real endpoint, must not erase the FIRST
+        // command's still-unresolved deferral.
+        let secondStartResponse = await server.route(request: commandEventRequest(
+            token: testToken, surfaceIDHeader: surfaceID.uuidString,
+            body: commandStartBody(cmdID: "cmd-second", command: "make test", cwd: "/Users/dev/repo")
+        ))
+        XCTAssertEqual(secondStartResponse.statusCode, 204)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .blocked,
+                       "Precondition: the new phase: start does not itself touch the row's state")
+
+        // The first command's phase: end never arrives (the shell body
+        // swallows a failed POST). Sweeping past
+        // deferredGhosttySettleDelay from when the deferral was recorded
+        // must still settle the row.
+        registry.sweepStaleEntries(now: reportedAround.addingTimeInterval(5 + 31))
+
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .done,
+                       "A later command's phase: start must not erase an earlier command's still-unresolved " +
+                       "ghostty deferral -- otherwise the deferral is wiped the instant the new command's " +
+                       "phase: start POST lands, and this blocked row never settles at all")
+    }
 }
