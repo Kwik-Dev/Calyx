@@ -205,14 +205,24 @@ struct AgentResolution: Sendable {
     /// is still the resolver's job, so an event is interpreted in
     /// exactly one place.
     let learnedPeerID: UUID?
-    /// Whether this signal is a resolver-accepted parent-scoped
-    /// sweep event (`resolveHook`'s trailing check against
-    /// `Self.parentTurnBoundaryEventNames`) that must retire every
-    /// child `SubagentRegistry` tracks under this surface. `false` for
-    /// every signal but `.hook`, and `false` for a `.hook` this resolver
-    /// rejected for the parent row (`RowAction.keep`) -- a rejected
-    /// event says nothing happened to the parent's turn or session, so
-    /// it must say nothing about the parent's children either.
+    /// Whether this signal must retire every child `SubagentRegistry`
+    /// tracks under this surface. `resolveHook` sets it, on an accepted
+    /// (`RowAction.write`) non-subagent `.hook`, whenever either of two
+    /// CLI-reported facts holds: the event's name is one of
+    /// `Self.parentSessionBoundaryEventNames`, or the written row and the
+    /// row it replaced each name a session and those sessions differ --
+    /// a different session took the row over, which is itself a fact the
+    /// CLI reported, not a guess. A row merely learning a session for the
+    /// first time (an `.mcpConnection`/`.titleHeuristic` row, whose
+    /// `sessionID` is always `nil`, promoted to `.hooks`) does not count
+    /// on its own: `nil` on one side means no session to compare
+    /// against, not a handoff. `false` for every signal but `.hook`, and `false` for a `.hook`
+    /// this resolver rejected for the parent row (`RowAction.keep`) -- a
+    /// rejected event says nothing happened to the parent's session, so
+    /// it must say nothing about the parent's children either. An
+    /// accepted parent `Stop` that leaves the row's own session
+    /// unchanged is `false` too: the parent's own turn ending says
+    /// nothing about whether any of its children are still running.
     let retiresChildren: Bool
 
     /// Private so the factories below are the only way to build a
@@ -347,19 +357,41 @@ enum AgentStateResolver {
         "UserPromptSubmit", "PreToolUse", "PostToolUse",
     ]
 
-    /// Hook events that, on the PARENT's own event (never a subagent
-    /// event) and only once `resolveHookRow` has actually ACCEPTED that
-    /// event for the parent row, mean no child of the surface can still
-    /// be running: the parent's turn ended (`Stop`), its session ended
-    /// (`SessionEnd`), or a new session started (`SessionStart`).
-    /// `resolveHook` is the only reader -- see its own `retiringChildren`
-    /// call. This is also what makes a CLI that omits `agent_id` on its
-    /// own `SubagentStop` degrade (children linger until an ACCEPTED
-    /// parent-scoped event of this kind) rather than leak permanently:
-    /// a `Stop`/`SessionEnd` this resolver rejects (a session mismatch on
-    /// a non-`.done` row) never reaches this check.
-    private static let parentTurnBoundaryEventNames: Set<String> = [
-        "Stop", "SessionEnd", "SessionStart",
+    /// Hook event names that, on the PARENT's own event (never a
+    /// subagent event) and only once `resolveHookRow` has actually
+    /// ACCEPTED that event for the parent row, mean no child of the
+    /// surface can still be running: the parent's session ended
+    /// (`SessionEnd`) or a new session started (`SessionStart`). This is
+    /// one of two facts `resolveHook` treats as children-retiring; the
+    /// other, decided independently of any event name, is a different
+    /// session taking the row over -- see `AgentResolution
+    /// .retiresChildren`'s own doc comment for what that requires (both
+    /// the written row and the row it replaced must actually name a
+    /// session, so a row merely learning its first session, such as an
+    /// `.mcpConnection` row promoted to `.hooks`, does not qualify on its
+    /// own). `Stop` is
+    /// deliberately excluded from this set: a captured real Claude Code
+    /// run shows the parent's own `Stop` firing, several times across a
+    /// turn, while both of its subagents were still mid-flight -- a CLI
+    /// can and does keep a subagent running past the parent's own turn
+    /// ending, so treating `Stop` as a children-retiring event deleted
+    /// rows the CLI still reported live. An accepted `Stop` still retires
+    /// children when it lands via the session-mismatch replacement path
+    /// (a `.done` row's session differs from the event's), since that is
+    /// the other, name-independent fact. `resolveHook` is the only
+    /// reader of this set -- see its own `retiringChildren` call. This is
+    /// also what makes a CLI that omits `agent_id` on its own
+    /// `SubagentStop` degrade rather than leak permanently, though the
+    /// degradation window is now longer than a turn: the lingering child
+    /// survives an accepted, same-session parent `Stop` and only goes
+    /// away on an ACCEPTED `SessionEnd`/`SessionStart`, a session-mismatch
+    /// row replacement, the pane exiting, or the parent row settling
+    /// `.done`. That trade is still the right one: deleting a child the
+    /// CLI still reports running is the worse violation of the two. A
+    /// `SessionEnd`/`SessionStart` this resolver rejects (a session
+    /// mismatch on a non-`.done` row) never reaches either check.
+    private static let parentSessionBoundaryEventNames: Set<String> = [
+        "SessionEnd", "SessionStart",
     ]
 
     /// Window within which a same-session `PreToolUse` following a
@@ -635,13 +667,28 @@ enum AgentStateResolver {
     /// And, once the row effect is known, whether this event retires
     /// every child `SubagentRegistry` tracks under the surface:
     /// `retiringChildren()` applies only when the event is NOT
-    /// subagent-scoped, its name is one of `parentTurnBoundaryEventNames`,
-    /// and `resolveHookRow` actually accepted it for the parent row
-    /// (`RowAction.write`) -- a rejected event (a session mismatch on a
-    /// non-`.done` row) never reaches a live child's lifetime, exactly as
-    /// it never reaches the parent row. The child's lifetime is decided
-    /// HERE, in the same place that decided the parent's, rather than
-    /// re-derived from the event's name a second time somewhere else.
+    /// subagent-scoped and `resolveHookRow` actually accepted it for the
+    /// parent row (`RowAction.write`) -- a rejected event (a session
+    /// mismatch on a non-`.done` row) never reaches a live child's
+    /// lifetime, exactly as it never reaches the parent row -- and, on
+    /// top of that, one of two CLI-reported facts holds: the event's
+    /// name is one of `parentSessionBoundaryEventNames`, or the row this
+    /// call just wrote names a session that differs from the session the
+    /// row it replaced named -- i.e. a different session took the row
+    /// over. Both sides must actually name a session for that second
+    /// condition to hold: a row being promoted from `.mcpConnection`/
+    /// `.titleHeuristic` (which carry no `sessionID` of their own) to
+    /// `.hooks` is `nil` learning a session for the first time, not a
+    /// session handoff, so it does not retire children on its own --
+    /// only the accompanying session-boundary event name can. An
+    /// accepted parent `Stop` that leaves the row's own session unchanged
+    /// settles the parent row same as before but triggers neither
+    /// condition, so it never reaches this check at all; a `Stop` that
+    /// instead lands via a session-mismatch replacement does, since a
+    /// different session really did take the row over. The child's
+    /// lifetime is decided HERE, in the same place that decided the
+    /// parent's, rather than re-derived from the event's name a second
+    /// time somewhere else.
     private static func resolveHook(
         _ event: AgentEvent,
         kind: String,
@@ -657,9 +704,14 @@ enum AgentStateResolver {
         )
         .withLearnedPeerID(event.ipcSelfPeerID.flatMap(UUID.init(uuidString:)))
 
-        guard !event.isSubagentEvent,
-              parentTurnBoundaryEventNames.contains(event.hookEventName),
-              case .write = resolution.row
+        guard !event.isSubagentEvent, case .write(let entry) = resolution.row else {
+            return resolution
+        }
+        let previousSessionID = current?.sessionID
+        let tookOverFromADifferentSession =
+            entry.sessionID != nil && previousSessionID != nil && entry.sessionID != previousSessionID
+        guard parentSessionBoundaryEventNames.contains(event.hookEventName)
+            || tookOverFromADifferentSession
         else {
             return resolution
         }

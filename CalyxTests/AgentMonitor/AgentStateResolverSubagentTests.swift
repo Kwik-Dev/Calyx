@@ -39,6 +39,19 @@
 //  - The parent's own SessionStart still behaves exactly as before: a
 //    fresh session replaces the row, and a same-session re-send
 //    preserves state and revives a .done row
+//  - retiresChildren: an accepted, same-session parent-scoped Stop no
+//    longer retires children (it still settles the row to .idle); an
+//    accepted SessionEnd / SessionStart still retires them; an accepted
+//    session-mismatch row replacement (a forward-moving event handing
+//    the surface to a different session) retires them too, whatever the
+//    event's name; a subagent-scoped event never retires them; a
+//    rejected (session-mismatched) parent-scoped event never retires
+//    them; an accepted event PROMOTING an .mcpConnection or
+//    .titleHeuristic row (sessionID nil) to .hooks does not retire them
+//    either, since that is a row learning its session for the first
+//    time, not a different session taking the row over; nor does a
+//    replacement whose new session is nil (a value-to-nil loss of
+//    session identity)
 //
 
 import XCTest
@@ -472,5 +485,190 @@ final class AgentStateResolverSubagentTests: XCTestCase {
         let doneUpdated = try XCTUnwrap(writtenEntry(doneResolution))
         XCTAssertEqual(doneUpdated.state, .idle,
                        "A re-sent SessionStart for the same session revives a .done row to .idle")
+    }
+
+    // MARK: - retiresChildren
+
+    /// An accepted parent-scoped `Stop` must still settle the row to
+    /// `.idle` exactly as before, but must no longer retire the
+    /// surface's children -- a still-running child must be allowed to
+    /// linger past its parent's own turn ending, since the CLI itself
+    /// keeps reporting it running past that point (the real captured
+    /// Claude Code sequence this bug was found from).
+    func test_acceptedParentStop_settlesRowToIdle_butNoLongerRetiresChildren() throws {
+        let surfaceID = UUID()
+        let existing = hooksEntry(surfaceID: surfaceID, state: .working)
+
+        let resolution = resolve(event("Stop", agentID: nil, agentType: nil), current: existing)
+
+        let updated = try XCTUnwrap(writtenEntry(resolution))
+        XCTAssertEqual(updated.state, .idle, "An accepted parent Stop must still settle the row to .idle")
+        XCTAssertFalse(resolution.retiresChildren,
+                       "An accepted parent Stop must no longer retire the surface's children")
+    }
+
+    /// An accepted parent-scoped `SessionEnd` must still retire every
+    /// child of the surface: the parent's own session ending really
+    /// does mean no child of it can still be running.
+    func test_acceptedParentSessionEnd_stillRetiresChildren() throws {
+        let surfaceID = UUID()
+        let existing = hooksEntry(surfaceID: surfaceID, state: .working)
+
+        let resolution = resolve(event("SessionEnd", agentID: nil, agentType: nil), current: existing)
+
+        _ = try XCTUnwrap(writtenEntry(resolution))
+        XCTAssertTrue(resolution.retiresChildren, "An accepted parent SessionEnd must still retire children")
+    }
+
+    /// An accepted parent-scoped `SessionStart` (a fresh session
+    /// replacing the row) must still retire every child of the surface:
+    /// a new session starting means whatever the previous session's
+    /// children were, none of them belong to it.
+    func test_acceptedParentSessionStart_stillRetiresChildren() throws {
+        let surfaceID = UUID()
+        let existing = hooksEntry(
+            surfaceID: surfaceID, sessionID: "old-session", cwd: "/Users/dev/old", state: .done
+        )
+
+        let resolution = resolve(
+            event("SessionStart", sessionID: "new-session", cwd: "/Users/dev/new", agentID: nil, agentType: nil),
+            current: existing
+        )
+
+        _ = try XCTUnwrap(writtenEntry(resolution))
+        XCTAssertTrue(resolution.retiresChildren, "An accepted parent SessionStart must still retire children")
+    }
+
+    /// A subagent-scoped event must never retire children, whatever its
+    /// name -- including one it maps to `.idle`/`.done` for the parent
+    /// row like `Stop`/`SessionEnd`, and including `SessionStart`, which
+    /// never even reaches the parent row.
+    func test_subagentScopedEvent_neverRetiresChildren() {
+        let surfaceID = UUID()
+        let existing = hooksEntry(surfaceID: surfaceID, state: .working)
+
+        for name in ["Stop", "SessionEnd", "SessionStart", "PreToolUse"] {
+            let resolution = resolve(event(name), current: existing)
+            XCTAssertFalse(resolution.retiresChildren,
+                           "A subagent-scoped \(name) must never retire children")
+        }
+    }
+
+    /// An accepted session-mismatch row replacement -- a forward-moving
+    /// event (never `SessionEnd`/`SessionStart`) whose session differs
+    /// from the row that was there before, which `resolveHookRow`
+    /// accepts by replacing the row outright -- must retire the OLD
+    /// session's children: that CLI process is gone, and no
+    /// `SubagentStop` for its children can ever arrive once a different
+    /// session now owns the surface.
+    func test_acceptedSessionMismatchReplacement_retiresOldSessionsChildren() throws {
+        let surfaceID = UUID()
+        let existing = hooksEntry(surfaceID: surfaceID, sessionID: "old-session", state: .working)
+
+        let resolution = resolve(
+            event("PreToolUse", sessionID: "new-session", agentID: nil, agentType: nil), current: existing
+        )
+
+        let updated = try XCTUnwrap(writtenEntry(resolution),
+                                    "Precondition: a forward-moving, session-mismatched event on a " +
+                                    "non-.done row must be accepted and replace the row -- otherwise this " +
+                                    "test proves nothing about the replacement case")
+        XCTAssertEqual(updated.sessionID, "new-session",
+                       "Precondition: the row now belongs to the new session")
+        XCTAssertTrue(resolution.retiresChildren,
+                      "An accepted session-mismatch row replacement must retire the OLD session's " +
+                      "children -- that CLI process is gone")
+    }
+
+    /// An accepted event that PROMOTES an `.mcpConnection` row (whose
+    /// `sessionID` is always `nil`) to `.hooks` must not retire children:
+    /// the row is learning a session for the first time, not handing the
+    /// surface from one session to another, and `AgentRegistry
+    /// .handleHookEvent` lets a child be created under any live row --
+    /// `.mcpConnection` included -- so a child created moments earlier
+    /// under this row must survive its promotion.
+    func test_acceptedPromotionFromMCPConnectionRow_doesNotRetireChildren() throws {
+        let surfaceID = UUID()
+        let existing = AgentEntry(
+            surfaceID: surfaceID, sessionID: nil, source: .mcpConnection, state: .idle,
+            cwd: nil, kind: AgentEntry.claudeCodeKind, lastEventAt: Date()
+        )
+
+        let resolution = resolve(
+            event("PreToolUse", sessionID: "parent-session", agentID: nil, agentType: nil), current: existing
+        )
+
+        let updated = try XCTUnwrap(writtenEntry(resolution),
+                                    "Precondition: the promoting event must be accepted and replace the row")
+        XCTAssertEqual(updated.source, .hooks, "Precondition: the row was promoted to .hooks")
+        XCTAssertEqual(updated.sessionID, "parent-session", "Precondition: the row now carries a session")
+        XCTAssertFalse(resolution.retiresChildren,
+                       "Promoting an .mcpConnection row to .hooks must not retire children -- the row is " +
+                       "learning its session for the first time, not changing hands")
+    }
+
+    /// The same promotion, from a `.titleHeuristic` row instead.
+    func test_acceptedPromotionFromTitleHeuristicRow_doesNotRetireChildren() throws {
+        let surfaceID = UUID()
+        let existing = AgentEntry(
+            surfaceID: surfaceID, sessionID: nil, source: .titleHeuristic, state: .idle,
+            cwd: nil, kind: AgentEntry.claudeCodeKind, lastEventAt: Date()
+        )
+
+        let resolution = resolve(
+            event("PreToolUse", sessionID: "parent-session", agentID: nil, agentType: nil), current: existing
+        )
+
+        let updated = try XCTUnwrap(writtenEntry(resolution),
+                                    "Precondition: the promoting event must be accepted and replace the row")
+        XCTAssertEqual(updated.source, .hooks, "Precondition: the row was promoted to .hooks")
+        XCTAssertEqual(updated.sessionID, "parent-session", "Precondition: the row now carries a session")
+        XCTAssertFalse(resolution.retiresChildren,
+                       "Promoting a .titleHeuristic row to .hooks must not retire children -- the row is " +
+                       "learning its session for the first time, not changing hands")
+    }
+
+    /// An accepted session-mismatch replacement where the NEW event
+    /// carries no `session_id` at all (a `.hooks` row losing its session
+    /// identity, value-to-`nil`) must not retire children either: that
+    /// reports missing identity, not a report that a different session
+    /// took the row over.
+    func test_acceptedValueToNilSessionReplacement_doesNotRetireChildren() throws {
+        let surfaceID = UUID()
+        let existing = hooksEntry(surfaceID: surfaceID, sessionID: "old-session", state: .working)
+
+        let resolution = resolve(
+            event("PreToolUse", sessionID: nil, agentID: nil, agentType: nil), current: existing
+        )
+
+        let updated = try XCTUnwrap(writtenEntry(resolution),
+                                    "Precondition: a forward-moving, session-mismatched event on a " +
+                                    "non-.done row must be accepted and replace the row")
+        XCTAssertNil(updated.sessionID, "Precondition: the new row carries no session at all")
+        XCTAssertFalse(resolution.retiresChildren,
+                       "A replacement whose new session is nil must not retire children -- that reports " +
+                       "missing session identity, not a different session taking the row over")
+    }
+
+    /// A rejected (session-mismatched, non-`.done` row) parent-scoped
+    /// event must never retire children -- a rejected event says
+    /// nothing happened to the parent's turn or session, so it must say
+    /// nothing about the parent's children either.
+    func test_rejectedMismatchedSessionParentEvent_neverRetiresChildren() {
+        let surfaceID = UUID()
+        let existing = hooksEntry(surfaceID: surfaceID, sessionID: "real-session", state: .working)
+
+        for name in ["Stop", "SessionEnd"] {
+            let resolution = resolve(
+                event(name, sessionID: "other-session", agentID: nil, agentType: nil), current: existing
+            )
+            guard case .keep = resolution.row else {
+                return XCTFail("Precondition: a session-mismatched \(name) on a non-.done row must be " +
+                               "rejected (.keep) -- otherwise this test proves nothing about the rejected " +
+                               "case, got \(resolution.row)")
+            }
+            XCTAssertFalse(resolution.retiresChildren,
+                           "A rejected (session-mismatched) parent-scoped \(name) must never retire children")
+        }
     }
 }

@@ -34,6 +34,10 @@
 //    mirroring the `entry.unreadCount > 0` guard the row wraps
 //    UnreadCountBadge in; "N unread" for 1...99; capped at "99+ unread"
 //    above 99, mirroring UnreadCountBadge's own "99+" digit cap
+//  - elapsedLabel(since:now:): a counting-up duration ("Ns", "Nm Ns",
+//    "Nh Nm"), not a relative "... ago" phrase -- pinned at the 0/59/
+//    60/3599/3600-second boundaries, and clamped to "0s" for a now
+//    earlier than since (clock skew / an out-of-order write)
 //
 
 import XCTest
@@ -426,5 +430,67 @@ final class AgentRowDisplayTests: XCTestCase {
     func test_unreadAccessibilityValue_overCap_returnsCappedValue() {
         XCTAssertEqual(AgentRowDisplay.unreadAccessibilityValue(count: 100), "99+ unread")
         XCTAssertEqual(AgentRowDisplay.unreadAccessibilityValue(count: 150), "99+ unread")
+    }
+
+    // MARK: - elapsedLabel(since:now:)
+
+    /// Fixed anchor so every case below computes `now` as
+    /// `anchor.addingTimeInterval(seconds)` -- deterministic, no
+    /// `Date()` arithmetic in the assertion path.
+    private let anchor = Date(timeIntervalSince1970: 1_700_000_000)
+
+    private func elapsed(_ seconds: TimeInterval) -> String {
+        AgentRowDisplay.elapsedLabel(since: anchor, now: anchor.addingTimeInterval(seconds))
+    }
+
+    func test_elapsedLabel_zeroSeconds_returnsZeroS() {
+        XCTAssertEqual(elapsed(0), "0s")
+    }
+
+    func test_elapsedLabel_oneSecond_returnsOneS() {
+        XCTAssertEqual(elapsed(1), "1s")
+    }
+
+    func test_elapsedLabel_thirtyThreeSeconds_returnsThirtyThreeS() {
+        XCTAssertEqual(elapsed(33), "33s")
+    }
+
+    /// The boundary just below one minute: still rendered in seconds.
+    func test_elapsedLabel_fiftyNineSeconds_returnsFiftyNineS() {
+        XCTAssertEqual(elapsed(59), "59s")
+    }
+
+    /// The boundary at exactly one minute: switches to the "Nm Ns" form.
+    func test_elapsedLabel_sixtySeconds_returnsOneMZeroS() {
+        XCTAssertEqual(elapsed(60), "1m 0s")
+    }
+
+    func test_elapsedLabel_oneMinuteFiveSeconds_returnsOneMFiveS() {
+        XCTAssertEqual(elapsed(65), "1m 5s")
+    }
+
+    /// The boundary just below one hour: still rendered in minutes.
+    func test_elapsedLabel_fiftyNineMinutesFiftyNineSeconds_returnsFiftyNineMFiftyNineS() {
+        XCTAssertEqual(elapsed(59 * 60 + 59), "59m 59s")
+    }
+
+    /// The boundary at exactly one hour: switches to the "Nh Nm" form.
+    func test_elapsedLabel_sixtyMinutes_returnsOneHZeroM() {
+        XCTAssertEqual(elapsed(3600), "1h 0m")
+    }
+
+    func test_elapsedLabel_oneHourTwoMinutes_returnsOneHTwoM() {
+        XCTAssertEqual(elapsed(3600 + 2 * 60), "1h 2m")
+    }
+
+    func test_elapsedLabel_twentyFiveHours_returnsTwentyFiveHZeroM() {
+        XCTAssertEqual(elapsed(25 * 3600), "25h 0m")
+    }
+
+    /// A `now` earlier than `since` -- clock skew, an out-of-order
+    /// write -- must clamp to "0s" rather than render a negative
+    /// number.
+    func test_elapsedLabel_nowEarlierThanSince_clampsToZeroS() {
+        XCTAssertEqual(AgentRowDisplay.elapsedLabel(since: anchor, now: anchor.addingTimeInterval(-5)), "0s")
     }
 }

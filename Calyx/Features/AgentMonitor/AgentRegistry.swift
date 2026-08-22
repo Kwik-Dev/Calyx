@@ -261,8 +261,11 @@ final class AgentRegistry {
     /// clause owns every precedence rule an event answers to: the
     /// `SessionStart` re-send, the unrecognized event, the terminal
     /// `.done` row, the session mismatch, and -- for a non-subagent
-    /// event -- whether the surface's children are retired
-    /// (`AgentResolution.retiresChildren`, applied by `apply` below).
+    /// event accepted for the parent row -- whether the surface's
+    /// children are retired (`AgentResolution.retiresChildren`, set on a
+    /// parent-scoped `SessionEnd`/`SessionStart` or a row replacement
+    /// where a different session took the surface over, applied by
+    /// `apply` below).
     /// See also the state transition table in the AgentMonitor design
     /// doc.
     ///
@@ -560,17 +563,27 @@ final class AgentRegistry {
     /// was removed, or the row's state became `.done`), or whenever the
     /// resolver itself decided the surface's children are retired
     /// (`AgentResolution.retiresChildren` -- a resolver-accepted
-    /// parent-scoped `Stop`/`SessionEnd`/`SessionStart`, decided
-    /// entirely by `AgentStateResolver.resolveHook`; this method never
-    /// re-derives that decision from the event's name). Every settle
-    /// path funnels through here -- a hook-reported `SessionEnd`, a
-    /// pane-exit signal (`handlePaneCommandFinished`), and the staleness
-    /// sweep's deferred-ghostty settle (`resolveStaleSweep`) alike -- so
-    /// a child can never outlive a parent row that stopped reporting,
-    /// regardless of which route settled it. A `.working`-to-`.idle`
-    /// staleness downgrade is deliberately excluded: `.idle` is still a
-    /// live row, and that downgrade is Calyx's own inference about a row
-    /// it hasn't heard from, not a report that the agent finished.
+    /// parent-scoped `SessionEnd`/`SessionStart`, or a resolver-accepted
+    /// row replacement where a different session took the row over,
+    /// decided entirely by `AgentStateResolver.resolveHook`; this method
+    /// never re-derives that decision from the event's name or from
+    /// comparing sessionIDs itself). An accepted, same-session parent
+    /// `Stop` settles the row to `.idle` the same as before but no
+    /// longer sweeps children -- a parent row can now legitimately sit
+    /// `.idle` while its children are still `.working`, since a CLI can
+    /// and does keep a subagent running past its parent's own turn
+    /// ending; a `Stop` that instead replaces the row with a different
+    /// session's does sweep, since a different session actually took the
+    /// row over. Every settle path funnels through here -- a
+    /// hook-reported `SessionEnd`,
+    /// a pane-exit signal (`handlePaneCommandFinished`), and the
+    /// staleness sweep's deferred-ghostty settle (`resolveStaleSweep`)
+    /// alike -- so a child can never outlive a parent row that stopped
+    /// reporting, regardless of which route settled it. A
+    /// `.working`-to-`.idle` staleness downgrade is deliberately
+    /// excluded: `.idle` is still a live row, and that downgrade is
+    /// Calyx's own inference about a row it hasn't heard from, not a
+    /// report that the agent finished.
     private func apply(_ r: AgentResolution, surfaceID: UUID) {
         let newEvidence = r.evidence.isEmpty ? nil : r.evidence
         if evidence[surfaceID] != newEvidence { evidence[surfaceID] = newEvidence }
