@@ -3,10 +3,17 @@
 //  CalyxTests
 //
 //  Covers SubagentRegistry, the storage side effect AgentRegistry.
-//  handleHookEvent forwards every hook event to: it owns child rows
+//  handleHookEvent forwards a subagent hook event to: it owns child rows
 //  keyed by (parentSurfaceID, agentID), reusing
 //  AgentStateResolver.resultingState(for:) for state so no
-//  child-specific vocabulary is ever duplicated.
+//  child-specific vocabulary is ever duplicated. SubagentRegistry itself
+//  no longer knows any parent event name -- a parent-scoped
+//  Stop/SessionEnd/SessionStart's children-retiring effect is decided by
+//  AgentStateResolver.resolveHook (AgentResolution.retiresChildren) and
+//  carried out by AgentRegistry.apply, so those tests live in
+//  AgentRegistryTests.swift instead, driving the pipeline through
+//  AgentRegistry.handleHookEvent rather than this type directly -- see
+//  that file's "Parent-scoped sweep" section.
 //
 //  Coverage:
 //  - SubagentStart creates a child at .working with its agentType
@@ -19,15 +26,9 @@
 //  - A subagent-scoped SessionEnd (a child's own teardown) removes only
 //    that agentID, exactly as SubagentStop does; it creates nothing for
 //    an agentID already removed
-//  - The parent's Stop removes every child of that parent, and no other
-//    parent's
-//  - A PARENT-scoped SessionEnd still sweeps every child of that parent
-//  - The parent's SessionEnd and SessionStart each remove every child of
-//    that parent
 //  - AgentRegistry.handleSurfaceDestroyed removes that parent's children
 //  - AgentRegistry.reset() removes every child
-//  - A SubagentStop with no agentID removes nothing; the children still
-//    go away on the parent's Stop (degrade, not leak)
+//  - A SubagentStop with no agentID removes nothing
 //  - children(of:) returns a stable order across calls
 //  - Children never appear in AgentRegistry.entries or externalEntries
 //
@@ -209,58 +210,6 @@ final class SubagentRegistryTests: XCTestCase {
         XCTAssertEqual(remaining.first?.agentID, "sub-2")
     }
 
-    // MARK: - Removal: parent's Stop
-
-    func test_parentStop_removesEveryChildOfThatParent_andNoOtherParents() {
-        let registry = SubagentRegistry()
-        let parentA = UUID()
-        let parentB = UUID()
-
-        registry.handleHookEvent(event("SubagentStart", agentID: "sub-1"), parentSurfaceID: parentA)
-        registry.handleHookEvent(event("SubagentStart", agentID: "sub-2"), parentSurfaceID: parentA)
-        registry.handleHookEvent(event("SubagentStart", agentID: "sub-3"), parentSurfaceID: parentB)
-
-        // The parent's own Stop -- not a subagent event.
-        registry.handleHookEvent(
-            AgentEvent(hookEventName: "Stop", sessionID: "parent-session", cwd: nil, message: nil),
-            parentSurfaceID: parentA
-        )
-
-        XCTAssertTrue(registry.children(of: parentA).isEmpty,
-                      "The parent's own Stop must remove every child of that parent")
-        XCTAssertEqual(registry.children(of: parentB).count, 1,
-                       "A different parent's children must be untouched")
-    }
-
-    // MARK: - Removal: parent's SessionEnd / SessionStart
-
-    func test_parentSessionEnd_removesEveryChildOfThatParent() {
-        let registry = SubagentRegistry()
-        let parent = UUID()
-        registry.handleHookEvent(event("SubagentStart", agentID: "sub-1"), parentSurfaceID: parent)
-
-        registry.handleHookEvent(
-            AgentEvent(hookEventName: "SessionEnd", sessionID: "parent-session", cwd: nil, message: nil),
-            parentSurfaceID: parent
-        )
-
-        XCTAssertTrue(registry.children(of: parent).isEmpty)
-    }
-
-    func test_parentSessionStart_removesEveryChildOfThatParent() {
-        let registry = SubagentRegistry()
-        let parent = UUID()
-        registry.handleHookEvent(event("SubagentStart", agentID: "sub-1"), parentSurfaceID: parent)
-
-        registry.handleHookEvent(
-            AgentEvent(hookEventName: "SessionStart", sessionID: "new-session", cwd: nil, message: nil),
-            parentSurfaceID: parent
-        )
-
-        XCTAssertTrue(registry.children(of: parent).isEmpty,
-                      "A fresh session on the parent means no child of the OLD session can still be running")
-    }
-
     // MARK: - AgentRegistry-level removal triggers
 
     func test_agentRegistry_handleSurfaceDestroyed_removesThatParentsChildren() {
@@ -318,8 +267,14 @@ final class SubagentRegistryTests: XCTestCase {
     }
 
     // MARK: - Degrade case: SubagentStop with no agentID
+    //
+    // The other half of this degrade case -- the lingering child still
+    // going away once an ACCEPTED parent Stop retires it -- needs the
+    // full AgentRegistry pipeline (AgentStateResolver.resolveHook's
+    // retiresChildren decision) and lives in AgentRegistryTests.swift's
+    // "Parent-scoped sweep" section instead.
 
-    func test_subagentStopWithNoAgentID_removesNothing_childrenStillGoOnParentStop() {
+    func test_subagentStopWithNoAgentID_removesNothing() {
         let registry = SubagentRegistry()
         let parent = UUID()
         registry.handleHookEvent(event("SubagentStart", agentID: "sub-1"), parentSurfaceID: parent)
@@ -332,13 +287,6 @@ final class SubagentRegistryTests: XCTestCase {
         )
         XCTAssertEqual(registry.children(of: parent).count, 1,
                        "A SubagentStop with no agentID identifies no child, so nothing may be removed")
-
-        registry.handleHookEvent(
-            AgentEvent(hookEventName: "Stop", sessionID: "parent-session", cwd: nil, message: nil),
-            parentSurfaceID: parent
-        )
-        XCTAssertTrue(registry.children(of: parent).isEmpty,
-                      "The lingering child still goes away once the parent's own turn ends -- degrade, not leak")
     }
 
     // MARK: - Removal: a child's own SessionEnd (subagent-scoped)
@@ -373,27 +321,6 @@ final class SubagentRegistryTests: XCTestCase {
 
         XCTAssertTrue(registry.children(of: parent).isEmpty,
                       "A subagent-scoped SessionEnd for an already-removed agentID must create nothing")
-    }
-
-    func test_parentScopedSessionEnd_stillSweepsEveryChild() {
-        let registry = SubagentRegistry()
-        let parentA = UUID()
-        let parentB = UUID()
-
-        registry.handleHookEvent(event("SubagentStart", agentID: "sub-1"), parentSurfaceID: parentA)
-        registry.handleHookEvent(event("SubagentStart", agentID: "sub-2"), parentSurfaceID: parentA)
-        registry.handleHookEvent(event("SubagentStart", agentID: "sub-3"), parentSurfaceID: parentB)
-
-        // The parent's own SessionEnd -- not a subagent event.
-        registry.handleHookEvent(
-            AgentEvent(hookEventName: "SessionEnd", sessionID: "parent-session", cwd: nil, message: nil),
-            parentSurfaceID: parentA
-        )
-
-        XCTAssertTrue(registry.children(of: parentA).isEmpty,
-                      "The parent's own SessionEnd must still sweep every child of that parent")
-        XCTAssertEqual(registry.children(of: parentB).count, 1,
-                       "A different parent's children must be untouched")
     }
 
     // MARK: - children(of:) stable order

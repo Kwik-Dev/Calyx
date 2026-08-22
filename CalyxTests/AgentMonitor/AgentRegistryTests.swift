@@ -524,6 +524,241 @@ final class AgentRegistryTests: XCTestCase {
         XCTAssertEqual(child?.lastToolName, "Bash", "A subagent event under a live parent row must still update the child")
     }
 
+    // MARK: - A parent-scoped sweep event the resolver rejects must not clear children
+
+    // A child's lifetime follows the resolver's own acceptance of the
+    // parent-scoped event that would retire it: `AgentStateResolver
+    // .resolveHook` only marks a `Stop`/`SessionEnd`/`SessionStart`
+    // as retiring the surface's children (`AgentResolution
+    // .retiresChildren`) when it also accepted that event for the
+    // parent row. A session-mismatched `Stop`/`SessionEnd` -- absent
+    // from `forwardMovingEventNames`, and arriving for a row that is
+    // not `.done` -- is exactly the case `AgentStateResolver
+    // .resolveHookRow`'s session-mismatch guard rejects (`.keep`,
+    // parent row untouched): Codex reports `agent_id` only on
+    // `SubagentStart`/`SubagentStop`, so its `Stop`/`SessionEnd` carry
+    // no `agent_id` at all and reach this guard directly. The children
+    // below must survive a sweep event the resolver itself rejected.
+
+    func test_handleHookEvent_rejectedMismatchedSessionSessionEnd_doesNotClearChildren() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("PreToolUse", sessionID: "session-a"), surfaceID: surfaceID)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .working, "Precondition: a live, non-done parent row")
+
+        registry.handleHookEvent(
+            AgentEvent(hookEventName: "SubagentStart", sessionID: "session-a", cwd: nil, message: nil,
+                       agentID: "sub-1", agentType: "explore"),
+            surfaceID: surfaceID
+        )
+        XCTAssertEqual(registry.subagentRegistry.children(of: surfaceID).count, 1, "Precondition: a live child")
+
+        // session-b never matches this row's own session-a: SessionEnd
+        // is absent from forwardMovingEventNames, and the row is not
+        // .done, so AgentStateResolver.resolveHookRow's session-mismatch
+        // guard discards this event entirely.
+        registry.handleHookEvent(event("SessionEnd", sessionID: "session-b"), surfaceID: surfaceID)
+
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .working,
+                       "Precondition: the resolver must actually reject the mismatched SessionEnd, leaving " +
+                       "the parent row untouched -- otherwise this test proves nothing about the rejected case")
+        XCTAssertEqual(registry.subagentRegistry.children(of: surfaceID).count, 1,
+                       "A SessionEnd AgentStateResolver rejected for the parent row must not clear the " +
+                       "parent's children either -- SubagentRegistry.handleHookEvent's sweep must not run " +
+                       "for an event the resolver discarded")
+    }
+
+    func test_handleHookEvent_rejectedMismatchedSessionStop_doesNotClearChildren() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("PreToolUse", sessionID: "session-a"), surfaceID: surfaceID)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .working, "Precondition: a live, non-done parent row")
+
+        registry.handleHookEvent(
+            AgentEvent(hookEventName: "SubagentStart", sessionID: "session-a", cwd: nil, message: nil,
+                       agentID: "sub-1", agentType: "explore"),
+            surfaceID: surfaceID
+        )
+        XCTAssertEqual(registry.subagentRegistry.children(of: surfaceID).count, 1, "Precondition: a live child")
+
+        // Stop is likewise absent from forwardMovingEventNames, so a
+        // mismatched-session Stop on a non-done row is discarded the
+        // same way.
+        registry.handleHookEvent(event("Stop", sessionID: "session-b"), surfaceID: surfaceID)
+
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .working,
+                       "Precondition: the resolver must actually reject the mismatched Stop, leaving the " +
+                       "parent row untouched -- otherwise this test proves nothing about the rejected case")
+        XCTAssertEqual(registry.subagentRegistry.children(of: surfaceID).count, 1,
+                       "A Stop AgentStateResolver rejected for the parent row must not clear the parent's " +
+                       "children either -- SubagentRegistry.handleHookEvent's sweep must not run for an " +
+                       "event the resolver discarded")
+    }
+
+    // MARK: - Regression guards: an ACCEPTED parent-scoped sweep event must still clear children
+
+    // A resolver-accepted parent-scoped sweep event -- a same-session
+    // Stop/SessionStart, or a Stop that auto-registers a fresh row where
+    // none existed -- must keep clearing every child of that parent.
+
+    func test_handleHookEvent_acceptedSameSessionStop_clearsChildren() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(
+            AgentEvent(hookEventName: "SubagentStart", sessionID: "session-a", cwd: nil, message: nil,
+                       agentID: "sub-1", agentType: "explore"),
+            surfaceID: surfaceID
+        )
+        XCTAssertEqual(registry.subagentRegistry.children(of: surfaceID).count, 1, "Precondition: a live child")
+
+        registry.handleHookEvent(event("Stop", sessionID: "session-a"), surfaceID: surfaceID)
+
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle,
+                       "Precondition: a same-session Stop is accepted and settles the row to idle")
+        XCTAssertTrue(registry.subagentRegistry.children(of: surfaceID).isEmpty,
+                       "An accepted, same-session Stop must still clear every child of the parent")
+    }
+
+    func test_handleHookEvent_acceptedParentScopedStopWithNoRowAtAll_autoRegistersIdleRow() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        XCTAssertNil(registry.entries[surfaceID], "Precondition: no row at all for this surface")
+
+        // Stop is accepted even for a surface with no row at all --
+        // AgentStateResolver.resolveHookRow's own auto-registration path
+        // (`guard let existing = current, ... else { ... return
+        // .write(makeEntry(state: newState), ...) }`) creates one.
+        registry.handleHookEvent(event("Stop", sessionID: "session-a"), surfaceID: surfaceID)
+
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle,
+                       "A parent-scoped Stop the resolver accepts must still auto-register a fresh row " +
+                       "for a surface that had none")
+    }
+
+    func test_handleHookEvent_acceptedSameSessionStart_clearsChildren() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(
+            AgentEvent(hookEventName: "SubagentStart", sessionID: "session-a", cwd: nil, message: nil,
+                       agentID: "sub-1", agentType: "explore"),
+            surfaceID: surfaceID
+        )
+        XCTAssertEqual(registry.subagentRegistry.children(of: surfaceID).count, 1, "Precondition: a live child")
+
+        // A re-sent SessionStart for the SAME session is unconditionally
+        // accepted by AgentStateResolver.resolveHookRow -- no source
+        // guard, no session guard, no terminal-state guard -- so it must
+        // keep clearing children exactly as any other SessionStart does.
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle,
+                       "Precondition: the same-session SessionStart re-send is accepted")
+        XCTAssertTrue(registry.subagentRegistry.children(of: surfaceID).isEmpty,
+                       "An accepted, same-session SessionStart re-send must still clear every child of " +
+                       "the parent")
+    }
+
+    // MARK: - Relocated from SubagentRegistryTests.swift: an accepted parent-scoped sweep clears only that parent's children
+
+    // These three pin the same facts SubagentRegistryTests.swift used to
+    // pin by calling SubagentRegistry.handleHookEvent directly with a
+    // parent-scoped event. That direct call became a no-op once
+    // SubagentRegistry stopped knowing any parent event name (see this
+    // file's own accepted-sweep tests above, and SubagentRegistry's own
+    // doc comment): the children-retiring decision now lives in
+    // AgentStateResolver.resolveHook, so these must drive the full
+    // AgentRegistry pipeline to exercise it, and additionally cover that
+    // the sweep never touches a DIFFERENT parent's children.
+
+    func test_handleHookEvent_acceptedParentStop_removesEveryChildOfThatParent_andNoOtherParents() {
+        let registry = AgentRegistry()
+        let parentA = UUID()
+        let parentB = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: parentA)
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-b"), surfaceID: parentB)
+        registry.handleHookEvent(
+            AgentEvent(hookEventName: "SubagentStart", sessionID: "session-a", cwd: nil, message: nil,
+                       agentID: "sub-1", agentType: "explore"),
+            surfaceID: parentA
+        )
+        registry.handleHookEvent(
+            AgentEvent(hookEventName: "SubagentStart", sessionID: "session-b", cwd: nil, message: nil,
+                       agentID: "sub-2", agentType: "explore"),
+            surfaceID: parentB
+        )
+        XCTAssertEqual(registry.subagentRegistry.children(of: parentA).count, 1, "Precondition: a live child")
+        XCTAssertEqual(registry.subagentRegistry.children(of: parentB).count, 1, "Precondition: a live child")
+
+        registry.handleHookEvent(event("Stop", sessionID: "session-a"), surfaceID: parentA)
+
+        XCTAssertTrue(registry.subagentRegistry.children(of: parentA).isEmpty,
+                      "An accepted, same-session Stop must remove every child of that parent")
+        XCTAssertEqual(registry.subagentRegistry.children(of: parentB).count, 1,
+                       "A different parent's children must be untouched")
+    }
+
+    func test_handleHookEvent_acceptedParentSessionEnd_removesEveryChildOfThatParent_andNoOtherParents() {
+        let registry = AgentRegistry()
+        let parentA = UUID()
+        let parentB = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: parentA)
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-b"), surfaceID: parentB)
+        registry.handleHookEvent(
+            AgentEvent(hookEventName: "SubagentStart", sessionID: "session-a", cwd: nil, message: nil,
+                       agentID: "sub-1", agentType: "explore"),
+            surfaceID: parentA
+        )
+        registry.handleHookEvent(
+            AgentEvent(hookEventName: "SubagentStart", sessionID: "session-b", cwd: nil, message: nil,
+                       agentID: "sub-2", agentType: "explore"),
+            surfaceID: parentB
+        )
+        XCTAssertEqual(registry.subagentRegistry.children(of: parentA).count, 1, "Precondition: a live child")
+        XCTAssertEqual(registry.subagentRegistry.children(of: parentB).count, 1, "Precondition: a live child")
+
+        registry.handleHookEvent(event("SessionEnd", sessionID: "session-a"), surfaceID: parentA)
+
+        XCTAssertTrue(registry.subagentRegistry.children(of: parentA).isEmpty,
+                      "An accepted, same-session SessionEnd must remove every child of that parent")
+        XCTAssertEqual(registry.subagentRegistry.children(of: parentB).count, 1,
+                       "A different parent's children must be untouched")
+    }
+
+    /// The other half of `SubagentRegistryTests.test_subagentStopWithNoAgentID_removesNothing`'s
+    /// original degrade case: a CLI that omits `agent_id` on its own
+    /// `SubagentStop` still loses the lingering child once an ACCEPTED
+    /// parent-scoped event retires it, rather than leaking it forever.
+    func test_handleHookEvent_subagentStopWithNoAgentID_childStillGoesAwayOnAcceptedParentStop() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(
+            AgentEvent(hookEventName: "SubagentStart", sessionID: "session-a", cwd: nil, message: nil,
+                       agentID: "sub-1", agentType: "explore"),
+            surfaceID: surfaceID
+        )
+        XCTAssertEqual(registry.subagentRegistry.children(of: surfaceID).count, 1, "Precondition: a live child")
+
+        // A SubagentStop that carries no agentID is not a subagent event
+        // and must remove nothing on its own.
+        registry.handleHookEvent(
+            AgentEvent(hookEventName: "SubagentStop", sessionID: "session-a", cwd: nil, message: nil, agentID: nil),
+            surfaceID: surfaceID
+        )
+        XCTAssertEqual(registry.subagentRegistry.children(of: surfaceID).count, 1,
+                       "A SubagentStop with no agentID identifies no child, so nothing may be removed")
+
+        registry.handleHookEvent(event("Stop", sessionID: "session-a"), surfaceID: surfaceID)
+
+        XCTAssertTrue(registry.subagentRegistry.children(of: surfaceID).isEmpty,
+                      "The lingering child still goes away once the parent's own accepted Stop retires it " +
+                      "-- degrade, not leak")
+    }
+
     /// The corollary of the guard above: `handleMCPConnection` replacing
     /// a `.done` row with a live one must not surface a phantom child
     /// left over from the previous session. Nothing special is needed

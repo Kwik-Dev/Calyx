@@ -191,6 +191,15 @@ struct AgentResolution: Sendable {
     /// is still the resolver's job, so an event is interpreted in
     /// exactly one place.
     let learnedPeerID: UUID?
+    /// Whether this signal is a resolver-accepted parent-scoped
+    /// sweep event (`resolveHook`'s trailing check against
+    /// `Self.parentTurnBoundaryEventNames`) that must retire every
+    /// child `SubagentRegistry` tracks under this surface. `false` for
+    /// every signal but `.hook`, and `false` for a `.hook` this resolver
+    /// rejected for the parent row (`RowAction.keep`) -- a rejected
+    /// event says nothing happened to the parent's turn or session, so
+    /// it must say nothing about the parent's children either.
+    let retiresChildren: Bool
 
     /// Private so the factories below are the only way to build a
     /// resolution. Two combinations of these fields are destructive and
@@ -198,11 +207,15 @@ struct AgentResolution: Sendable {
     /// expire a live agent's pending approvals while leaving its row
     /// untouched, and a peer binding attached to a signal that never
     /// reports one would evict a different surface's binding.
-    private init(row: RowAction, evidence: AgentEvidence, didSettle: Bool, learnedPeerID: UUID?) {
+    private init(
+        row: RowAction, evidence: AgentEvidence, didSettle: Bool, learnedPeerID: UUID?,
+        retiresChildren: Bool = false
+    ) {
         self.row = row
         self.evidence = evidence
         self.didSettle = didSettle
         self.learnedPeerID = learnedPeerID
+        self.retiresChildren = retiresChildren
     }
 
     /// The signal changed no row. Its evidence may still have changed.
@@ -232,7 +245,21 @@ struct AgentResolution: Sendable {
     /// Attaches the peer a hook event reported. Only `resolveHook` calls
     /// this, so no other signal can reach `bindSurface`.
     func withLearnedPeerID(_ peerID: UUID?) -> AgentResolution {
-        AgentResolution(row: row, evidence: evidence, didSettle: didSettle, learnedPeerID: peerID)
+        AgentResolution(
+            row: row, evidence: evidence, didSettle: didSettle, learnedPeerID: peerID,
+            retiresChildren: retiresChildren
+        )
+    }
+
+    /// Marks this resolution as retiring every child of the surface it
+    /// resolves. Only `resolveHook` calls this, on its way out, once it
+    /// already knows the event was both parent-scoped and accepted for
+    /// the parent row.
+    func retiringChildren() -> AgentResolution {
+        AgentResolution(
+            row: row, evidence: evidence, didSettle: didSettle, learnedPeerID: learnedPeerID,
+            retiresChildren: true
+        )
     }
 
     /// Re-derives when the row entered `.blocked`. `resolve` calls this
@@ -255,7 +282,10 @@ struct AgentResolution: Sendable {
         } else {
             updated.blockedSince = nil
         }
-        return AgentResolution(row: row, evidence: updated, didSettle: didSettle, learnedPeerID: learnedPeerID)
+        return AgentResolution(
+            row: row, evidence: updated, didSettle: didSettle, learnedPeerID: learnedPeerID,
+            retiresChildren: retiresChildren
+        )
     }
 }
 
@@ -301,6 +331,21 @@ enum AgentStateResolver {
     /// `.blocked`.
     private static let forwardMovingEventNames: Set<String> = [
         "UserPromptSubmit", "PreToolUse", "PostToolUse",
+    ]
+
+    /// Hook events that, on the PARENT's own event (never a subagent
+    /// event) and only once `resolveHookRow` has actually ACCEPTED that
+    /// event for the parent row, mean no child of the surface can still
+    /// be running: the parent's turn ended (`Stop`), its session ended
+    /// (`SessionEnd`), or a new session started (`SessionStart`).
+    /// `resolveHook` is the only reader -- see its own `retiringChildren`
+    /// call. This is also what makes a CLI that omits `agent_id` on its
+    /// own `SubagentStop` degrade (children linger until an ACCEPTED
+    /// parent-scoped event of this kind) rather than leak permanently:
+    /// a `Stop`/`SessionEnd` this resolver rejects (a session mismatch on
+    /// a non-`.done` row) never reaches this check.
+    private static let parentTurnBoundaryEventNames: Set<String> = [
+        "Stop", "SessionEnd", "SessionStart",
     ]
 
     /// Window within which a same-session `PreToolUse` following a
@@ -556,11 +601,20 @@ enum AgentStateResolver {
         return .write(entry, evidence: clearedEvidence)
     }
 
-    /// Resolves a hook event's row effect, then carries the peer ID the
-    /// event reported (if any) on the result. The peer ID is a fact
-    /// about the surface independent of whatever happens to the row, so
-    /// it rides along on every resolution this event produces, including
-    /// the ones that leave the row untouched.
+    /// Resolves a hook event's row effect, then carries two facts
+    /// independent of the row itself on the result. The peer ID the
+    /// event reported (if any) rides along on every resolution this
+    /// event produces, including the ones that leave the row untouched.
+    /// And, once the row effect is known, whether this event retires
+    /// every child `SubagentRegistry` tracks under the surface:
+    /// `retiringChildren()` applies only when the event is NOT
+    /// subagent-scoped, its name is one of `parentTurnBoundaryEventNames`,
+    /// and `resolveHookRow` actually accepted it for the parent row
+    /// (`RowAction.write`) -- a rejected event (a session mismatch on a
+    /// non-`.done` row) never reaches a live child's lifetime, exactly as
+    /// it never reaches the parent row. The child's lifetime is decided
+    /// HERE, in the same place that decided the parent's, rather than
+    /// re-derived from the event's name a second time somewhere else.
     private static func resolveHook(
         _ event: AgentEvent,
         kind: String,
@@ -570,11 +624,19 @@ enum AgentStateResolver {
         blockedSince: Date?,
         now: Date
     ) -> AgentResolution {
-        return resolveHookRow(
+        let resolution = resolveHookRow(
             event, kind: kind, surfaceID: surfaceID, current: current,
             evidence: evidence, blockedSince: blockedSince, now: now
         )
         .withLearnedPeerID(event.ipcSelfPeerID.flatMap(UUID.init(uuidString:)))
+
+        guard !event.isSubagentEvent,
+              parentTurnBoundaryEventNames.contains(event.hookEventName),
+              case .write = resolution.row
+        else {
+            return resolution
+        }
+        return resolution.retiringChildren()
     }
 
     /// Applies a CLI hook event, the strongest evidence the registry
