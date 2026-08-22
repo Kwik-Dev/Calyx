@@ -38,6 +38,8 @@
 //  - Force-quit: handlePaneCommandFinished's pane-exit settle sweeps
 //    every child, and a late child event for that now-.done surface
 //    creates nothing
+//  - Codex: a session-mismatched Stop AgentStateResolver rejects for
+//    the parent row must not clear a live child
 //
 
 import XCTest
@@ -623,6 +625,83 @@ final class SubagentSidebarPipelineTests: XCTestCase {
         let lateChild = await waitForChildren(of: surfaceID, timeout: 0.5) { !$0.isEmpty }
         XCTAssertNil(lateChild, "A child is only ever tracked under a live row: a late event for a .done surface creates nothing")
         XCTAssertEqual(registry.entries[surfaceID]?.state, .done, "The already-settled row must not be revived")
+    }
+
+    // MARK: - Codex: a session-mismatched parent-scoped Stop/SessionEnd must not clear a live child
+
+    /// Codex's `agent_id` field is present ONLY on `SubagentStart` /
+    /// `SubagentStop` -- see `AgentEvent.agentID`'s own doc comment.
+    /// Every other Codex hook event, `Stop` and `SessionEnd` included,
+    /// carries no `agent_id` at all, so `AgentRegistry.handleHookEvent`
+    /// forwards it to no child at all: only a subagent-scoped event
+    /// ever reaches `SubagentRegistry.handleHookEvent`, and whether a
+    /// non-subagent `Stop`/`SessionEnd` retires the surface's children
+    /// is decided entirely by `AgentStateResolver.resolveHook`
+    /// (`AgentResolution.retiresChildren`), gated on that same event
+    /// having been accepted for the parent row.
+    ///
+    /// A `Stop`/`SessionEnd` for a DIFFERENT session than the row's own
+    /// is exactly the case `AgentStateResolver.resolveHookRow`'s
+    /// session-mismatch guard rejects for a non-`.done` row (`Stop`/
+    /// `SessionEnd` are both absent from `forwardMovingEventNames`): the
+    /// parent row must stay untouched, and so must the child underneath
+    /// it. Because Codex's own subsequent `SubagentStop` is the only
+    /// event that could ever clear this child, and it carries the SAME
+    /// `agent_id` this test's `SubagentStart` reported, the child must
+    /// keep lingering for the rest of the run rather than be wiped out
+    /// from under a row the resolver never touched.
+    func test_codex_rejectedMismatchedSessionStop_doesNotClearLiveChild() async throws {
+        let surfaceID = UUID()
+        let sessionID = "codex-parent-session"
+        let otherSessionID = "codex-other-session"
+        let cwd = "/Users/dev/codex-repo"
+        let agentID = "codex-sub-1"
+
+        let sessionStartStdin = """
+        {"session_id":"\(sessionID)","cwd":"\(cwd)","hook_event_name":"SessionStart"}
+        """
+        XCTAssertEqual(try runHookScript(stdinJSON: sessionStartStdin, surfaceID: surfaceID, kindArgument: "codex"), 0)
+        let parentBefore = await waitForEntry(surfaceID: surfaceID)
+        XCTAssertEqual(parentBefore?.state, .idle, "Precondition: SessionStart registers the row as idle")
+        XCTAssertEqual(parentBefore?.sessionID, sessionID)
+
+        // Codex's real SubagentStart shape: agent_id and agent_type
+        // present, no tool_name.
+        let subagentStartStdin = """
+        {"session_id":"\(sessionID)","cwd":"\(cwd)","hook_event_name":"SubagentStart",\
+        "agent_id":"\(agentID)","agent_type":"general-purpose"}
+        """
+        XCTAssertEqual(try runHookScript(stdinJSON: subagentStartStdin, surfaceID: surfaceID, kindArgument: "codex"), 0)
+        let childrenAfterStart = await waitForChildren(of: surfaceID) { $0.count == 1 }
+        XCTAssertEqual(childrenAfterStart?.count, 1, "Precondition: the real SubagentStart POST creates the child")
+
+        // Codex's real Stop shape: session_id and hook_event_name only,
+        // no agent_id -- for a session that does NOT match the row's own.
+        let mismatchedStopStdin = """
+        {"session_id":"\(otherSessionID)","cwd":"\(cwd)","hook_event_name":"Stop"}
+        """
+        XCTAssertEqual(try runHookScript(stdinJSON: mismatchedStopStdin, surfaceID: surfaceID, kindArgument: "codex"), 0)
+
+        // Give the real network round-trip a moment to land, the same
+        // way the rest of this file's helpers do, then assert against
+        // the live, settled state rather than the polling helper's own
+        // return value -- this call is expected to resolve to an empty
+        // array if the defect is present, so racing to catch it "in the
+        // middle" would only make this test flaky.
+        _ = await waitForChildren(of: surfaceID, timeout: 2.0) { $0.isEmpty }
+
+        let parentAfter = registry.entries[surfaceID]
+        XCTAssertEqual(parentAfter?.sessionID, sessionID,
+                       "Precondition: the resolver must actually reject the mismatched Stop, leaving the " +
+                       "parent row's own sessionID untouched -- otherwise this test proves nothing about " +
+                       "the rejected case")
+        XCTAssertEqual(parentAfter?.state, .idle, "Precondition: the mismatched Stop must not change the row's state")
+
+        XCTAssertEqual(registry.subagentRegistry.children(of: surfaceID).count, 1,
+                       "A session-mismatched Stop AgentStateResolver rejected for the parent row must not " +
+                       "clear the child a real Codex SubagentStart reported -- Codex never re-sends " +
+                       "agent_id on Stop/SessionEnd, so nothing else will ever recreate this child once " +
+                       "it is wiped out from under a row the resolver left alone")
     }
 }
 

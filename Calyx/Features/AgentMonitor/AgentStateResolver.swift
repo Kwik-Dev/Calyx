@@ -25,11 +25,12 @@ enum AgentSignal: Sendable {
     case hook(AgentEvent, kind: String)
     case mcpConnection(kind: String)
     case paneCommandFinished(exitCode: Int32?, suspended: Bool, origin: PaneCommandOrigin)
-    /// Calyx's own shell integration reported something for the surface,
-    /// either phase. Carries no row effect of its own: it exists so the
-    /// resolver, not the registry, owns when an outstanding ghostty
-    /// deferral is answered.
-    case calyxShellIntegrationReported
+    /// Calyx's own shell integration reported something for the surface.
+    /// Carries no row effect of its own: it exists so the resolver, not
+    /// the registry, owns when an outstanding ghostty deferral is
+    /// answered. Only `.commandEnd` answers it -- see
+    /// `CalyxShellReportPhase` and `resolveCalyxShellIntegrationReported`.
+    case calyxShellIntegrationReported(phase: CalyxShellReportPhase)
     case screen(AgentState?)
     /// Pre-classified: `AgentRegistry.handleTitleChange` constructs this
     /// only when `ClaudeTitleHeuristic.classify` returns non-nil, so a
@@ -53,6 +54,18 @@ enum AgentSignal: Sendable {
 /// ever reported on the surface.
 enum PaneCommandOrigin: Sendable, Equatable {
     case calyxShellIntegration, ghostty
+}
+
+/// The phase of a `CommandEvent` Calyx's own shell integration reported,
+/// in the resolver's own vocabulary -- kept separate from
+/// `CommandEvent.Phase` (`Features/CommandLog/CommandEvent.swift`) so
+/// this resolver stays free of the CommandLog feature; `CalyxMCPServer
+/// .routeCommandEvent` converts at the boundary. A deferral answers a
+/// question only a command's own END can answer -- "did the pane's
+/// foreground job actually finish?" -- so only `.commandEnd` carries
+/// that answer to `resolveCalyxShellIntegrationReported`.
+enum CalyxShellReportPhase: Sendable, Equatable {
+    case commandStart, commandEnd
 }
 
 // MARK: - Evidence & Context
@@ -93,17 +106,18 @@ struct AgentEvidence: Sendable, Equatable {
     /// this the row could never settle by either route.
     var deferredGhosttyFinishAt: Date? = nil
 
-    /// When Calyx's own shell integration last reported anything for
-    /// the surface, start or end. Read only to decide whether a ghostty
-    /// deferral arriving right now is worth recording: a suspend that
-    /// Calyx just reported is answered already, and recording a
-    /// deferral for it would let the sweep settle a job that is merely
-    /// stopped.
-    var lastCalyxReportAt: Date? = nil
+    /// When Calyx's own shell integration last reported a command's END
+    /// for the surface. Read only to decide whether a ghostty deferral
+    /// arriving right now is worth recording: a suspend that Calyx just
+    /// reported is answered already, and recording a deferral for it
+    /// would let the sweep settle a job that is merely stopped. A
+    /// `.commandStart` report never stamps this -- see
+    /// `resolveCalyxShellIntegrationReported`.
+    var lastCalyxCommandEndAt: Date? = nil
 
     var isEmpty: Bool {
         screenMissStreak == 0 && blockedSince == nil
-            && deferredGhosttyFinishAt == nil && lastCalyxReportAt == nil
+            && deferredGhosttyFinishAt == nil && lastCalyxCommandEndAt == nil
     }
 
     /// The evidence after a positive heuristic signal: a
@@ -191,6 +205,15 @@ struct AgentResolution: Sendable {
     /// is still the resolver's job, so an event is interpreted in
     /// exactly one place.
     let learnedPeerID: UUID?
+    /// Whether this signal is a resolver-accepted parent-scoped
+    /// sweep event (`resolveHook`'s trailing check against
+    /// `Self.parentTurnBoundaryEventNames`) that must retire every
+    /// child `SubagentRegistry` tracks under this surface. `false` for
+    /// every signal but `.hook`, and `false` for a `.hook` this resolver
+    /// rejected for the parent row (`RowAction.keep`) -- a rejected
+    /// event says nothing happened to the parent's turn or session, so
+    /// it must say nothing about the parent's children either.
+    let retiresChildren: Bool
 
     /// Private so the factories below are the only way to build a
     /// resolution. Two combinations of these fields are destructive and
@@ -198,11 +221,15 @@ struct AgentResolution: Sendable {
     /// expire a live agent's pending approvals while leaving its row
     /// untouched, and a peer binding attached to a signal that never
     /// reports one would evict a different surface's binding.
-    private init(row: RowAction, evidence: AgentEvidence, didSettle: Bool, learnedPeerID: UUID?) {
+    private init(
+        row: RowAction, evidence: AgentEvidence, didSettle: Bool, learnedPeerID: UUID?,
+        retiresChildren: Bool = false
+    ) {
         self.row = row
         self.evidence = evidence
         self.didSettle = didSettle
         self.learnedPeerID = learnedPeerID
+        self.retiresChildren = retiresChildren
     }
 
     /// The signal changed no row. Its evidence may still have changed.
@@ -232,7 +259,21 @@ struct AgentResolution: Sendable {
     /// Attaches the peer a hook event reported. Only `resolveHook` calls
     /// this, so no other signal can reach `bindSurface`.
     func withLearnedPeerID(_ peerID: UUID?) -> AgentResolution {
-        AgentResolution(row: row, evidence: evidence, didSettle: didSettle, learnedPeerID: peerID)
+        AgentResolution(
+            row: row, evidence: evidence, didSettle: didSettle, learnedPeerID: peerID,
+            retiresChildren: retiresChildren
+        )
+    }
+
+    /// Marks this resolution as retiring every child of the surface it
+    /// resolves. Only `resolveHook` calls this, on its way out, once it
+    /// already knows the event was both parent-scoped and accepted for
+    /// the parent row.
+    func retiringChildren() -> AgentResolution {
+        AgentResolution(
+            row: row, evidence: evidence, didSettle: didSettle, learnedPeerID: learnedPeerID,
+            retiresChildren: true
+        )
     }
 
     /// Re-derives when the row entered `.blocked`. `resolve` calls this
@@ -255,7 +296,10 @@ struct AgentResolution: Sendable {
         } else {
             updated.blockedSince = nil
         }
-        return AgentResolution(row: row, evidence: updated, didSettle: didSettle, learnedPeerID: learnedPeerID)
+        return AgentResolution(
+            row: row, evidence: updated, didSettle: didSettle, learnedPeerID: learnedPeerID,
+            retiresChildren: retiresChildren
+        )
     }
 }
 
@@ -303,6 +347,21 @@ enum AgentStateResolver {
         "UserPromptSubmit", "PreToolUse", "PostToolUse",
     ]
 
+    /// Hook events that, on the PARENT's own event (never a subagent
+    /// event) and only once `resolveHookRow` has actually ACCEPTED that
+    /// event for the parent row, mean no child of the surface can still
+    /// be running: the parent's turn ended (`Stop`), its session ended
+    /// (`SessionEnd`), or a new session started (`SessionStart`).
+    /// `resolveHook` is the only reader -- see its own `retiringChildren`
+    /// call. This is also what makes a CLI that omits `agent_id` on its
+    /// own `SubagentStop` degrade (children linger until an ACCEPTED
+    /// parent-scoped event of this kind) rather than leak permanently:
+    /// a `Stop`/`SessionEnd` this resolver rejects (a session mismatch on
+    /// a non-`.done` row) never reaches this check.
+    private static let parentTurnBoundaryEventNames: Set<String> = [
+        "Stop", "SessionEnd", "SessionStart",
+    ]
+
     /// Window within which a same-session `PreToolUse` following a
     /// transition to `.blocked` is treated as a stale async-delivery
     /// race rather than genuine forward progress, and is dropped rather
@@ -317,8 +376,9 @@ enum AgentStateResolver {
     /// `isStopSignalExitCode`.
     private static let stopSignals: Set<Int32> = [SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU]
 
-    /// How recently Calyx's own shell integration must have reported for
-    /// a ghostty deferral arriving now to count as already answered, and
+    /// How recently Calyx's own shell integration must have reported a
+    /// command's END (`AgentEvidence.lastCalyxCommandEndAt`) for a
+    /// ghostty deferral arriving now to count as already answered, and
     /// so not be recorded at all. The two signals for one command arrive
     /// within milliseconds of each other in either order, and it is the
     /// order where Calyx reports FIRST that needs this: without it a
@@ -363,8 +423,8 @@ enum AgentStateResolver {
                 exitCode: exitCode, suspended: suspended, origin: origin,
                 current: current, evidence: evidence, context: context, now: now
             )
-        case .calyxShellIntegrationReported:
-            resolution = resolveCalyxShellIntegrationReported(evidence: evidence, now: now)
+        case .calyxShellIntegrationReported(let phase):
+            resolution = resolveCalyxShellIntegrationReported(phase: phase, evidence: evidence, now: now)
         case .screen(let state):
             resolution = resolveScreen(
                 state, surfaceID: surfaceID, current: current, evidence: evidence, now: now
@@ -461,17 +521,29 @@ enum AgentStateResolver {
 
     // MARK: Calyx Shell Integration Report Signal
 
-    /// Records that Calyx's own shell integration reported for the
-    /// surface, and answers any outstanding ghostty deferral in the same
-    /// step. Touches no row: the report's phase alone says nothing about
-    /// whether the pane's foreground job exited, which is what
+    /// Records that Calyx's own shell integration reported the END of a
+    /// command for the surface, and answers any outstanding ghostty
+    /// deferral in the same step. Touches no row: even a command's own
+    /// end report says nothing about whether the pane's foreground JOB
+    /// exited (a suspend also reaches `phase: end`), which is what
     /// `.paneCommandFinished` decides.
+    ///
+    /// A `.commandStart` report answers nothing -- a command merely
+    /// STARTING says nothing about whether any earlier command, or this
+    /// one, has finished -- so it leaves `evidence` completely
+    /// untouched: neither stamping `lastCalyxCommandEndAt` nor clearing
+    /// `deferredGhosttyFinishAt`. A deferral can only be answered by the
+    /// fact it is a question about: did the foreground job end.
     private static func resolveCalyxShellIntegrationReported(
+        phase: CalyxShellReportPhase,
         evidence: AgentEvidence,
         now: Date
     ) -> AgentResolution {
+        guard phase == .commandEnd else {
+            return .keep(evidence: evidence)
+        }
         var updated = evidence
-        updated.lastCalyxReportAt = now
+        updated.lastCalyxCommandEndAt = now
         updated.deferredGhosttyFinishAt = nil
         return .keep(evidence: updated)
     }
@@ -556,11 +628,20 @@ enum AgentStateResolver {
         return .write(entry, evidence: clearedEvidence)
     }
 
-    /// Resolves a hook event's row effect, then carries the peer ID the
-    /// event reported (if any) on the result. The peer ID is a fact
-    /// about the surface independent of whatever happens to the row, so
-    /// it rides along on every resolution this event produces, including
-    /// the ones that leave the row untouched.
+    /// Resolves a hook event's row effect, then carries two facts
+    /// independent of the row itself on the result. The peer ID the
+    /// event reported (if any) rides along on every resolution this
+    /// event produces, including the ones that leave the row untouched.
+    /// And, once the row effect is known, whether this event retires
+    /// every child `SubagentRegistry` tracks under the surface:
+    /// `retiringChildren()` applies only when the event is NOT
+    /// subagent-scoped, its name is one of `parentTurnBoundaryEventNames`,
+    /// and `resolveHookRow` actually accepted it for the parent row
+    /// (`RowAction.write`) -- a rejected event (a session mismatch on a
+    /// non-`.done` row) never reaches a live child's lifetime, exactly as
+    /// it never reaches the parent row. The child's lifetime is decided
+    /// HERE, in the same place that decided the parent's, rather than
+    /// re-derived from the event's name a second time somewhere else.
     private static func resolveHook(
         _ event: AgentEvent,
         kind: String,
@@ -570,11 +651,19 @@ enum AgentStateResolver {
         blockedSince: Date?,
         now: Date
     ) -> AgentResolution {
-        return resolveHookRow(
+        let resolution = resolveHookRow(
             event, kind: kind, surfaceID: surfaceID, current: current,
             evidence: evidence, blockedSince: blockedSince, now: now
         )
         .withLearnedPeerID(event.ipcSelfPeerID.flatMap(UUID.init(uuidString:)))
+
+        guard !event.isSubagentEvent,
+              parentTurnBoundaryEventNames.contains(event.hookEventName),
+              case .write = resolution.row
+        else {
+            return resolution
+        }
+        return resolution.retiringChildren()
     }
 
     /// Applies a CLI hook event, the strongest evidence the registry
@@ -796,10 +885,13 @@ enum AgentStateResolver {
     /// `resolveStaleSweep` can settle the row if Calyx never answers it
     /// -- see that clause and the field's own doc comment. The one case
     /// that records nothing is a deferral arriving within
-    /// `calyxReportGraceWindow` of Calyx's own last report: Calyx has
-    /// already spoken for this command, and on a fish Ctrl-Z it can
-    /// speak FIRST, so recording here would leave a deferral behind that
-    /// the report meant to clear it already went past.
+    /// `calyxReportGraceWindow` of Calyx's own last command-END report
+    /// (`AgentEvidence.lastCalyxCommandEndAt`): Calyx has already spoken
+    /// for this command, and on a fish Ctrl-Z it can speak FIRST, so
+    /// recording here would leave a deferral behind that the report
+    /// meant to clear it already went past. A `.commandStart` report
+    /// never stamps that field, so it can never win this grace window on
+    /// its own -- only a genuine end report can.
     ///
     /// Every path with `origin == .calyxShellIntegration` clears the
     /// deferral instead, settling or not: this signal is the answer a
@@ -822,7 +914,7 @@ enum AgentStateResolver {
     ) -> AgentResolution {
         if origin == .ghostty, context.calyxShellIntegrationSeen {
             var updated = evidence
-            let calyxJustReported = evidence.lastCalyxReportAt.map {
+            let calyxJustReported = evidence.lastCalyxCommandEndAt.map {
                 now.timeIntervalSince($0) < calyxReportGraceWindow
             } ?? false
             if !calyxJustReported {

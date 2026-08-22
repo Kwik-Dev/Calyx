@@ -260,8 +260,11 @@ final class AgentRegistry {
     /// `AgentStateResolver.resolve(.hook(...))`, whose `resolveHook`
     /// clause owns every precedence rule an event answers to: the
     /// `SessionStart` re-send, the unrecognized event, the terminal
-    /// `.done` row, and the session mismatch. See also the state
-    /// transition table in the AgentMonitor design doc.
+    /// `.done` row, the session mismatch, and -- for a non-subagent
+    /// event -- whether the surface's children are retired
+    /// (`AgentResolution.retiresChildren`, applied by `apply` below).
+    /// See also the state transition table in the AgentMonitor design
+    /// doc.
     ///
     /// - Parameter kind: The agent CLI this event came from (Phase 2:
     ///   Codex / OpenCode alongside the default Claude Code), forwarded by
@@ -301,13 +304,15 @@ final class AgentRegistry {
         // event whose fire-and-forget POST completes after the parent
         // already settled `.done` (or never had a row at all) would
         // create a child nothing can ever remove: the CLI has exited, so
-        // no further parent-scoped event will arrive to sweep it. The
-        // no-agentID parent sweep path (Stop/SessionEnd/SessionStart)
-        // must still run even for a surface with no row at all, so only
-        // a subagent-identified event is gated here.
-        if event.isSubagentEvent, entries[surfaceID].map({ $0.state == .done }) ?? true {
-            return
-        }
+        // no further parent-scoped event will arrive to sweep it.
+        //
+        // A non-subagent event is never forwarded here at all: its own
+        // effect on the surface's children, if any, was already decided
+        // by the resolver above (`AgentResolution.retiresChildren`) and
+        // carried out by `apply`. `SubagentRegistry` itself only ever
+        // creates, updates, or removes a child by its own `agentID`.
+        guard event.isSubagentEvent else { return }
+        guard let row = entries[surfaceID], row.state != .done else { return }
         subagentRegistry.handleHookEvent(event, parentSurfaceID: surfaceID, now: now)
     }
 
@@ -370,21 +375,29 @@ final class AgentRegistry {
     /// regardless of `CommandLogStore.ingest`'s acceptance: a rejected
     /// duplicate event still proves Calyx's integration is live in that
     /// pane. See `calyxShellIntegrationReportedSurfaces`'s own doc
-    /// comment for why recording on `.start` as well as `.end` matters.
+    /// comment for why recording on `.start` as well as `.end` matters --
+    /// that reasoning is unaffected by `phase` below, which governs only
+    /// what the resolver does with the report, not whether this set is
+    /// updated.
     ///
-    /// Also routes the report through the resolver, which stamps
-    /// `AgentEvidence.lastCalyxReportAt` and answers any outstanding
-    /// ghostty deferral for the surface. That half is per-surface
-    /// evidence with a lifetime of one command, so it lives in
-    /// `evidence` rather than in the permanent set above, and the
-    /// resolver owns when it is set and cleared.
+    /// Also routes the report through the resolver, tagged with `phase`.
+    /// Only `.commandEnd` stamps `AgentEvidence.lastCalyxCommandEndAt`
+    /// and answers any outstanding ghostty deferral for the surface --
+    /// `AgentStateResolver.resolveCalyxShellIntegrationReported` owns
+    /// that decision; a `.commandStart` report leaves the surface's
+    /// evidence untouched, since a command merely starting answers no
+    /// question about whether any job has finished. That evidence has a
+    /// lifetime of one command, so it lives in `evidence` rather than in
+    /// the permanent set above.
     ///
     /// - Parameter now: Injectable for tests (defaults to `Date()`).
-    func recordCalyxShellIntegrationReported(surfaceID: UUID, now: Date = Date()) {
+    func recordCalyxShellIntegrationReported(
+        surfaceID: UUID, phase: CalyxShellReportPhase, now: Date = Date()
+    ) {
         calyxShellIntegrationReportedSurfaces.insert(surfaceID)
         apply(
             AgentStateResolver.resolve(
-                .calyxShellIntegrationReported,
+                .calyxShellIntegrationReported(phase: phase),
                 surfaceID: surfaceID,
                 current: entries[surfaceID],
                 evidence: evidence[surfaceID] ?? AgentEvidence(),
@@ -460,7 +473,7 @@ final class AgentRegistry {
     func handlePaneCommandFinished(
         surfaceID: UUID, exitCode: Int32? = nil, suspended: Bool = false, now: Date = Date()
     ) -> Bool {
-        recordCalyxShellIntegrationReported(surfaceID: surfaceID, now: now)
+        recordCalyxShellIntegrationReported(surfaceID: surfaceID, phase: .commandEnd, now: now)
         let resolution = AgentStateResolver.resolve(
             .paneCommandFinished(exitCode: exitCode, suspended: suspended, origin: .calyxShellIntegration),
             surfaceID: surfaceID,
@@ -543,16 +556,21 @@ final class AgentRegistry {
     /// key once it goes back to `.isEmpty`.
     ///
     /// Also sweeps `subagentRegistry`'s children of `surfaceID` whenever
-    /// this resolution leaves the surface without a live row: the row
-    /// was removed, or the row's state became `.done`. Every settle path
-    /// funnels through here -- a hook-reported `SessionEnd`, a pane-exit
-    /// signal (`handlePaneCommandFinished`), and the staleness sweep's
-    /// deferred-ghostty settle (`resolveStaleSweep`) alike -- so a child
-    /// can never outlive a parent row that stopped reporting, regardless
-    /// of which route settled it. A `.working`-to-`.idle` staleness
-    /// downgrade is deliberately excluded: `.idle` is still a live row,
-    /// and that downgrade is Calyx's own inference about a row it hasn't
-    /// heard from, not a report that the agent finished.
+    /// this resolution leaves the surface without a live row (the row
+    /// was removed, or the row's state became `.done`), or whenever the
+    /// resolver itself decided the surface's children are retired
+    /// (`AgentResolution.retiresChildren` -- a resolver-accepted
+    /// parent-scoped `Stop`/`SessionEnd`/`SessionStart`, decided
+    /// entirely by `AgentStateResolver.resolveHook`; this method never
+    /// re-derives that decision from the event's name). Every settle
+    /// path funnels through here -- a hook-reported `SessionEnd`, a
+    /// pane-exit signal (`handlePaneCommandFinished`), and the staleness
+    /// sweep's deferred-ghostty settle (`resolveStaleSweep`) alike -- so
+    /// a child can never outlive a parent row that stopped reporting,
+    /// regardless of which route settled it. A `.working`-to-`.idle`
+    /// staleness downgrade is deliberately excluded: `.idle` is still a
+    /// live row, and that downgrade is Calyx's own inference about a row
+    /// it hasn't heard from, not a report that the agent finished.
     private func apply(_ r: AgentResolution, surfaceID: UUID) {
         let newEvidence = r.evidence.isEmpty ? nil : r.evidence
         if evidence[surfaceID] != newEvidence { evidence[surfaceID] = newEvidence }
@@ -564,7 +582,9 @@ final class AgentRegistry {
             break
         case .write(let row):
             if entries[surfaceID] != row { entries[surfaceID] = row }
-            if row.state == .done { subagentRegistry.handleSurfaceDestroyed(parentSurfaceID: surfaceID) }
+            if row.state == .done || r.retiresChildren {
+                subagentRegistry.handleSurfaceDestroyed(parentSurfaceID: surfaceID)
+            }
         case .remove:
             if entries[surfaceID] != nil { entries.removeValue(forKey: surfaceID) }
             subagentRegistry.handleSurfaceDestroyed(parentSurfaceID: surfaceID)

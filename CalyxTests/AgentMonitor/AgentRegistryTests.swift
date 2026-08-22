@@ -524,6 +524,241 @@ final class AgentRegistryTests: XCTestCase {
         XCTAssertEqual(child?.lastToolName, "Bash", "A subagent event under a live parent row must still update the child")
     }
 
+    // MARK: - A parent-scoped sweep event the resolver rejects must not clear children
+
+    // A child's lifetime follows the resolver's own acceptance of the
+    // parent-scoped event that would retire it: `AgentStateResolver
+    // .resolveHook` only marks a `Stop`/`SessionEnd`/`SessionStart`
+    // as retiring the surface's children (`AgentResolution
+    // .retiresChildren`) when it also accepted that event for the
+    // parent row. A session-mismatched `Stop`/`SessionEnd` -- absent
+    // from `forwardMovingEventNames`, and arriving for a row that is
+    // not `.done` -- is exactly the case `AgentStateResolver
+    // .resolveHookRow`'s session-mismatch guard rejects (`.keep`,
+    // parent row untouched): Codex reports `agent_id` only on
+    // `SubagentStart`/`SubagentStop`, so its `Stop`/`SessionEnd` carry
+    // no `agent_id` at all and reach this guard directly. The children
+    // below must survive a sweep event the resolver itself rejected.
+
+    func test_handleHookEvent_rejectedMismatchedSessionSessionEnd_doesNotClearChildren() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("PreToolUse", sessionID: "session-a"), surfaceID: surfaceID)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .working, "Precondition: a live, non-done parent row")
+
+        registry.handleHookEvent(
+            AgentEvent(hookEventName: "SubagentStart", sessionID: "session-a", cwd: nil, message: nil,
+                       agentID: "sub-1", agentType: "explore"),
+            surfaceID: surfaceID
+        )
+        XCTAssertEqual(registry.subagentRegistry.children(of: surfaceID).count, 1, "Precondition: a live child")
+
+        // session-b never matches this row's own session-a: SessionEnd
+        // is absent from forwardMovingEventNames, and the row is not
+        // .done, so AgentStateResolver.resolveHookRow's session-mismatch
+        // guard discards this event entirely.
+        registry.handleHookEvent(event("SessionEnd", sessionID: "session-b"), surfaceID: surfaceID)
+
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .working,
+                       "Precondition: the resolver must actually reject the mismatched SessionEnd, leaving " +
+                       "the parent row untouched -- otherwise this test proves nothing about the rejected case")
+        XCTAssertEqual(registry.subagentRegistry.children(of: surfaceID).count, 1,
+                       "A SessionEnd AgentStateResolver rejected for the parent row must not clear the " +
+                       "parent's children either -- SubagentRegistry.handleHookEvent's sweep must not run " +
+                       "for an event the resolver discarded")
+    }
+
+    func test_handleHookEvent_rejectedMismatchedSessionStop_doesNotClearChildren() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(event("PreToolUse", sessionID: "session-a"), surfaceID: surfaceID)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .working, "Precondition: a live, non-done parent row")
+
+        registry.handleHookEvent(
+            AgentEvent(hookEventName: "SubagentStart", sessionID: "session-a", cwd: nil, message: nil,
+                       agentID: "sub-1", agentType: "explore"),
+            surfaceID: surfaceID
+        )
+        XCTAssertEqual(registry.subagentRegistry.children(of: surfaceID).count, 1, "Precondition: a live child")
+
+        // Stop is likewise absent from forwardMovingEventNames, so a
+        // mismatched-session Stop on a non-done row is discarded the
+        // same way.
+        registry.handleHookEvent(event("Stop", sessionID: "session-b"), surfaceID: surfaceID)
+
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .working,
+                       "Precondition: the resolver must actually reject the mismatched Stop, leaving the " +
+                       "parent row untouched -- otherwise this test proves nothing about the rejected case")
+        XCTAssertEqual(registry.subagentRegistry.children(of: surfaceID).count, 1,
+                       "A Stop AgentStateResolver rejected for the parent row must not clear the parent's " +
+                       "children either -- SubagentRegistry.handleHookEvent's sweep must not run for an " +
+                       "event the resolver discarded")
+    }
+
+    // MARK: - Regression guards: an ACCEPTED parent-scoped sweep event must still clear children
+
+    // A resolver-accepted parent-scoped sweep event -- a same-session
+    // Stop/SessionStart, or a Stop that auto-registers a fresh row where
+    // none existed -- must keep clearing every child of that parent.
+
+    func test_handleHookEvent_acceptedSameSessionStop_clearsChildren() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(
+            AgentEvent(hookEventName: "SubagentStart", sessionID: "session-a", cwd: nil, message: nil,
+                       agentID: "sub-1", agentType: "explore"),
+            surfaceID: surfaceID
+        )
+        XCTAssertEqual(registry.subagentRegistry.children(of: surfaceID).count, 1, "Precondition: a live child")
+
+        registry.handleHookEvent(event("Stop", sessionID: "session-a"), surfaceID: surfaceID)
+
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle,
+                       "Precondition: a same-session Stop is accepted and settles the row to idle")
+        XCTAssertTrue(registry.subagentRegistry.children(of: surfaceID).isEmpty,
+                       "An accepted, same-session Stop must still clear every child of the parent")
+    }
+
+    func test_handleHookEvent_acceptedParentScopedStopWithNoRowAtAll_autoRegistersIdleRow() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        XCTAssertNil(registry.entries[surfaceID], "Precondition: no row at all for this surface")
+
+        // Stop is accepted even for a surface with no row at all --
+        // AgentStateResolver.resolveHookRow's own auto-registration path
+        // (`guard let existing = current, ... else { ... return
+        // .write(makeEntry(state: newState), ...) }`) creates one.
+        registry.handleHookEvent(event("Stop", sessionID: "session-a"), surfaceID: surfaceID)
+
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle,
+                       "A parent-scoped Stop the resolver accepts must still auto-register a fresh row " +
+                       "for a surface that had none")
+    }
+
+    func test_handleHookEvent_acceptedSameSessionStart_clearsChildren() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(
+            AgentEvent(hookEventName: "SubagentStart", sessionID: "session-a", cwd: nil, message: nil,
+                       agentID: "sub-1", agentType: "explore"),
+            surfaceID: surfaceID
+        )
+        XCTAssertEqual(registry.subagentRegistry.children(of: surfaceID).count, 1, "Precondition: a live child")
+
+        // A re-sent SessionStart for the SAME session is unconditionally
+        // accepted by AgentStateResolver.resolveHookRow -- no source
+        // guard, no session guard, no terminal-state guard -- so it must
+        // keep clearing children exactly as any other SessionStart does.
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .idle,
+                       "Precondition: the same-session SessionStart re-send is accepted")
+        XCTAssertTrue(registry.subagentRegistry.children(of: surfaceID).isEmpty,
+                       "An accepted, same-session SessionStart re-send must still clear every child of " +
+                       "the parent")
+    }
+
+    // MARK: - Relocated from SubagentRegistryTests.swift: an accepted parent-scoped sweep clears only that parent's children
+
+    // These three pin the same facts SubagentRegistryTests.swift used to
+    // pin by calling SubagentRegistry.handleHookEvent directly with a
+    // parent-scoped event. That direct call became a no-op once
+    // SubagentRegistry stopped knowing any parent event name (see this
+    // file's own accepted-sweep tests above, and SubagentRegistry's own
+    // doc comment): the children-retiring decision now lives in
+    // AgentStateResolver.resolveHook, so these must drive the full
+    // AgentRegistry pipeline to exercise it, and additionally cover that
+    // the sweep never touches a DIFFERENT parent's children.
+
+    func test_handleHookEvent_acceptedParentStop_removesEveryChildOfThatParent_andNoOtherParents() {
+        let registry = AgentRegistry()
+        let parentA = UUID()
+        let parentB = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: parentA)
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-b"), surfaceID: parentB)
+        registry.handleHookEvent(
+            AgentEvent(hookEventName: "SubagentStart", sessionID: "session-a", cwd: nil, message: nil,
+                       agentID: "sub-1", agentType: "explore"),
+            surfaceID: parentA
+        )
+        registry.handleHookEvent(
+            AgentEvent(hookEventName: "SubagentStart", sessionID: "session-b", cwd: nil, message: nil,
+                       agentID: "sub-2", agentType: "explore"),
+            surfaceID: parentB
+        )
+        XCTAssertEqual(registry.subagentRegistry.children(of: parentA).count, 1, "Precondition: a live child")
+        XCTAssertEqual(registry.subagentRegistry.children(of: parentB).count, 1, "Precondition: a live child")
+
+        registry.handleHookEvent(event("Stop", sessionID: "session-a"), surfaceID: parentA)
+
+        XCTAssertTrue(registry.subagentRegistry.children(of: parentA).isEmpty,
+                      "An accepted, same-session Stop must remove every child of that parent")
+        XCTAssertEqual(registry.subagentRegistry.children(of: parentB).count, 1,
+                       "A different parent's children must be untouched")
+    }
+
+    func test_handleHookEvent_acceptedParentSessionEnd_removesEveryChildOfThatParent_andNoOtherParents() {
+        let registry = AgentRegistry()
+        let parentA = UUID()
+        let parentB = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: parentA)
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-b"), surfaceID: parentB)
+        registry.handleHookEvent(
+            AgentEvent(hookEventName: "SubagentStart", sessionID: "session-a", cwd: nil, message: nil,
+                       agentID: "sub-1", agentType: "explore"),
+            surfaceID: parentA
+        )
+        registry.handleHookEvent(
+            AgentEvent(hookEventName: "SubagentStart", sessionID: "session-b", cwd: nil, message: nil,
+                       agentID: "sub-2", agentType: "explore"),
+            surfaceID: parentB
+        )
+        XCTAssertEqual(registry.subagentRegistry.children(of: parentA).count, 1, "Precondition: a live child")
+        XCTAssertEqual(registry.subagentRegistry.children(of: parentB).count, 1, "Precondition: a live child")
+
+        registry.handleHookEvent(event("SessionEnd", sessionID: "session-a"), surfaceID: parentA)
+
+        XCTAssertTrue(registry.subagentRegistry.children(of: parentA).isEmpty,
+                      "An accepted, same-session SessionEnd must remove every child of that parent")
+        XCTAssertEqual(registry.subagentRegistry.children(of: parentB).count, 1,
+                       "A different parent's children must be untouched")
+    }
+
+    /// The other half of `SubagentRegistryTests.test_subagentStopWithNoAgentID_removesNothing`'s
+    /// original degrade case: a CLI that omits `agent_id` on its own
+    /// `SubagentStop` still loses the lingering child once an ACCEPTED
+    /// parent-scoped event retires it, rather than leaking it forever.
+    func test_handleHookEvent_subagentStopWithNoAgentID_childStillGoesAwayOnAcceptedParentStop() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID)
+        registry.handleHookEvent(
+            AgentEvent(hookEventName: "SubagentStart", sessionID: "session-a", cwd: nil, message: nil,
+                       agentID: "sub-1", agentType: "explore"),
+            surfaceID: surfaceID
+        )
+        XCTAssertEqual(registry.subagentRegistry.children(of: surfaceID).count, 1, "Precondition: a live child")
+
+        // A SubagentStop that carries no agentID is not a subagent event
+        // and must remove nothing on its own.
+        registry.handleHookEvent(
+            AgentEvent(hookEventName: "SubagentStop", sessionID: "session-a", cwd: nil, message: nil, agentID: nil),
+            surfaceID: surfaceID
+        )
+        XCTAssertEqual(registry.subagentRegistry.children(of: surfaceID).count, 1,
+                       "A SubagentStop with no agentID identifies no child, so nothing may be removed")
+
+        registry.handleHookEvent(event("Stop", sessionID: "session-a"), surfaceID: surfaceID)
+
+        XCTAssertTrue(registry.subagentRegistry.children(of: surfaceID).isEmpty,
+                      "The lingering child still goes away once the parent's own accepted Stop retires it " +
+                      "-- degrade, not leak")
+    }
+
     /// The corollary of the guard above: `handleMCPConnection` replacing
     /// a `.done` row with a live one must not surface a phantom child
     /// left over from the previous session. Nothing special is needed
@@ -2424,7 +2659,7 @@ final class AgentRegistryTests: XCTestCase {
         let finished = started.addingTimeInterval(5 * 60)
         registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID, now: started)
         registry.handleHookEvent(event("UserPromptSubmit", sessionID: "session-a"), surfaceID: surfaceID, now: started)
-        registry.recordCalyxShellIntegrationReported(surfaceID: surfaceID, now: started)
+        registry.recordCalyxShellIntegrationReported(surfaceID: surfaceID, phase: .commandStart, now: started)
         XCTAssertEqual(registry.entries[surfaceID]?.state, .working, "Precondition: a live hooks row")
 
         let ghosttySettled = registry.handleGhosttyCommandFinished(surfaceID: surfaceID, exitCode: 0, now: finished)
@@ -2446,6 +2681,118 @@ final class AgentRegistryTests: XCTestCase {
         XCTAssertEqual(registry.entries[surfaceID]?.lastEventAt, started,
                        "The sweep never stamps lastEventAt: the timestamp still means when the agent last " +
                        "reported, and this settle is Calyx's own inference, not a report")
+    }
+
+    // MARK: - sweepStaleEntries: a later phase: start must not erase an unresolved deferral
+
+    // A `.commandStart` report must never answer a ghostty deferral: only
+    // `.commandEnd` says anything about whether a foreground job
+    // finished, so `AgentStateResolver.resolveCalyxShellIntegrationReported`
+    // leaves `deferredGhosttyFinishAt` untouched for `.commandStart`.
+    // If that were not true, a NEW command starting within
+    // `deferredGhosttySettleDelay` (30s) of an earlier command's own
+    // lost `phase: end` would wipe the still-unresolved deferral that
+    // earlier command recorded, leaving a `.blocked` row stuck red for
+    // the rest of the pane's life, since nothing else would ever settle
+    // it.
+
+    func test_sweepStaleEntries_laterPhaseStart_mustNotEraseUnresolvedGhosttyDeferral() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        let base = Date()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID, now: base)
+        // A PermissionRequest blocks the row -- the visible state a
+        // lost end report must not leave stuck red.
+        registry.handleHookEvent(event("PermissionRequest", sessionID: "session-a"), surfaceID: surfaceID, now: base)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .blocked, "Precondition: a blocked hooks row")
+
+        // Calyx's own shell integration has reported on this surface
+        // well before the ghostty signal below, so ghostty defers to it.
+        registry.recordCalyxShellIntegrationReported(surfaceID: surfaceID, phase: .commandStart, now: base.addingTimeInterval(5))
+
+        // The command's own ghostty pane-exit signal arrives outside the
+        // grace window of that report, so it records a deferral rather
+        // than being swallowed as already-answered.
+        let ghosttySettled = registry.handleGhosttyCommandFinished(
+            surfaceID: surfaceID, exitCode: 0, now: base.addingTimeInterval(15)
+        )
+        XCTAssertFalse(ghosttySettled, "Precondition: ghostty defers to Calyx's own integration for this surface")
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .blocked,
+                       "Precondition: the deferred signal itself must leave the row alone")
+
+        // Sanity: a sweep well short of deferredGhosttySettleDelay (30s)
+        // from the deferral recorded above must not settle the row --
+        // this proves the deferral is genuinely still outstanding at
+        // this point, before the interfering event below is introduced.
+        registry.sweepStaleEntries(now: base.addingTimeInterval(25))
+        XCTAssertNotEqual(registry.entries[surfaceID]?.state, .done,
+                          "Precondition: the deferral is not yet old enough to settle on its own")
+
+        // A brand new command starts on the same pane within 30s of the
+        // still-unresolved deferral above. Its own phase: start --
+        // CalyxMCPServer.routeCommandEvent calls exactly this method,
+        // unconditionally, for both a start and an end -- must not erase
+        // the PREVIOUS command's unresolved deferral.
+        registry.recordCalyxShellIntegrationReported(surfaceID: surfaceID, phase: .commandStart, now: base.addingTimeInterval(26))
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .blocked,
+                       "Precondition: the new phase: start does not itself touch the row's state")
+
+        // Calyx's phase: end for the FIRST command never arrives (the
+        // shell body swallows a failed POST). Sweeping past
+        // deferredGhosttySettleDelay from when the deferral was recorded
+        // must still settle the row.
+        registry.sweepStaleEntries(now: base.addingTimeInterval(15 + 31))
+
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .done,
+                       "A later command's phase: start must not erase an earlier command's still-unresolved " +
+                       "ghostty deferral -- otherwise the deferral is wiped the instant the new command " +
+                       "starts, and this blocked row never settles at all")
+    }
+
+    // MARK: - sweepStaleEntries: a short-lived command's own phase: start must not swallow its ghostty deferral
+
+    // `AgentEvidence.lastCalyxCommandEndAt` is stamped only by a
+    // `.commandEnd` report, never a `.commandStart` -- so a bare start
+    // with no matching end can never satisfy `resolvePaneCommandFinished`'s
+    // own grace-window check (`calyxReportGraceWindow`, 2s) as "Calyx
+    // already spoke for this command". A short-lived command whose own
+    // `phase: end` POST is lost, and whose ghostty pane-exit signal
+    // lands within 2s of its OWN `phase: start`, must still have its
+    // signal recorded as a deferral `sweepStaleEntries` can act on.
+
+    func test_sweepStaleEntries_shortLivedCommand_ghosttySignalWithinStartGraceWindow_stillSettlesViaDeferral() {
+        let registry = AgentRegistry()
+        let surfaceID = UUID()
+        let base = Date()
+        registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID, now: base)
+        registry.handleHookEvent(event("PermissionRequest", sessionID: "session-a"), surfaceID: surfaceID, now: base)
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .blocked, "Precondition: a blocked hooks row")
+
+        // The command's own phase: start.
+        registry.recordCalyxShellIntegrationReported(surfaceID: surfaceID, phase: .commandStart, now: base.addingTimeInterval(5))
+
+        // The command exits almost immediately -- its ghostty pane-exit
+        // signal lands within calyxReportGraceWindow (2s) of its OWN
+        // phase: start, because its (never-arriving) phase: end would
+        // ordinarily have landed around the same moment.
+        let ghosttySettled = registry.handleGhosttyCommandFinished(
+            surfaceID: surfaceID, exitCode: 0, now: base.addingTimeInterval(6)
+        )
+        XCTAssertFalse(ghosttySettled, "Precondition: ghostty defers to Calyx's own integration for this surface")
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .blocked,
+                       "Precondition: the deferred signal itself must leave the row alone")
+
+        // Calyx's own phase: end for this command never arrives. Sweeping
+        // well past deferredGhosttySettleDelay from the ghostty signal
+        // must still settle the row: a lost end report must not leave a
+        // command's own exit permanently unrecorded just because its
+        // ghostty signal happened to race its own start.
+        registry.sweepStaleEntries(now: base.addingTimeInterval(6 + 31))
+
+        XCTAssertEqual(registry.entries[surfaceID]?.state, .done,
+                       "A ghostty pane-exit signal landing within the grace window of a command's OWN " +
+                       "phase: start must still be recorded as a deferral sweepStaleEntries can settle -- " +
+                       "otherwise nothing is ever recorded for it and the row stays blocked forever")
     }
 
     // The ordering trap. On a fish Ctrl-Z, Calyx's own suspend report and
@@ -2501,7 +2848,7 @@ final class AgentRegistryTests: XCTestCase {
         registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID, now: base)
         // Calyx's own integration reports for the pane, and the agent's
         // own hook event lands milliseconds behind it.
-        registry.recordCalyxShellIntegrationReported(surfaceID: surfaceID, now: base)
+        registry.recordCalyxShellIntegrationReported(surfaceID: surfaceID, phase: .commandEnd, now: base)
         registry.handleHookEvent(
             event("UserPromptSubmit", sessionID: "session-a"),
             surfaceID: surfaceID, now: base.addingTimeInterval(0.05)
@@ -2533,7 +2880,7 @@ final class AgentRegistryTests: XCTestCase {
         let finished = started.addingTimeInterval(5 * 60)
         registry.handleHookEvent(event("SessionStart", sessionID: "session-a"), surfaceID: surfaceID, now: started)
         registry.handleHookEvent(event("UserPromptSubmit", sessionID: "session-a"), surfaceID: surfaceID, now: started)
-        registry.recordCalyxShellIntegrationReported(surfaceID: surfaceID, now: started)
+        registry.recordCalyxShellIntegrationReported(surfaceID: surfaceID, phase: .commandStart, now: started)
         XCTAssertFalse(registry.handleGhosttyCommandFinished(surfaceID: surfaceID, exitCode: 0, now: finished),
                        "Precondition: ghostty defers")
 
@@ -2580,7 +2927,7 @@ final class AgentRegistryTests: XCTestCase {
         inbox.submit(request)
         XCTAssertEqual(inbox.pending.map(\.id), [request.id], "Precondition")
 
-        registry.recordCalyxShellIntegrationReported(surfaceID: surfaceID, now: started)
+        registry.recordCalyxShellIntegrationReported(surfaceID: surfaceID, phase: .commandStart, now: started)
         XCTAssertFalse(registry.handleGhosttyCommandFinished(surfaceID: surfaceID, exitCode: 0, now: finished),
                        "Precondition: ghostty defers")
 
@@ -2857,7 +3204,7 @@ final class AgentRegistryTests: XCTestCase {
         // Ctrl-Z would see their agent's row retire.
         let registry = AgentRegistry()
         let surfaceID = UUID()
-        registry.recordCalyxShellIntegrationReported(surfaceID: surfaceID)
+        registry.recordCalyxShellIntegrationReported(surfaceID: surfaceID, phase: .commandStart)
 
         registry.reset()
 

@@ -8,7 +8,13 @@
 // as long as the CLI reports them: no timer, no retention count, no
 // eviction policy.
 //
-// Row-state decisions stay in AgentStateResolver. This type reuses
+// Row-state decisions stay in AgentStateResolver, and so does a child's
+// LIFETIME: this type never inspects a non-subagent event's name.
+// AgentStateResolver.resolveHook decides whether a parent-scoped event
+// retires every child of the surface (AgentResolution.retiresChildren),
+// and AgentRegistry.apply carries that decision out by calling
+// handleSurfaceDestroyed below -- the same call site an actual row
+// removal or .done settle already uses. This type reuses
 // AgentStateResolver.resultingState(for:) for a child's own state so no
 // child-specific vocabulary is ever duplicated -- the same table decides
 // what a hook event means for a parent row and for a child row.
@@ -41,17 +47,6 @@ final class SubagentRegistry {
     /// never collide with or replace a pane's own row.
     private(set) var entries: [UUID: [String: SubagentEntry]] = [:]
 
-    /// Hook event names that, on the PARENT's own event (never a
-    /// subagent event), remove every child of that parent -- the turn
-    /// ended, the session ended, or a new session started, so no child
-    /// of the OLD session/turn can still be running. This is also what
-    /// makes a CLI that omits `agent_id` on its own `SubagentStop`
-    /// degrade (children linger until the parent's turn ends) rather
-    /// than leak permanently.
-    private static let parentSweepEventNames: Set<String> = [
-        "Stop", "SessionEnd", "SessionStart",
-    ]
-
     /// Returns the children of `parentSurfaceID`, sorted by `agentID` so
     /// repeated calls (with no mutation between them) return the exact
     /// same order -- `AgentSidebarRows.build` renders this list directly
@@ -60,35 +55,40 @@ final class SubagentRegistry {
         (entries[parentSurfaceID] ?? [:]).values.sorted { $0.agentID < $1.agentID }
     }
 
-    /// Applies one hook event already routed to `parentSurfaceID`.
+    /// Applies one hook event already routed to `parentSurfaceID`. Only
+    /// a subagent event (`event.agentID` present) is ever handled here.
+    /// A non-subagent event -- including a parent-scoped `Stop`/
+    /// `SessionEnd`/`SessionStart` that retires every child of the
+    /// surface -- never reaches this type at all: `AgentRegistry
+    /// .handleHookEvent` only forwards a subagent event, and a parent
+    /// row's own children-retiring effect is carried out by `AgentRegistry
+    /// .apply` calling `handleSurfaceDestroyed` below, driven entirely by
+    /// `AgentStateResolver.resolveHook`'s `AgentResolution
+    /// .retiresChildren`. This type has no vocabulary of parent event
+    /// names of its own -- see this file's own header comment.
     ///
-    /// A non-subagent event (`event.isSubagentEvent == false`) only ever
-    /// sweeps: if its name is `parentSweepEventNames`, every child of
-    /// `parentSurfaceID` is removed. Every other non-subagent event is a
-    /// no-op here -- `AgentStateResolver` already handles what it means
-    /// for the parent's own row.
+    /// A subagent event either removes the one child it names --
+    /// `SubagentStop`, or a `SessionEnd` fired inside that child's own
+    /// session (a Grok subagent has its own session, so its teardown
+    /// arrives this way rather than as `SubagentStop`; both names report
+    /// the same fact, that this child is over) -- or creates/updates
+    /// that child. `SubagentStart` maps to no `AgentState` in
+    /// `AgentStateResolver.resultingState(for:)`, so a newly created
+    /// child starts at `.working` -- the CLI just reported it started.
+    /// An event naming an `agentID` this registry has never seen before
+    /// also creates a child: the CLI reported that child exists, which
+    /// is a reported fact, not an invention. A subagent-scoped
+    /// `SessionStart` is deliberately excluded from the removal branch
+    /// below: a child's own start is not a report that the child ended,
+    /// so it never removes one.
     ///
-    /// A subagent event (`agentID` present) either removes the one child
-    /// it names -- `SubagentStop`, or a `SessionEnd` fired inside that
-    /// child's own session (a Grok subagent has its own session, so its
-    /// teardown arrives this way rather than as `SubagentStop`; both
-    /// names report the same fact, that this child is over) -- or
-    /// creates/updates that child. `SubagentStart` maps to no
-    /// `AgentState` in `AgentStateResolver.resultingState(for:)`, so a
-    /// newly created child starts at `.working` -- the CLI just reported
-    /// it started. An event naming an `agentID` this registry has never
-    /// seen before also creates a child: the CLI reported that child
-    /// exists, which is a reported fact, not an invention. A
-    /// subagent-scoped `SessionStart` is deliberately excluded from this
-    /// removal rule: a child's own start is not a report that the child
-    /// ended, so it never removes one.
+    /// A CLI that omits `agent_id` on its own `SubagentStop` still
+    /// degrades rather than leaking permanently: an ACCEPTED parent
+    /// `Stop`/`SessionEnd`/`SessionStart` -- resolved through the same
+    /// path as every other parent-scoped event above -- still retires
+    /// the lingering child once the parent's own turn or session ends.
     func handleHookEvent(_ event: AgentEvent, parentSurfaceID: UUID, now: Date = Date()) {
-        guard let agentID = event.agentID else {
-            if Self.parentSweepEventNames.contains(event.hookEventName) {
-                entries.removeValue(forKey: parentSurfaceID)
-            }
-            return
-        }
+        guard let agentID = event.agentID else { return }
 
         if event.hookEventName == "SubagentStop" || event.hookEventName == "SessionEnd" {
             entries[parentSurfaceID]?.removeValue(forKey: agentID)
@@ -120,11 +120,14 @@ final class SubagentRegistry {
         entries[parentSurfaceID] = byAgent
     }
 
-    /// Removes every child of `parentSurfaceID`. Called both when the
-    /// pane itself is destroyed (`AgentRegistry.handleSurfaceDestroyed`)
-    /// and whenever `AgentRegistry.apply(_:surfaceID:)` sees a resolution
-    /// remove the parent's row or settle it to `.done` -- either way, no
-    /// child of that surface can still be running.
+    /// Removes every child of `parentSurfaceID`. Called when the pane
+    /// itself is destroyed (`AgentRegistry.handleSurfaceDestroyed`), and
+    /// by `AgentRegistry.apply(_:surfaceID:)` on any of three
+    /// resolutions: the parent's row is removed, the parent's row
+    /// settles to `.done`, or the resolver accepted a parent-scoped
+    /// turn/session-boundary event for the parent row
+    /// (`AgentResolution.retiresChildren`) -- in every case, no child of
+    /// that surface can still be running.
     func handleSurfaceDestroyed(parentSurfaceID: UUID) {
         entries.removeValue(forKey: parentSurfaceID)
     }
