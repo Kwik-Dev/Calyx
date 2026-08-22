@@ -40,7 +40,7 @@ final class AgentSidebarRowsTests: XCTestCase {
     private func child(parentSurfaceID: UUID, agentID: String) -> SubagentEntry {
         SubagentEntry(
             parentSurfaceID: parentSurfaceID, agentID: agentID, agentType: "explore",
-            state: .working, lastToolName: nil, lastEventAt: Date()
+            state: .working, lastToolName: nil, startedAt: Date()
         )
     }
 

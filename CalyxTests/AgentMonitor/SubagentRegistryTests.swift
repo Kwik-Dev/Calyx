@@ -7,13 +7,14 @@
 //  keyed by (parentSurfaceID, agentID), reusing
 //  AgentStateResolver.resultingState(for:) for state so no
 //  child-specific vocabulary is ever duplicated. SubagentRegistry itself
-//  no longer knows any parent event name -- a parent-scoped
-//  Stop/SessionEnd/SessionStart's children-retiring effect is decided by
+//  no longer knows any parent event name or compares sessionIDs -- a
+//  parent-scoped SessionEnd/SessionStart's children-retiring effect (a
+//  same-session parent Stop no longer retires children at all), and a
+//  session-mismatch row replacement's identical effect, are decided by
 //  AgentStateResolver.resolveHook (AgentResolution.retiresChildren) and
 //  carried out by AgentRegistry.apply, so those tests live in
 //  AgentRegistryTests.swift instead, driving the pipeline through
-//  AgentRegistry.handleHookEvent rather than this type directly -- see
-//  that file's "Parent-scoped sweep" section.
+//  AgentRegistry.handleHookEvent rather than this type directly.
 //
 //  Coverage:
 //  - SubagentStart creates a child at .working with its agentType
@@ -31,6 +32,9 @@
 //  - A SubagentStop with no agentID removes nothing
 //  - children(of:) returns a stable order across calls
 //  - Children never appear in AgentRegistry.entries or externalEntries
+//  - startedAt is stamped once at creation and never restamped by a
+//    later event for that child, even while state/lastToolName/agentType
+//    do update
 //
 
 import XCTest
@@ -269,10 +273,14 @@ final class SubagentRegistryTests: XCTestCase {
     // MARK: - Degrade case: SubagentStop with no agentID
     //
     // The other half of this degrade case -- the lingering child still
-    // going away once an ACCEPTED parent Stop retires it -- needs the
-    // full AgentRegistry pipeline (AgentStateResolver.resolveHook's
-    // retiresChildren decision) and lives in AgentRegistryTests.swift's
-    // "Parent-scoped sweep" section instead.
+    // going away once an ACCEPTED parent SessionEnd or SessionStart
+    // retires it -- needs the full AgentRegistry pipeline
+    // (AgentStateResolver.resolveHook's retiresChildren decision) and
+    // lives in AgentRegistryTests.swift's "Parent-scoped sweep" section
+    // instead. An accepted parent Stop no longer retires children at
+    // all, so a lingering child now survives its parent's own Stop and
+    // only goes away on SessionEnd/SessionStart, pane exit, or the
+    // parent row settling to .done.
 
     func test_subagentStopWithNoAgentID_removesNothing() {
         let registry = SubagentRegistry()
@@ -433,6 +441,50 @@ final class SubagentRegistryTests: XCTestCase {
         XCTAssertEqual(registry.subagentRegistry.children(of: parent).count, 1,
                        "A .working -> .idle staleness downgrade must not clear children -- .idle is still a " +
                        "live row")
+    }
+
+    // MARK: - startedAt is stamped once and never restamped
+
+    /// A child's startedAt is set once when it is created and must never
+    /// be restamped by any later event for that child, unlike state /
+    /// lastToolName / agentType which do keep updating.
+    func test_startedAt_isStampedOnceAtCreation_neverRestampedByLaterEvents() {
+        let registry = SubagentRegistry()
+        let parent = UUID()
+        let creationTime = Date(timeIntervalSince1970: 1_000)
+        let laterTime = Date(timeIntervalSince1970: 2_000)
+        let evenLaterTime = Date(timeIntervalSince1970: 3_000)
+
+        registry.handleHookEvent(
+            event("SubagentStart", agentID: "sub-1", agentType: "explore"), parentSurfaceID: parent, now: creationTime
+        )
+        let created = registry.children(of: parent).first
+        XCTAssertEqual(created?.startedAt, creationTime, "startedAt must be set to the creation event's own time")
+
+        registry.handleHookEvent(
+            event("PreToolUse", agentID: "sub-1", toolName: "Bash"), parentSurfaceID: parent, now: laterTime
+        )
+        let afterPreToolUse = registry.children(of: parent).first
+        XCTAssertEqual(afterPreToolUse?.startedAt, creationTime,
+                       "A later PreToolUse must not restamp startedAt")
+        XCTAssertEqual(afterPreToolUse?.lastToolName, "Bash", "Sanity: lastToolName does still update")
+
+        registry.handleHookEvent(
+            event("PostToolUse", agentID: "sub-1", agentType: "reviewer", toolName: "Read"),
+            parentSurfaceID: parent, now: evenLaterTime
+        )
+        let afterPostToolUse = registry.children(of: parent).first
+        XCTAssertEqual(afterPostToolUse?.startedAt, creationTime,
+                       "A later PostToolUse must not restamp startedAt either")
+        XCTAssertEqual(afterPostToolUse?.agentType, "reviewer", "Sanity: agentType does still update")
+
+        registry.handleHookEvent(
+            event("PermissionRequest", agentID: "sub-1"), parentSurfaceID: parent, now: evenLaterTime
+        )
+        let afterStateChange = registry.children(of: parent).first
+        XCTAssertEqual(afterStateChange?.startedAt, creationTime,
+                       "A state-changing event must not restamp startedAt")
+        XCTAssertEqual(afterStateChange?.state, .blocked, "Sanity: state does still update")
     }
 
     // MARK: - Moving between live states never clears children

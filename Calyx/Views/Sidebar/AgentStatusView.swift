@@ -87,9 +87,11 @@ struct AgentStatusView: View {
                     if entries.isEmpty {
                         emptyPlaceholder
                     } else {
-                        // TimelineView re-renders every second so each row's
-                        // relative "time ago" label stays live; it also stops
-                        // firing automatically while the sidebar isn't visible.
+                        // TimelineView re-renders every second so each
+                        // parent row's relative "time ago" label, and each
+                        // child row's counting-up elapsed duration, both
+                        // stay live; it also stops firing automatically
+                        // while the sidebar isn't visible.
                         //
                         // Wrapped in a GeometryReader purely to measure the
                         // viewport height for monitoringDisabledPlaceholder's
@@ -714,11 +716,18 @@ private struct AgentRowView: View {
 /// reported for it; a `nil` value on either simply omits that line
 /// rather than rendering an "N/A" placeholder, since a child carries no
 /// pane of its own for those fields to ever legitimately resolve to a
-/// missing value the way a parent row's title/cwd can.
+/// missing value the way a parent row's title/cwd can. The trailing
+/// label is a counting-up elapsed duration since the child started
+/// (`AgentRowDisplay.elapsedLabel(since:now:)`), matching what the CLI's
+/// own display shows for a running subagent -- not a relative "... ago"
+/// time, which is what `AgentRowView`'s own trailing label means for the
+/// parent row.
 private struct AgentSubRowView: View {
     let child: SubagentEntry
-    /// See `AgentRowView.now`'s own doc comment -- supplied by the same
-    /// enclosing `TimelineView`.
+    /// The instant used to render the counting-up elapsed duration since
+    /// `child.startedAt` (`AgentRowDisplay.elapsedLabel(since:now:)`),
+    /// supplied by the same enclosing `TimelineView` `AgentRowView.now`
+    /// is, so it stays live without this row managing its own timer.
     let now: Date
     /// The surface a click on this row should focus -- resolved once by
     /// the caller via `AgentRowFocusTarget.resolve(source:surfaceID:
@@ -733,15 +742,6 @@ private struct AgentSubRowView: View {
     @Environment(\.controlActiveState) private var controlActiveState
     @State private var isHovering = false
 
-    /// Same formatter configuration as `AgentRowView`'s own
-    /// `relativeDateFormatter` -- kept as a separate instance since that
-    /// one is `private` to `AgentRowView`.
-    private static let relativeDateFormatter: RelativeDateTimeFormatter = {
-        let fmt = RelativeDateTimeFormatter()
-        fmt.unitsStyle = .short
-        return fmt
-    }()
-
     private var dotColor: Color { AgentRowDisplay.dotColor(for: child.state) }
 
     private var typeLine: String? {
@@ -754,14 +754,32 @@ private struct AgentSubRowView: View {
         return toolName
     }
 
-    /// This row's tooltip / accessibility label: the child's state
-    /// (always present, via `AgentRowDisplay.stateLabel(for:)`)
-    /// followed by `typeLine` and `toolLine`, each omitted (not "N/A")
-    /// when `nil`. The state is always included, unlike `typeLine` /
-    /// `toolLine`, so this string is never empty even for a CLI whose
-    /// subagent hooks are lifecycle-only (codex) and report neither an
-    /// agent type nor a tool name.
-    private var tooltip: String {
+    private var elapsedLine: String {
+        AgentRowDisplay.elapsedLabel(since: child.startedAt, now: now)
+    }
+
+    /// This row's hover help text: the child's state (always present, via
+    /// `AgentRowDisplay.stateLabel(for:)`), `typeLine` and `toolLine`,
+    /// each omitted (not "N/A") when `nil`, and the elapsed duration
+    /// since the child started. The state is always included, unlike
+    /// `typeLine` / `toolLine`, so this string is never empty even for a
+    /// CLI whose subagent hooks are lifecycle-only (codex) and report
+    /// neither an agent type nor a tool name. Unlike `accessibilityLabel`
+    /// below, hover help has no re-announce concern, so it includes
+    /// `elapsedLine`.
+    private var helpText: String {
+        ([AgentRowDisplay.stateLabel(for: child.state), typeLine, toolLine, elapsedLine] as [String?])
+            .compactMap { $0 }
+            .joined(separator: "\n")
+    }
+
+    /// This row's accessibility label: the same content as `helpText`
+    /// minus `elapsedLine`. This row sits inside a
+    /// `TimelineView(.periodic(from: .now, by: 1))` that re-renders every
+    /// second, so including the counting-up elapsed duration here would
+    /// change the label every second and re-announce the row while
+    /// VoiceOver focus sits on it.
+    private var accessibilityLabel: String {
         ([AgentRowDisplay.stateLabel(for: child.state), typeLine, toolLine] as [String?])
             .compactMap { $0 }
             .joined(separator: "\n")
@@ -783,7 +801,7 @@ private struct AgentSubRowView: View {
                 rowContent
             }
         }
-        .help(tooltip)
+        .help(helpText)
         .onChange(of: focusTarget) { _, newValue in
             if newValue == nil { isHovering = false }
         }
@@ -811,7 +829,7 @@ private struct AgentSubRowView: View {
 
             Spacer()
 
-            Text(Self.relativeDateFormatter.localizedString(for: child.lastEventAt, relativeTo: now))
+            Text(elapsedLine)
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
         }
@@ -829,11 +847,11 @@ private struct AgentSubRowView: View {
         .opacity(controlActiveState == .key ? 1.0 : 0.5)
         // See AgentRowView.rowContent's own `.accessibilityElement`
         // comment: `.combine` makes this row one VoiceOver stop, and the
-        // relative last-event time is left out of the merged content for
-        // the same re-announce-every-second reason.
+        // elapsed duration is left out of the merged content for the
+        // same re-announce-every-second reason.
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier(AccessibilityID.Sidebar.agentSubRow(id: child.id))
-        .accessibilityLabel(tooltip)
+        .accessibilityLabel(accessibilityLabel)
     }
 }
 
@@ -989,5 +1007,25 @@ enum AgentRowDisplay {
     static func unreadAccessibilityValue(count: Int) -> String {
         guard count > 0 else { return "" }
         return count > 99 ? "99+ unread" : "\(count) unread"
+    }
+
+    /// A counting-up elapsed duration from `since` to `now`, shown on a
+    /// child row (`AgentSubRowView`) as how long the CLI has reported it
+    /// running -- not a relative "... ago" phrase, which is what a
+    /// parent row's own trailing label means. Three forms: seconds only
+    /// under a minute (`"0s"`...`"59s"`), minutes and seconds under an
+    /// hour (`"1m 0s"`...`"59m 59s"`), hours and minutes at an hour and
+    /// over (`"1h 0m"`, `"25h 0m"`). A `now` earlier than `since` -- clock
+    /// skew, or an out-of-order write -- clamps to `"0s"` rather than
+    /// rendering a negative duration.
+    static func elapsedLabel(since: Date, now: Date) -> String {
+        let totalSeconds = max(0, Int(now.timeIntervalSince(since)))
+        if totalSeconds < 60 {
+            return "\(totalSeconds)s"
+        }
+        if totalSeconds < 3600 {
+            return "\(totalSeconds / 60)m \(totalSeconds % 60)s"
+        }
+        return "\(totalSeconds / 3600)h \((totalSeconds % 3600) / 60)m"
     }
 }

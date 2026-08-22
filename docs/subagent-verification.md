@@ -92,6 +92,34 @@ payloads.
 It also answers a question Claude Code's docs leave open: a subagent's
 hooks carry the PARENT's `session_id`, not a child's.
 
+A second, isolated `claude -p --settings <probe>` run with two parallel
+`Task` calls captured the fact that closed a real bug: the parent's own
+`Stop` fires, more than once across a turn, while its children are still
+running.
+
+```
+21:38:29  SubagentStart   agent_id=ad6adb...  agent_type=general-purpose
+21:38:31  PreToolUse      agent_id=ad6adb...  tool=Bash
+21:38:32  Stop            (parent scoped, no agent_id)   <- both children still running
+21:38:32  PreToolUse      agent_id=ae0d20...  tool=Bash
+21:38:52  PostToolUse     agent_id=ad6adb...  /  agent_id=ae0d20...
+21:38:54  SubagentStop    agent_id=ad6adb...  /  agent_id=ae0d20...
+21:38:56  Stop            21:38:58  Stop
+```
+
+Every event carried the PARENT's `session_id`, child ones included. The
+parent's own `Stop` marks the end of one TURN, not the end of every
+child running under the session, so `AgentStateResolver` no longer
+treats an accepted parent `Stop` as retiring the surface's children
+(`AgentResolution.retiresChildren` now fires only on an accepted
+`SessionEnd`/`SessionStart`). A CLI that omits `agent_id` on its own
+`SubagentStop` therefore degrades over a longer window than before: the
+lingering child now survives an accepted parent `Stop` and only goes
+away on an accepted `SessionEnd`/`SessionStart`, the pane exiting, or
+the parent row settling `.done`. Codex is the most exposed to this
+window, since its `agent_id`-on-`SubagentStop` is documented but still
+uncaptured (see the Codex section below).
+
 ### OpenCode
 
 One `opencode run` delegating to a subagent, with a probe plugin logging
@@ -113,6 +141,13 @@ child on that signal alone leaves every finished child listed until the
 parent's whole turn ends, and the sets keyed on it are never cleaned. A
 child's own `session.idle` is what actually reports that child is over,
 since a subagent takes no further turn.
+
+For OpenCode, `EVENT_MAP` maps `SessionEnd` only from `session.deleted`,
+which this same capture shows never fires, and `SessionStart` fires once,
+at `session.created`. A parent-scoped `Stop` no longer retires children
+at all (see the Claude Code capture above), so for this CLI the
+post-`Stop` fallback that retires a lingering child is effectively pane
+exit alone.
 
 ### Codex
 
