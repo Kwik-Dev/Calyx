@@ -31,3 +31,7 @@ ghostty/zig-out/
 Packages/
 Package.resolved
 scratchpad
+
+# Internal verification notes: procedures and captured CLI payloads kept
+# locally, not part of the published repository.
+docs/

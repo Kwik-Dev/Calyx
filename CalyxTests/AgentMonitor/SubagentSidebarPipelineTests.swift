@@ -2,22 +2,21 @@
 //  SubagentSidebarPipelineTests.swift
 //  CalyxTests
 //
-//  Raises docs/subagent-verification.md's manual GUI checklist (items 3
-//  through 10) into automated coverage, wherever the check does not
-//  genuinely require looking at pixels. Driven the same way as
-//  AgentHookPipelineIntegrationTests: a real /bin/sh calyx-agent-hook
-//  script, run as a real child Process, piping real captured stdin JSON
-//  into a real CalyxMCPServer bound to a real loopback port, landing in a
-//  real AgentRegistry (and its SubagentRegistry). Assertions are made on
-//  AgentSidebarRows.build's own output -- what the sidebar actually
-//  renders -- rather than on any view.
+//  Raises the manual GUI checklist (items 3 through 10) into automated
+//  coverage, wherever the check does not genuinely require looking at
+//  pixels. Driven the same way as AgentHookPipelineIntegrationTests: a
+//  real /bin/sh calyx-agent-hook script, run as a real child Process,
+//  piping real captured stdin JSON into a real CalyxMCPServer bound to
+//  a real loopback port, landing in a real AgentRegistry (and its
+//  SubagentRegistry). Assertions are made on AgentSidebarRows.build's
+//  own output -- what the sidebar actually renders -- rather than on
+//  any view.
 //
 //  Claude Code and Grok payload shapes below are the exact field names,
-//  event values, and (where given) IDs captured from real CLI runs, per
-//  the wire contract in docs/subagent-verification.md. Session/cwd
-//  strings the capture didn't pin to a specific value follow this test
-//  target's own existing placeholder convention (e.g. "parent-session"),
-//  matching AgentHookPipelineIntegrationTests.
+//  event values, and (where given) IDs captured from real CLI runs.
+//  Session/cwd strings the capture didn't pin to a specific value follow
+//  this test target's own existing placeholder convention (e.g.
+//  "parent-session"), matching AgentHookPipelineIntegrationTests.
 //
 //  Coverage:
 //  - Claude Code: PreToolUse(Agent) -> SubagentStart(Explore) ->
@@ -170,10 +169,9 @@ final class SubagentSidebarPipelineTests: XCTestCase {
 
     // MARK: - Claude Code: the full captured sequence, row list at every step
 
-    /// Replays the exact 4-event Claude Code capture in
-    /// docs/subagent-verification.md's wire contract table: one `Task`
-    /// launching an `Explore` subagent that runs one `Bash` command,
-    /// every event sharing the parent's own `session_id`.
+    /// Replays the exact 4-event Claude Code capture verbatim: one
+    /// `Task` launching an `Explore` subagent that runs one `Bash`
+    /// command, every event sharing the parent's own `session_id`.
     func test_claudeCode_subagentSequence_rowListAtEachStep() async throws {
         let surfaceID = UUID()
         let sessionID = "parent-session"
@@ -259,16 +257,15 @@ final class SubagentSidebarPipelineTests: XCTestCase {
 
     // MARK: - Grok: the full captured 7-event sequence
 
-    /// Replays the exact 7-event Grok capture in
-    /// docs/subagent-verification.md's wire contract table verbatim,
-    /// including the real parent and child session IDs the capture
-    /// pinned. Proves events 2 and 3 resolve to ONE child (the bug the
-    /// real capture exposed: `subagent_start` alone carries the
-    /// PARENT's `sessionId`), that the parent stays `.working` for the
-    /// child's whole run, that the child is gone after event 5, and that
-    /// the child's own `session_end` (event 6) neither resurrects it nor
-    /// settles the parent -- only the parent's own `session_end` (event
-    /// 7) does that.
+    /// Replays the exact 7-event Grok capture verbatim, including the
+    /// real parent and child session IDs the capture pinned. Proves
+    /// events 2 and 3 resolve to ONE child (the bug the real capture
+    /// exposed: `subagent_start` alone carries the PARENT's
+    /// `sessionId`), that the parent stays `.working` for the child's
+    /// whole run, that the child is gone after event 5, and that the
+    /// child's own `session_end` (event 6) neither resurrects it nor
+    /// settles the parent -- only the parent's own `session_end`
+    /// (event 7) does that.
     func test_grok_subagentSequence_oneChildAndParentStaysWorking() async throws {
         let surfaceID = UUID()
         let parentSessionID = "01a02092-04e6-73a1-9d04-e1bd11dcd4fa"
