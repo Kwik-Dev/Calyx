@@ -38,6 +38,12 @@
 //    "Nh Nm"), not a relative "... ago" phrase -- pinned at the 0/59/
 //    60/3599/3600-second boundaries, and clamped to "0s" for a now
 //    earlier than since (clock skew / an out-of-order write)
+//  - lastEventLabel(lastEventAt:now:): "now" for any interval under one
+//    second, including a negative one (lastEventAt ahead of the
+//    TimelineView tick, however far ahead); at and beyond one second it
+//    delegates to a RelativeDateTimeFormatter (unitsStyle = .short)
+//    matching the parent row's own configuration, so unit escalation
+//    ("1 sec. ago" through past "1 hr. ago") is unchanged
 //
 
 import XCTest
@@ -492,5 +498,115 @@ final class AgentRowDisplayTests: XCTestCase {
     /// number.
     func test_elapsedLabel_nowEarlierThanSince_clampsToZeroS() {
         XCTAssertEqual(AgentRowDisplay.elapsedLabel(since: anchor, now: anchor.addingTimeInterval(-5)), "0s")
+    }
+
+    // MARK: - lastEventLabel(lastEventAt:now:)
+
+    /// Same fixed anchor as `elapsedLabel`'s section, reused as `now`;
+    /// `lastEventAt` is derived from it so the tests stay deterministic.
+    private func lastEventLabel(_ secondsAgo: TimeInterval) -> String {
+        AgentRowDisplay.lastEventLabel(lastEventAt: anchor.addingTimeInterval(-secondsAgo), now: anchor)
+    }
+
+    /// A reference formatter built the same way the parent row configures
+    /// its own: `unitsStyle = .short`. Expectations for the delegating
+    /// branch are computed from this, never from a hardcoded English
+    /// string, so the assertion survives any locale.
+    private func referenceRelativeString(secondsAgo: TimeInterval) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        let lastEventAt = anchor.addingTimeInterval(-secondsAgo)
+        return formatter.localizedString(for: lastEventAt, relativeTo: anchor)
+    }
+
+    func test_lastEventLabel_exactlyZeroInterval_returnsNow() {
+        XCTAssertEqual(lastEventLabel(0), "now")
+    }
+
+    func test_lastEventLabel_subSecondPastInterval_returnsNow() {
+        XCTAssertEqual(lastEventLabel(0.4), "now")
+    }
+
+    /// The boundary just below one second: still "now".
+    func test_lastEventLabel_justUnderOneSecond_returnsNow() {
+        XCTAssertEqual(lastEventLabel(0.99), "now")
+    }
+
+    /// `lastEventAt` running ahead of the `TimelineView` tick (a negative
+    /// interval from `now`'s perspective) must still read "now", not a
+    /// future-tense phrase like "in 0 sec.".
+    func test_lastEventLabel_lastEventAtAheadOfNow_returnsNow() {
+        XCTAssertEqual(lastEventLabel(-0.5), "now")
+    }
+
+    /// A large negative interval -- `lastEventAt` a full hour ahead of
+    /// `now` -- must still read "now", not delegate to the formatter at
+    /// some escalated future-tense unit.
+    func test_lastEventLabel_lastEventAtFarAheadOfNow_returnsNow() {
+        XCTAssertEqual(lastEventLabel(-3600), "now")
+    }
+
+    /// The boundary at exactly one second: no longer "now" -- delegates
+    /// to the reference formatter instead.
+    func test_lastEventLabel_exactlyOneSecond_matchesReferenceFormatterAndIsNotNow() {
+        let result = lastEventLabel(1.0)
+
+        XCTAssertNotEqual(result, "now")
+        XCTAssertEqual(result, referenceRelativeString(secondsAgo: 1.0))
+    }
+
+    func test_lastEventLabel_oneNineSeconds_matchesReferenceFormatterAndIsNotNow() {
+        let result = lastEventLabel(1.9)
+
+        XCTAssertNotEqual(result, "now")
+        XCTAssertEqual(result, referenceRelativeString(secondsAgo: 1.9))
+    }
+
+    func test_lastEventLabel_fiftyNineSeconds_matchesReferenceFormatterAndIsNotNow() {
+        let result = lastEventLabel(59)
+
+        XCTAssertNotEqual(result, "now")
+        XCTAssertEqual(result, referenceRelativeString(secondsAgo: 59))
+    }
+
+    /// The boundary at exactly one minute: still delegates, just at the
+    /// next unit up.
+    func test_lastEventLabel_sixtySeconds_matchesReferenceFormatterAndIsNotNow() {
+        let result = lastEventLabel(60)
+
+        XCTAssertNotEqual(result, "now")
+        XCTAssertEqual(result, referenceRelativeString(secondsAgo: 60))
+    }
+
+    func test_lastEventLabel_thirtySixHundredSeconds_matchesReferenceFormatterAndIsNotNow() {
+        let result = lastEventLabel(3600)
+
+        XCTAssertNotEqual(result, "now")
+        XCTAssertEqual(result, referenceRelativeString(secondsAgo: 3600))
+    }
+
+    /// Escalation past the one-hour boundary: still delegates, at the
+    /// next unit up again.
+    func test_lastEventLabel_eightySixThousandFourHundredSeconds_matchesReferenceFormatterAndIsNotNow() {
+        let result = lastEventLabel(86400)
+
+        XCTAssertNotEqual(result, "now")
+        XCTAssertEqual(result, referenceRelativeString(secondsAgo: 86400))
+    }
+
+    /// The one-second and sixty-second cases must render as different
+    /// strings -- a future change that flattens every delegated interval
+    /// down to raw seconds (defeating unit escalation) would still pass
+    /// a same-formula-on-both-sides comparison against itself, but not
+    /// this cross-check.
+    func test_lastEventLabel_oneSecondAndSixtySeconds_produceDifferentStrings() {
+        XCTAssertNotEqual(lastEventLabel(1), lastEventLabel(60))
+    }
+
+    /// The one-hour and one-day cases must also render as different
+    /// strings, guarding escalation past the hour boundary the same way
+    /// the 1s-vs-60s cross-check guards escalation past the second.
+    func test_lastEventLabel_thirtySixHundredAndEightySixThousandFourHundredSeconds_produceDifferentStrings() {
+        XCTAssertNotEqual(lastEventLabel(3600), lastEventLabel(86400))
     }
 }
