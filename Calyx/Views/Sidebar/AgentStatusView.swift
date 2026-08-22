@@ -87,47 +87,51 @@ struct AgentStatusView: View {
                     if entries.isEmpty {
                         emptyPlaceholder
                     } else {
-                        // TimelineView re-renders every second so each
-                        // parent row's relative "time ago" label, and each
-                        // child row's counting-up elapsed duration, both
-                        // stay live; it also stops firing automatically
-                        // while the sidebar isn't visible.
-                        //
                         // Wrapped in a GeometryReader purely to measure the
                         // viewport height for monitoringDisabledPlaceholder's
                         // centering below -- layout-neutral for the rows
-                        // themselves, since TimelineView/ScrollView both
-                        // accept whatever size is proposed and fill it
-                        // exactly as they filled their parent before this
-                        // was added.
+                        // themselves, since ScrollView accepts whatever size
+                        // is proposed and fills it exactly as it filled its
+                        // parent before this was added. The per-row
+                        // TimelineViews inside are likewise layout-transparent
+                        // and each stops firing automatically while the
+                        // sidebar isn't visible, so none of them costs
+                        // anything while hidden.
                         GeometryReader { viewport in
-                            TimelineView(.periodic(from: .now, by: 1)) { context in
-                                ScrollView {
-                                    // A single VStack, not bare ScrollView
-                                    // siblings, so the scroll content's total
-                                    // height is exactly rowsHeight plus the
-                                    // placeholder block's own height -- no
-                                    // implicit, unmeasured inter-sibling
-                                    // spacing to throw off the minHeight math
-                                    // below.
-                                    VStack(spacing: 0) {
-                                        // Keyed by surfaceID so a click on a
-                                        // .external row (whose own
-                                        // surfaceID is never a resolvable
-                                        // SurfaceRegistry id) still resolves
-                                        // a child's focus target through the
-                                        // parent's own focusSurfaceID --
-                                        // the same resolution AgentRowView
-                                        // itself performs for the parent row.
-                                        let entriesByID = Dictionary(
-                                            entries.map { ($0.surfaceID, $0) }, uniquingKeysWith: { _, latest in latest }
-                                        )
-                                        VStack(spacing: 4) {
-                                            ForEach(AgentSidebarRows.build(
-                                                entries: entries,
-                                                children: { AgentRegistry.shared.subagentRegistry.children(of: $0) },
-                                                expanded: expandedParents
-                                            )) { row in
+                            ScrollView {
+                                // A single VStack, not bare ScrollView
+                                // siblings, so the scroll content's total
+                                // height is exactly rowsHeight plus the
+                                // placeholder block's own height -- no
+                                // implicit, unmeasured inter-sibling
+                                // spacing to throw off the minHeight math
+                                // below.
+                                VStack(spacing: 0) {
+                                    // Keyed by surfaceID so a click on a
+                                    // .external row (whose own
+                                    // surfaceID is never a resolvable
+                                    // SurfaceRegistry id) still resolves
+                                    // a child's focus target through the
+                                    // parent's own focusSurfaceID --
+                                    // the same resolution AgentRowView
+                                    // itself performs for the parent row.
+                                    let entriesByID = Dictionary(
+                                        entries.map { ($0.surfaceID, $0) }, uniquingKeysWith: { _, latest in latest }
+                                    )
+                                    VStack(spacing: 4) {
+                                        ForEach(AgentSidebarRows.build(
+                                            entries: entries,
+                                            children: { AgentRegistry.shared.subagentRegistry.children(of: $0) },
+                                            expanded: expandedParents
+                                        )) { row in
+                                            // Anchored to this row's own tickAnchor so the tick fires
+                                            // exactly when the row's elapsed-time label would change;
+                                            // any other phase leaves the label frozen one second short
+                                            // of the true value for part of every second. Wraps the
+                                            // whole row, not just its label Text, since
+                                            // AgentSubRowView.helpText also depends on `now` and must
+                                            // stay live while hovered.
+                                            TimelineView(.periodic(from: row.tickAnchor, by: 1)) { context in
                                                 switch row {
                                                 case .parent(let entry, let childCount, let isExpanded):
                                                     AgentRowView(
@@ -154,19 +158,19 @@ struct AgentStatusView: View {
                                                 }
                                             }
                                         }
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 4)
-                                        .onGeometryChange(for: CGFloat.self) { proxy in
-                                            proxy.size.height
-                                        } action: { height in
-                                            rowsHeight = height
-                                        }
+                                    }
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .onGeometryChange(for: CGFloat.self) { proxy in
+                                        proxy.size.height
+                                    } action: { height in
+                                        rowsHeight = height
+                                    }
 
-                                        if AgentSidebarGate.showsMonitoringDisabledBanner(isServerRunning: isServerRunning, hasExternal: hasExternal) && rowsHeight > 0 {
-                                            monitoringDisabledPlaceholder(
-                                                minHeight: max(0, (viewport.size.height - rowsHeight).rounded(.down) - 1)
-                                            )
-                                        }
+                                    if AgentSidebarGate.showsMonitoringDisabledBanner(isServerRunning: isServerRunning, hasExternal: hasExternal) && rowsHeight > 0 {
+                                        monitoringDisabledPlaceholder(
+                                            minHeight: max(0, (viewport.size.height - rowsHeight).rounded(.down) - 1)
+                                        )
                                     }
                                 }
                             }
@@ -406,6 +410,20 @@ enum AgentSidebarRows {
             case .child(let child): return child.id
             }
         }
+
+        /// The origin this row's per-row `TimelineView` should be
+        /// anchored to, and the same instant its own seconds-ticking
+        /// label is measured from: a parent row's anchor must match
+        /// `lastEventLabel(lastEventAt:now:)`'s `lastEventAt`, and a
+        /// child row's anchor must match `elapsedLabel(since:now:)`'s
+        /// `since`, so the row's `TimelineView` fires exactly when that
+        /// label's displayed value would change.
+        var tickAnchor: Date {
+            switch self {
+            case .parent(let entry, _, _): return entry.lastEventAt
+            case .child(let child): return child.startedAt
+            }
+        }
     }
 
     /// Builds the flat row list: one `.parent` row per entry in
@@ -435,11 +453,13 @@ enum AgentSidebarRows {
 
 private struct AgentRowView: View {
     let entry: AgentEntry
-    /// The "current" instant supplied by the enclosing `TimelineView`,
-    /// passed to `AgentRowDisplay.lastEventLabel(lastEventAt:now:)` to
-    /// render `entry.lastEventAt`'s trailing label without this row
-    /// managing its own timer. An interval under one second between the
-    /// two -- including a negative one, `lastEventAt` landing ahead of
+    /// The "current" instant supplied by this row's own enclosing
+    /// `TimelineView`, anchored (per `AgentSidebarRows.Row.tickAnchor`) on
+    /// this same `entry.lastEventAt`, passed to
+    /// `AgentRowDisplay.lastEventLabel(lastEventAt:now:)` to render that
+    /// value's trailing label without this row managing its own timer. An
+    /// interval under one second between the two -- including a negative
+    /// one, `lastEventAt` landing ahead of
     /// this tick -- reads "now" rather than a `RelativeDateTimeFormatter`
     /// phrase; see `lastEventLabel` for why.
     let now: Date
@@ -657,10 +677,11 @@ private struct AgentRowView: View {
             // inner element is exactly one VoiceOver stop carrying both.
             //
             // The relative last-event time is deliberately left out of
-            // both: this row sits inside a
-            // `TimelineView(.periodic(from: .now, by: 1))` that re-renders
-            // every second, so a value that changed every second would
-            // re-announce while VoiceOver focus sits on the row.
+            // both: this row sits inside its own
+            // `TimelineView(.periodic(from: row.tickAnchor, by: 1))` that
+            // re-renders every second, so a value that changed every
+            // second would re-announce while VoiceOver focus sits on the
+            // row.
             .accessibilityElement(children: .combine)
             .accessibilityIdentifier(AccessibilityID.Sidebar.agentRow(id: entry.id))
             .accessibilityLabel(tooltip)
@@ -724,8 +745,9 @@ private struct AgentSubRowView: View {
     let child: SubagentEntry
     /// The instant used to render the counting-up elapsed duration since
     /// `child.startedAt` (`AgentRowDisplay.elapsedLabel(since:now:)`),
-    /// supplied by the same enclosing `TimelineView` `AgentRowView.now`
-    /// is, so it stays live without this row managing its own timer.
+    /// supplied by this row's own enclosing `TimelineView`, anchored (per
+    /// `AgentSidebarRows.Row.tickAnchor`) on that same `startedAt`, so it
+    /// stays live without this row managing its own timer.
     let now: Date
     /// The surface a click on this row should focus -- resolved once by
     /// the caller via `AgentRowFocusTarget.resolve(source:surfaceID:
@@ -772,11 +794,11 @@ private struct AgentSubRowView: View {
     }
 
     /// This row's accessibility label: the same content as `helpText`
-    /// minus `elapsedLine`. This row sits inside a
-    /// `TimelineView(.periodic(from: .now, by: 1))` that re-renders every
-    /// second, so including the counting-up elapsed duration here would
-    /// change the label every second and re-announce the row while
-    /// VoiceOver focus sits on it.
+    /// minus `elapsedLine`. This row sits inside its own
+    /// `TimelineView(.periodic(from: row.tickAnchor, by: 1))` that
+    /// re-renders every second, so including the counting-up elapsed
+    /// duration here would change the label every second and re-announce
+    /// the row while VoiceOver focus sits on it.
     private var accessibilityLabel: String {
         ([AgentRowDisplay.stateLabel(for: child.state), typeLine, toolLine] as [String?])
             .compactMap { $0 }
