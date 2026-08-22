@@ -435,9 +435,13 @@ enum AgentSidebarRows {
 
 private struct AgentRowView: View {
     let entry: AgentEntry
-    /// The "current" instant used to render `lastEventAt`'s relative
-    /// label, supplied by the enclosing `TimelineView` so it stays live
-    /// without this row managing its own timer.
+    /// The "current" instant supplied by the enclosing `TimelineView`,
+    /// passed to `AgentRowDisplay.lastEventLabel(lastEventAt:now:)` to
+    /// render `entry.lastEventAt`'s trailing label without this row
+    /// managing its own timer. An interval under one second between the
+    /// two -- including a negative one, `lastEventAt` landing ahead of
+    /// this tick -- reads "now" rather than a `RelativeDateTimeFormatter`
+    /// phrase; see `lastEventLabel` for why.
     let now: Date
     /// Resolves the pane's own recorded title (`SurfacePropertyStore
     /// .title(for:)`) for the surface `focusTarget` names, this row's
@@ -466,12 +470,6 @@ private struct AgentRowView: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.controlActiveState) private var controlActiveState
     @State private var isHovering = false
-
-    private static let relativeDateFormatter: RelativeDateTimeFormatter = {
-        let fmt = RelativeDateTimeFormatter()
-        fmt.unitsStyle = .short
-        return fmt
-    }()
 
     private var dotColor: Color { AgentRowDisplay.dotColor(for: entry.state) }
 
@@ -628,7 +626,7 @@ private struct AgentRowView: View {
                     UnreadCountBadge(count: entry.unreadCount)
                 }
 
-                Text(Self.relativeDateFormatter.localizedString(for: entry.lastEventAt, relativeTo: now))
+                Text(AgentRowDisplay.lastEventLabel(lastEventAt: entry.lastEventAt, now: now))
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
 
@@ -1027,5 +1025,28 @@ enum AgentRowDisplay {
             return "\(totalSeconds / 60)m \(totalSeconds % 60)s"
         }
         return "\(totalSeconds / 3600)h \((totalSeconds % 3600) / 60)m"
+    }
+
+    private static let relativeDateFormatter: RelativeDateTimeFormatter = {
+        let fmt = RelativeDateTimeFormatter()
+        fmt.unitsStyle = .short
+        return fmt
+    }()
+
+    /// A parent row's trailing "last event" label, from `lastEventAt` to
+    /// `now`. `RelativeDateTimeFormatter` renders the whole window
+    /// strictly inside one second, in either direction, as a future-tense
+    /// "in 0 sec." -- indistinguishable from an actual future instant, and
+    /// reached almost permanently by a pane whose hook events arrive
+    /// faster than the enclosing `TimelineView`'s one-second tick. Any
+    /// interval under one second, including a negative one where
+    /// `lastEventAt` lands ahead of `now`, instead reads the hardcoded
+    /// English "now" -- deliberately unlocalized, matching `stateLabel
+    /// (for:)`'s "Working"/"Idle" in this same type. At and beyond one
+    /// second the formatter's own unit escalation ("1 sec. ago" through
+    /// "1 hr. ago") is unchanged.
+    static func lastEventLabel(lastEventAt: Date, now: Date) -> String {
+        guard now.timeIntervalSince(lastEventAt) >= 1 else { return "now" }
+        return relativeDateFormatter.localizedString(for: lastEventAt, relativeTo: now)
     }
 }
