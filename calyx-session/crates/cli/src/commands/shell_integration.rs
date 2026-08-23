@@ -476,7 +476,7 @@ mod tests {
         let result = resolve_shell_integration_env(|key| fake_env.get(key).map(|v| v.to_string()));
 
         assert!(
-            as_map(result).get("CALYX_ZSH_ZDOTDIR").is_none(),
+            !as_map(result).contains_key("CALYX_ZSH_ZDOTDIR"),
             "CALYX_ZSH_ZDOTDIR is a zsh-specific concept; a non-zsh $SHELL (fish here) must never \
              receive it as a stray env var"
         );
@@ -494,10 +494,14 @@ mod tests {
     // so this relays the client's own ZDOTDIR verbatim in that case.
 
     #[test]
-    fn resolve_shell_integration_env_relays_client_zdotdir_verbatim_when_no_resources_dir_for_zsh() {
+    fn resolve_shell_integration_env_relays_client_zdotdir_verbatim_when_no_resources_dir_for_zsh()
+    {
         let fake_env: BTreeMap<&str, &str> = [
             ("SHELL", "/bin/zsh"),
-            ("ZDOTDIR", "/Users/alice/Library/Application Support/Calyx/shell-integration/zsh"),
+            (
+                "ZDOTDIR",
+                "/Users/alice/Library/Application Support/Calyx/shell-integration/zsh",
+            ),
         ]
         .into_iter()
         .collect();
@@ -515,10 +519,14 @@ mod tests {
     }
 
     #[test]
-    fn resolve_shell_integration_env_does_not_relay_zdotdir_for_non_zsh_shell_without_resources_dir() {
+    fn resolve_shell_integration_env_does_not_relay_zdotdir_for_non_zsh_shell_without_resources_dir(
+    ) {
         let fake_env: BTreeMap<&str, &str> = [
             ("SHELL", "/usr/bin/fish"),
-            ("ZDOTDIR", "/Users/alice/Library/Application Support/Calyx/shell-integration/zsh"),
+            (
+                "ZDOTDIR",
+                "/Users/alice/Library/Application Support/Calyx/shell-integration/zsh",
+            ),
         ]
         .into_iter()
         .collect();
@@ -526,7 +534,7 @@ mod tests {
         let result = resolve_shell_integration_env(|key| fake_env.get(key).map(|v| v.to_string()));
 
         assert!(
-            as_map(result).get("ZDOTDIR").is_none(),
+            !as_map(result).contains_key("ZDOTDIR"),
             "the ZDOTDIR relay (no resources dir case) is zsh-specific -- ZDOTDIR means nothing to \
              fish, so a non-zsh $SHELL must not receive it"
         );
@@ -542,7 +550,10 @@ mod tests {
         let fake_env: BTreeMap<&str, &str> = [
             ("GHOSTTY_RESOURCES_DIR", "/opt/ghostty-resources"),
             ("SHELL", "/bin/zsh"),
-            ("XDG_DATA_DIRS", "/opt/calyx/shell-integration:/usr/local/share:/usr/share"),
+            (
+                "XDG_DATA_DIRS",
+                "/opt/calyx/shell-integration:/usr/local/share:/usr/share",
+            ),
         ]
         .into_iter()
         .collect();
@@ -557,7 +568,8 @@ mod tests {
     }
 
     #[test]
-    fn resolve_shell_integration_env_forwards_xdg_data_dirs_for_fish_persistent_panes_without_resources_dir() {
+    fn resolve_shell_integration_env_forwards_xdg_data_dirs_for_fish_persistent_panes_without_resources_dir(
+    ) {
         // THE BUG this specific case fixes: a persistent-session fish
         // pane has no GHOSTTY_RESOURCES_DIR at all (fish never went
         // through ghostty's zsh-specific setup to begin with), so before
@@ -569,7 +581,10 @@ mod tests {
         // via plain process-env inheritance.
         let fake_env: BTreeMap<&str, &str> = [
             ("SHELL", "/usr/bin/fish"),
-            ("XDG_DATA_DIRS", "/opt/calyx/shell-integration:/usr/local/share:/usr/share"),
+            (
+                "XDG_DATA_DIRS",
+                "/opt/calyx/shell-integration:/usr/local/share:/usr/share",
+            ),
         ]
         .into_iter()
         .collect();

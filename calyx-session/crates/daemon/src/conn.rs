@@ -276,6 +276,9 @@ impl Conn {
                 self.reply(&ControlMsg::HistoryEnabled { enabled })
             }
             ControlMsg::PrepareHandoff => self.prepare_handoff(),
+            ControlMsg::GetHealth => self.reply(&ControlMsg::Health {
+                user_lookup_ok: crate::health::user_lookup_ok(),
+            }),
             // Server-to-client messages arriving from a client are a
             // protocol violation.
             ControlMsg::HelloOk { .. }
@@ -289,6 +292,7 @@ impl Conn {
             | ControlMsg::SetHistoryEnabledOk { .. }
             | ControlMsg::HistoryEnabled { .. }
             | ControlMsg::PrepareHandoffOk { .. }
+            | ControlMsg::Health { .. }
             | ControlMsg::Event(_)
             | ControlMsg::Err { .. } => false,
         }

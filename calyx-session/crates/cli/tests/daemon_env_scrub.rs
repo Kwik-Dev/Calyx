@@ -39,33 +39,43 @@
 //! process environment and this test process's environment are
 //! genuinely separate address spaces.
 //!
-//! `calyx-session new` (unlike `attach`) sends `SessionSpec.env:
-//! vec![]` (see `commands::new::run`), so a session created this way
-//! carries no per-session env of its own: whatever the spawned shell
-//! sees came entirely from the daemon's own inherited process
-//! environment, which is exactly the leak path this test proves is
-//! closed. This test's one session is also created with no `--argv`
-//! at all, so `spec.argv` is `None` and `session.rs` must resolve the
-//! executable to run from `$SHELL` itself: `SHELL` is pointed at an
-//! executable dumper script (`write_dumper_shell`) rather than a
-//! nonexistent path, so this genuinely exercises that default-argv
-//! resolution instead of only proving `SHELL` is inherited (an
-//! explicit `--argv` session would prove just the latter, since
-//! `session.rs` never reads `$SHELL` once `spec.argv` is `Some`).
+//! `calyx-session new`'s `SessionSpec.env` (see
+//! `commands::new::build_spec`) carries `resolve_terminal_env`, read
+//! from the `new` invocation's own client process, not the daemon's:
+//! `TERM`/`TERMINFO`/`LANG`/`PATH`/etc reach the session shell from
+//! whichever process ran `calyx-session new`, overriding whatever the
+//! daemon itself happened to inherit for those same keys. Every other
+//! variable this test poisons is either scrubbed (`POISONED_ENV`) or,
+//! for keys `resolve_terminal_env` never touches, falls through
+//! unchanged from the daemon's own inherited environment, which is
+//! exactly the leak path this test proves is closed for THOSE keys.
+//! This test's one session is also created with no `--argv` at all, so
+//! `spec.argv` is `None` and `session.rs` must resolve the executable
+//! to run from `$SHELL` itself: `SHELL` is pointed at an executable
+//! dumper script (`write_dumper_shell`) rather than a nonexistent
+//! path, so this genuinely exercises that default-argv resolution
+//! instead of only proving `SHELL` is inherited (an explicit `--argv`
+//! session would prove just the latter, since `session.rs` never reads
+//! `$SHELL` once `spec.argv` is `Some`).
 //!
-//! `TERMINFO`, `GHOSTTY_BIN_DIR`, and `XDG_DATA_DIRS` are deliberately
-//! absent from `POISONED_ENV`: none of the three is in
-//! `SCRUBBED_ENV_VARS` either (see that const's own doc comment for
-//! why), so this test asserts the opposite for each instead, that it
-//! DOES survive into the session shell with the exact value set on
-//! the daemon, mirroring the `SHELL` assertion. `TERMINFO` and
-//! `GHOSTTY_BIN_DIR` survive for one reason: nothing on any path a
-//! session shell can take ever re-supplies either one, so scrubbing
-//! them would be a pure loss, not a fix, even though the daemon's own
-//! inherited copy can go stale. `XDG_DATA_DIRS` survives for a
-//! different reason: its inherited copy carries the user's own real
-//! entries alongside whatever Calyx or ghostty appended, not just a
-//! stale pointer with nothing else riding along.
+//! `TERMINFO` is forwarded by `resolve_terminal_env`, so this test sets
+//! it explicitly on the `new` invocation itself (`CLIENT_TERMINFO`,
+//! distinct from the daemon's own poisoned copy, `KNOWN_TERMINFO`) and
+//! asserts the session shell sees the client's value, not the
+//! daemon's: proof the client-supplied copy actually reaches the
+//! shell rather than merely not crashing. `GHOSTTY_BIN_DIR` and
+//! `XDG_DATA_DIRS` are deliberately absent from both `POISONED_ENV` and
+//! `resolve_terminal_env`'s own key list, so this test asserts the
+//! daemon-inheritance fall-through for both instead: they DO survive
+//! into the session shell with the exact value set on the daemon,
+//! mirroring the `SHELL` assertion. `GHOSTTY_BIN_DIR` survives for one
+//! reason: nothing on any path a session shell can take ever
+//! re-supplies it, so scrubbing it would be a pure loss, not a fix,
+//! even though the daemon's own inherited copy can go stale.
+//! `XDG_DATA_DIRS` survives for a different reason: its inherited copy
+//! carries the user's own real entries alongside whatever Calyx or
+//! ghostty appended, not just a stale pointer with nothing else riding
+//! along.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -101,16 +111,28 @@ const POISONED_ENV: &[(&str, &str)] = &[
     ("CALYX_SURFACE_ID", "poisoned-inherited-surface-id"),
 ];
 
-/// Neither `attach` nor `new` ever puts `TERMINFO` into
-/// `SessionSpec.env`, and `SCRUBBED_ENV_VARS` deliberately leaves it
-/// out of the scrub too (see that const's own doc comment): nothing
-/// re-supplies a fresh value on any path a session shell can take, so
-/// a value the daemon inherited for it, however stale, must still
-/// reach the session shell unchanged rather than being dropped, the
-/// same way `SHELL` does.
-const KNOWN_TERMINFO: &str = "poisoned-but-must-survive-terminfo";
+/// Poisoned on the daemon's own process environment, exactly like
+/// `POISONED_ENV`'s members, but `new`'s `resolve_terminal_env` DOES
+/// forward `TERMINFO` from the `new` invocation's own client process
+/// (`CLIENT_TERMINFO`, set explicitly on that one invocation below), so
+/// this value must be overridden in the session shell, never seen
+/// there. It exists only to prove the override actually happens
+/// (rather than the client's value merely also being present).
+const KNOWN_TERMINFO: &str = "poisoned-but-must-be-overridden-terminfo";
 
-/// Same rationale as `KNOWN_TERMINFO` above, for `GHOSTTY_BIN_DIR`.
+/// Set on the `new` invocation itself (not the daemon): the value
+/// `resolve_terminal_env` should forward into the session shell,
+/// overriding the daemon's own stale `KNOWN_TERMINFO`.
+const CLIENT_TERMINFO: &str = "resupplied-by-new-client-terminfo";
+
+/// `new` never puts `GHOSTTY_BIN_DIR` into `SessionSpec.env`
+/// (`resolve_terminal_env`'s key list doesn't include it), and
+/// `SCRUBBED_ENV_VARS` deliberately leaves it out of the scrub too
+/// (see that const's own doc comment): nothing re-supplies a fresh
+/// value on any path a session shell can take, so a value the daemon
+/// inherited for it, however stale, must still reach the session
+/// shell unchanged rather than being dropped, the same way `SHELL`
+/// does.
 const KNOWN_GHOSTTY_BIN_DIR: &str = "poisoned-but-must-survive-ghostty-bin-dir";
 
 /// `resolve_shell_integration_env` forwards `XDG_DATA_DIRS` verbatim
@@ -164,12 +186,30 @@ fn wait_for_socket(path: &Path, timeout: Duration) -> bool {
 }
 
 fn run_cli(runtime_dir: &Path, state_dir: &Path, args: &[&str]) -> Output {
-    Command::new(bin())
-        .args(["--runtime-dir", runtime_dir.to_str().unwrap()])
+    run_cli_with_env(runtime_dir, state_dir, args, &[])
+}
+
+/// Like `run_cli`, but sets `env` on the subprocess itself: needed for
+/// the `new` invocation below, whose own client-side environment (not
+/// the daemon's) is what `resolve_terminal_env` reads `TERMINFO` from.
+/// Without pinning this explicitly, the assertion on that key would
+/// silently depend on whether the machine running the test happens to
+/// have `TERMINFO` set in its own ambient environment.
+fn run_cli_with_env(
+    runtime_dir: &Path,
+    state_dir: &Path,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> Output {
+    let mut cmd = Command::new(bin());
+    cmd.args(["--runtime-dir", runtime_dir.to_str().unwrap()])
         .args(["--state-dir", state_dir.to_str().unwrap()])
         .args(args)
-        .stdin(Stdio::null())
-        .output()
+        .stdin(Stdio::null());
+    for &(key, value) in env {
+        cmd.env(key, value);
+    }
+    cmd.output()
         .unwrap_or_else(|e| panic!("run `calyx-session {}`: {e}", args.join(" ")))
 }
 
@@ -234,14 +274,22 @@ fn session_shell_never_sees_the_daemons_inherited_pane_scoped_env() {
         );
     }
 
-    // `new`, not `attach`, and with no `--argv` at all: no
-    // `SessionSpec.env` of its own reaches this session, so every
-    // variable its shell ends up seeing came from the daemon's own
-    // process environment, poisoned above; and `spec.argv` is `None`,
-    // so `session.rs` must resolve the executable to run from `$SHELL`
+    // `new`, not `attach`, and with no `--argv` at all: every variable
+    // its shell ends up seeing either came from `resolve_terminal_env`,
+    // read from THIS invocation's own client process (`TERMINFO` is
+    // set explicitly here, to `CLIENT_TERMINFO`, to pin that it
+    // overrides the daemon's own stale copy), or fell through
+    // unchanged from the daemon's own process environment, poisoned
+    // above, for every other key. `spec.argv` is `None`, so
+    // `session.rs` must resolve the executable to run from `$SHELL`
     // itself (`dumper_shell_path`), genuinely exercising that
     // default-argv path rather than merely asserting SHELL survives.
-    let new_result = run_cli(&runtime_dir, &state_dir, &["new"]);
+    let new_result = run_cli_with_env(
+        &runtime_dir,
+        &state_dir,
+        &["new"],
+        &[("TERMINFO", CLIENT_TERMINFO)],
+    );
     assert!(
         new_result.status.success(),
         "new should succeed, got {new_result:?}"
@@ -302,12 +350,12 @@ fn session_shell_never_sees_the_daemons_inherited_pane_scoped_env() {
 
     assert_eq!(
         dumped_env.get("TERMINFO").map(String::as_str),
-        Some(KNOWN_TERMINFO),
-        "TERMINFO must still reach a `new`-created session's shell after the scrub, unchanged \
-         from whatever the daemon itself inherited: it is deliberately left out of \
-         SCRUBBED_ENV_VARS (crates/cli/src/commands/daemon.rs) because nothing on any path a \
-         session shell can take ever re-supplies it, so scrubbing it would be a pure loss, not a \
-         fix, even though the daemon's own inherited copy can go stale. Got dumped env: {dumped:?}"
+        Some(CLIENT_TERMINFO),
+        "TERMINFO must reach a `new`-created session's shell as the value supplied by the \
+         `new` invocation's own client process (resolve_terminal_env), not the daemon's own \
+         inherited (and here, deliberately poisoned) copy: a launchd-owned daemon's job \
+         environment never has TERMINFO at all, so this client-side re-supply is the only way \
+         a session shell gets one. Got dumped env: {dumped:?}"
     );
 
     assert_eq!(

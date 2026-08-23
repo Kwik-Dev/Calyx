@@ -2,6 +2,8 @@
 
 mod cli;
 mod commands;
+#[cfg(target_os = "macos")]
+mod launch_agent;
 
 use std::process::ExitCode;
 
