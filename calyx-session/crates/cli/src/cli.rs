@@ -71,6 +71,15 @@ pub struct DaemonArgs {
     /// Spawned by `calyx-session upgrade`; not meant for direct use.
     #[arg(long, value_name = "PATH")]
     pub handoff_connect: Option<PathBuf>,
+    /// (EXPERIMENTAL, internal) If the single-daemon flock is already
+    /// held, adopt the running daemon (connect as a client, drive
+    /// `PrepareHandoff`, become the new daemon) instead of exiting as a
+    /// duplicate. LaunchAgent-only: ordinary `daemon` starts must keep
+    /// collapsing to one instance (see `daemon_lock_regression.rs`),
+    /// so this is opt-in and requires `--foreground` (launchd always
+    /// starts its job in the foreground).
+    #[arg(long, requires = "foreground")]
+    pub adopt_existing: bool,
 }
 
 #[derive(Args, Debug)]

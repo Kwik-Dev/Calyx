@@ -147,6 +147,25 @@ pub enum ControlMsg {
         code: String,
         msg: String,
     },
+    /// Asks the daemon whether its process context can still resolve the
+    /// current user (see `Health`). A double-forked daemon inherits the
+    /// spawning Calyx.app's jetsam coalition, and once that app quits
+    /// the daemon's process context can no longer reach opendirectoryd,
+    /// at which point every shell it spawns afterwards loses
+    /// `$USER`/`$LOGNAME` at login. A launchd-owned daemon (its own
+    /// coalition, `ppid` 1) does not have this problem. Adding this
+    /// variant does not bump `PROTOCOL_VERSION`: a daemon predating this
+    /// message simply fails to decode it and closes the connection,
+    /// which callers must already treat as "this daemon needs to be
+    /// replaced" (see the `launch_agent`/`attach` health-probe
+    /// contract).
+    GetHealth,
+    /// Reply to `GetHealth`. `user_lookup_ok` is `true` when
+    /// `getpwuid(geteuid())` succeeds in the daemon's own process
+    /// context.
+    Health {
+        user_lookup_ok: bool,
+    },
 }
 
 /// A server-pushed event not requested by any specific `ControlMsg`.
@@ -252,6 +271,34 @@ mod tests {
         };
         let encoded = encode_control(&msg).expect("encode PrepareHandoffOk");
         let decoded = decode_control(&encoded).expect("decode PrepareHandoffOk");
+        assert_eq!(decoded, msg);
+    }
+
+    /// launchd-owned daemon health probe: the client-to-server trigger.
+    /// A unit variant CBOR-encodes as a bare string, distinct from a
+    /// struct variant's map encoding (see `health_round_trips_through_cbor`
+    /// below), so this must be exercised separately even though both
+    /// variants exist on the same enum.
+    #[test]
+    fn get_health_round_trips_through_cbor() {
+        let msg = ControlMsg::GetHealth;
+        let encoded = encode_control(&msg).expect("encode GetHealth");
+        let decoded = decode_control(&encoded).expect("decode GetHealth");
+        assert_eq!(decoded, msg);
+    }
+
+    /// See `get_health_round_trips_through_cbor`. The server's reply
+    /// carries `user_lookup_ok`, which callers use to distinguish a
+    /// healthy launchd-owned daemon (`getpwuid` on its own euid
+    /// succeeds) from one whose process context can no longer reach
+    /// opendirectoryd.
+    #[test]
+    fn health_round_trips_through_cbor() {
+        let msg = ControlMsg::Health {
+            user_lookup_ok: true,
+        };
+        let encoded = encode_control(&msg).expect("encode Health");
+        let decoded = decode_control(&encoded).expect("decode Health");
         assert_eq!(decoded, msg);
     }
 }

@@ -3,8 +3,10 @@ use std::path::{Path, PathBuf};
 
 use daemon::{Daemon, DaemonConfig, LOCK_FILE};
 use nix::fcntl::{Flock, FlockArg};
+use proto::ControlMsg;
 
 use crate::cli::DaemonArgs;
+use crate::commands::client::{server_err, unexpected, DaemonClient};
 use crate::commands::{resolve_runtime_dir, resolve_state_dir, CommandError};
 
 /// Variables scrubbed from the daemon's own process environment
@@ -156,6 +158,9 @@ pub fn run(
     }
 
     if args.foreground {
+        if args.adopt_existing {
+            return run_foreground_single_instance(config);
+        }
         Daemon::bind(config)?.run_until_idle()?;
         return Ok(0);
     }
@@ -164,6 +169,45 @@ pub fn run(
         return Ok(0);
     }
     run_daemonized(config)
+}
+
+/// `daemon --foreground --adopt-existing` entry point (LaunchAgent
+/// only; see `adopt_existing`'s doc comment on `DaemonArgs`): takes the
+/// single-daemon flock non-blockingly, binding fresh if it wins, or
+/// adopting the daemon that already holds it if it loses.
+fn run_foreground_single_instance(config: DaemonConfig) -> Result<u8, CommandError> {
+    match daemon::try_acquire_single_daemon_lock(&config.runtime_dir)? {
+        Some(lock) => {
+            Daemon::bind(config)?.with_lock(lock).run_until_idle()?;
+            Ok(0)
+        }
+        None => adopt_running_daemon(config),
+    }
+}
+
+/// Connects to the daemon already holding the single-daemon lock as an
+/// ordinary client, drives `PrepareHandoff`, and becomes the new
+/// daemon via `daemon::run_handoff_receiver` (the receiver side of the
+/// same Live Handoff `upgrade` drives, run here by the process that
+/// lost the lock race instead of a third-party orchestrator). Never
+/// falls back to `Daemon::bind` on any failure: that would delete and
+/// rebind the existing socket out from under a daemon that is still
+/// alive and serving it.
+fn adopt_running_daemon(config: DaemonConfig) -> Result<u8, CommandError> {
+    let socket = config.runtime_dir.join(::daemon::SOCKET_FILE);
+    let client = DaemonClient::connect(&socket)?;
+    let path = match client.request(&ControlMsg::PrepareHandoff)? {
+        ControlMsg::PrepareHandoffOk { path } => path,
+        ControlMsg::Err { code, msg } => return Err(server_err(code, msg)),
+        other => return Err(unexpected(&other)),
+    };
+    // Keep `client` alive for the whole handoff attempt: the old
+    // daemon reports a `handoff-failed` `Err` on this same connection
+    // if adoption fails on this side, and dropping the connection
+    // early would look identical to a successful takeover.
+    daemon::run_handoff_receiver(config, std::path::Path::new(&path))?;
+    drop(client);
+    Ok(0)
 }
 
 /// Double-forks into a detached grandchild (new session in between, so
@@ -245,6 +289,14 @@ fn run_daemonized_receiver(
 
 /// Never returns control to a caller that could double-run main-exit
 /// logic: ends in `_exit`.
+///
+/// Duplicates `daemon::try_acquire_single_daemon_lock`'s open/flock/
+/// dup/forget sequence rather than calling it: that function maps a
+/// flock failure to `Ok(None)` only for `EWOULDBLOCK` and to `Err`
+/// otherwise, while this function needs every flock failure, of any
+/// kind, to collapse to the same quiet `_exit(0)` (pinned by
+/// `daemon_lock_regression.rs`). See that function's own doc comment
+/// for the full reasoning.
 fn run_daemonized(config: DaemonConfig) -> Result<u8, CommandError> {
     detach_stdio(&config);
 

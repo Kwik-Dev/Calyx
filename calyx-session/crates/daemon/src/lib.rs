@@ -46,6 +46,7 @@ mod conn;
 mod error;
 mod fdpass;
 mod handoff;
+mod health;
 mod history;
 mod ledger;
 mod outq;
@@ -173,6 +174,48 @@ impl Daemon {
         let socket = self.socket_path();
         start_accepting(&shared, self.listener);
         block_until_idle(shared, socket)
+    }
+}
+
+/// Takes the single-daemon flock on `runtime_dir/sessiond.lock`
+/// non-blockingly. `Ok(Some(fd))` on success: a dup of the held lock
+/// fd, with the guard itself leaked so the hold lasts this process's
+/// whole life. `Ok(None)` if another process already holds it (not an
+/// error: the launchd-owned `--adopt-existing` path uses this to
+/// decide whether to bind fresh or adopt the running daemon instead).
+///
+/// `cli::commands::daemon::run_daemonized` performs the identical
+/// open/flock/dup/forget sequence itself rather than calling this
+/// function, and deliberately keeps doing so: the two callers need
+/// different mappings from a flock failure to an exit code, and this
+/// function's own `Result` collapses exactly the distinction
+/// `run_daemonized` needs. `run_daemonized` `_exit(1)`s on an open
+/// failure but `_exit(0)`s on ANY flock failure (a plain "someone else
+/// is already the daemon, so this one quietly steps aside" collapse,
+/// pinned by `daemon_lock_regression.rs`); this function instead maps
+/// only `EWOULDBLOCK` to `Ok(None)` and every other flock errno to
+/// `Err`, since the launchd route needs to actually report an
+/// unexpected flock failure rather than silently treat it as "someone
+/// else is serving". Routing `run_daemonized` through this function
+/// would require reconstructing that lost distinction from `Err`'s
+/// opaque `DaemonError`, trading one duplicated call sequence for a
+/// fragile string/kind match on an error this function was never
+/// designed to carry.
+pub fn try_acquire_single_daemon_lock(runtime_dir: &Path) -> Result<Option<OwnedFd>, DaemonError> {
+    create_private_dir(runtime_dir)?;
+    let lock_file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(runtime_dir.join(LOCK_FILE))?;
+    match nix::fcntl::Flock::lock(lock_file, nix::fcntl::FlockArg::LockExclusiveNonblock) {
+        Ok(lock) => {
+            let dup = lock.as_fd().try_clone_to_owned()?;
+            std::mem::forget(lock);
+            Ok(Some(dup))
+        }
+        Err((_file, errno)) if errno == nix::errno::Errno::EWOULDBLOCK => Ok(None),
+        Err((_file, errno)) => Err(DaemonError::Io(std::io::Error::from(errno))),
     }
 }
 
@@ -429,8 +472,16 @@ fn accept_loop(listener: UnixListener, shared: Arc<Shared>) {
 }
 
 /// mkdir -p with mode 0700 for path components this call creates
-/// (pre-existing directories keep their permissions).
-fn create_private_dir(dir: &Path) -> Result<(), DaemonError> {
+/// (pre-existing directories keep their permissions). Exposed beyond
+/// this crate so a caller that must create `runtime_dir`/`state_dir`
+/// before a `Daemon` exists to do it for them (the launchd-owned
+/// route's `connect_via_launchd`, which must create both directories
+/// before handing the job to launchd: launchd opens the plist's
+/// `StandardOutPath`/`StandardErrorPath` under `state_dir` itself, so
+/// they must already exist, and with the same private mode `Daemon::bind`
+/// itself would have used) gets the identical mode-0700 semantics
+/// rather than a second, possibly-diverging implementation.
+pub fn create_private_dir(dir: &Path) -> Result<(), DaemonError> {
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true).mode(0o700);
     builder.create(dir)?;

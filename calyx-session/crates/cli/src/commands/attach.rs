@@ -21,12 +21,22 @@ use proto::{
 use crate::cli::AttachArgs;
 use crate::commands::client::{server_err, unexpected, DaemonClient};
 use crate::commands::shell_integration::resolve_shell_integration_env;
+use crate::commands::terminal_env::resolve_terminal_env;
 use crate::commands::{resolve_runtime_dir, resolve_state_dir, socket_path, CommandError};
 
 /// Exit code for "the connection or the daemon went away".
 const EXIT_DISCONNECTED: u8 = 2;
 /// Bound on auto-start + reconnect attempts.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Bound on waiting for a kickstarted launchd-owned daemon to become
+/// healthy (macOS default-session-root route only; see
+/// `connect_via_launchd`). Longer than `CONNECT_TIMEOUT`: adopting an
+/// existing daemon with many live sessions runs `daemon::handoff`'s
+/// receiver, which itself budgets up to `HANDOFF_ACK_TIMEOUT` (10s) to
+/// receive the manifest/fds plus a further receive/adopt budget; 20s
+/// covers both with margin.
+#[cfg(target_os = "macos")]
+const HEALTH_TIMEOUT: Duration = Duration::from_secs(20);
 
 pub fn run(
     runtime_dir: &Option<PathBuf>,
@@ -41,14 +51,18 @@ pub fn run(
 
     let tty_size = tty_size().unwrap_or((80, 24));
     let (cols, rows) = resolved_initial_size(tty_size, args.initial_cols, args.initial_rows);
-    let create = args.create.then(|| SessionSpec {
-        id: args.id.clone(),
-        name: args.name.clone(),
-        cwd: args.cwd.clone(),
-        argv: (!args.argv.is_empty()).then(|| args.argv.clone()),
-        env: resolve_shell_integration_env(|k| std::env::var(k).ok()),
-        cols,
-        rows,
+    let create = args.create.then(|| {
+        let mut env = resolve_terminal_env(|k| std::env::var(k).ok());
+        env.extend(resolve_shell_integration_env(|k| std::env::var(k).ok()));
+        SessionSpec {
+            id: args.id.clone(),
+            name: args.name.clone(),
+            cwd: args.cwd.clone(),
+            argv: (!args.argv.is_empty()).then(|| args.argv.clone()),
+            env,
+            cols,
+            rows,
+        }
     });
 
     match client.request(&ControlMsg::Attach {
@@ -168,11 +182,45 @@ fn bridge(stream: UnixStream) -> Result<u8, CommandError> {
 /// Connects to the daemon, auto-starting it if the socket is dead:
 /// take the spawn lock (so concurrent attaches spawn one daemon, not
 /// N), start `calyx-session daemon`, and retry with backoff.
+///
+/// On macOS, when `runtime_dir`/`state_dir` resolve to the real
+/// default session root, this instead goes through the launchd-owned
+/// daemon route (`connect_via_launchd`): a double-forked daemon
+/// inherits the spawning Calyx.app's jetsam coalition and loses
+/// `getpwuid` access once that app quits (see `proto::control`'s
+/// `GetHealth` doc comment), which a launchd-owned daemon (its own
+/// coalition, never double-forked) does not. Every other path (an
+/// explicit non-default `--runtime-dir`, e.g. every daemon/cli test
+/// fixture and the E2E harness's `/tmp/cxe2e-*` root, or a non-macOS
+/// remote host with no launchd) keeps the direct-spawn behavior below
+/// unmodified.
 fn connect_or_spawn(
     socket: &Path,
     runtime_dir: &Option<PathBuf>,
     state_dir: &Option<PathBuf>,
 ) -> Result<DaemonClient, CommandError> {
+    #[cfg(target_os = "macos")]
+    {
+        // `default_session_root` resolves without panicking when `HOME`
+        // is unset (unlike `resolve_runtime_dir`/`resolve_state_dir`'s
+        // `None` fallback, which `.expect()`s it): an explicit
+        // `--runtime-dir`/`--state-dir` pair must keep working in a
+        // `HOME`-less environment (`env -i`, some CI/launchd contexts)
+        // exactly as it did before this route existed, so "can't tell
+        // whether this is the default root" degrades to "assume it
+        // isn't" rather than crashing.
+        if let Some((default_run, default_state)) = crate::commands::default_session_root() {
+            if crate::commands::uses_default_session_root(
+                runtime_dir,
+                state_dir,
+                &default_run,
+                &default_state,
+            ) {
+                return connect_via_launchd(socket, &default_run, &default_state);
+            }
+        }
+    }
+
     let deadline = Instant::now() + CONNECT_TIMEOUT;
     let mut spawned = false;
     loop {
@@ -189,6 +237,262 @@ fn connect_or_spawn(
             spawn_daemon(runtime_dir, state_dir)?;
         }
         thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// The launchd-owned daemon route (macOS, default session root only):
+///
+/// 1. Creates `runtime_dir`/`state_dir` (mode `0700`, same as
+///    `Daemon::bind` would) up front: the plist's `StandardOutPath`/
+///    `StandardErrorPath` live under `state_dir`, and launchd opens
+///    them the moment the job is loaded/kickstarted below, before
+///    `Daemon::bind` ever runs inside that job to create them itself.
+/// 2. Installs the LaunchAgent's files (idempotent; never calls
+///    `launchctl`). A failure here is reported, never silently
+///    swallowed into a direct spawn: that would just recreate the
+///    broken (double-forked, coalition-bound) daemon this route exists
+///    to avoid. This step, loading the job (3), and the first
+///    `kickstart` (4) all hold one `InstallLock`, so two concurrent
+///    attaches (e.g. several panes restoring at once) can never
+///    interleave one attach's `reload` (`bootout`..`bootstrap`) window
+///    with another's `kickstart`.
+/// 3. Loads the job if it isn't loaded yet (`ensure_loaded`, never
+///    `bootout`s).
+/// 4. Connects. If nobody answers: only reload the job (`bootout` +
+///    `bootstrap`, which can kill a running daemon) when the plist
+///    just changed -- a socket that's merely not up yet, with an
+///    unchanged plist, needs nothing more than a `kickstart` -- then
+///    `kickstart`s and retries until `CONNECT_TIMEOUT`. If the plist
+///    did NOT just change, reloading here would be pointless (the
+///    on-disk job definition already matches whatever's running or
+///    about to run).
+/// 5. Once connected, probes health over a throwaway connection (a
+///    healthy daemon's own `getpwuid` on its own euid succeeds).
+///    Crucially, if the plist changed but the socket answered anyway
+///    (a daemon was already serving), this never reloads: `bootout`
+///    would kill every live session the very mechanism
+///    (`--adopt-existing`) this PR adds exists to preserve.
+/// 6. If unhealthy, `kickstart`s again (triggering `--adopt-existing`
+///    adoption of whatever daemon was already running) and polls until
+///    healthy or `HEALTH_TIMEOUT`. A `Busy` probe (the daemon merely
+///    hasn't answered `GetHealth` within its own read timeout yet) is
+///    never treated as unhealthy: see `HealthProbe`.
+/// 7. On timeout, tries one last connect. A daemon that answers is
+///    attached to with a warning: `daemon::handoff` has known failure
+///    modes (fd limits, a paused session thread that never resumes)
+///    under heavy session counts, and turning those into a hard attach
+///    failure would upgrade a display-only prompt bug into "can't open
+///    a pane at all". If nobody answers even now (the adopting daemon
+///    itself died and the old one has since exited), `kickstart`s once
+///    more and retries the connect up to `CONNECT_TIMEOUT` before
+///    giving up, rather than warning about a daemon that isn't there
+///    and failing anyway.
+#[cfg(target_os = "macos")]
+fn connect_via_launchd(
+    socket: &Path,
+    runtime_dir: &Path,
+    state_dir: &Path,
+) -> Result<DaemonClient, CommandError> {
+    ::daemon::create_private_dir(runtime_dir)?;
+    ::daemon::create_private_dir(state_dir)?;
+
+    let installer = crate::launch_agent::LaunchAgentInstaller::system()?;
+    let current_exe = std::env::current_exe()?;
+
+    let lock = installer.lock()?;
+    let outcome = match installer.install_files(&lock, &current_exe, runtime_dir, state_dir) {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            eprintln!("calyx-session: failed to install the launchd session daemon: {e}");
+            return Err(CommandError::Io(e));
+        }
+    };
+    if let Err(e) = installer.ensure_loaded(&lock) {
+        eprintln!("calyx-session: failed to load the launchd session daemon: {e}");
+        return Err(CommandError::Io(e));
+    }
+
+    let reachable = UnixStream::connect(socket).is_ok();
+    if !reachable {
+        if should_reload_before_kickstart(outcome, reachable) {
+            if let Err(e) = installer.reload(&lock) {
+                eprintln!("calyx-session: failed to reload the launchd session daemon: {e}");
+                return Err(CommandError::Io(e));
+            }
+        }
+
+        let deadline = Instant::now() + CONNECT_TIMEOUT;
+        let mut kickstarted = false;
+        while UnixStream::connect(socket).is_err() {
+            if Instant::now() >= deadline {
+                return Err(CommandError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("the launchd session daemon did not start within {CONNECT_TIMEOUT:?}"),
+                )));
+            }
+            if !kickstarted {
+                kickstarted = true;
+                if let Err(e) = installer.kickstart(&lock) {
+                    eprintln!("calyx-session: failed to start the launchd session daemon: {e}");
+                    return Err(CommandError::Io(e));
+                }
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+    drop(lock);
+
+    match probe_health(socket) {
+        HealthProbe::Healthy | HealthProbe::Busy => DaemonClient::connect(socket),
+        HealthProbe::Unhealthy => {
+            {
+                let lock = installer.lock()?;
+                if let Err(e) = installer.kickstart(&lock) {
+                    eprintln!("calyx-session: failed to restart the launchd session daemon: {e}");
+                    return Err(CommandError::Io(e));
+                }
+            }
+            let health_deadline = Instant::now() + HEALTH_TIMEOUT;
+            while Instant::now() < health_deadline {
+                if matches!(probe_health(socket), HealthProbe::Healthy) {
+                    return DaemonClient::connect(socket);
+                }
+                thread::sleep(Duration::from_millis(200));
+            }
+
+            match DaemonClient::connect(socket) {
+                Ok(client) => {
+                    warn_user_lookup_may_be_broken();
+                    Ok(client)
+                }
+                Err(_) => {
+                    // The health poll can time out because the
+                    // adopting daemon itself died mid-handoff and the
+                    // old daemon has since exited too (its own idle
+                    // timeout, or it simply crashed), so the socket may
+                    // be gone entirely by now. Re-kickstart once for
+                    // one more chance at bringing a daemon back, rather
+                    // than warning about a daemon that isn't even there
+                    // and failing the attach anyway.
+                    {
+                        let lock = installer.lock()?;
+                        if let Err(e) = installer.kickstart(&lock) {
+                            eprintln!(
+                                "calyx-session: failed to restart the launchd session daemon: {e}"
+                            );
+                            return Err(CommandError::Io(e));
+                        }
+                    }
+                    let retry_deadline = Instant::now() + CONNECT_TIMEOUT;
+                    loop {
+                        match DaemonClient::connect(socket) {
+                            Ok(client) => {
+                                warn_user_lookup_may_be_broken();
+                                return Ok(client);
+                            }
+                            Err(e) => {
+                                if Instant::now() >= retry_deadline {
+                                    return Err(e);
+                                }
+                            }
+                        }
+                        thread::sleep(Duration::from_millis(100));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Printed only once an unhealthy daemon has actually been reached
+/// again, never merely attempted: a warning about a daemon that is not
+/// even there is worse than no warning at all.
+#[cfg(target_os = "macos")]
+fn warn_user_lookup_may_be_broken() {
+    eprintln!(
+        "warning: this calyx-session daemon cannot look up your user account; new \
+         shells will lose your user name in the prompt. Restarting the daemon fixes it."
+    );
+}
+
+/// Whether `connect_via_launchd` should call `reload()` (`bootout` +
+/// `bootstrap`, which can kill a running daemon) before retrying a
+/// `kickstart`: only when the plist just changed on this install AND
+/// the socket is currently unreachable. A changed plist while the
+/// socket is reachable (a daemon is serving) must never reload here --
+/// that would `bootout` every live session `--adopt-existing` exists to
+/// preserve; the plist takes effect the next time the job restarts on
+/// its own instead.
+#[cfg(target_os = "macos")]
+fn should_reload_before_kickstart(
+    outcome: crate::launch_agent::InstallOutcome,
+    socket_reachable: bool,
+) -> bool {
+    !socket_reachable && outcome == crate::launch_agent::InstallOutcome::PlistUpdated
+}
+
+/// The result of a `GetHealth` probe over a throwaway connection.
+///
+/// `Busy` (a read/write timeout on the probe connection, from
+/// `DaemonClient`'s own `IO_TIMEOUT`) is deliberately distinct from
+/// `Unhealthy`: it means the daemon is alive but simply hasn't answered
+/// yet (e.g. it's mid-handoff adopting another daemon for a different
+/// attach), not that it's broken. Treating a timeout as `Unhealthy`
+/// would misclassify a merely-busy daemon as needing re-adoption,
+/// burning `HEALTH_TIMEOUT` polling and printing a bogus warning for a
+/// daemon that only needed a moment. `Busy` skips both the poll and the
+/// warning and attaches immediately.
+///
+/// A residual case this doesn't detect: a launchd-owned daemon that is
+/// definitely, persistently unhealthy while also genuinely running
+/// (rather than merely busy) would still classify as `Unhealthy` and
+/// get `kickstart`ed, which is correct; there is no known way for that
+/// state to be confused with `Busy` (a busy daemon is, by definition,
+/// still processing something, not stuck).
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HealthProbe {
+    Healthy,
+    Unhealthy,
+    Busy,
+}
+
+/// `GetHealth` over a throwaway connection: `Health { user_lookup_ok:
+/// true }` is the only healthy reply. `Health { user_lookup_ok: false
+/// }`, a decode error, or a closed connection (an older daemon
+/// predating `GetHealth` closes on an unknown variant) all count as
+/// `Unhealthy`. A read/write timeout counts as `Busy`, not `Unhealthy`;
+/// see `HealthProbe`. The health probe is never reused as the real
+/// attach connection.
+#[cfg(target_os = "macos")]
+fn probe_health(socket: &Path) -> HealthProbe {
+    let client = match DaemonClient::connect(socket) {
+        Ok(client) => client,
+        Err(e) => return classify_probe_error(&e),
+    };
+    match client.request(&ControlMsg::GetHealth) {
+        Ok(ControlMsg::Health {
+            user_lookup_ok: true,
+        }) => HealthProbe::Healthy,
+        Ok(_) => HealthProbe::Unhealthy,
+        Err(e) => classify_probe_error(&e),
+    }
+}
+
+/// Classifies a probe-connection/request failure into `Busy` (a read or
+/// write timeout, from `DaemonClient`'s own `IO_TIMEOUT`) or
+/// `Unhealthy` (everything else: EOF, connection reset, connection
+/// refused, a decode error).
+#[cfg(target_os = "macos")]
+fn classify_probe_error(err: &CommandError) -> HealthProbe {
+    let kind = match err {
+        CommandError::Io(e) => Some(e.kind()),
+        CommandError::Protocol(proto::ProtoError::Io(e)) => Some(e.kind()),
+        _ => None,
+    };
+    match kind {
+        Some(std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => HealthProbe::Busy,
+        _ => HealthProbe::Unhealthy,
     }
 }
 
@@ -360,5 +664,94 @@ mod tests {
     #[test]
     fn absent_initial_grid_uses_current_tty_size() {
         assert_eq!(resolved_initial_size((99, 35), None, None), (99, 35));
+    }
+
+    #[cfg(target_os = "macos")]
+    mod reload_gating {
+        use super::super::should_reload_before_kickstart;
+        use crate::launch_agent::InstallOutcome;
+
+        /// A daemon that's already serving (socket reachable) must
+        /// never be reloaded, even if the plist just changed: `reload`
+        /// would `bootout` every live session.
+        #[test]
+        fn never_reloads_a_reachable_socket() {
+            assert!(!should_reload_before_kickstart(
+                InstallOutcome::PlistUpdated,
+                true
+            ));
+            assert!(!should_reload_before_kickstart(
+                InstallOutcome::Unchanged,
+                true
+            ));
+        }
+
+        /// An unreachable socket only reloads when the plist actually
+        /// changed; an unchanged plist needs nothing beyond a plain
+        /// `kickstart`.
+        #[test]
+        fn unreachable_socket_reloads_only_when_the_plist_changed() {
+            assert!(should_reload_before_kickstart(
+                InstallOutcome::PlistUpdated,
+                false
+            ));
+            assert!(!should_reload_before_kickstart(
+                InstallOutcome::Unchanged,
+                false
+            ));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    mod health_probe_classification {
+        use super::super::{classify_probe_error, HealthProbe};
+        use crate::commands::CommandError;
+
+        /// A read/write timeout on the probe connection (the daemon is
+        /// merely busy, not broken) must classify as `Busy`, never
+        /// `Unhealthy`.
+        #[test]
+        fn read_timeout_classifies_as_busy() {
+            let err = CommandError::Io(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "timed out waiting for a reply",
+            ));
+            assert_eq!(classify_probe_error(&err), HealthProbe::Busy);
+
+            let err = CommandError::Protocol(proto::ProtoError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "timed out waiting for a reply",
+            )));
+            assert_eq!(classify_probe_error(&err), HealthProbe::Busy);
+        }
+
+        /// EOF/connection-reset (an older daemon closing on an unknown
+        /// `GetHealth` variant) must classify as `Unhealthy`, not
+        /// `Busy`.
+        #[test]
+        fn eof_and_connection_reset_classify_as_unhealthy() {
+            let eof = CommandError::Protocol(proto::ProtoError::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "connection closed",
+            )));
+            assert_eq!(classify_probe_error(&eof), HealthProbe::Unhealthy);
+
+            let reset = CommandError::Io(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "connection reset by peer",
+            ));
+            assert_eq!(classify_probe_error(&reset), HealthProbe::Unhealthy);
+        }
+
+        /// A decode error or any other non-I/O failure must also
+        /// classify as `Unhealthy`.
+        #[test]
+        fn non_io_errors_classify_as_unhealthy() {
+            let err = CommandError::Server {
+                code: "bad-reply".to_string(),
+                msg: "unexpected".to_string(),
+            };
+            assert_eq!(classify_probe_error(&err), HealthProbe::Unhealthy);
+        }
     }
 }
