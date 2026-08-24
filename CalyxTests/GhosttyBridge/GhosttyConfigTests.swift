@@ -295,3 +295,178 @@ struct GhosttyConfigForegroundOverrideTests {
                 "Opacity 0.0 vs 1.0 should produce different foreground decisions for #F0F0F0")
     }
 }
+
+// MARK: - runtimeOverrideText Tests
+//
+// Proposed API:
+//
+//   static func runtimeOverrideText(
+//       glassOpacity: Double,
+//       opacityCells: Bool,
+//       preset: String,
+//       customHex: String
+//   ) -> String
+//
+// Pure extraction of the text-generation inlined in
+// applyRuntimeOverrides(_:) (GhosttyConfig.swift). Builds the
+// managed block plus, when foregroundOverrideLine(preset:customHex:glassOpacity:)
+// is non-nil, an appended "\nforeground = ..." line.
+
+@MainActor
+@Suite("GhosttyConfigManager.runtimeOverrideText Tests")
+struct GhosttyConfigRuntimeOverrideTextTests {
+
+    // Every field in this block is determined by the spec, not by reading
+    // the current inline implementation: 0.7 formats as "0.700" under
+    // "%.3f", "ghostty" preset makes foregroundOverrideLine return nil
+    // (pinned above by ghosttyPresetReturnsNil), so this is the complete,
+    // exact output for that input with no trailing foreground line and no
+    // trailing newline (the call site appends its own "\n" before writing).
+    @Test("Exact output for glassOpacity 0.7, opacityCells false, ghostty preset")
+    func exactOutputForCanonicalInputs() {
+        let result = GhosttyConfigManager.runtimeOverrideText(
+            glassOpacity: 0.7,
+            opacityCells: false,
+            preset: "ghostty",
+            customHex: "#AABBCC"
+        )
+        let expected = """
+        # --- Calyx Runtime Override (managed) ---
+        background-opacity = 0.700
+        background-blur = macos-glass-regular
+        background-opacity-cells = false
+        font-codepoint-map = U+2600-U+27BF=Apple Color Emoji
+        font-codepoint-map = U+1F300-U+1F5FF=Apple Color Emoji
+        font-codepoint-map = U+1F600-U+1F64F=Apple Color Emoji
+        font-codepoint-map = U+1F680-U+1F6FF=Apple Color Emoji
+        font-codepoint-map = U+1F7E0-U+1F7FF=Apple Color Emoji
+        font-codepoint-map = U+1F900-U+1F9FF=Apple Color Emoji
+        font-codepoint-map = U+1FA70-U+1FAFF=Apple Color Emoji
+        font-codepoint-map = U+FE00-U+FE0F=Apple Color Emoji
+        # --- End Calyx Runtime Override ---
+        """
+        #expect(result == expected,
+                "runtimeOverrideText must produce exactly this managed block for the canonical inputs")
+    }
+
+    @Test("opacityCells true emits the exact line 'background-opacity-cells = true'")
+    func opacityCellsTrueEmitsTrueLine() {
+        let result = GhosttyConfigManager.runtimeOverrideText(
+            glassOpacity: 0.7,
+            opacityCells: true,
+            preset: "ghostty",
+            customHex: "#AABBCC"
+        )
+        let lines = result.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        #expect(lines.contains("background-opacity-cells = true"),
+                "opacityCells: true must produce the exact line 'background-opacity-cells = true'")
+        #expect(!lines.contains("background-opacity-cells = false"))
+    }
+
+    @Test("opacityCells false emits the exact line 'background-opacity-cells = false'")
+    func opacityCellsFalseEmitsFalseLine() {
+        let result = GhosttyConfigManager.runtimeOverrideText(
+            glassOpacity: 0.7,
+            opacityCells: false,
+            preset: "ghostty",
+            customHex: "#AABBCC"
+        )
+        let lines = result.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        #expect(lines.contains("background-opacity-cells = false"),
+                "opacityCells: false must produce the exact line 'background-opacity-cells = false'")
+        #expect(!lines.contains("background-opacity-cells = true"))
+    }
+
+    @Test("glassOpacity formats with three decimal places in the background-opacity line")
+    func glassOpacityFormatsWithThreeDecimals() {
+        let result = GhosttyConfigManager.runtimeOverrideText(
+            glassOpacity: 0.5,
+            opacityCells: false,
+            preset: "ghostty",
+            customHex: "#AABBCC"
+        )
+        let lines = result.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        #expect(lines.contains("background-opacity = 0.500"),
+                "glassOpacity 0.5 must format as 'background-opacity = 0.500'")
+    }
+
+    @Test("glassOpacity below 0.0 is clamped to 0.000")
+    func glassOpacityClampsBelowZero() {
+        let result = GhosttyConfigManager.runtimeOverrideText(
+            glassOpacity: -0.5,
+            opacityCells: false,
+            preset: "ghostty",
+            customHex: "#AABBCC"
+        )
+        let lines = result.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        #expect(lines.contains("background-opacity = 0.000"),
+                "glassOpacity -0.5 must clamp to 'background-opacity = 0.000'")
+    }
+
+    @Test("glassOpacity above 1.0 is clamped to 1.000")
+    func glassOpacityClampsAboveOne() {
+        let result = GhosttyConfigManager.runtimeOverrideText(
+            glassOpacity: 1.5,
+            opacityCells: false,
+            preset: "ghostty",
+            customHex: "#AABBCC"
+        )
+        let lines = result.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        #expect(lines.contains("background-opacity = 1.000"),
+                "glassOpacity 1.5 must clamp to 'background-opacity = 1.000'")
+    }
+
+    @Test("Managed block start and end comment lines are present")
+    func managedBlockCommentsPresent() {
+        let result = GhosttyConfigManager.runtimeOverrideText(
+            glassOpacity: 0.7,
+            opacityCells: false,
+            preset: "ghostty",
+            customHex: "#AABBCC"
+        )
+        #expect(result.contains("# --- Calyx Runtime Override (managed) ---"))
+        #expect(result.contains("# --- End Calyx Runtime Override ---"))
+    }
+
+    @Test("All 8 font-codepoint-map lines are present, none dropped")
+    func fontCodepointMapLinesAllPresent() {
+        let result = GhosttyConfigManager.runtimeOverrideText(
+            glassOpacity: 0.7,
+            opacityCells: false,
+            preset: "ghostty",
+            customHex: "#AABBCC"
+        )
+        let mapLineCount = result.split(separator: "\n")
+            .filter { $0.trimmingCharacters(in: .whitespaces).hasPrefix("font-codepoint-map = ") }
+            .count
+        #expect(mapLineCount == 8,
+                "Exactly 8 font-codepoint-map lines must be present, found \(mapLineCount)")
+    }
+
+    // "original" at glassOpacity 0.7 is pinned by darkPresetReturnsWhiteForeground
+    // above to yield "foreground = #FFFFFF", so a non-"ghostty" preset must append
+    // that exact line after the managed block.
+    @Test("Non-ghostty preset appends the exact foreground override line")
+    func nonGhosttyPresetAppendsForegroundLine() {
+        let result = GhosttyConfigManager.runtimeOverrideText(
+            glassOpacity: 0.7,
+            opacityCells: false,
+            preset: "original",
+            customHex: "#000000"
+        )
+        #expect(result.hasSuffix("\nforeground = #FFFFFF"),
+                "A non-ghostty preset must append '\\nforeground = #FFFFFF' after the managed block")
+    }
+
+    @Test("ghostty preset appends no foreground line")
+    func ghosttyPresetAppendsNoForegroundLine() {
+        let result = GhosttyConfigManager.runtimeOverrideText(
+            glassOpacity: 0.7,
+            opacityCells: false,
+            preset: "ghostty",
+            customHex: "#AABBCC"
+        )
+        #expect(!result.contains("foreground ="),
+                "The ghostty preset must not append a foreground override line")
+    }
+}

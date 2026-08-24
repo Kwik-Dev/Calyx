@@ -16,6 +16,7 @@ enum SettingsRow: String, CaseIterable {
     case themeColorWell
     case themeColorHex
     case glassOpacity
+    case glassOpacityCells
     case smoothScrolling
     case lspAutoInstall
     case lspRequireConfirmation
@@ -32,7 +33,7 @@ enum SettingsRow: String, CaseIterable {
     var pane: SettingsPane {
         switch self {
         case .themeColorPreset, .themeColorWell, .themeColorHex,
-             .glassOpacity, .smoothScrolling, .openConfigFileFooter:
+             .glassOpacity, .glassOpacityCells, .smoothScrolling, .openConfigFileFooter:
             return .appearance
         case .lspAutoInstall, .lspRequireConfirmation:
             return .lsp

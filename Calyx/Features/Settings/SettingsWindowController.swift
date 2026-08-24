@@ -126,7 +126,7 @@ class SettingsWindowController: NSWindowController {
             )
         case .openConfigFileFooter:
             return SectionHeading(title: nil, subtitle: nil)
-        case .themeColorWell, .themeColorHex, .lspRequireConfirmation,
+        case .glassOpacityCells, .themeColorWell, .themeColorHex, .lspRequireConfirmation,
              .historyPersistence, .agentResumeAutoExecute,
              .openSessionBrowserButton:
             return nil
@@ -168,6 +168,8 @@ class SettingsWindowController: NSWindowController {
             return themeColorHexRow()
         case .glassOpacity:
             return glassOpacityRow()
+        case .glassOpacityCells:
+            return glassOpacityCellsRow()
         case .smoothScrolling:
             return smoothScrollingRow()
         case .lspAutoInstall:
@@ -238,6 +240,15 @@ class SettingsWindowController: NSWindowController {
         return opacityRow
     }
 
+    private func glassOpacityCellsRow() -> NSView {
+        let cellsSwitch = NSSwitch()
+        cellsSwitch.setAccessibilityIdentifier(AccessibilityID.Settings.glassOpacityCellsSwitch)
+        cellsSwitch.state = Self.sessionToggleInitialState(for: .glassOpacityCells) ? .on : .off
+        cellsSwitch.target = self
+        cellsSwitch.action = #selector(glassOpacityCellsDidChange(_:))
+        return controlRow(label: "Apply opacity to cell backgrounds", control: cellsSwitch)
+    }
+
     private func smoothScrollingRow() -> NSView {
         let smoothScrollSwitch = NSSwitch()
         smoothScrollSwitch.setAccessibilityIdentifier(AccessibilityID.Settings.smoothScrollingSwitch)
@@ -265,14 +276,19 @@ class SettingsWindowController: NSWindowController {
         return controlRow(label: "Confirm before each install step", control: requireConfirmSwitch)
     }
 
-    /// Pure mapping from a Sessions-pane toggle row to the SessionSettings
-    /// value it must seed its initial `.state` from. Extracted as its own
-    /// function (rather than reading SessionSettings directly inline in
-    /// each row builder) because SettingsWindowController.shared's
-    /// one-shot, process-lifetime construction makes the seeding behavior
-    /// unobservable through the real singleton in a test -- this has none
-    /// of that lifetime, so a test can set SessionSettings directly and
-    /// call it standalone.
+    /// Pure mapping from a toggle row to the value its switch's initial
+    /// `.state` must be seeded from. Despite the `session` prefix left over
+    /// from this function's original scope, it now covers toggle rows
+    /// across multiple panes, each backed by its own store: SessionSettings
+    /// for the session rows, CockpitSettings for cockpitAutoApprove and
+    /// agentHookApproval, CommandTrackingSettings for commandTracking, and
+    /// UserDefaults.standard directly for glassOpacityCells (it has no
+    /// dedicated settings type). Extracted as its own function (rather than
+    /// reading each backing store directly inline in each row builder)
+    /// because SettingsWindowController.shared's one-shot, process-lifetime
+    /// construction makes the seeding behavior unobservable through the
+    /// real singleton in a test -- this has none of that lifetime, so a
+    /// test can set the backing store directly and call it standalone.
     static func sessionToggleInitialState(for row: SettingsRow) -> Bool {
         switch row {
         case .persistentSessions: return SessionSettings.persistentSessionsEnabled
@@ -282,6 +298,7 @@ class SettingsWindowController: NSWindowController {
         case .cockpitAutoApprove: return CockpitSettings.autoApproveEnabled
         case .commandTracking: return CommandTrackingSettings.trackingEnabled
         case .agentHookApproval: return CockpitSettings.agentHookApprovalEnabled
+        case .glassOpacityCells: return UserDefaults.standard.bool(forKey: "terminalGlassOpacityCells")
         default: return false
         }
     }
@@ -460,6 +477,11 @@ class SettingsWindowController: NSWindowController {
         updateOpacityLabel()
         let opacity = max(0.0, min(1.0, opacitySlider.doubleValue))
         UserDefaults.standard.set(opacity, forKey: "terminalGlassOpacity")
+        applyOpacityToRunningSurfaces()
+    }
+
+    @objc private func glassOpacityCellsDidChange(_ sender: NSSwitch) {
+        UserDefaults.standard.set(sender.state == .on, forKey: "terminalGlassOpacityCells")
         applyOpacityToRunningSurfaces()
     }
 
