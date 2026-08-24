@@ -39,6 +39,10 @@
 //    name unmapped, exactly as before.
 //  - The Grok branch never extracts `ipcSelfPeerID`: Grok's peer binding
 //    is established through the MCP `initialize` surface header instead.
+//  - `toolInput` is Grok's spelling of the object `toolSummary` is
+//    derived from. The captured child-scoped `pre_tool_use` carries no
+//    `toolInput` key at all, so its `toolSummary` is nil while its
+//    `toolName` still decodes.
 //
 
 import XCTest
@@ -518,5 +522,33 @@ final class AgentEventGrokDecodeTests: XCTestCase {
         XCTAssertNil(event.sessionID,
                      "Adding the Grok branch must not make the Claude Code path start accepting " +
                      "camelCase aliases: session_id is the only key that path reads")
+    }
+
+    // MARK: - toolSummary
+
+    /// The captured child-scoped `pre_tool_use`, verbatim: Grok sends no
+    /// `toolInput` key with it, so there is nothing to derive a summary
+    /// from -- while the tool name itself must still decode.
+    func test_decode_grokPreToolUse_noToolInputKey_toolSummaryIsNil() throws {
+        let event = try XCTUnwrap(AgentEvent.decode(from: json("""
+        {"hookEventName":"pre_tool_use","sessionId":"01a02092-1cc5-7e53-be01-6b4de101b378",\
+        "subagentType":"general-purpose","toolName":"run_terminal_command"}
+        """)))
+
+        XCTAssertEqual(event.toolName, "run_terminal_command")
+        XCTAssertNil(event.toolSummary)
+    }
+
+    /// The decoder contract for the camelCase key: `toolInput` is read on
+    /// the Grok branch exactly as `tool_input` is on the snake_case one.
+    func test_decode_grokToolInput_toolSummaryIsTheCommand() throws {
+        let event = try XCTUnwrap(AgentEvent.decode(from: json("""
+        {"hookEventName":"pre_tool_use","sessionId":"01a02092-1cc5-7e53-be01-6b4de101b378",\
+        "subagentType":"general-purpose","toolName":"run_terminal_command",\
+        "toolInput":{"command":"npm test"}}
+        """)))
+
+        XCTAssertEqual(event.toolName, "run_terminal_command")
+        XCTAssertEqual(event.toolSummary, "npm test")
     }
 }

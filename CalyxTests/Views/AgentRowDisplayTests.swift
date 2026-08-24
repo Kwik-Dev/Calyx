@@ -38,6 +38,10 @@
 //    "Nh Nm"), not a relative "... ago" phrase -- pinned at the 0/59/
 //    60/3599/3600-second boundaries, and clamped to "0s" for a now
 //    earlier than since (clock skew / an out-of-order write)
+//  - toolLine(toolName:toolSummary:): nil for a nil or empty tool name
+//    (the child row omits the line entirely); the bare tool name when
+//    there is no summary or the summary is empty; "name: summary" --
+//    a colon and one space -- when both are present
 //  - lastEventLabel(lastEventAt:now:): "now" for any interval under one
 //    second, including a negative one (lastEventAt ahead of the
 //    TimelineView tick, however far ahead); at and beyond one second it
@@ -608,5 +612,31 @@ final class AgentRowDisplayTests: XCTestCase {
     /// the 1s-vs-60s cross-check guards escalation past the second.
     func test_lastEventLabel_thirtySixHundredAndEightySixThousandFourHundredSeconds_produceDifferentStrings() {
         XCTAssertNotEqual(lastEventLabel(3600), lastEventLabel(86400))
+    }
+
+    // MARK: - toolLine(toolName:toolSummary:)
+
+    func test_toolLine_nilToolName_returnsNil() {
+        XCTAssertNil(AgentRowDisplay.toolLine(toolName: nil, toolSummary: "git status --short"))
+    }
+
+    func test_toolLine_emptyToolName_returnsNil() {
+        XCTAssertNil(AgentRowDisplay.toolLine(toolName: "", toolSummary: "git status --short"))
+    }
+
+    func test_toolLine_nilSummary_returnsToolNameAlone() {
+        XCTAssertEqual(AgentRowDisplay.toolLine(toolName: "Bash", toolSummary: nil), "Bash")
+    }
+
+    func test_toolLine_emptySummary_returnsToolNameAlone() {
+        XCTAssertEqual(AgentRowDisplay.toolLine(toolName: "Bash", toolSummary: ""), "Bash",
+                       "An empty summary must render exactly as no summary at all: never a trailing separator")
+    }
+
+    func test_toolLine_toolNameAndSummary_joinedByColonAndOneSpace() {
+        XCTAssertEqual(
+            AgentRowDisplay.toolLine(toolName: "Bash", toolSummary: "git status --short"),
+            "Bash: git status --short"
+        )
     }
 }

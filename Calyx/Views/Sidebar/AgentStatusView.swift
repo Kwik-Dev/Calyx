@@ -731,11 +731,13 @@ private struct AgentRowView: View {
 /// same flat `ForEach` -- see `AgentSidebarRows`'s doc comment for why
 /// flat is required rather than nesting this inside the parent. Shows
 /// the child's lifecycle state (the same dot colors `AgentRowView`
-/// uses) plus whatever `agentType` / `lastToolName` the CLI has
-/// reported for it; a `nil` value on either simply omits that line
-/// rather than rendering an "N/A" placeholder, since a child carries no
-/// pane of its own for those fields to ever legitimately resolve to a
-/// missing value the way a parent row's title/cwd can. The trailing
+/// uses) plus whatever the CLI has reported for it: `agentType` on its
+/// own line, and `lastToolName` with `lastToolSummary` together on one
+/// line via `AgentRowDisplay.toolLine(toolName:toolSummary:)`. A `nil`
+/// `agentType` or `lastToolName` simply omits that line rather than
+/// rendering an "N/A" placeholder, since a child carries no pane of its
+/// own for those fields to ever legitimately resolve to a missing value
+/// the way a parent row's title/cwd can. The trailing
 /// label is a counting-up elapsed duration since the child started
 /// (`AgentRowDisplay.elapsedLabel(since:now:)`), matching what the CLI's
 /// own display shows for a running subagent -- not a relative "... ago"
@@ -770,8 +772,7 @@ private struct AgentSubRowView: View {
     }
 
     private var toolLine: String? {
-        guard let toolName = child.lastToolName, !toolName.isEmpty else { return nil }
-        return toolName
+        AgentRowDisplay.toolLine(toolName: child.lastToolName, toolSummary: child.lastToolSummary)
     }
 
     private var elapsedLine: String {
@@ -844,6 +845,11 @@ private struct AgentSubRowView: View {
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        // The sidebar is user-resizable, so SwiftUI picks
+                        // the elision point from the actual width: eliding
+                        // at the tail keeps the tool name and the head of
+                        // its content, the part that identifies the call.
+                        .truncationMode(.tail)
                 }
             }
 
@@ -852,6 +858,10 @@ private struct AgentSubRowView: View {
             Text(elapsedLine)
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
+                // A long tool line must not squeeze the duration into an
+                // ellipsis of its own: the duration keeps its full width
+                // and the tool line elides instead.
+                .layoutPriority(1)
         }
         .contentShape(Rectangle())
         .padding(.leading, 32)
@@ -946,6 +956,20 @@ enum AgentRowDisplay {
     ) -> String {
         let focusTarget = AgentRowFocusTarget.resolve(source: source, surfaceID: surfaceID, focusSurfaceID: focusSurfaceID)
         return primaryLabel(title: focusTarget.flatMap(paneTitle))
+    }
+
+    /// A child row's tool line: the CLI-reported tool name, followed by
+    /// that call's own content (`SubagentEntry.lastToolSummary` -- the
+    /// command, the file path, the URL) after a colon and one space.
+    /// `nil` for a `nil` or empty tool name, so a row with no tool
+    /// reported omits the line entirely rather than showing a
+    /// placeholder. The name alone when there is no summary or it is
+    /// empty: never a trailing separator. The separator is plain
+    /// punctuation because VoiceOver speaks this string as-is.
+    static func toolLine(toolName: String?, toolSummary: String?) -> String? {
+        guard let toolName, !toolName.isEmpty else { return nil }
+        guard let toolSummary, !toolSummary.isEmpty else { return toolName }
+        return "\(toolName): \(toolSummary)"
     }
 
     /// The Agents sidebar row's second line: the pane's working

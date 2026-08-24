@@ -11,6 +11,15 @@
 //  - Unknown/extra fields are tolerated
 //  - Optional fields (session_id / cwd / message) may be entirely absent
 //  - Malformed JSON is rejected
+//  - toolSummary: the tool-specific string derived from tool_input
+//    (Bash's command, Write's file_path, WebFetch's url), tool_input's
+//    own arguments as sorted `key: value` pairs for any other tool, nil
+//    when there is no tool_input object or the derived string is empty,
+//    collapsed to a single line and capped at
+//    AgentToolSummary.maxSummaryLength visible characters
+//  - A pair list cut by the cap never ends on a dangling separator
+//  - A structured value cut by the cap never ends on a dangling
+//    element separator, in an array and in an object alike
 //
 
 import XCTest
@@ -536,5 +545,360 @@ final class AgentEventTests: XCTestCase {
         let missingInputEvent = try XCTUnwrap(AgentEvent.decode(from: missingInputData))
         XCTAssertNil(missingInputEvent.ipcSelfPeerID,
                     "A calyx-ipc tool_name with no tool_input at all must decode ipcSelfPeerID as nil, not crash")
+    }
+
+    // MARK: - toolSummary
+
+    func test_decode_bashToolInput_toolSummaryIsTheCommand() throws {
+        let data = json("""
+        {
+            "session_id": "abc-123",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "git status --short"}
+        }
+        """)
+
+        let event = try XCTUnwrap(AgentEvent.decode(from: data))
+
+        XCTAssertEqual(event.toolSummary, "git status --short")
+    }
+
+    func test_decode_writeToolInput_toolSummaryIsTheFilePath() throws {
+        let data = json("""
+        {
+            "session_id": "abc-123",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/Users/dev/repo/file.swift", "content": "x"}
+        }
+        """)
+
+        let event = try XCTUnwrap(AgentEvent.decode(from: data))
+
+        XCTAssertEqual(event.toolSummary, "/Users/dev/repo/file.swift")
+    }
+
+    func test_decode_webFetchToolInput_toolSummaryIsTheURL() throws {
+        let data = json("""
+        {
+            "session_id": "abc-123",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "WebFetch",
+            "tool_input": {"url": "https://example.com/docs"}
+        }
+        """)
+
+        let event = try XCTUnwrap(AgentEvent.decode(from: data))
+
+        XCTAssertEqual(event.toolSummary, "https://example.com/docs")
+    }
+
+    /// A tool with no well-known tool_input key of its own shows its
+    /// arguments as readable `key: value` pairs, never a raw JSON blob.
+    func test_decode_unknownTool_toolSummaryIsReadableArgumentPairs() throws {
+        let data = json("""
+        {
+            "session_id": "abc-123",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "SomeFutureUnknownTool",
+            "tool_input": {"pattern": "TODO"}
+        }
+        """)
+
+        let event = try XCTUnwrap(AgentEvent.decode(from: data))
+
+        XCTAssertEqual(event.toolSummary, "pattern: TODO")
+    }
+
+    /// Keys are sorted, so the same call always reads the same way
+    /// regardless of the order the payload spelled them in.
+    func test_decode_unknownToolWithSeveralKeys_toolSummaryPairsAreSortedByKey() throws {
+        let data = json("""
+        {
+            "session_id": "abc-123",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Grep",
+            "tool_input": {"pattern": "TODO", "glob": "*.swift"}
+        }
+        """)
+
+        let event = try XCTUnwrap(AgentEvent.decode(from: data))
+
+        XCTAssertEqual(event.toolSummary, "glob: *.swift, pattern: TODO")
+    }
+
+    func test_decode_unknownToolWithNonStringValues_toolSummaryRendersThemNaturally() throws {
+        let data = json("""
+        {
+            "session_id": "abc-123",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Grep",
+            "tool_input": {"multiline": true, "head_limit": 20}
+        }
+        """)
+
+        let event = try XCTUnwrap(AgentEvent.decode(from: data))
+
+        XCTAssertEqual(event.toolSummary, "head_limit: 20, multiline: true")
+    }
+
+    /// A structured value is rendered as the compact JSON of that one
+    /// value -- never of the whole tool_input object around it.
+    func test_decode_unknownToolWithStructuredValue_toolSummaryRendersThatValueAsCompactJSON() throws {
+        let data = json("""
+        {
+            "session_id": "abc-123",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "TodoWrite",
+            "tool_input": {"todos": [{"status": "pending", "content": "ship it"}], "note": null}
+        }
+        """)
+
+        let event = try XCTUnwrap(AgentEvent.decode(from: data))
+
+        XCTAssertEqual(event.toolSummary, "note: null, todos: [{\"content\":\"ship it\",\"status\":\"pending\"}]")
+    }
+
+    /// A tool input built in Swift rather than decoded from JSON carries
+    /// native containers in its values, and they render exactly as the
+    /// decoded ones do.
+    func test_readableArguments_nativeNestedContainers_renderAsCompactJSON() {
+        let toolInput: [String: Any] = [
+            "todos": [["status": "pending", "content": "ship it"] as [String: Any]] as [Any],
+            "note": NSNull()
+        ]
+
+        let summary = AgentToolSummary.readableArguments(toolInput)
+
+        XCTAssertEqual(summary, "note: null, todos: [{\"content\":\"ship it\",\"status\":\"pending\"}]")
+    }
+
+    /// The pair list stops at the cap, so a value that fills the budget
+    /// leaves the keys sorted after it unrendered.
+    func test_decode_unknownToolOverCap_toolSummaryStopsMidList() throws {
+        let longValue = String(repeating: "a", count: 600)
+        let data = json("""
+        {
+            "session_id": "abc-123",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "SomeFutureUnknownTool",
+            "tool_input": {"alpha": "\(longValue)", "beta": "short"}
+        }
+        """)
+
+        let event = try XCTUnwrap(AgentEvent.decode(from: data))
+
+        let summary = try XCTUnwrap(event.toolSummary)
+        XCTAssertEqual(summary.count, AgentToolSummary.maxSummaryLength)
+        XCTAssertEqual(summary, "alpha: " + String(repeating: "a", count: AgentToolSummary.maxSummaryLength - 7))
+        XCTAssertFalse(summary.contains("beta"), "The budget is spent before the second key is reached")
+    }
+
+    func test_decode_emptyToolInputObject_toolSummaryIsNil() throws {
+        let data = json("""
+        {
+            "session_id": "abc-123",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "SomeFutureUnknownTool",
+            "tool_input": {}
+        }
+        """)
+
+        let event = try XCTUnwrap(AgentEvent.decode(from: data))
+
+        XCTAssertEqual(event.toolName, "SomeFutureUnknownTool", "Precondition: the tool name still decodes")
+        XCTAssertNil(event.toolSummary, "An argument-less call has no arguments to show, so the row shows the tool name alone")
+    }
+
+    func test_decode_preToolUseWithNoToolInput_toolSummaryIsNil() throws {
+        let data = json("""
+        { "session_id": "abc-123", "hook_event_name": "PreToolUse", "tool_name": "Bash" }
+        """)
+
+        let event = try XCTUnwrap(AgentEvent.decode(from: data))
+
+        XCTAssertEqual(event.toolName, "Bash", "Precondition: the tool name still decodes without a tool_input object")
+        XCTAssertNil(event.toolSummary, "No tool_input object at all leaves nothing to derive a summary from")
+    }
+
+    func test_decode_emptyDerivedValue_toolSummaryIsNilNotEmptyString() throws {
+        let data = json("""
+        {
+            "session_id": "abc-123",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": ""}
+        }
+        """)
+
+        let event = try XCTUnwrap(AgentEvent.decode(from: data))
+
+        XCTAssertNil(event.toolSummary, "An empty derived string is nil, never an empty string a row would render as a bare separator")
+    }
+
+    func test_decode_toolSummaryOverCap_truncatedToMaxSummaryLength() throws {
+        let longCommand = String(repeating: "a", count: 600)
+        let data = json("""
+        {
+            "session_id": "abc-123",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "\(longCommand)"}
+        }
+        """)
+
+        let event = try XCTUnwrap(AgentEvent.decode(from: data))
+
+        XCTAssertEqual(event.toolSummary?.count, AgentToolSummary.maxSummaryLength)
+        XCTAssertEqual(event.toolSummary, String(longCommand.prefix(AgentToolSummary.maxSummaryLength)))
+    }
+
+    func test_decode_nonToolEvent_toolSummaryIsNil() throws {
+        let data = json("""
+        {
+            "session_id": "abc-123",
+            "cwd": "/Users/dev/repo",
+            "hook_event_name": "SessionStart",
+            "source": "startup"
+        }
+        """)
+
+        let event = try XCTUnwrap(AgentEvent.decode(from: data))
+
+        XCTAssertNil(event.toolSummary)
+    }
+
+    /// A heredoc command carries hard line breaks, and the row draws its
+    /// tool line as one `.lineLimit(1)` `Text` whose help and
+    /// accessibility strings join their fields with newlines, so the
+    /// summary is one line: every run of whitespace becomes one space.
+    func test_decode_multiLineCommand_toolSummaryIsOneLine() throws {
+        let data = json("""
+        {
+            "session_id": "abc-123",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "cat <<'EOF' > /tmp/x\\nline one\\nline two\\nEOF"}
+        }
+        """)
+
+        let event = try XCTUnwrap(AgentEvent.decode(from: data))
+
+        XCTAssertEqual(event.toolSummary, "cat <<'EOF' > /tmp/x line one line two EOF")
+    }
+
+    func test_decode_commandWithTabsAndCarriageReturns_toolSummaryCollapsesThemToSingleSpaces() throws {
+        let data = json("""
+        {
+            "session_id": "abc-123",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "\\r\\n\\tgit\\tstatus \\r\\n  --short\\t\\r\\n"}
+        }
+        """)
+
+        let event = try XCTUnwrap(AgentEvent.decode(from: data))
+
+        XCTAssertEqual(event.toolSummary, "git status --short")
+    }
+
+    /// The cap counts characters that survive the collapse, so leading
+    /// whitespace and line breaks never spend the budget.
+    func test_decode_commandWithLeadingWhitespaceOverCap_toolSummaryHasMaxSummaryLengthVisibleCharacters() throws {
+        let command = "\\n   \\n\\t" + String(repeating: "a", count: 600)
+        let data = json("""
+        {
+            "session_id": "abc-123",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "\(command)"}
+        }
+        """)
+
+        let event = try XCTUnwrap(AgentEvent.decode(from: data))
+
+        XCTAssertEqual(event.toolSummary?.count, AgentToolSummary.maxSummaryLength)
+        XCTAssertEqual(event.toolSummary, String(repeating: "a", count: AgentToolSummary.maxSummaryLength))
+    }
+
+    /// The pair separator is only written when a character of the pair
+    /// behind it still fits, so a list cut by the cap never ends on a
+    /// dangling `,` or `, `.
+    func test_decode_unknownToolCutInsideSeparator_toolSummaryHasNoDanglingSeparator() throws {
+        for firstValueLength in [495, 496] {
+            let firstValue = String(repeating: "x", count: firstValueLength)
+            let data = json("""
+            {
+                "session_id": "abc-123",
+                "hook_event_name": "PreToolUse",
+                "tool_name": "SomeFutureUnknownTool",
+                "tool_input": {"a": "\(firstValue)", "b": "yy"}
+            }
+            """)
+
+            let event = try XCTUnwrap(AgentEvent.decode(from: data))
+
+            let summary = try XCTUnwrap(event.toolSummary)
+            XCTAssertEqual(summary, "a: " + firstValue, "first value of \(firstValueLength) characters")
+            XCTAssertFalse(summary.hasSuffix(","), "first value of \(firstValueLength) characters")
+            XCTAssertFalse(summary.hasSuffix(", "), "first value of \(firstValueLength) characters")
+        }
+    }
+
+    /// A structured value's element separator follows the same rule: it
+    /// is only written when a character of the element behind it still
+    /// fits, so an array cut by the cap never ends on a dangling `,`.
+    func test_decode_unknownToolArrayCutInsideElementSeparator_toolSummaryHasNoDanglingSeparator() throws {
+        let expected = [
+            492: "a: [\"" + String(repeating: "x", count: 492) + "\",\"",
+            493: "a: [\"" + String(repeating: "x", count: 493) + "\"]"
+        ]
+        for elementLength in [492, 493] {
+            let element = String(repeating: "x", count: elementLength)
+            let data = json("""
+            {
+                "session_id": "abc-123",
+                "hook_event_name": "PreToolUse",
+                "tool_name": "SomeFutureUnknownTool",
+                "tool_input": {"a": ["\(element)", "yy"]}
+            }
+            """)
+
+            let event = try XCTUnwrap(AgentEvent.decode(from: data))
+
+            let summary = try XCTUnwrap(event.toolSummary)
+            XCTAssertEqual(summary, expected[elementLength], "element of \(elementLength) characters")
+            XCTAssertEqual(summary.count, AgentToolSummary.maxSummaryLength, "element of \(elementLength) characters")
+            XCTAssertFalse(summary.hasSuffix(","), "element of \(elementLength) characters")
+        }
+    }
+
+    /// The same rule inside an object: the separator between two members
+    /// is only written when a character of the member behind it still
+    /// fits, so an object cut by the cap never ends on a dangling `,`.
+    func test_decode_unknownToolObjectCutInsideMemberSeparator_toolSummaryHasNoDanglingSeparator() throws {
+        let expected = [
+            487: "a: {\"k1\":\"" + String(repeating: "x", count: 487) + "\",\"",
+            488: "a: {\"k1\":\"" + String(repeating: "x", count: 488) + "\"}"
+        ]
+        for valueLength in [487, 488] {
+            let value = String(repeating: "x", count: valueLength)
+            let data = json("""
+            {
+                "session_id": "abc-123",
+                "hook_event_name": "PreToolUse",
+                "tool_name": "SomeFutureUnknownTool",
+                "tool_input": {"a": {"k1": "\(value)", "k2": "yy"}}
+            }
+            """)
+
+            let event = try XCTUnwrap(AgentEvent.decode(from: data))
+
+            let summary = try XCTUnwrap(event.toolSummary)
+            XCTAssertEqual(summary, expected[valueLength], "value of \(valueLength) characters")
+            XCTAssertEqual(summary.count, AgentToolSummary.maxSummaryLength, "value of \(valueLength) characters")
+            XCTAssertFalse(summary.hasSuffix(","), "value of \(valueLength) characters")
+        }
     }
 }

@@ -36,17 +36,25 @@ struct SubagentEntry: Identifiable, Sendable, Equatable {
     var agentType: String?
     var state: AgentState
     var lastToolName: String?
+    /// The tool-specific content of that same tool call (the command,
+    /// the file path, the URL -- `AgentEvent.toolSummary`), shown on the
+    /// row beside `lastToolName`. Written only together with
+    /// `lastToolName`, and `nil` whenever the CLI reported a tool name
+    /// with nothing to summarize: a summary left over from an earlier
+    /// tool would make the row describe a call that is not the one it
+    /// names.
+    var lastToolSummary: String?
     /// When Calyx first observed the CLI reporting this child: stamped
     /// from `handleHookEvent`'s own `now` at creation, once, and never
     /// restamped by any later event for this child, unlike
-    /// `state`/`lastToolName`/`agentType`. The CLI supplies no start
-    /// timestamp of its own in any subagent event, and the event that
-    /// creates the child is not necessarily `SubagentStart` -- see
-    /// `handleHookEvent`'s own doc comment -- so this is an approximation
-    /// of the child's start, Calyx's own receipt time of whichever event
-    /// first named its `agentID`, not a timestamp the CLI reported. The
-    /// sidebar renders how long the child has been running from this,
-    /// not a Calyx-side timer.
+    /// `state`/`lastToolName`/`lastToolSummary`/`agentType`. The CLI
+    /// supplies no start timestamp of its own in any subagent event, and
+    /// the event that creates the child is not necessarily
+    /// `SubagentStart` -- see `handleHookEvent`'s own doc comment -- so
+    /// this is an approximation of the child's start, Calyx's own receipt
+    /// time of whichever event first named its `agentID`, not a timestamp
+    /// the CLI reported. The sidebar renders how long the child has been
+    /// running from this, not a Calyx-side timer.
     let startedAt: Date
     var id: String { "\(parentSurfaceID.uuidString)/\(agentID)" }
 }
@@ -128,7 +136,7 @@ final class SubagentRegistry {
         var byAgent = entries[parentSurfaceID] ?? [:]
         var child = byAgent[agentID] ?? SubagentEntry(
             parentSurfaceID: parentSurfaceID, agentID: agentID, agentType: nil,
-            state: .working, lastToolName: nil, startedAt: now
+            state: .working, lastToolName: nil, lastToolSummary: nil, startedAt: now
         )
 
         if let newState = AgentStateResolver.resultingState(for: event) {
@@ -137,6 +145,7 @@ final class SubagentRegistry {
         if event.hookEventName == "PreToolUse" || event.hookEventName == "PostToolUse",
            let toolName = event.toolName {
             child.lastToolName = toolName
+            child.lastToolSummary = event.toolSummary
         }
         if let agentType = event.agentType {
             child.agentType = agentType

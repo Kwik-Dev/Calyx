@@ -48,19 +48,7 @@ struct AgentHookToolCall: Sendable {
     static let maxPayloadBytes = 16_384
 
     /// `summary`'s cap, in `Character`s.
-    static let maxSummaryLength = 500
-
-    /// `tool_name`s whose `summary` is the string at `tool_input.file_path`.
-    /// `NotebookEdit` is deliberately NOT in this set -- Claude Code's
-    /// actual PreToolUse schema for it is `tool_input.notebook_path`, a
-    /// distinct key of its own (see `derivedSummary`'s own `NotebookEdit`
-    /// case).
-    private static let filePathToolNames: Set<String> = ["Write", "Edit", "Read"]
-
-    /// Tool names whose `summary` is the string at `tool_input.command`:
-    /// Claude Code's and Codex's `Bash`, and Grok's own shell tool
-    /// `run_terminal_command`.
-    private static let commandToolNames: Set<String> = ["Bash", "run_terminal_command"]
+    static let maxSummaryLength = AgentToolSummary.maxSummaryLength
 
     /// Grok's top-level permission-mode key, the one spelling its hook
     /// payloads use for it. Not part of `Envelope` -- see
@@ -106,7 +94,9 @@ struct AgentHookToolCall: Sendable {
     /// the URL for `WebFetch`) capped at `maxSummaryLength` characters --
     /// any other tool name, or a recognized one missing its expected key,
     /// falls back to the same compact JSON of `tool_input` used for
-    /// `payload`.
+    /// `payload`. The derivation itself lives in
+    /// `AgentToolSummary.derive(toolName:toolInput:fallback:)`, shared
+    /// with the Agents sidebar's own subagent tool line.
     ///
     /// Grok spells the same three top-level keys `toolName` / `toolInput`
     /// / `hookEventName`. All three are read from one envelope, chosen by
@@ -130,49 +120,16 @@ struct AgentHookToolCall: Sendable {
             )
         }
 
-        let compactJSON = (try? JSONSerialization.data(withJSONObject: toolInput))
-            .flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        let compactJSON = AgentToolSummary.compactJSON(toolInput)
 
-        let payload = truncatedToByteCap(compactJSON, cap: maxPayloadBytes)
-        let derivedSummary = derivedSummary(toolName: toolName, toolInput: toolInput, compactJSON: compactJSON)
+        let payload = AgentToolSummary.truncatedToByteCap(compactJSON, cap: maxPayloadBytes)
+        let derivedSummary = AgentToolSummary.derive(
+            toolName: toolName, toolInput: toolInput, fallback: compactJSON
+        )
 
         return AgentHookToolCall(
             toolName: toolName, payload: payload, summary: String(derivedSummary.prefix(maxSummaryLength)),
             hookEventName: hookEventName, permissionMode: permissionMode
         )
-    }
-
-    /// `summary`'s tool-specific well-known key per tool_name, falling
-    /// back to `compactJSON` when `toolName` isn't one of these, or the
-    /// expected key is absent/not a string.
-    private static func derivedSummary(toolName: String, toolInput: [String: Any], compactJSON: String) -> String {
-        switch toolName {
-        case _ where commandToolNames.contains(toolName):
-            return (toolInput["command"] as? String) ?? compactJSON
-        case _ where filePathToolNames.contains(toolName):
-            return (toolInput["file_path"] as? String) ?? compactJSON
-        case "NotebookEdit":
-            return (toolInput["notebook_path"] as? String) ?? compactJSON
-        case "WebFetch":
-            return (toolInput["url"] as? String) ?? compactJSON
-        default:
-            return compactJSON
-        }
-    }
-
-    /// Truncates `text` to at most `cap` UTF-8 bytes without ever
-    /// splitting a `Character` in half -- backs off to the last whole
-    /// character that still fits under `cap`.
-    private static func truncatedToByteCap(_ text: String, cap: Int) -> String {
-        guard text.utf8.count > cap else { return text }
-        var result = ""
-        var byteCount = 0
-        for character in text {
-            let characterByteCount = String(character).utf8.count
-            guard byteCount + characterByteCount <= cap else { break }
-            result.append(character)
-            byteCount += characterByteCount
-        }
-        return result
     }
 }
