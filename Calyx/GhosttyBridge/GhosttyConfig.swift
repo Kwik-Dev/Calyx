@@ -172,37 +172,55 @@ final class GhosttyConfigManager {
         return cfg
     }
 
+    /// Builds the text of the Calyx-managed runtime override block, plus an
+    /// appended foreground override line when `foregroundOverrideLine`
+    /// returns one. Pure function: no I/O, no UserDefaults access.
+    static func runtimeOverrideText(
+        glassOpacity: Double,
+        opacityCells: Bool,
+        preset: String,
+        customHex: String
+    ) -> String {
+        let clampedOpacity = max(0.0, min(1.0, glassOpacity))
+        let text = """
+        # --- Calyx Runtime Override (managed) ---
+        background-opacity = \(String(format: "%.3f", clampedOpacity))
+        background-blur = macos-glass-regular
+        background-opacity-cells = \(opacityCells ? "true" : "false")
+        font-codepoint-map = U+2600-U+27BF=Apple Color Emoji
+        font-codepoint-map = U+1F300-U+1F5FF=Apple Color Emoji
+        font-codepoint-map = U+1F600-U+1F64F=Apple Color Emoji
+        font-codepoint-map = U+1F680-U+1F6FF=Apple Color Emoji
+        font-codepoint-map = U+1F7E0-U+1F7FF=Apple Color Emoji
+        font-codepoint-map = U+1F900-U+1F9FF=Apple Color Emoji
+        font-codepoint-map = U+1FA70-U+1FAFF=Apple Color Emoji
+        font-codepoint-map = U+FE00-U+FE0F=Apple Color Emoji
+        # --- End Calyx Runtime Override ---
+        """
+
+        var finalText = text
+        if let fgLine = foregroundOverrideLine(
+            preset: preset,
+            customHex: customHex,
+            glassOpacity: clampedOpacity
+        ) {
+            finalText += "\n\(fgLine)"
+        }
+        return finalText
+    }
+
     private static func applyRuntimeOverrides(_ cfg: ghostty_config_t) {
         let fm = FileManager.default
         do {
             try fm.createDirectory(at: calyxConfigDir, withIntermediateDirectories: true)
 
             let sliderOpacity = UserDefaults.standard.object(forKey: "terminalGlassOpacity") as? Double ?? 0.7
-            let clampedOpacity = max(0.0, min(1.0, sliderOpacity))
-            let text = """
-            # --- Calyx Runtime Override (managed) ---
-            background-opacity = \(String(format: "%.3f", clampedOpacity))
-            background-blur = macos-glass-regular
-            background-opacity-cells = false
-            font-codepoint-map = U+2600-U+27BF=Apple Color Emoji
-            font-codepoint-map = U+1F300-U+1F5FF=Apple Color Emoji
-            font-codepoint-map = U+1F600-U+1F64F=Apple Color Emoji
-            font-codepoint-map = U+1F680-U+1F6FF=Apple Color Emoji
-            font-codepoint-map = U+1F7E0-U+1F7FF=Apple Color Emoji
-            font-codepoint-map = U+1F900-U+1F9FF=Apple Color Emoji
-            font-codepoint-map = U+1FA70-U+1FAFF=Apple Color Emoji
-            font-codepoint-map = U+FE00-U+FE0F=Apple Color Emoji
-            # --- End Calyx Runtime Override ---
-            """
-
-            var finalText = text
-            if let fgLine = foregroundOverrideLine(
+            let finalText = runtimeOverrideText(
+                glassOpacity: sliderOpacity,
+                opacityCells: UserDefaults.standard.bool(forKey: "terminalGlassOpacityCells"),
                 preset: UserDefaults.standard.string(forKey: "themeColorPreset") ?? "original",
-                customHex: UserDefaults.standard.string(forKey: "themeColorCustomHex") ?? ThemeColorPreset.defaultCustomHex,
-                glassOpacity: clampedOpacity
-            ) {
-                finalText += "\n\(fgLine)"
-            }
+                customHex: UserDefaults.standard.string(forKey: "themeColorCustomHex") ?? ThemeColorPreset.defaultCustomHex
+            )
 
             try (finalText + "\n").write(to: calyxRuntimeOverrideURL, atomically: true, encoding: .utf8)
             GhosttyFFI.configLoadFile(cfg, path: calyxRuntimeOverrideURL.path)

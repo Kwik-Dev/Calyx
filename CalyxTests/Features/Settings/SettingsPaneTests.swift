@@ -82,6 +82,7 @@ final class SettingsPaneTests: XCTestCase {
         ("themeColorWell", .appearance),
         ("themeColorHex", .appearance),
         ("glassOpacity", .appearance),
+        ("glassOpacityCells", .appearance),
         ("smoothScrolling", .appearance),
         ("lspAutoInstall", .lsp),
         ("lspRequireConfirmation", .lsp),
