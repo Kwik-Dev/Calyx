@@ -48,13 +48,11 @@ struct AgentStatusView: View {
             // `CalyxWindowController`'s screen-classification poll can
             // gate on "visible in any window" rather than each window's
             // own local sidebar state -- see that property's doc comment.
-            // Also the herdr integration's third start() trigger
-            // (alongside app launch / `applicationDidBecomeActive`) --
-            // see `AppDelegate.startHerdrIntegrationIfNeeded()`'s own
-            // doc comment.
+            // This view has no part in the herdr connection: that is a
+            // function of herdr's own presence
+            // (`HerdrSessionPresence`), never of a view appearing.
             .onAppear {
                 AgentRegistry.shared.incrementAgentsSidebarVisible()
-                (NSApp.delegate as? AppDelegate)?.startHerdrIntegrationIfNeeded()
             }
             .onDisappear { AgentRegistry.shared.decrementAgentsSidebarVisible() }
     }
