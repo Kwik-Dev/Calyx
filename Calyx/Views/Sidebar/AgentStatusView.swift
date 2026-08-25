@@ -589,10 +589,12 @@ private struct AgentRowView: View {
         }
         // The title/cwd/subtitle lines `rowContent` renders are each
         // `.lineLimit(1)` and can truncate on screen -- the subtitle in
-        // particular truncates with `.truncationMode(.middle)` in a
-        // narrow column -- so the tooltip is how a row's full text is
-        // reached, whether or not the row is clickable. Attached to the
-        // `Group` so both branches of the `if` above get it.
+        // particular truncates in the middle of a narrow column for
+        // `.external` rows (to keep their trailing " via herdr" marker
+        // readable; see `AgentRowDisplay.subtitleTruncationMode`) -- so
+        // the tooltip is how a row's full text is reached, whether or
+        // not the row is clickable. Attached to the `Group` so both
+        // branches of the `if` above get it.
         .help(resolvedTooltip)
         // `focusTarget` can flip non-nil -> nil at runtime (its bridging
         // Calyx pane closing prunes `focusSurfaceID`), which tears down
@@ -637,7 +639,7 @@ private struct AgentRowView: View {
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                        .truncationMode(.middle)
+                        .truncationMode(AgentRowDisplay.subtitleTruncationMode(source: entry.source))
                 }
 
                 Spacer()
@@ -1016,16 +1018,28 @@ enum AgentRowDisplay {
     /// `.external` rows so a row sourced from herdr rather than Calyx's
     /// own hooks/title-heuristic pipeline is distinguishable at a
     /// glance ("Claude Code via herdr"). Kept in natural reading order
-    /// (kind first): `AgentRowView` pairs this with
-    /// `.truncationMode(.middle)` on the rendered `Text`, so
-    /// `.lineLimit(1)` truncating in the narrow (~60pt) subtitle column
-    /// elides the MIDDLE of the string ("Clau...herdr") rather than the
-    /// tail, keeping the marker visible without reordering the text.
-    /// Native (`.hooks`/`.titleHeuristic`) rows are unchanged.
+    /// (kind first): `AgentRowView` pairs this with the
+    /// `.truncationMode` `subtitleTruncationMode(source:)` picks for the
+    /// rendered `Text`, so `.lineLimit(1)` truncating in the narrow
+    /// (~60pt) subtitle column elides the string in a way that keeps
+    /// this marker readable rather than swallowing it.
     static func subtitle(kind: String, source: AgentSource) -> String {
         let kindLabel = AgentEntry.displayName(forKind: kind)
         guard source == .external else { return kindLabel }
         return "\(kindLabel) via herdr"
+    }
+
+    /// The `.truncationMode` `AgentRowView.rowContent` applies to the
+    /// subtitle `Text` returned by `subtitle(kind:source:)`. Only
+    /// `.external` rows carry a trailing `" via herdr"` marker, so only
+    /// they need `.middle`: a narrow (~60pt) column truncating at the
+    /// tail would elide the marker itself ("Claude Code via h..."
+    /// becoming unreadable), whereas `.middle` keeps it visible
+    /// ("Clau...herdr"). Rows without a marker (`.hooks`,
+    /// `.titleHeuristic`, `.mcpConnection`) get `.tail` instead, so
+    /// their more informative leading text stays readable.
+    static func subtitleTruncationMode(source: AgentSource) -> Text.TruncationMode {
+        source == .external ? .middle : .tail
     }
 
     /// The Agents sidebar row's tooltip and accessibility-label text:

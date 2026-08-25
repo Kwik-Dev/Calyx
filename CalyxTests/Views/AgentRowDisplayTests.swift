@@ -27,6 +27,10 @@
 //    focusSurfaceID, never its own (herdr) surfaceID
 //  - subtitle: kind label per agent kind, plus a " via herdr" suffix
 //    for an .external source
+//  - subtitleTruncationMode(source:): .middle for .external, to protect
+//    the " via herdr" tail marker under .lineLimit(1); .tail for every
+//    native source (.hooks/.titleHeuristic/.mcpConnection), which carry
+//    no tail marker to protect
 //  - tooltip: title/cwdLabel/subtitle newline-joined in that order,
 //    always three lines; every string is passed through verbatim,
 //    including non-ASCII characters and the " via herdr" suffix
@@ -50,6 +54,7 @@
 //    ("1 sec. ago" through past "1 hr. ago") is unchanged
 //
 
+import SwiftUI
 import XCTest
 @testable import Calyx
 
@@ -364,6 +369,38 @@ final class AgentRowDisplayTests: XCTestCase {
                 AgentRowDisplay.subtitle(kind: testCase.kind, source: .external),
                 testCase.expected,
                 "kind: \(testCase.kind)"
+            )
+        }
+    }
+
+    // MARK: - subtitleTruncationMode
+
+    /// Only `.external` carries a trailing " via herdr" marker worth
+    /// protecting from `.lineLimit(1)` truncation in the narrow subtitle
+    /// column, so only `.external` gets `.middle`. A future edit that
+    /// applies `.middle` unconditionally to every source would truncate
+    /// a native row's plain kind label -- e.g. "Claude Code" as
+    /// "Cla...ode" -- even though it has no tail marker to protect.
+    func test_subtitleTruncationMode_externalSource_returnsMiddle() {
+        XCTAssertEqual(
+            AgentRowDisplay.subtitleTruncationMode(source: .external),
+            .middle,
+            "an .external row's \" via herdr\" suffix sits at the tail, so it must be protected by middle truncation"
+        )
+    }
+
+    /// Covers all three native sources, not just `.hooks`: a future edit
+    /// that hardcodes one native case and leaves another still mapped to
+    /// `.middle` must fail here instead of passing on single-case
+    /// coverage alone.
+    func test_subtitleTruncationMode_nativeSource_returnsTail() {
+        let cases: [AgentSource] = [.hooks, .titleHeuristic, .mcpConnection]
+
+        for source in cases {
+            XCTAssertEqual(
+                AgentRowDisplay.subtitleTruncationMode(source: source),
+                .tail,
+                "source: \(source) -- a native row's subtitle carries no tail marker to protect, so it must truncate normally at the tail"
             )
         }
     }
