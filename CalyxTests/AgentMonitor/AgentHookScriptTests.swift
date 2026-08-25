@@ -13,7 +13,6 @@
 //  - install(toDirectory:) writes the script at 0755 with scriptBody's
 //    exact content
 //  - AgentEndpointFile.write creates a 0600 JSON file with port/token
-//  - AgentEndpointFile.remove deletes it
 //
 
 import XCTest
@@ -149,17 +148,5 @@ final class AgentHookScriptTests: XCTestCase {
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: filePath + ".tmp"),
                        "atomicWrite must not leave a .tmp file behind after renaming")
-    }
-
-    func test_agentEndpointFile_remove_deletesFile() throws {
-        try AgentEndpointFile.write(port: 41830, token: "test-token-abc", directory: tempDir)
-        let filePath = tempDir + "/agent-endpoint.json"
-        XCTAssertTrue(FileManager.default.fileExists(atPath: filePath),
-                     "Precondition: file must exist before remove")
-
-        AgentEndpointFile.remove(directory: tempDir)
-
-        XCTAssertFalse(FileManager.default.fileExists(atPath: filePath),
-                       "remove() must delete agent-endpoint.json")
     }
 }

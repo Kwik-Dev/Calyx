@@ -12,7 +12,7 @@ import Network
 @MainActor
 final class CalyxMCPServer {
 
-    static let shared = CalyxMCPServer()
+    static let shared = CalyxMCPServer(agentEndpointDirectory: AgentEndpointFile.defaultDirectory)
 
     // MARK: - Public State
 
@@ -78,7 +78,9 @@ final class CalyxMCPServer {
 
     // MARK: - Init
 
-    init() {}
+    init(agentEndpointDirectory: String) {
+        self.agentEndpointDirectory = agentEndpointDirectory
+    }
 
     /// For testing only — sets the token without starting the listener.
     func _testSetToken(_ token: String) {
@@ -194,11 +196,15 @@ final class CalyxMCPServer {
     var agentSessionMetaBridge = AgentSessionMetaBridge()
 
     /// Directory `agent-endpoint.json` is written to (by `finishStart`)
-    /// and removed from (by `stop()`). Defaults to
+    /// and removed from (by `stop()`). Required at construction, not
+    /// defaulted: a caller that forgets to wire this fails to build
+    /// rather than silently pointing at
     /// `AgentEndpointFile.defaultDirectory`
-    /// (`~/Library/Application Support/Calyx`); tests inject a per-test
-    /// temp directory so `start()`/`stop()` never touch the real file.
-    var agentEndpointDirectory: String = AgentEndpointFile.defaultDirectory
+    /// (`~/Library/Application Support/Calyx`): only
+    /// `CalyxMCPServer.shared` passes that value; every test passes a
+    /// per-test temp directory so `start()`/`stop()` never touch the
+    /// real file.
+    let agentEndpointDirectory: String
 
     /// The slow-loris deadline `handleConnection` bounds *receiving* a
     /// complete request to (not request processing — see
@@ -1199,6 +1205,13 @@ final class CalyxMCPServer {
 
     @discardableResult
     func stop() -> Task<Void, Never> {
+        // Captured before any state reset below, most importantly
+        // before `port = 0` a few lines down, so the removal always
+        // checks the port+token this instance actually published.
+        // Capturing both together (not just `port`) keeps this correct
+        // even if a future change starts resetting `token` here too.
+        let stoppedPort = port
+        let stoppedToken = token
         listener?.cancel()
         listener = nil
         isRunning = false
@@ -1206,7 +1219,7 @@ final class CalyxMCPServer {
         peerRegistrationTask?.cancel()
         peerRegistrationTask = nil
         port = 0
-        AgentEndpointFile.remove(directory: agentEndpointDirectory)
+        AgentEndpointFile.remove(directory: agentEndpointDirectory, port: stoppedPort, token: stoppedToken)
         // Clears every native Agents sidebar row (hooks/title-heuristic)
         // — without this, disabling IPC (or a start()-triggered restart)
         // leaves stale rows on screen for panes the registry will never

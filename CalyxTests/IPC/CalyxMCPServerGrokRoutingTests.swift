@@ -43,8 +43,7 @@ final class CalyxMCPServerGrokRoutingTests: XCTestCase {
         CockpitSettings._testUseSuite(named: settingsSuiteName)
         agentEndpointDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString).path
-        server = CalyxMCPServer()
-        server.agentEndpointDirectory = agentEndpointDir
+        server = CalyxMCPServer(agentEndpointDirectory: agentEndpointDir)
         registry = AgentRegistry()
         server.agentRegistry = registry
         approvalInbox = ApprovalInboxStore()

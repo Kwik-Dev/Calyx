@@ -27,10 +27,11 @@ final class CalyxMCPServerAgentEventTests: XCTestCase {
     private var server: CalyxMCPServer!
     private let testToken = "test-token-12345"
 
-    /// Test-isolated `agent-endpoint.json` directory. This suite never
-    /// calls `start()`, but `tearDown`'s `server.stop()` still calls
-    /// `AgentEndpointFile.remove(directory:)` — redirect it so that
-    /// never touches the real
+    /// Test-isolated `agent-endpoint.json` directory, passed to `server`
+    /// via the required `agentEndpointDirectory` init parameter. This
+    /// suite never calls `start()`, but `tearDown`'s `server.stop()`
+    /// still calls `AgentEndpointFile.remove(directory:port:token:)` --
+    /// redirect it so that never touches the real
     /// ~/Library/Application Support/Calyx/agent-endpoint.json.
     private var agentEndpointDir: String!
 
@@ -40,8 +41,7 @@ final class CalyxMCPServerAgentEventTests: XCTestCase {
         super.setUp()
         agentEndpointDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString).path
-        server = CalyxMCPServer()
-        server.agentEndpointDirectory = agentEndpointDir
+        server = CalyxMCPServer(agentEndpointDirectory: agentEndpointDir)
         // stop() (called from tearDown) now also resets agentRegistry;
         // individual tests that assert on agent-event handling override
         // this with their own instance below.

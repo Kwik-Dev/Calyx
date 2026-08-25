@@ -63,9 +63,8 @@ final class AgentHookPipelineIntegrationTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: appSupportDir, withIntermediateDirectories: true)
 
         registry = AgentRegistry()
-        server = CalyxMCPServer()
+        server = CalyxMCPServer(agentEndpointDirectory: appSupportDir)
         server.agentRegistry = registry
-        server.agentEndpointDirectory = appSupportDir
         // A randomized preferred port (IANA dynamic/private range, one
         // per test run) rather than a hardcoded literal — this test only
         // needs *some* running server (the script reads the actual bound

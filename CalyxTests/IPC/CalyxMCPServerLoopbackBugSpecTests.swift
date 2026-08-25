@@ -63,7 +63,6 @@ final class CalyxMCPServerLoopbackBugSpecTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        server = CalyxMCPServer()
 
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString).path
@@ -75,7 +74,7 @@ final class CalyxMCPServerLoopbackBugSpecTests: XCTestCase {
         // Redirect agent-endpoint.json into the same per-test tempdir so
         // start()/stop() never touch the real
         // ~/Library/Application Support/Calyx/agent-endpoint.json.
-        server.agentEndpointDirectory = tempDir
+        server = CalyxMCPServer(agentEndpointDirectory: tempDir)
         // stop() now also resets agentRegistry; agentRegistry defaults to
         // the true AgentRegistry.shared singleton, so this suite's
         // start()/stop() calls would otherwise reset shared app-wide

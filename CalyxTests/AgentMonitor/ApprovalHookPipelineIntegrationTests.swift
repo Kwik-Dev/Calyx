@@ -89,9 +89,8 @@ final class ApprovalHookPipelineIntegrationTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: appSupportDir, withIntermediateDirectories: true)
 
         approvalInbox = ApprovalInboxStore()
-        server = CalyxMCPServer()
+        server = CalyxMCPServer(agentEndpointDirectory: appSupportDir)
         server.agentRegistry = AgentRegistry()
-        server.agentEndpointDirectory = appSupportDir
         server.approvalInbox = approvalInbox
         // R6 test hygiene: isolate Always-Allow memory from the shared
         // singleton, same rationale as `approvalInbox` above.
