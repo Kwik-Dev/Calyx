@@ -51,7 +51,7 @@ Calyx exposes panes, commands, captured output, browser tabs, language servers, 
 ### Agent supervision
 
 - **Agents Sidebar** -- live status for Claude Code, Codex, OpenCode, Hermes, Grok, and pi, with every row named after its own pane (title, working directory, agent), unread badges, last-seen timestamps, and click-to-focus navigation
-- **Subagent Rows** -- a pane running subagents gains a count badge and a disclosure chevron that expands them as indented child rows, for the CLIs that report subagents (Claude Code, Codex, OpenCode, Grok); each row carries the child's state, and the child's current tool wherever its CLI reports one (Claude Code and Grok; Codex and OpenCode report lifecycle only). Children exist only while the CLI reports them, and a pane whose CLI reports no subagents at all (pi, Hermes, herdr) looks exactly as it always did. Because a CLI reads its hook configuration once at session start, subagent rows appear in sessions started after Calyx installs the hooks, not in one already running
+- **Subagent Rows** -- a pane running subagents gains a count badge and a disclosure chevron that expands them as indented child rows, for the CLIs that report subagents (Claude Code, Codex, OpenCode, Grok); each row carries the child's state, and the child's current tool with the command, path, or URL that call is working on wherever its CLI reports one (Claude Code and Grok; Codex and OpenCode report lifecycle only). Children exist only while the CLI reports them, and a pane whose CLI reports no subagents at all (pi, Hermes, herdr) looks exactly as it always did. Because a CLI reads its hook configuration once at session start, subagent rows appear in sessions started after Calyx installs the hooks, not in one already running
 - **Approval Inbox** -- one opt-in queue across every pane for Claude Code and Codex permission prompts, for the tool calls of always-approve Grok sessions, and for every pi tool call, with Allow, Deny, and per-pane or global session-scoped approval; Claude Code and Codex queue a request only where the CLI would have prompted you itself and fall back to the agent's own prompt, while an unanswered Grok or pi request is denied
 - **Approval Queue Navigation** -- inspect and decide pending requests in any order, with a preview menu on the position label for jumping straight to one, and automatic navigation to the nearest remaining request
 - **Agent Cockpit** -- MCP tools for listing, creating, and splitting panes; commands and keystrokes remain approval-gated unless auto-approve is enabled
@@ -70,7 +70,7 @@ Calyx exposes panes, commands, captured output, browser tabs, language servers, 
 - **Remote Sessions** -- deploy `calyx-session` once to an SSH host from `~/.ssh/config`, then browse and reattach to remote persistent sessions
 - **Agent Resume** -- offer to resume the agent CLI conversation associated with a reattached session
 - **Layout Restore** -- restore tabs, splits, and working directories on launch
-- **herdr Integration** -- browse and manage herdr workspaces as native split-pane tabs; herdr-hosted agents also appear in the Agents Sidebar, and a row bridged into a Calyx tab focuses that pane on click
+- **herdr Integration** -- browse and manage herdr workspaces as native split-pane tabs; herdr-hosted agents also appear in the Agents Sidebar, and a row bridged into a Calyx tab focuses that pane on click. Calyx watches for herdr instead of polling, so herdr started or installed after Calyx launched is picked up without a relaunch
 
 ### Terminal workspace
 
@@ -81,7 +81,7 @@ Calyx exposes panes, commands, captured output, browser tabs, language servers, 
 - **Search and Navigation** -- highlighted scrollback search, native overlay scrollbar, smooth trackpad and mouse-wheel scrolling, and prompt-line cursor click-to-move
 - **Input Tools** -- shell-escaped drag and drop, multiline Compose Overlay, clipboard safety confirmation, and Secure Keyboard Entry
 - **Quick Terminal and Notifications** -- a system-wide drop-down terminal plus OSC 9/99/777 desktop notifications
-- **Liquid Glass Appearance** -- macOS 26-native glass UI drawn as one seamless sheet of window chrome, eight theme presets, custom colors, adaptive text color, and a fully opaque window under Reduce Transparency ([demo video](https://www.youtube.com/watch?v=cUYc7yzI_eM))
+- **Liquid Glass Appearance** -- macOS 26-native glass UI drawn as one seamless sheet of window chrome, eight theme presets, custom colors, adaptive text color, an optional opacity pass that reaches cells an app paints itself, and a fully opaque window under Reduce Transparency ([demo video](https://www.youtube.com/watch?v=cUYc7yzI_eM))
 
 ### Browser automation
 
@@ -258,7 +258,7 @@ Bug reports and feature ideas are welcome as issues. External pull requests are 
 ## Known Limitations
 
 - **Cursor click-to-move on full-width text** -- cursor placement may be offset on Japanese/full-width text lines because Ghostty's cursor-click-to-move internally translates clicks into arrow-key steps over terminal cells.
-- **Calyx-managed config keys** -- `background-opacity`, `background-blur`, `background-opacity-cells`, `font-codepoint-map`, `foreground` are overridden by Calyx for Glass UI. See Settings > Ghostty Config Compatibility for the full list.
+- **Calyx-managed config keys** -- `background-opacity`, `background-blur`, `background-opacity-cells`, `font-codepoint-map`, `foreground` are overridden by Calyx for Glass UI. `background-opacity-cells` is set from Settings > Appearance > Glass instead. See Settings > Ghostty Config Compatibility for the full list.
 
 ## License
 
