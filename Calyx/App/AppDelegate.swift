@@ -8,7 +8,7 @@ private let logger = Logger(
 )
 
 @MainActor
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver {
     private(set) var appSession = AppSession()
     private(set) var browserTabBroker = BrowserTabBroker()
     private var windowControllers: [CalyxWindowController] = []
@@ -34,16 +34,32 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// property's own doc comment for why a `lazy var` THERE would be
     /// unsafe) because `HerdrIntegrationCoordinator.init` does no I/O of
     /// its own and starts no timer
-    /// (`HerdrIntegrationCoordinatorTests.test_neverCallingStart_doesNoWork_noBackgroundTimer`
+    /// (`HerdrIntegrationCoordinatorTests.test_neverObservingAPresenceChange_doesNoWork_noBackgroundTimer`
     /// pins that), so this property being read for the first time is
-    /// behaviorally inert until `startHerdrIntegrationIfNeeded()` below
-    /// actually calls `start()`.
+    /// behaviorally inert until `herdrSessionPresence` below reports a
+    /// herdr session it can connect to.
     private lazy var herdrIntegrationCoordinator = HerdrIntegrationCoordinator(
-        resolver: HerdrBinaryResolver(),
         discovery: HerdrSessionDiscovery(),
         transportFactory: LiveHerdrTransportFactory(),
         mirror: herdrAgentMirror
     )
+
+    /// Owns "is a herdr session there right now?" -- see
+    /// `HerdrSessionPresence.swift`'s own header -- and drives
+    /// `herdrIntegrationCoordinator` above through every transition it
+    /// observes. Held here because the answer outlives any window,
+    /// sidebar, or tab: watching stops only when the app does.
+    /// Constructing it opens nothing and starts nothing; `start()`
+    /// (`startHerdrIntegration()` below, reached only past
+    /// `applicationDidFinishLaunching`'s unit-test-host gate) is what
+    /// begins watching.
+    private let herdrSessionPresence = HerdrSessionPresence()
+
+    /// The most recent presence-forwarding task -- see
+    /// `herdrSessionPresenceDidChange(_:)`. Only the last one is
+    /// retained; each awaits its predecessor, which is what keeps
+    /// transitions in order.
+    private var herdrPresenceForwardingTask: Task<Void, Never>?
 
     /// Shared across `herdrTabCoordinator`'s own lazy
     /// construction AND `createSurfaceWithPwd`'s restore-time
@@ -59,7 +75,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Native-tab coordinator -- see `HerdrTabCoordinator.swift`'s
     /// own header. `nil` when herdr itself isn't resolvable, OR before
-    /// `startHerdrIntegrationIfNeeded()`'s own async resolution below has
+    /// `startHerdrIntegration()`'s own async resolution below has
     /// completed -- every call site here guards on that `nil`. Everywhere
     /// else in this integration that means zero behavior change while
     /// herdr stays unresolved (`openHerdrAttachTab`'s own doc comment),
@@ -67,14 +83,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// this resolves queues its adoption into `pendingHerdrTabAdoptions`
     /// instead of dropping it, flushed the moment this property is
     /// actually assigned (`flushPendingHerdrTabAdoptions()`, called
-    /// immediately after, in `startHerdrIntegrationIfNeeded()`). A herdr
-    /// installed AFTER launch is not picked up until the next one (this
-    /// property is set at most once per launch, mirroring every other
-    /// "resolved once" property in this codebase) -- an accepted
-    /// limitation, not a bug: there is no live re-poll here.
+    /// immediately after, in `startHerdrIntegration()`). A herdr
+    /// installed, or put on `PATH`, AFTER launch IS picked up: every
+    /// presence transition that still finds this nil resolves again
+    /// (`prepareHerdrTabCoordinatorIfNeeded()`), and presence reporting
+    /// a live session is the strongest evidence there is that herdr
+    /// exists. Assigned at most once all the same -- the first
+    /// resolution that succeeds wins, and this instance owns
+    /// per-workspace state no later one may replace.
     ///
     /// Populated asynchronously, off `@MainActor`, by
-    /// `startHerdrIntegrationIfNeeded()` below: a `lazy var` here would run
+    /// `startHerdrIntegration()` below: a `lazy var` here would run
     /// `herdrBinaryResolver.resolve()`'s real, uncached `PATH` walk
     /// synchronously on first access, forced unconditionally on every
     /// launch by that same method -- see that method's own doc comment
@@ -95,7 +114,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// Restored-tab adoptions queued by `adoptRestoredHerdrTabIfNeeded(_:)`
     /// while `herdrTabCoordinator` above was still nil -- `restoreSession()`
     /// runs synchronously during launch, before
-    /// `startHerdrIntegrationIfNeeded()`'s own async herdr-binary
+    /// `startHerdrIntegration()`'s own async herdr-binary
     /// resolution can possibly have assigned that property yet, so a
     /// restored herdr tab must not simply be dropped here. Appended to
     /// ONLY from that one call site; flushed in order, and cleared, by
@@ -107,12 +126,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var pendingHerdrTabAdoptions: [PendingHerdrTabAdoption] = []
 
     #if DEBUG
+    /// See `resolveHerdrBinPathOffMainThread()`. DO NOT use from
+    /// production code.
+    var _herdrBinPathOverrideForTesting: String?
+
     /// Test seam: sets `herdrTabCoordinator` directly and flushes
     /// `pendingHerdrTabAdoptions`, mirroring
-    /// `startHerdrIntegrationIfNeeded()`'s own assign-then-flush sequence
-    /// exactly. `startHerdrIntegrationIfNeeded()` itself is unreachable
-    /// from a test (`LaunchEnvironmentPolicy.isUnitTestHost()`'s own
-    /// gate), and `herdrTabCoordinator`'s setter is private besides, so
+    /// `startHerdrIntegration()`'s own assign-then-flush sequence
+    /// exactly. `startHerdrIntegration()` itself is unreachable
+    /// from a test (`applicationDidFinishLaunching`'s own
+    /// `LaunchEnvironmentPolicy.isUnitTestHost()` gate), and
+    /// `herdrTabCoordinator`'s setter is private besides, so
     /// this is the only way to drive the flush deterministically, without
     /// a real herdr binary. DO NOT use from production code.
     func _setHerdrTabCoordinatorForTesting(_ coordinator: HerdrTabCoordinator?) {
@@ -123,7 +147,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Builds the real `HerdrTabCoordinator` once `herdrBinPath` is
     /// already resolved -- extracted out of `herdrTabCoordinator`'s own
-    /// former `lazy var` initializer so `startHerdrIntegrationIfNeeded()`
+    /// former `lazy var` initializer so `startHerdrIntegration()`
     /// can call it only AFTER resolving off `@MainActor` (see that
     /// method's own doc comment).
     private func makeHerdrTabCoordinator(herdrBinPath: String) -> HerdrTabCoordinator {
@@ -346,7 +370,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     ///
     /// The actual per-tool checks, config parsing, and any resulting
     /// writes all run off `@MainActor` (`resyncAgentHooksOffMainThread()`
-    /// below), mirroring `startHerdrIntegrationIfNeeded()`'s identical
+    /// below), mirroring `startHerdrIntegration()`'s identical
     /// off-main hop for the same reason: this would otherwise be
     /// synchronous I/O running before the first window ever draws.
     ///
@@ -507,68 +531,92 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Herdr Integration
 
-    /// Starts (or no-ops, per `HerdrIntegrationCoordinator.start()`'s
-    /// own idempotent contract) the herdr integration. Every
-    /// production call site -- app launch (`applicationDidFinishLaunching`
-    /// below, alongside `HerdrHostedSurfaces.shared.startObserving()`),
-    /// `applicationDidBecomeActive` below, and the Agents sidebar
-    /// becoming visible (`AgentStatusView.onAppear`) -- calls this SAME
-    /// method; none of them are distinguished internally, mirroring
-    /// `HerdrIntegrationCoordinator.start()`'s own "none of them are
-    /// distinguished internally" contract one level up.
+    /// Assembles the herdr integration, once, at launch: resolves the
+    /// herdr binary, builds `herdrTabCoordinator` from it, wires that
+    /// coordinator up as `herdrIntegrationCoordinator`'s structure-event
+    /// observer, and only THEN lets `herdrSessionPresence` start
+    /// reporting -- a connection must never exist before there is
+    /// somewhere to send its structure events.
     ///
-    /// Gated on `LaunchEnvironmentPolicy.isUnitTestHost()` as a single
-    /// choke point for all three triggers, rather than duplicating the
-    /// gate at each call site -- mirrors `applicationDidFinishLaunching`'s
-    /// / `applicationWillTerminate`'s own identical gate (see that
-    /// method's own doc comment for the incident this guards against),
-    /// so a unit-test host launch never opens a real herdr connection
-    /// even when herdr happens to be installed on the development
-    /// machine running the suite.
-    func startHerdrIntegrationIfNeeded() {
-        guard !LaunchEnvironmentPolicy.isUnitTestHost() else { return }
+    /// Nothing here decides WHEN a connection happens: presence owns
+    /// that (`HerdrSessionPresence`'s own header), so this runs exactly
+    /// once per launch rather than being poked by app activation or by
+    /// a view appearing.
+    ///
+    /// Called only from `applicationDidFinishLaunching`, which returns
+    /// early for `LaunchEnvironmentPolicy.isUnitTestHost()` -- that is
+    /// what keeps a unit-test host from watching, or connecting to, the
+    /// developer's own real herdr (see that method's own doc comment for
+    /// the incident this guards against).
+    private func startHerdrIntegration() {
         Task {
-            // Resolves off `@MainActor` before
-            // ever constructing `herdrTabCoordinator` -- mirrors
-            // `HerdrIntegrationCoordinator.detectLiveCandidate()`'s own
-            // `DispatchQueue.global()` hop for the identical reason (that
-            // type's own doc comment: "never blocks @MainActor"). A plain
-            // `Task { }` created from this (`@MainActor`) method inherits
-            // `@MainActor` isolation, so calling `herdrBinaryResolver
-            // .resolve()` directly here, without the hop, would still run
-            // this real, uncached `PATH` walk on the main thread -- only
-            // deferring WHEN, never WHERE.
-            if herdrTabCoordinator == nil, let herdrBinPath = await resolveHerdrBinPathOffMainThread() {
-                // Re-checked (not just re-assigned) after the await:
-                // applicationDidFinishLaunching and
-                // applicationDidBecomeActive both call this method, so a
-                // second call's own Task can reach this point before the
-                // first one's own await above has resumed. This check,
-                // then the assignment below, are themselves synchronous
-                // on `@MainActor` with no further `await` in between, so
-                // two concurrent calls can never both construct one.
-                if herdrTabCoordinator == nil {
-                    herdrTabCoordinator = makeHerdrTabCoordinator(herdrBinPath: herdrBinPath)
-                    // Adopts any restore-time queued entry now that a
-                    // coordinator finally exists -- see
-                    // flushPendingHerdrTabAdoptions()'s own doc comment.
-                    flushPendingHerdrTabAdoptions()
-                }
-            }
-            // Wires HerdrTabCoordinator (`nil` when herdr itself isn't
-            // resolvable -- setStructureEventObserver stores it as-is,
-            // and a coordinator that never connects never has anything to
-            // notify anyway) as the observer of herdr's pane.closed/
-            // layout.updated events, BEFORE the start() call below, so a
-            // connection never exists before this coordinator has
-            // somewhere to send its own structure events.
-            herdrIntegrationCoordinator.setStructureEventObserver(herdrTabCoordinator)
-            await herdrIntegrationCoordinator.start()
+            await prepareHerdrTabCoordinatorIfNeeded()
+            herdrSessionPresence.setObserver(self)
+            herdrSessionPresence.start()
+        }
+    }
+
+    /// Resolves herdr and builds `herdrTabCoordinator` from it, unless
+    /// one already exists. Runs at launch AND again on a presence
+    /// transition that still finds this nil (see
+    /// `herdrSessionPresenceDidChange(_:)`): herdr installed, or put on
+    /// `PATH`, after Calyx launched would otherwise leave this nil for
+    /// the whole process, and a nil structure-event observer means a
+    /// `pane.closed` never closes its bridge surface and a native herdr
+    /// tab can never be opened -- while the mirror happily shows rows
+    /// for that same session.
+    ///
+    /// Re-resolved per transition rather than once: herdr existing is a
+    /// fact presence owns, so the moment it reports a live session is
+    /// the only honest moment to ask again -- a flag saying "already
+    /// tried" would be Calyx deciding herdr is absent on evidence older
+    /// than presence's own.
+    ///
+    /// `herdrBinaryResolver.resolve()` is a real, uncached `PATH` walk
+    /// and runs off `@MainActor` (`resolveHerdrBinPathOffMainThread()`):
+    /// a plain `Task { }` created from an `@MainActor` method inherits
+    /// that isolation, so calling it directly would only defer WHEN, not
+    /// WHERE.
+    private func prepareHerdrTabCoordinatorIfNeeded() async {
+        guard herdrTabCoordinator == nil else { return }
+        guard let herdrBinPath = await resolveHerdrBinPathOffMainThread() else { return }
+        // Re-checked (not just re-assigned) after the await: the launch
+        // call and a presence-driven call can both reach the resolve.
+        // This check and the assignment below are synchronous on
+        // `@MainActor` with no `await` between them, so two callers can
+        // never both construct one.
+        guard herdrTabCoordinator == nil else { return }
+        herdrTabCoordinator = makeHerdrTabCoordinator(herdrBinPath: herdrBinPath)
+        // Adopts any restore-time queued entry now that a coordinator
+        // finally exists -- see flushPendingHerdrTabAdoptions()'s own
+        // doc comment.
+        flushPendingHerdrTabAdoptions()
+        herdrIntegrationCoordinator.setStructureEventObserver(herdrTabCoordinator)
+    }
+
+    /// Forwards every presence transition to
+    /// `herdrIntegrationCoordinator`, which owns what a connection does
+    /// about it -- but only after `prepareHerdrTabCoordinatorIfNeeded()`
+    /// has had its chance, so a connection never exists before there is
+    /// somewhere to send its structure events.
+    ///
+    /// That preparation is asynchronous while this callback is not, so
+    /// forwarding is chained onto the previous transition's own task
+    /// rather than spawned freely: presence transitions are only
+    /// meaningful in the order they happened, and the coordinator reads
+    /// them as such.
+    func herdrSessionPresenceDidChange(_ change: HerdrSessionPresenceChange) {
+        let previous = herdrPresenceForwardingTask
+        herdrPresenceForwardingTask = Task { [weak self] in
+            await previous?.value
+            guard let self else { return }
+            await self.prepareHerdrTabCoordinatorIfNeeded()
+            self.herdrIntegrationCoordinator.herdrSessionPresenceDidChange(change)
         }
     }
 
     /// Runs `herdrBinaryResolver.resolve()` off `@MainActor`, on
-    /// `DispatchQueue.global()` -- see `startHerdrIntegrationIfNeeded()`'s
+    /// `DispatchQueue.global()` -- see `startHerdrIntegration()`'s
     /// own doc comment for why a plain `Task { }` alone is not enough.
     /// `HerdrBinaryResolver` is `Sendable` (its own doc comment), so
     /// capturing it into the background closure is sound without any
@@ -576,6 +624,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// identical `resolver`/`discovery` capture in
     /// `HerdrIntegrationCoordinator.swift`.
     private func resolveHerdrBinPathOffMainThread() async -> String? {
+        #if DEBUG
+        // Test seam: stands in for the real `PATH` walk, so a test can
+        // drive `prepareHerdrTabCoordinatorIfNeeded()` without its
+        // outcome depending on whether the machine running the suite
+        // happens to have herdr installed. DO NOT use from production
+        // code.
+        if let overridden = _herdrBinPathOverrideForTesting { return overridden }
+        #endif
         let resolver = herdrBinaryResolver
         return await withCheckedContinuation { (continuation: CheckedContinuation<String?, Never>) in
             DispatchQueue.global().async {
@@ -588,7 +644,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// `pendingHerdrTabAdoptions` while `herdrTabCoordinator` was still
     /// nil, in the order they were queued, then empties the queue.
     /// Called immediately after `herdrTabCoordinator` is assigned, above
-    /// in `startHerdrIntegrationIfNeeded()` and in
+    /// in `startHerdrIntegration()` and in
     /// `_setHerdrTabCoordinatorForTesting` -- a coordinator that never
     /// gets constructed this launch simply leaves the queue as-is, with
     /// no other effect (no timer, no request, nothing beyond the value
@@ -866,7 +922,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // documents (which is what actually self-heals a row created
         // before this launch's herdr connection is even established).
         HerdrPaneRegistry.shared.setBridgeObserver(herdrAgentMirror)
-        startHerdrIntegrationIfNeeded()
+        startHerdrIntegration()
         resyncAgentHooksIfInstalled()
 
         browserTabBroker.appDelegate = self
@@ -1067,12 +1123,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let scheme: ghostty_color_scheme_e = isDark ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT
             ghostty_app_set_color_scheme(app, scheme)
         }
-    }
-
-    /// Herdr integration's second lifecycle trigger -- see
-    /// `startHerdrIntegrationIfNeeded()`'s own doc comment.
-    func applicationDidBecomeActive(_ notification: Notification) {
-        startHerdrIntegrationIfNeeded()
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -3179,7 +3229,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// here -- extraction, not validation.
     ///
     /// When `herdrTabCoordinator` already exists, this adopts directly.
-    /// Otherwise (still nil at restore time -- `startHerdrIntegrationIfNeeded()`'s
+    /// Otherwise (still nil at restore time -- `startHerdrIntegration()`'s
     /// own async herdr-binary resolution has not necessarily landed yet
     /// by the time `restoreSession()` runs), the entry is queued into
     /// `pendingHerdrTabAdoptions` instead of being dropped, and adopted
@@ -3407,7 +3457,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// `pendingHerdrTabAdoptions` for a later `flushPendingHerdrTabAdoptions()`
     /// to deliver (`herdrTabCoordinator` still nil -- always the case in
     /// the unit-test host unless a test sets one, since
-    /// `startHerdrIntegrationIfNeeded`'s own gate never runs there), so a
+    /// `applicationDidFinishLaunching`'s own unit-test-host gate
+    /// stops `startHerdrIntegration()` from ever running there), so a
     /// test can observe the adoption's computed shape either way. `nil`
     /// (the default) leaves production behavior unchanged: the real
     /// adoption, direct or queued, still always happens regardless of

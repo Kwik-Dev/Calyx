@@ -16,6 +16,14 @@
 import Darwin
 import Foundation
 
+/// Filesystem locations herdr itself owns, shared by every Calyx type
+/// that has to look at them (`HerdrSessionDiscovery` enumerates
+/// candidates under this root; `HerdrSessionPresence` watches it).
+enum HerdrConfigPaths {
+    /// `~/.config/herdr`.
+    static let defaultRootDirectory: String = NSHomeDirectory() + "/.config/herdr"
+}
+
 /// One discovered (not yet liveness-checked) herdr socket location.
 /// `name` is `"default"` for `<configRootDirectory>/herdr.sock` --
 /// herdr's own term for this session: `herdr session list --json`
@@ -92,7 +100,7 @@ struct HerdrSessionDiscovery: HerdrSessionDiscoveryProtocol {
 
     init(
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        configRootDirectory: String = NSHomeDirectory() + "/.config/herdr"
+        configRootDirectory: String = HerdrConfigPaths.defaultRootDirectory
     ) {
         self.environment = environment
         self.configRootDirectory = configRootDirectory

@@ -311,7 +311,7 @@ final class AppDelegateRestoreHerdrPaneRefsWiringTests: XCTestCase {
     /// `restoreTabSurfaces` runs, so the adoption is queued into
     /// `pendingHerdrTabAdoptions` instead of reaching any coordinator.
     /// Creating one afterward (`_setHerdrTabCoordinatorForTesting`, which
-    /// flushes exactly like `startHerdrIntegrationIfNeeded()`'s own
+    /// flushes exactly like `startHerdrIntegration()`'s own
     /// assign-then-flush sequence) adopts that queued entry -- proven by
     /// `hasOpenTab` for its workspace id/socket path, and, for the
     /// paneRefs specifically, by closing the EXACT pane the surviving ref

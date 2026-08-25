@@ -1,30 +1,32 @@
 // HerdrIntegrationCoordinator.swift
 // Calyx
 //
-// @MainActor lifecycle owner for the herdr connection: detects herdr,
-// takes a `session.snapshot` on its own one-shot connection, subscribes
-// on a SEPARATE, long-lived event-stream connection, keeps
+// @MainActor lifecycle owner for the herdr connection: takes a
+// `session.snapshot` on its own one-shot connection, subscribes on a
+// SEPARATE, long-lived event-stream connection, keeps
 // `HerdrAgentMirror` in sync with pushed events, and rebuilds or
 // reconnects as the pane set or transport health changes. Every
-// dependency is injected (binary resolver, discovery, a transport
-// factory, the mirror) so this file's own tests never open a real socket
-// -- see HerdrIntegrationCoordinatorTests.swift.
+// dependency is injected (discovery, a transport factory, the mirror)
+// so this file's own tests never open a real socket -- see
+// HerdrIntegrationCoordinatorTests.swift.
 //
-// LIFECYCLE: driven ENTIRELY by explicit calls to `start()` from
-// outside (app launch / app became active / Agents sidebar became
-// visible). There is no polling timer anywhere in this type: `start()`
-// is a no-op if herdr isn't currently detectable, and does nothing again
-// on a second call while already connected -- nothing here loops or
+// LIFECYCLE: the connection is a FUNCTION of herdr's own presence.
+// `HerdrSessionPresence` owns the question "is a herdr session there
+// right now?" and reports every transition through
+// `herdrSessionPresenceDidChange(_:)` (see the extension at the bottom
+// of this file for the per-change contract); nothing else starts,
+// stops, or re-aims a connection. There is no polling timer anywhere in
+// this type and no detection of its own -- nothing here loops or
 // retries on its own initiative except the bounded reconnect described
-// below, itself only ever triggered BY a transport-level EOF/failure,
-// never by a clock.
+// below, itself only ever triggered BY a connection to a session
+// presence says is live failing (its stream ending, or the very first
+// attempt for that session not completing), never by a clock.
 //
-// DETECTION (`start()` steps 1-2 below): unchanged from before --
-// `resolver.resolve()` and `discovery.discover()`/`discovery
-// .isAlive(socketPath:)` all do blocking filesystem/socket work, so this
-// whole step is dispatched as ONE unit onto `DispatchQueue.global()`
-// behind a `withCheckedContinuation`, never blocking `@MainActor` -- see
-// `detectLiveCandidate()`.
+// `discovery` survives that split for ONE remaining purpose: gating
+// each bounded reconnect attempt on `isAlive(socketPath:)`, the probe
+// that tells a server which merely dropped one connection from one
+// which is gone. Which sockets exist, and which of them are live, is
+// presence's question alone.
 //
 // CONNECT SEQUENCE (`attemptConnect(socketPath:)`, pinned by test) --
 // MEASURED against a real herdr 0.8.0 server: a request/response
@@ -172,7 +174,7 @@
 // settled). A `.paneClosed`/`.paneExited` event is ALWAYS a trigger,
 // unconditionally, at ANY time (accumulating or steady state) -- see
 // REPLAY BURST RECONCILIATION above for why these two carry no storm
-// risk. Every trigger funnels through `triggerRebuild(socketPath:)`,
+// risk. Every trigger funnels through `triggerRebuild(socketPath:generation:)`,
 // shared with the settle task's own burst-driven rebuild -- see
 // CONSECUTIVE-REBUILD CAP below for what it checks before tearing
 // anything down.
@@ -207,9 +209,9 @@
 // SINGLE OWNER, NOT A RACE: `triggerRebuild` and the "stream ended" tail
 // of `consumeEvents` (DISCONNECT HANDLING below) are the only two places
 // that ever call `attemptConnect` again after the first, and they are
-// mutually exclusive via `isRebuildOrReconnectInFlight`, a plain flag
-// claimed-and-released SYNCHRONOUSLY (before any `await`, so there is no
-// window for two callers to both see it unclaimed): whichever of "the
+// mutually exclusive via a CLAIM (`claimRebuildOrReconnect()`), taken
+// and released SYNCHRONOUSLY (before any `await`, so there is no
+// window for two callers to both see it free): whichever of "the
 // burst-settle task decided to reconcile-rebuild" or "this connection's
 // own stream genuinely ended" reaches its own outer entry point FIRST
 // proceeds; the other backs off rather than independently opening a
@@ -228,13 +230,48 @@
 // external transport EOF/failure landing in the vanishingly small
 // scheduling window after a same-generation settle task has already
 // passed both its cancellation and generation checks, but before this
-// connection's own natural-disconnect path has itself claimed
-// `isRebuildOrReconnectInFlight`, could in principle see the mutex
-// already held and back off from handling that disconnect directly --
+// connection's own natural-disconnect path has itself taken the claim,
+// could in principle see it already held and back off from handling
+// that disconnect directly --
 // accepted because the in-flight rebuild already holding the mutex will
 // itself reach `attemptConnect`/`handleDisconnect` and correctly resolve
 // the connection's fate either way; nothing is silently dropped, only
 // handled by whichever side won.
+//
+// A PRESENCE TRANSITION OUTRANKS BOTH, and deliberately does not queue
+// behind `isRebuildOrReconnectInFlight`: presence is reporting that the
+// session those two are working on is not the session behind that path
+// any more, so waiting for them would mean waiting on work that is
+// already pointless. `discardCurrentConnection` therefore bumps
+// `connectionGeneration` (BEFORE closing the transport, so the
+// `consumeEvents` tail that unblocks on the close cannot see its own
+// generation still current), and every step a rebuild or a reconnect
+// takes AFTER an `await` re-checks the generation it started with:
+// `attemptConnect` twice (once the moment its snapshot answers, before
+// that snapshot reaches the mirror at all, and again before adopting a
+// connection -- a superseded attempt closes its own subscribe transport
+// rather than orphaning the one presence has since established),
+// `triggerRebuild` before it touches any state at all, again after its
+// backoff, and again after a failed attempt, `reconnectLoop` at every
+// iteration and after its own backoff. A
+// superseded path always returns silently -- never through
+// `giveUpOnBoundSession()`/`handleDisconnect`, which would clear
+// `isActive` and the mirror rows belonging to the connection that
+// replaced it.
+//
+// `discardCurrentConnection` also BREAKS the single-owner claim in that
+// same synchronous frame, since the holder is by definition working on
+// the connection just discarded: without that, a rebuild sleeping
+// through its backoff would still hold the claim when the replacement
+// connection is established, and the first structure event on that new
+// connection would find no owner available and silently skip its
+// resync. The broken claim is not released twice: a holder releases
+// only the claim it still holds. One accepted gap of the same class as
+// the one above: promotion (DISCONNECT HANDLING below) begins while the
+// giving-up path's own claim is still held for a few synchronous
+// frames, so a rebuild trigger arriving in that window backs off --
+// harmless, since the connection it would rebuild is the one just given
+// up on.
 //
 // HANDSHAKE DEADLINE -- now PER STEP, not one combined window:
 // each of the two steps above (the snapshot request, the subscribe ack)
@@ -333,22 +370,39 @@
 // injected delay primitive (defaults to real `Task.sleep`, overridden
 // in tests to drive it deterministically).
 //
+// GIVING UP, AND PROMOTION: running out of budget or of
+// `reconnectDelays`, or the socket no longer probing alive, is terminal
+// FOR THAT SESSION only (`giveUpOnBoundSession()`): the identity is
+// marked abandoned, and any OTHER session presence has reported live is
+// bound and connected to instead. A session given up on is never
+// retried, and never promoted to, until presence reports the path
+// carrying a different one -- which is what stops two failing sessions
+// from promoting each other forever.
+//
 // LIFETIME RECONNECT BUDGET: `reconnectDelays` alone bounds only
 // ONE disconnect-to-give-up cycle -- a server that repeatedly accepts a
 // connection and then immediately drops it again starts a FRESH cycle
 // every time, so bounding each cycle in isolation still allows
 // unbounded reconnect churn (and visible sidebar flapping: rows cleared
-// and repopulated every cycle) across many cycles. `totalReconnectAttempts`
-// instead counts every `reconnectLoop`-driven attempt for as long as
-// THIS INSTANCE exists, across every cycle, capped by
-// `maxLifetimeReconnectAttempts`; once reached, `reconnectLoop` gives
-// up permanently (`resetToIdle()`) without even trying the remaining
-// attempt, same as running out of `reconnectDelays` entries.
-// Deliberately NOT reset by `resetToIdle()`'s own full give-up -- a
-// LATER `start()` call is still bound by the SAME lifetime total,
-// otherwise a flapping server would simply be re-armed for a fresh full
-// budget every time `applicationDidBecomeActive` fires again. The ONLY
-// way to earn the budget back to zero is a connection proving itself
+// and repopulated every cycle) across many cycles.
+// `totalReconnectAttempts` instead counts every `reconnectLoop`-driven
+// attempt across every cycle, capped by `maxLifetimeReconnectAttempts`;
+// once reached, `reconnectLoop` gives up permanently (`resetToIdle()`)
+// without even trying the remaining attempt, same as running out of
+// `reconnectDelays` entries.
+//
+// The budget belongs to `boundIdentity` -- the ONE herdr session this
+// coordinator is currently bound to -- not to this process. What it
+// bounds is reconnect churn against a single server, so its verdict
+// reaches exactly as far as that server does: `boundIdentity` changing
+// (presence reporting the socket REPLACED, or a different live session
+// taken up after the bound one DISAPPEARED) discards the spent budget
+// along with everything else that was true of the old server. Without
+// that, one flapping session would permanently deafen Calyx to every
+// later one. Deliberately NOT reset by `resetToIdle()`'s own full
+// give-up: giving up on a server says nothing about that server having
+// changed. The ONLY other way to earn the budget back to zero is a
+// connection proving itself
 // HEALTHY, defined here as: it delivered at least one event AFTER its
 // own subscribe ack completed (the first iteration of `consumeEvents`'s
 // own read loop for that connection actually running). A successful
@@ -445,7 +499,6 @@ final class HerdrIntegrationCoordinator {
     /// attempts.
     static let defaultRebuildBackoffDelays: [Duration] = [.milliseconds(200), .seconds(1), .seconds(2)]
 
-    private let resolver: any HerdrBinaryResolverProtocol
     private let discovery: any HerdrSessionDiscoveryProtocol
     private let transportFactory: any HerdrTransportFactory
     private let mirror: HerdrAgentMirror
@@ -491,10 +544,15 @@ final class HerdrIntegrationCoordinator {
 
     /// SINGLE OWNER, NOT A RACE (see this file's header): claimed
     /// synchronously by `triggerRebuild` and by the natural-disconnect
-    /// tail of `consumeEvents` before either does anything else: only
+    /// tail of `consumeEvents` before either does anything else, so only
     /// one of the two may ever be establishing/tearing down a
-    /// connection at a time.
-    private var isRebuildOrReconnectInFlight = false
+    /// connection at a time. The claim belongs to the CONNECTION it was
+    /// taken for: `discardCurrentConnection` breaks it outright, and the
+    /// holder's own release is conditional on still holding the SAME
+    /// claim, so a claim broken while its holder sleeps can never be
+    /// released a second time out from under whoever claimed next.
+    private var currentRebuildOrReconnectClaim: Int?
+    private var lastRebuildOrReconnectClaimID = 0
 
     /// CONSECUTIVE-REBUILD CAP (see this file's header) -- counts
     /// rebuilds since the last one that made mechanical progress (see
@@ -504,26 +562,60 @@ final class HerdrIntegrationCoordinator {
     private var consecutiveRebuildsWithoutProgress = 0
 
     /// LIFETIME RECONNECT BUDGET -- see this file's header. Counts
-    /// every `reconnectLoop`-driven attempt across every disconnect
-    /// cycle for as long as this instance exists; deliberately NOT
-    /// touched by `resetToIdle()`. Only earning a connection HEALTHY
-    /// (see `consumeEvents`) resets it back to zero.
+    /// every `reconnectLoop`-driven attempt against `boundIdentity`,
+    /// across every disconnect cycle; deliberately NOT touched by
+    /// `resetToIdle()`. Reset to zero by `boundIdentity` changing (the
+    /// budget belongs to a session, not to this process) or by a
+    /// connection earning itself HEALTHY (see `consumeEvents`).
     private var totalReconnectAttempts = 0
 
-    /// `true` from the moment `start()` begins a real connection attempt
-    /// (set SYNCHRONOUSLY, before this method's first `await`) through
-    /// until this instance is fully idle again -- covers the in-flight
-    /// CONNECT SEQUENCE, the established connection, and every
-    /// bounded-reconnect attempt. This is what makes `start()` safe to
-    /// call redundantly from its three independent production triggers
-    /// (app launch, `applicationDidBecomeActive`, the Agents sidebar
-    /// becoming visible) without risking two connections opened for the
-    /// same socket by two overlapping `start()` calls racing each other
-    /// across an `await`.
+    /// The one herdr session this coordinator is bound to, as presence
+    /// last reported it -- `nil` only before the first `.appeared` and
+    /// after the bound session `.disappeared`. Survives `resetToIdle()`:
+    /// giving up on a server does not make it a different server, and a
+    /// later `.replaced` for THIS identity is what says it finally is.
+    private var boundIdentity: HerdrSocketIdentity?
+
+    /// Every live herdr session presence has reported and not since
+    /// withdrawn, keyed by socket path -- what a `.disappeared` for the
+    /// bound session is answered from. At most one of these is ever
+    /// connected to.
+    private var liveIdentities: [String: HerdrSocketIdentity] = [:]
+
+    /// Sessions whose LIFETIME RECONNECT BUDGET is spent -- see
+    /// `giveUpOnBoundSession()`. Never connected to again, and never
+    /// promoted to. A mark lives exactly as long as the fact that
+    /// produced it: any presence transition naming an identity as
+    /// newly live (`.appeared`, either side of a `.replaced`, or a
+    /// `.disappeared` withdrawing it) clears that identity's mark, so
+    /// this holds nothing presence is not currently asserting.
+    private var abandonedIdentities: Set<HerdrSocketIdentity> = []
+
+    /// Presence transitions are applied ONE AT A TIME, in arrival order:
+    /// `herdrSessionPresenceDidChange(_:)` is synchronous while acting
+    /// on a transition is not (a teardown closes a transport, a connect
+    /// runs the whole CONNECT SEQUENCE), so a second transition arriving
+    /// mid-flight queues here instead of racing the one already being
+    /// applied. A queued transition therefore waits at most one whole
+    /// connect-and-give-up cycle for the transition ahead of it: a
+    /// connect sequence (bounded by the PER-STEP HANDSHAKE DEADLINE),
+    /// plus, if it fails, the bounded reconnect that follows. Nothing
+    /// there is unbounded, and while it runs `connectionGeneration`
+    /// cannot change, so the cycle always resolves against the session
+    /// it was started for.
+    private var pendingPresenceChanges: [HerdrSessionPresenceChange] = []
+    private var isApplyingPresenceChanges = false
+
+    /// `true` from the moment a presence transition begins a real
+    /// connection attempt (set SYNCHRONOUSLY, before that path's first
+    /// `await`) through until this instance is fully idle again --
+    /// covers the in-flight CONNECT SEQUENCE, the established
+    /// connection, and every bounded-reconnect attempt. This is what
+    /// keeps a second live session appearing while one is already being
+    /// connected to from opening a second connection for it.
     private var isActive = false
 
     init(
-        resolver: any HerdrBinaryResolverProtocol,
         discovery: any HerdrSessionDiscoveryProtocol,
         transportFactory: any HerdrTransportFactory,
         mirror: HerdrAgentMirror,
@@ -535,7 +627,6 @@ final class HerdrIntegrationCoordinator {
         rebuildBackoffDelays: [Duration] = HerdrIntegrationCoordinator.defaultRebuildBackoffDelays,
         sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     ) {
-        self.resolver = resolver
         self.discovery = discovery
         self.transportFactory = transportFactory
         self.mirror = mirror
@@ -546,37 +637,6 @@ final class HerdrIntegrationCoordinator {
         self.maxConsecutiveRebuildsWithoutProgress = maxConsecutiveRebuildsWithoutProgress
         self.rebuildBackoffDelays = rebuildBackoffDelays
         self.sleep = sleep
-    }
-
-    /// Explicit lifecycle entry point -- see this file's header. Every
-    /// production call site (app launch, app became active, Agents
-    /// sidebar became visible) calls this SAME method; none of them are
-    /// distinguished internally, since none of this file's behavior
-    /// varies by which one fired.
-    func start() async {
-        guard !isActive else { return }
-        isActive = true
-
-        guard let candidate = await detectLiveCandidate() else {
-            resetToIdle()
-            return
-        }
-
-        guard await attemptConnect(socketPath: candidate.socketPath) else {
-            // A plain give-up, distinct from DISCONNECT HANDLING's
-            // bounded reconnect (which only ever follows an established
-            // connection's stream ending) -- but NOT necessarily one
-            // that never touched anything: `attemptConnect`'s own
-            // snapshot step may have already succeeded (upserting rows
-            // into the mirror, and populating `knownPaneIDs`/
-            // `recognizedPaneIDs`) before its OWN subsequent subscribe
-            // step failed. `resetToIdle()` (not a bare `isActive =
-            // false`) is what unwinds that -- see its own doc comment --
-            // so a later `start()` call re-attempts detection from
-            // scratch with no leftover state from this abandoned attempt.
-            resetToIdle()
-            return
-        }
     }
 
     // MARK: - Structure event observer
@@ -602,30 +662,44 @@ final class HerdrIntegrationCoordinator {
     /// being silently accumulated instead.
     internal var testOnlyIsAccumulatingReplayBurst: Bool { isAccumulatingReplayBurst }
 
-    // MARK: - Detection (START SEQUENCE steps 1-2)
-
-    /// Runs `resolver.resolve()` then, only if that succeeds,
-    /// `discovery.discover()`/`discovery.isAlive(socketPath:)` as ONE
-    /// unit on `DispatchQueue.global()`, off `@MainActor` -- see this
-    /// file's header "DETECTION". `resolver`/`discovery` are both
-    /// `Sendable` protocol existentials, so capturing them into the
-    /// background closure is sound without any actor hop of their own.
-    private func detectLiveCandidate() async -> HerdrSessionCandidate? {
-        let resolver = self.resolver
-        let discovery = self.discovery
-        return await withCheckedContinuation { (continuation: CheckedContinuation<HerdrSessionCandidate?, Never>) in
-            DispatchQueue.global().async {
-                guard resolver.resolve() != nil else {
-                    continuation.resume(returning: nil)
-                    return
-                }
-                let candidate = discovery.discover().first { discovery.isAlive(socketPath: $0.socketPath) }
-                continuation.resume(returning: candidate)
-            }
-        }
-    }
+    /// TEST ONLY: `connectionGeneration` -- same precedent as
+    /// `testOnlyIsAccumulatingReplayBurst` above. A test answering a
+    /// connect sequence by hand polls this to know the CONNECTION
+    /// ITSELF has been adopted (rather than only that its last request
+    /// was answered), the point at which injecting an event onto it is
+    /// meaningful.
+    internal var testOnlyConnectionGeneration: Int { connectionGeneration }
 
     // MARK: - Connecting (CONNECT SEQUENCE)
+
+    /// Begins a connection to `identity` unless one is already in
+    /// flight or established. `isActive` is claimed SYNCHRONOUSLY,
+    /// before the first `await`, so two transitions can never both open
+    /// a connection for the same session.
+    ///
+    /// A failed attempt is DISCONNECT HANDLING, exactly as an
+    /// established connection's stream ending is: presence says a
+    /// session is live behind that path, so one attempt failing (a
+    /// handshake that timed out under launch load, a subscribe the
+    /// server rejected) says nothing about the session being gone. It
+    /// therefore gets the same bounded reconnect, gated on the same
+    /// `discovery.isAlive(socketPath:)` probe and bounded by the same
+    /// per-identity budget. Nothing else would ever retry it: presence
+    /// reports a live session ONCE, so a coordinator that gave up here
+    /// would stay blind to that session for the rest of the process.
+    ///
+    /// `handleDisconnect` also unwinds what a half-finished attempt left
+    /// behind: `attemptConnect`'s own snapshot step may have succeeded
+    /// (upserting rows into the mirror, and populating `knownPaneIDs`/
+    /// `recognizedPaneIDs`) before its OWN subsequent subscribe step
+    /// failed.
+    private func connect(to identity: HerdrSocketIdentity) async {
+        guard !isActive else { return }
+        isActive = true
+        let generation = connectionGeneration
+        if await attemptConnect(socketPath: identity.socketPath) { return }
+        await handleDisconnect(socketPath: identity.socketPath, generation: generation)
+    }
 
     /// Runs the CONNECT SEQUENCE described in this file's header: a
     /// one-shot `session.snapshot`, applied to the mirror and used to
@@ -639,6 +713,14 @@ final class HerdrIntegrationCoordinator {
     /// or times out (nothing left half-set in that case -- the caller
     /// decides what "this attempt failed" means).
     private func attemptConnect(socketPath: String) async -> Bool {
+        // A presence transition landing while this attempt is suspended
+        // has already re-aimed the coordinator -- see this file's header
+        // "SINGLE OWNER, NOT A RACE". Nothing else can bump
+        // `connectionGeneration` between here and this attempt's own
+        // bump below: every OTHER caller is serialized behind
+        // `isRebuildOrReconnectInFlight` or behind the presence queue.
+        let startedGeneration = connectionGeneration
+
         let snapshotTransport = await transportFactory.makeTransport()
         guard let snapshotResult: HerdrSnapshotRPCResult = await runWithDeadline(transport: snapshotTransport, operation: {
             let request = HerdrOneShotRequest(transport: snapshotTransport)
@@ -647,6 +729,11 @@ final class HerdrIntegrationCoordinator {
             return false
         }
         let snapshot = snapshotResult.snapshot
+        // Superseded while the snapshot was in flight: this is a
+        // snapshot of a server that is not the one behind that path any
+        // more, and everything below it feeds state the connection which
+        // replaced this attempt now owns.
+        guard startedGeneration == connectionGeneration else { return false }
 
         mirror.applySnapshot(snapshot, socketPath: socketPath)
         // CONNECT SEQUENCE step 3: REPLACES `knownPaneIDs`, never merges
@@ -677,6 +764,13 @@ final class HerdrIntegrationCoordinator {
             let eventStream = HerdrEventStream(transport: subscribeTransport)
             return try await eventStream.subscribe(subscriptions, socketPath: socketPath)
         }) else {
+            return false
+        }
+        // Superseded while this attempt was in flight: adopting it now
+        // would orphan the connection that replaced it, leaving two live
+        // event streams feeding the mirror.
+        guard startedGeneration == connectionGeneration else {
+            await subscribeTransport.close()
             return false
         }
 
@@ -804,7 +898,7 @@ final class HerdrIntegrationCoordinator {
     /// "LIFETIME RECONNECT BUDGET". The stream ending -- normally (a
     /// clean EOF) or by throwing (a transport failure) -- is DISCONNECT
     /// HANDLING, shared with a failed reconnect attempt via
-    /// `handleDisconnect(socketPath:)`; `generation` is what lets that
+    /// `handleDisconnect(socketPath:generation:)`; `generation` is what lets that
     /// tail recognize a stream ending as a DIRECT CONSEQUENCE of an
     /// external `triggerRebuild` call (the burst-settle task's own
     /// reconciliation) rather than a genuine disconnect -- see this
@@ -840,7 +934,7 @@ final class HerdrIntegrationCoordinator {
                     // update needed here: `attemptConnect`'s own fresh
                     // snapshot (inside `triggerRebuild`, below) already
                     // updates both.
-                    if await triggerRebuild(socketPath: socketPath) { return }
+                    if await triggerRebuild(socketPath: socketPath, generation: generation) { return }
                 case .paneClosed(let paneID):
                     // Forwarded to the observer BEFORE the pre-existing
                     // unconditional rebuild below -- a successful rebuild
@@ -852,7 +946,7 @@ final class HerdrIntegrationCoordinator {
                     // pane_closed nor pane_exited is ever replayed at
                     // subscribe time, so there is no storm risk to guard
                     // against here.
-                    if await triggerRebuild(socketPath: socketPath) { return }
+                    if await triggerRebuild(socketPath: socketPath, generation: generation) { return }
                 case .paneExited:
                     // Deliberately NOT forwarded to the observer: the
                     // herdr pane itself still exists after its own child
@@ -860,7 +954,7 @@ final class HerdrIntegrationCoordinator {
                     // died) -- closing the Calyx bridge surface for a
                     // pane that is still there would be wrong. The
                     // pre-existing unconditional rebuild is unaffected.
-                    if await triggerRebuild(socketPath: socketPath) { return }
+                    if await triggerRebuild(socketPath: socketPath, generation: generation) { return }
                 case .workspaceClosed(let workspaceID):
                     // Unconditional, no rebuild -- see this file's header
                     // "STRUCTURE EVENT OBSERVER".
@@ -894,13 +988,32 @@ final class HerdrIntegrationCoordinator {
         // mutex both mean "someone else is already resolving this
         // connection's fate," so back off silently rather than handling
         // it a second time.
-        guard generation == connectionGeneration, !isRebuildOrReconnectInFlight else { return }
-        isRebuildOrReconnectInFlight = true
-        defer { isRebuildOrReconnectInFlight = false }
-        await handleDisconnect(socketPath: socketPath)
+        guard generation == connectionGeneration, let claim = claimRebuildOrReconnect() else { return }
+        defer { releaseRebuildOrReconnect(claim) }
+        await handleDisconnect(socketPath: socketPath, generation: generation)
     }
 
     // MARK: - Rebuild
+
+    /// Claims the single-owner right to establish or tear down a
+    /// connection, `nil` when someone else already holds it -- see this
+    /// file's header "SINGLE OWNER, NOT A RACE". Synchronous, with no
+    /// `await` between the check and the claim, so two callers can never
+    /// both see it free.
+    private func claimRebuildOrReconnect() -> Int? {
+        guard currentRebuildOrReconnectClaim == nil else { return nil }
+        lastRebuildOrReconnectClaimID += 1
+        currentRebuildOrReconnectClaim = lastRebuildOrReconnectClaimID
+        return lastRebuildOrReconnectClaimID
+    }
+
+    /// Releases `claim` if it is still the current one. A claim
+    /// `discardCurrentConnection` already broke is NOT the current one,
+    /// so its holder waking up later releases nothing.
+    private func releaseRebuildOrReconnect(_ claim: Int) {
+        guard currentRebuildOrReconnectClaim == claim else { return }
+        currentRebuildOrReconnectClaim = nil
+    }
 
     /// Shared entry point for every REBUILD TRIGGER (see this file's
     /// header) -- `consumeEvents`' own steady-state triggers AND
@@ -908,18 +1021,27 @@ final class HerdrIntegrationCoordinator {
     /// Returns `true` if this call actually performed a rebuild (closed
     /// the current connection and attempted a fresh one); callers inside
     /// `consumeEvents` must `return` (ending their own Task body) ONLY
-    /// when this returns `true` -- `false` means the CONSECUTIVE-REBUILD
-    /// CAP was already exhausted, or a rebuild/reconnect sequence was
-    /// already in flight (SINGLE OWNER, NOT A RACE) -- in EITHER case,
-    /// deliberately leaving the current, still-live connection
-    /// completely untouched, per this file's header.
+    /// when this returns `true` -- `false` means `generation` was
+    /// already superseded when this trigger arrived, the
+    /// CONSECUTIVE-REBUILD CAP was already exhausted, a rebuild/reconnect
+    /// sequence was already in flight (SINGLE OWNER, NOT A RACE), or
+    /// `generation` was superseded while backing off -- in EVERY case,
+    /// deliberately
+    /// leaving whatever connection is current completely untouched, per
+    /// this file's header.
     @discardableResult
-    private func triggerRebuild(socketPath: String) async -> Bool {
-        guard !isRebuildOrReconnectInFlight, consecutiveRebuildsWithoutProgress < maxConsecutiveRebuildsWithoutProgress else {
+    private func triggerRebuild(socketPath: String, generation: Int) async -> Bool {
+        // Checked in the SAME synchronous frame as the claim, BEFORE any
+        // of the state below is touched: a trigger from a connection
+        // already superseded would otherwise clear the REPLAY BURST
+        // accumulating flag of the connection that replaced it, and
+        // spend that connection's CONSECUTIVE-REBUILD CAP.
+        guard generation == connectionGeneration,
+              consecutiveRebuildsWithoutProgress < maxConsecutiveRebuildsWithoutProgress,
+              let claim = claimRebuildOrReconnect() else {
             return false
         }
-        isRebuildOrReconnectInFlight = true
-        defer { isRebuildOrReconnectInFlight = false }
+        defer { releaseRebuildOrReconnect(claim) }
 
         isAccumulatingReplayBurst = false // interrupt any in-progress accumulation
 
@@ -932,12 +1054,21 @@ final class HerdrIntegrationCoordinator {
         if let lastIndex = rebuildBackoffDelays.indices.last {
             await sleep(rebuildBackoffDelays[min(delayIndex, lastIndex)])
         }
+        // Checked again: the guard above ruled out a trigger that was
+        // ALREADY superseded when it arrived, this one a presence
+        // transition landing DURING the backoff. Rebuilding a superseded
+        // connection now would open a second one behind it.
+        guard generation == connectionGeneration else { return false }
 
         await closeAndClearEventStreamTransport()
         if await attemptConnect(socketPath: socketPath) {
             return true
         }
-        await handleDisconnect(socketPath: socketPath)
+        // A failure a presence transition caused is not this rebuild's
+        // to resolve: `handleDisconnect` would clear the mirror rows the
+        // connection that superseded this one has already populated.
+        guard generation == connectionGeneration else { return false }
+        await handleDisconnect(socketPath: socketPath, generation: generation)
         return true
     }
 
@@ -967,7 +1098,7 @@ final class HerdrIntegrationCoordinator {
         }
 
         recognizedPaneIDs.formUnion(newlyRevealed)
-        await triggerRebuild(socketPath: socketPath)
+        await triggerRebuild(socketPath: socketPath, generation: generation)
     }
 
     // MARK: - Disconnect handling
@@ -979,15 +1110,15 @@ final class HerdrIntegrationCoordinator {
     /// TRANSPORT TEARDOWN" -- a harmless no-op here if the transport
     /// already ended on its own), then attempts the bounded reconnect --
     /// see this file's header "DISCONNECT HANDLING".
-    private func handleDisconnect(socketPath: String) async {
+    private func handleDisconnect(socketPath: String, generation: Int) async {
         mirror.connectionLost()
         await closeAndClearEventStreamTransport()
-        await reconnectLoop(socketPath: socketPath)
+        await reconnectLoop(socketPath: socketPath, generation: generation)
     }
 
     /// Closes `currentEventStreamTransport`, if any, and clears the
-    /// reference -- shared by `triggerRebuild(socketPath:)` and
-    /// `handleDisconnect(socketPath:)`; see this file's header "EXPLICIT
+    /// reference -- shared by `triggerRebuild(socketPath:generation:)` and
+    /// `handleDisconnect(socketPath:generation:)`; see this file's header "EXPLICIT
     /// TRANSPORT TEARDOWN". `HerdrTransport.close()` is documented
     /// idempotent, so this is safe to call even when the transport
     /// already ended (EOF/failure) on its own. Also cancels and clears
@@ -1013,19 +1144,29 @@ final class HerdrIntegrationCoordinator {
     /// moment the socket no longer probes alive, once `reconnectDelays`
     /// is exhausted, or once the lifetime budget is exhausted --
     /// whichever comes first.
-    private func reconnectLoop(socketPath: String) async {
+    ///
+    /// A presence transition landing during a backoff delay has already
+    /// torn this connection down and re-aimed the coordinator (see this
+    /// file's header LIFECYCLE), which `generation` no longer matching
+    /// `connectionGeneration` is what reveals. That abandons this loop
+    /// silently -- never via `resetToIdle()`, which would flip
+    /// `isActive` out from under the connection presence has since put
+    /// in this one's place.
+    private func reconnectLoop(socketPath: String, generation: Int) async {
         for delay in reconnectDelays {
+            guard generation == connectionGeneration else { return }
             guard totalReconnectAttempts < maxLifetimeReconnectAttempts else {
-                resetToIdle()
+                await giveUpOnBoundSession()
                 return
             }
             guard discovery.isAlive(socketPath: socketPath) else {
-                resetToIdle()
+                await giveUpOnBoundSession()
                 return
             }
             await sleep(delay)
+            guard generation == connectionGeneration else { return }
             guard discovery.isAlive(socketPath: socketPath) else {
-                resetToIdle()
+                await giveUpOnBoundSession()
                 return
             }
             totalReconnectAttempts += 1
@@ -1033,15 +1174,51 @@ final class HerdrIntegrationCoordinator {
                 return
             }
         }
+        guard generation == connectionGeneration else { return }
+        await giveUpOnBoundSession()
+    }
+
+    /// The terminal state of the bound session's LIFETIME RECONNECT
+    /// BUDGET (see this file's header): nothing more is attempted for
+    /// that identity until presence reports the path carrying a
+    /// DIFFERENT session. Marking it is what stops two failing sessions
+    /// from promoting each other back and forth forever, each `bind`
+    /// handing the other a fresh budget.
+    ///
+    /// Giving up on one session says nothing about any OTHER session
+    /// presence has reported live, so one is taken up here if there is
+    /// one -- the same promotion `.disappeared` performs, for the same
+    /// reason. The recursion this can form (promote, fail, give up,
+    /// promote again) is bounded by the number of live sessions: each is
+    /// marked here before the next is tried.
+    private func giveUpOnBoundSession() async {
+        if let bound = boundIdentity {
+            abandonedIdentities.insert(bound)
+        }
         resetToIdle()
+        await promoteAnotherLiveSession()
+    }
+
+    /// Binds and connects to a live session that is neither the one
+    /// currently bound nor one already given up on. A no-op when there
+    /// is none, or when a connection already exists.
+    private func promoteAnotherLiveSession() async {
+        guard !isActive else { return }
+        let candidate = liveIdentities
+            .sorted { $0.key < $1.key }
+            .first { $0.value != boundIdentity && !abandonedIdentities.contains($0.value) }?
+            .value
+        guard let candidate else { return }
+        bind(to: candidate)
+        await connect(to: candidate)
     }
 
     /// Full give-up: resets every piece of per-connection state so a
-    /// LATER `start()` call behaves exactly like this instance's very
-    /// first one -- EXCEPT `totalReconnectAttempts` (the LIFETIME
-    /// RECONNECT BUDGET), deliberately left untouched: see this file's
-    /// header for why a later `start()` must stay bound by the SAME
-    /// lifetime total rather than being re-armed with a fresh one.
+    /// LATER connection behaves exactly like this instance's very first
+    /// one -- EXCEPT `boundIdentity` and its `totalReconnectAttempts`
+    /// (the LIFETIME RECONNECT BUDGET), deliberately left untouched:
+    /// see this file's header for why giving up on a server leaves that
+    /// server's own spent budget spent.
     /// `knownPaneIDs`/`recognizedPaneIDs` in particular must not survive
     /// a full give-up -- a later-discovered herdr session may reuse
     /// pane ids the old one had, and resubscribing (or silently treating
@@ -1052,15 +1229,15 @@ final class HerdrIntegrationCoordinator {
     /// defensively, matching that method's own idempotent contract.
     ///
     /// `mirror.connectionLost()` is called unconditionally too, for the
-    /// identical reason: `attemptConnect`'s snapshot step (line ~582)
-    /// upserts rows into the mirror BEFORE its own, independently
-    /// fallible subscribe step runs -- a give-up reached via `start()`'s
-    /// own attemptConnect-failure branch, or via the last attempt inside
+    /// identical reason: `attemptConnect`'s snapshot step upserts rows
+    /// into the mirror BEFORE its own, independently fallible subscribe
+    /// step runs -- a give-up reached via `connect(to:)`'s own
+    /// attemptConnect-failure branch, or via the last attempt inside
     /// `reconnectLoop` before it gives up here, can therefore leave rows
     /// in the mirror with no live connection behind them. Safe to call
-    /// even when this attempt never got that far (e.g. `start()`'s
-    /// candidate-detection failure, which never touched the mirror at
-    /// all, or a `handleDisconnect` that already called it once):
+    /// even when this attempt never got that far (e.g. a snapshot step
+    /// that failed outright, which never touched the mirror at all, or a
+    /// `handleDisconnect` that already called it once):
     /// `HerdrAgentMirror.connectionLost()` iterates `ownedIDsBySocketPath`
     /// and clears it, an inherent no-op when nothing is owned.
     private func resetToIdle() {
@@ -1073,5 +1250,129 @@ final class HerdrIntegrationCoordinator {
         burstSettleTask?.cancel()
         burstSettleTask = nil
         consecutiveRebuildsWithoutProgress = 0
+    }
+}
+
+// MARK: - HerdrSessionPresenceObserver
+
+/// A herdr connection is a function of herdr's own presence -- see
+/// HerdrSessionPresence.swift's own header. This is the ONLY thing that
+/// starts, stops, or re-aims a connection.
+///
+///   - `.appeared` while there is no connection: bind to that identity
+///     and run the CONNECT SEQUENCE against its socket path. While
+///     there IS one (`isActive`), a second live session is recorded and
+///     nothing else: this coordinator mirrors exactly one at a time.
+///     The condition is `isActive`, NOT "nothing is bound": a session
+///     this coordinator gave up on stays bound, and a DIFFERENT server
+///     appearing afterwards has nothing to do with that verdict -- its
+///     agents would otherwise never be shown at all. Nor does that
+///     re-arm the server the budget was spent on: presence reports the
+///     same identity once, so the only way a session at a path already
+///     bound comes back is `.replaced`, which by definition carries a
+///     different server.
+///   - `.replaced` for the BOUND identity: the server behind that path
+///     is a different one now, so the current connection is worthless.
+///     Tear it down, bind to the new identity (which discards the old
+///     one's LIFETIME RECONNECT BUDGET), and connect afresh. For any
+///     other identity, replace the record -- and, since a replacement
+///     is a server that has never been given up on, take it up if this
+///     coordinator has no connection at all. Not doing so would leave a
+///     live session unmirrored for the rest of the process: the
+///     identity presence would report next for that path is another
+///     `.replaced`, which would be dropped for the same reason.
+///   - `.disappeared` for the BOUND identity: tear the connection down
+///     and make NO attempt of this coordinator's own to get it back --
+///     presence says the session is gone, and a socket that still
+///     happens to answer a probe does not outrank that. Another
+///     recorded live session, if there is one, is bound and connected to
+///     instead. For any other identity, drop the record and nothing
+///     else.
+extension HerdrIntegrationCoordinator: HerdrSessionPresenceObserver {
+
+    func herdrSessionPresenceDidChange(_ change: HerdrSessionPresenceChange) {
+        pendingPresenceChanges.append(change)
+        guard !isApplyingPresenceChanges else { return }
+        isApplyingPresenceChanges = true
+        Task { [weak self] in
+            await self?.applyPendingPresenceChanges()
+        }
+    }
+
+    /// Drains `pendingPresenceChanges` in arrival order -- see that
+    /// property's own doc comment for why transitions are applied one at
+    /// a time rather than concurrently.
+    private func applyPendingPresenceChanges() async {
+        defer { isApplyingPresenceChanges = false }
+        while !pendingPresenceChanges.isEmpty {
+            await apply(pendingPresenceChanges.removeFirst())
+        }
+    }
+
+    private func apply(_ change: HerdrSessionPresenceChange) async {
+        switch change {
+        case .appeared(let identity):
+            liveIdentities[identity.socketPath] = identity
+            abandonedIdentities.remove(identity)
+            guard !isActive else { return }
+            bind(to: identity)
+            await connect(to: identity)
+
+        case .replaced(let previous, let current):
+            liveIdentities[current.socketPath] = current
+            abandonedIdentities.remove(previous)
+            abandonedIdentities.remove(current)
+            guard boundIdentity == previous else {
+                // A different server took a path this coordinator is not
+                // bound to. Presence is reporting a live session, and
+                // clearing the abandoned mark above is what makes it
+                // connectable again -- so if there is no connection, take
+                // it up exactly as `.appeared` would. Harmless while
+                // there is one: promotion refuses to start a second.
+                await promoteAnotherLiveSession()
+                return
+            }
+            await discardCurrentConnection()
+            bind(to: current)
+            await connect(to: current)
+
+        case .disappeared(let identity):
+            liveIdentities[identity.socketPath] = nil
+            abandonedIdentities.remove(identity)
+            guard boundIdentity == identity else { return }
+            await discardCurrentConnection()
+            boundIdentity = nil
+            await promoteAnotherLiveSession()
+        }
+    }
+
+    /// Binds this coordinator to `identity`, discarding everything that
+    /// was true of the previously bound session -- its LIFETIME
+    /// RECONNECT BUDGET above all (see this file's header: the budget
+    /// belongs to a session, not to this process). Binding to the
+    /// identity ALREADY bound changes nothing, budget included: it is
+    /// the same server, whatever led back here.
+    private func bind(to identity: HerdrSocketIdentity) {
+        guard boundIdentity != identity else { return }
+        boundIdentity = identity
+        totalReconnectAttempts = 0
+    }
+
+    /// Tears the current connection down for a session presence says is
+    /// no longer the one behind that path. `connectionGeneration` is
+    /// bumped BEFORE the transport is closed, never after: closing it
+    /// ends the event stream, and the `consumeEvents` tail that unblocks
+    /// runs on this same actor -- it would otherwise see its own
+    /// generation still current across the `close()` suspension and
+    /// treat a deliberate teardown as a disconnect to reconnect from.
+    private func discardCurrentConnection() async {
+        connectionGeneration += 1
+        // Broken in the SAME synchronous frame as the generation bump,
+        // before the suspension below: a rebuild or reconnect sleeping
+        // through a backoff holds this claim, and the connection about
+        // to replace theirs must be free to rebuild.
+        currentRebuildOrReconnectClaim = nil
+        await closeAndClearEventStreamTransport()
+        resetToIdle()
     }
 }
