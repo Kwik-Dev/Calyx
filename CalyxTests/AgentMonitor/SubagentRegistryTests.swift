@@ -20,6 +20,10 @@
 //  - SubagentStart creates a child at .working with its agentType
 //  - An event with an unknown agentID creates a child (a reported fact)
 //  - PreToolUse / PostToolUse update lastToolName; other events don't
+//  - lastToolSummary is written in the same branch as lastToolName and
+//    always as a pair: a tool event carrying a name but no summary
+//    clears the previously recorded summary rather than leaving a stale
+//    one beside a new tool name
 //  - state follows resultingState(for:); an event mapping to nil leaves
 //    state alone
 //  - agentType is overwritten only when non-nil
@@ -51,11 +55,12 @@ final class SubagentRegistryTests: XCTestCase {
         cwd: String? = nil,
         agentID: String? = "sub-1",
         agentType: String? = "explore",
-        toolName: String? = nil
+        toolName: String? = nil,
+        toolSummary: String? = nil
     ) -> AgentEvent {
         AgentEvent(
             hookEventName: name, sessionID: sessionID, cwd: cwd, message: nil,
-            agentID: agentID, agentType: agentType, toolName: toolName
+            agentID: agentID, agentType: agentType, toolName: toolName, toolSummary: toolSummary
         )
     }
 
@@ -516,5 +521,72 @@ final class SubagentRegistryTests: XCTestCase {
         XCTAssertEqual(registry.entries[parent]?.state, .working)
         XCTAssertEqual(registry.subagentRegistry.children(of: parent).count, 1,
                        "Moving back to .working must not clear children")
+    }
+
+    // MARK: - lastToolSummary
+
+    func test_preToolUse_storesLastToolSummaryAlongsideLastToolName() {
+        let registry = SubagentRegistry()
+        let parent = UUID()
+
+        registry.handleHookEvent(
+            event("PreToolUse", toolName: "Bash", toolSummary: "git status --short"),
+            parentSurfaceID: parent
+        )
+
+        XCTAssertEqual(registry.children(of: parent).first?.lastToolName, "Bash")
+        XCTAssertEqual(registry.children(of: parent).first?.lastToolSummary, "git status --short")
+    }
+
+    func test_nextToolEvent_updatesLastToolSummaryTogetherWithLastToolName() {
+        let registry = SubagentRegistry()
+        let parent = UUID()
+
+        registry.handleHookEvent(
+            event("PreToolUse", toolName: "Bash", toolSummary: "git status --short"),
+            parentSurfaceID: parent
+        )
+        registry.handleHookEvent(
+            event("PostToolUse", toolName: "Read", toolSummary: "/Users/dev/repo/file.swift"),
+            parentSurfaceID: parent
+        )
+
+        XCTAssertEqual(registry.children(of: parent).first?.lastToolName, "Read")
+        XCTAssertEqual(registry.children(of: parent).first?.lastToolSummary, "/Users/dev/repo/file.swift")
+    }
+
+    func test_toolEventWithNoSummary_clearsThePreviouslyRecordedSummary() {
+        let registry = SubagentRegistry()
+        let parent = UUID()
+
+        registry.handleHookEvent(
+            event("PreToolUse", toolName: "Bash", toolSummary: "git status --short"),
+            parentSurfaceID: parent
+        )
+        XCTAssertEqual(registry.children(of: parent).first?.lastToolSummary, "git status --short",
+                       "Precondition: the first tool event records a summary to be cleared")
+
+        registry.handleHookEvent(event("PreToolUse", toolName: "TodoWrite", toolSummary: nil), parentSurfaceID: parent)
+
+        XCTAssertEqual(registry.children(of: parent).first?.lastToolName, "TodoWrite")
+        XCTAssertNil(registry.children(of: parent).first?.lastToolSummary,
+                     "The name and the summary are written as a pair: a new tool name must never keep the " +
+                     "previous tool's summary beside it")
+    }
+
+    func test_nonToolSubagentEvent_leavesLastToolSummaryAlone() {
+        let registry = SubagentRegistry()
+        let parent = UUID()
+
+        registry.handleHookEvent(
+            event("PreToolUse", toolName: "Bash", toolSummary: "git status --short"),
+            parentSurfaceID: parent
+        )
+
+        registry.handleHookEvent(event("SubagentStart", toolName: nil, toolSummary: nil), parentSurfaceID: parent)
+
+        XCTAssertEqual(registry.children(of: parent).first?.lastToolName, "Bash")
+        XCTAssertEqual(registry.children(of: parent).first?.lastToolSummary, "git status --short",
+                       "An event that names no tool at all is not a tool event, so it neither records nor clears a summary")
     }
 }

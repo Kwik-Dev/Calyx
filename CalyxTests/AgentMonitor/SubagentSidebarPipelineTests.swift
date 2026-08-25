@@ -41,6 +41,9 @@
 //    for the parent row must not clear a live child, and -- separately
 //    -- an ACCEPTED, same-session Stop must not clear one either, since
 //    an accepted Stop no longer retires children at all
+//  - A child-scoped PreToolUse carrying tool_input.command reaches the
+//    child row AgentSidebarRows.build renders with that command as its
+//    lastToolSummary
 //  - The real captured Claude Code sequence (two concurrent children,
 //    a parent-scoped Stop while both are still mid-flight, then each
 //    child's own PostToolUse/SubagentStop): the row list at every step
@@ -842,6 +845,49 @@ final class SubagentSidebarPipelineTests: XCTestCase {
 
         let finalRows = rows(expanded: [surfaceID])
         XCTAssertEqual(finalRows.count, 1, "Back to one parent row with no child rows")
+    }
+
+    // MARK: - Claude Code: a child-scoped tool call's own tool_input
+
+    /// A child-scoped `PreToolUse` carrying `tool_input.command` must
+    /// reach the rendered child row as `lastToolSummary`, so the sidebar
+    /// shows the command rather than the bare tool name. The parent's
+    /// own `Agent` `PreToolUse` runs first because a child is only ever
+    /// tracked under a live parent row.
+    func test_claudeCode_childScopedPreToolUseWithToolInput_childRowCarriesTheCommand() async throws {
+        let surfaceID = UUID()
+        let sessionID = "parent-session"
+        let cwd = "/Users/dev/repo"
+        let agentID = "a5bfac2e378042079"
+        let command = "git status --short"
+
+        let parentEvent = """
+        {"session_id":"\(sessionID)","cwd":"\(cwd)","hook_event_name":"PreToolUse","tool_name":"Agent"}
+        """
+        XCTAssertEqual(try runHookScript(stdinJSON: parentEvent, surfaceID: surfaceID), 0)
+        let parentEntry = await waitForEntry(surfaceID: surfaceID)
+        XCTAssertEqual(parentEntry?.state, .working, "Precondition: the parent's own Agent PreToolUse creates the row")
+
+        let event = """
+        {"session_id":"\(sessionID)","cwd":"\(cwd)","hook_event_name":"PreToolUse",\
+        "agent_id":"\(agentID)","agent_type":"Explore","tool_name":"Bash",\
+        "tool_input":{"command":"\(command)"}}
+        """
+        XCTAssertEqual(try runHookScript(stdinJSON: event, surfaceID: surfaceID), 0)
+
+        let children = await waitForChildren(of: surfaceID) { $0.first?.lastToolSummary == command }
+        XCTAssertEqual(children?.count, 1)
+
+        let rendered = rows(expanded: [surfaceID])
+        XCTAssertEqual(rendered.count, 2, "The parent row plus its one child row")
+        guard case .child(let child) = rendered[safe: 1] else {
+            return XCTFail("Row 1 must be the child row")
+        }
+        XCTAssertEqual(child.agentID, agentID)
+        XCTAssertEqual(child.lastToolName, "Bash")
+        XCTAssertEqual(child.lastToolSummary, command,
+                       "The command travels the whole path: hook script stdin, POST /agent-event, " +
+                       "AgentEvent.decode, SubagentRegistry, AgentSidebarRows.build")
     }
 }
 

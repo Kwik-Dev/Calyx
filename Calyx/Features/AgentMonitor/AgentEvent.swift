@@ -169,6 +169,21 @@ struct AgentEvent: Sendable, Equatable {
     /// `SubagentRegistry` can show a child row's most recently used tool
     /// without re-parsing the raw payload.
     var toolName: String? = nil
+    /// The tool-specific human-readable string derived from a
+    /// `PreToolUse`/`PostToolUse` event's tool-input object (the command
+    /// for a shell tool, the file path for a file tool, the URL for a
+    /// fetch, the object's own arguments as readable `key: value` pairs
+    /// for anything else --
+    /// `AgentToolSummary.derive(toolName:toolInput:fallback:)`, the same
+    /// derivation the approval banner uses), rendered as one line and
+    /// capped at `AgentToolSummary.maxSummaryLength` visible characters
+    /// by `AgentToolSummary.singleLineSummary(_:)`: every run of
+    /// whitespace collapses to a single space, so a heredoc command
+    /// still reads on the row's one line. `nil` when the payload
+    /// carries no tool-input object, or the derivation yields an empty
+    /// string -- never an empty string, which a row would render as a
+    /// bare separator.
+    var toolSummary: String? = nil
 
     /// Whether this event fired inside a subagent rather than the main
     /// thread. The ONLY subagent predicate in the codebase: `agentType`
@@ -207,8 +222,23 @@ struct AgentEvent: Sendable, Equatable {
             ipcSelfPeerID: extractIPCSelfPeerID(hookEventName: hookEventName, object: object),
             agentID: object["agent_id"] as? String,
             agentType: object["agent_type"] as? String,
-            toolName: object["tool_name"] as? String
+            toolName: object["tool_name"] as? String,
+            toolSummary: toolSummary(toolName: object["tool_name"] as? String, toolInput: object["tool_input"])
         )
+    }
+
+    /// The single-line, capped, empty-mapped-to-nil summary for one
+    /// event's tool name and raw tool-input value. `toolInput` is passed
+    /// in as `Any?` so both envelopes supply their own key spelling
+    /// (`tool_input` / `toolInput`) and share every other rule.
+    private static func toolSummary(toolName: String?, toolInput: Any?) -> String? {
+        guard let toolName, let toolInput = toolInput as? [String: Any] else { return nil }
+        let derived = AgentToolSummary.derive(
+            toolName: toolName, toolInput: toolInput,
+            fallback: AgentToolSummary.readableArguments(toolInput)
+        )
+        let line = AgentToolSummary.singleLineSummary(derived)
+        return line.isEmpty ? nil : line
     }
 
     /// Grok's `stop` `reason` for a genuine turn end. Grok fires an extra
@@ -273,7 +303,8 @@ struct AgentEvent: Sendable, Equatable {
             ipcSelfPeerID: nil,
             agentID: agentID,
             agentType: subagentType,
-            toolName: object["toolName"] as? String
+            toolName: object["toolName"] as? String,
+            toolSummary: toolSummary(toolName: object["toolName"] as? String, toolInput: object["toolInput"])
         )
     }
 
