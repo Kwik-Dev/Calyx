@@ -27,12 +27,12 @@ final class CalyxMCPServerTests: XCTestCase {
     private var server: CalyxMCPServer!
     private let testToken = "test-token-12345"
 
-    /// Test-isolated `agent-endpoint.json` directory. `stop()` (called
-    /// from `tearDown` and by `start()` on a toggle) always removes
-    /// whatever's at `agentEndpointDirectory`, so every server instance
-    /// in this suite — including the ad-hoc `srv` locals in the lifecycle
-    /// tests below — must be redirected here rather than touching the
-    /// real `~/Library/Application Support/Calyx/agent-endpoint.json`.
+    /// Test-isolated `agent-endpoint.json` directory, passed to every
+    /// `CalyxMCPServer` instance in this suite, including the ad-hoc
+    /// `srv` locals in the lifecycle tests below, via the required
+    /// `agentEndpointDirectory` init parameter, so `stop()` (called from
+    /// `tearDown` and by `start()` on a toggle) never touches the real
+    /// `~/Library/Application Support/Calyx/agent-endpoint.json`.
     private var agentEndpointDir: String!
 
     // MARK: - Lifecycle
@@ -41,8 +41,7 @@ final class CalyxMCPServerTests: XCTestCase {
         super.setUp()
         agentEndpointDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString).path
-        server = CalyxMCPServer()
-        server.agentEndpointDirectory = agentEndpointDir
+        server = CalyxMCPServer(agentEndpointDirectory: agentEndpointDir)
         // stop() (called unconditionally from tearDown) now also resets
         // agentRegistry; since server.agentRegistry defaults to the true
         // AgentRegistry.shared singleton, every test in this file would
@@ -549,8 +548,7 @@ final class CalyxMCPServerTests: XCTestCase {
     // 18. start/stop lifecycle
     func test_startStop_lifecycle() throws {
         // Arrange
-        let srv = CalyxMCPServer()
-        srv.agentEndpointDirectory = agentEndpointDir
+        let srv = CalyxMCPServer(agentEndpointDirectory: agentEndpointDir)
         srv.agentRegistry = AgentRegistry()
 
         // Pre-condition
@@ -582,8 +580,7 @@ final class CalyxMCPServerTests: XCTestCase {
     // observes AgentRegistry (not CalyxMCPServer, which isn't @Observable)
     // directly, so this is what actually makes the sidebar redraw.
     func test_start_marksAgentRegistryServerRunning_stop_resetsIt() throws {
-        let srv = CalyxMCPServer()
-        srv.agentEndpointDirectory = agentEndpointDir
+        let srv = CalyxMCPServer(agentEndpointDirectory: agentEndpointDir)
         let registry = AgentRegistry()
         srv.agentRegistry = registry
         XCTAssertFalse(registry.isServerRunning,
@@ -603,8 +600,7 @@ final class CalyxMCPServerTests: XCTestCase {
     // 18c. stop() clears every AgentRegistry entry, so disabling IPC (or a
     // start()-triggered restart) doesn't leave stale sidebar rows on screen.
     func test_stop_clearsAgentRegistryEntries() throws {
-        let srv = CalyxMCPServer()
-        srv.agentEndpointDirectory = agentEndpointDir
+        let srv = CalyxMCPServer(agentEndpointDirectory: agentEndpointDir)
         let registry = AgentRegistry()
         srv.agentRegistry = registry
         try srv.start(token: "registry-clear-token")
@@ -624,8 +620,7 @@ final class CalyxMCPServerTests: XCTestCase {
     // agentEndpointDirectory exists to redirect away from the real
     // ~/Library/Application Support/Calyx path in every test in this suite.
     func test_start_writesAgentEndpointFile_stop_removesIt() throws {
-        let srv = CalyxMCPServer()
-        srv.agentEndpointDirectory = agentEndpointDir
+        let srv = CalyxMCPServer(agentEndpointDirectory: agentEndpointDir)
         srv.agentRegistry = AgentRegistry()
 
         try srv.start(token: "endpoint-file-token")
@@ -649,7 +644,6 @@ final class CalyxMCPServerTests: XCTestCase {
     // sidebar, not the whole IPC server — its MCP tools have nothing to do
     // with this file.
     func test_start_survivesAgentEndpointFileWriteFailure() throws {
-        let srv = CalyxMCPServer()
         // A regular file (not a directory) at this path does NOT make
         // AgentEndpointFile.write's `createDirectory` call fail:
         // `fileExists(atPath:)` returns true for a plain file too, so
@@ -663,7 +657,7 @@ final class CalyxMCPServerTests: XCTestCase {
         let blockedPath = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString).path
         FileManager.default.createFile(atPath: blockedPath, contents: Data())
-        srv.agentEndpointDirectory = blockedPath
+        let srv = CalyxMCPServer(agentEndpointDirectory: blockedPath)
         srv.agentRegistry = AgentRegistry()
         defer { try? FileManager.default.removeItem(atPath: blockedPath) }
 
@@ -677,8 +671,7 @@ final class CalyxMCPServerTests: XCTestCase {
 
     // 19. Rapid start/stop toggle — no crash, correct final state
     func test_enableDisable_rapidToggle() throws {
-        let srv = CalyxMCPServer()
-        srv.agentEndpointDirectory = agentEndpointDir
+        let srv = CalyxMCPServer(agentEndpointDirectory: agentEndpointDir)
         srv.agentRegistry = AgentRegistry()
 
         for i in 0..<10 {
@@ -694,6 +687,59 @@ final class CalyxMCPServerTests: XCTestCase {
         XCTAssertFalse(srv.isRunning,
                        "Server should not be running after all toggle iterations")
         // The test passing without crash is itself a success
+    }
+
+    // 19b. Regression: a server that never called start() must not delete
+    // another, already-running server's agent-endpoint.json when it
+    // stop()s. CalyxMCPServer.stop() passes AgentEndpointFile.remove(
+    // directory:port:token:) this instance's own port and token, and
+    // remove() only deletes when both match the file on disk; a
+    // never-started instance's token stays "" (its init default), which
+    // remove() treats as an unconditional mismatch. This pins that
+    // invariant: two servers pointed at the same directory, one running
+    // and one never started, must not let the never-started one's
+    // stop() delete the running one's endpoint file out from under
+    // calyx-agent-hook.
+    func test_stop_onNeverStartedServer_doesNotDeleteAnotherServersEndpointFile() throws {
+        // Server A: actually starts, so it really writes
+        // agent-endpoint.json into the shared directory.
+        let serverA = CalyxMCPServer(agentEndpointDirectory: agentEndpointDir)
+        serverA.agentRegistry = AgentRegistry()
+        serverA.approvalInbox = ApprovalInboxStore()
+        serverA.agentHookApprovalMemory = AgentHookApprovalMemory()
+        try serverA.start(token: "server-a-token")
+        defer { serverA.stop() }
+
+        let filePath = agentEndpointDir + "/agent-endpoint.json"
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: filePath),
+            "Precondition: server A's start() must have written agent-endpoint.json"
+        )
+
+        // Server B: points at the SAME directory but is never started,
+        // its token stays "" and its port stays 0, exactly like a fresh
+        // CalyxMCPServer instance that some other code path constructed
+        // and never wired up.
+        let serverB = CalyxMCPServer(agentEndpointDirectory: agentEndpointDir)
+        serverB.agentRegistry = AgentRegistry()
+        serverB.approvalInbox = ApprovalInboxStore()
+        serverB.agentHookApprovalMemory = AgentHookApprovalMemory()
+
+        serverB.stop()
+
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: filePath),
+            "A never-started server's stop() must not delete another server's agent-endpoint.json"
+        )
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: filePath)) else {
+            XCTFail("agent-endpoint.json must still be readable after server B's stop()")
+            return
+        }
+        let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        XCTAssertEqual(json?["port"] as? Int, serverA.port,
+                       "The surviving agent-endpoint.json must still decode to server A's port")
+        XCTAssertEqual(json?["token"] as? String, "server-a-token",
+                       "The surviving agent-endpoint.json must still decode to server A's token")
     }
 
     // ==================== bound-port recording ====================
@@ -790,8 +836,7 @@ final class CalyxMCPServerTests: XCTestCase {
     // since "fails to start" is not an acceptable alternative to "starts
     // unreachable".
     func test_start_preferredPortZero_recordsActualBoundPortAndIsReachable() async throws {
-        let srv = CalyxMCPServer()
-        srv.agentEndpointDirectory = agentEndpointDir
+        let srv = CalyxMCPServer(agentEndpointDirectory: agentEndpointDir)
         srv.agentRegistry = AgentRegistry()
         let token = "port-zero-token"
 
@@ -857,8 +902,7 @@ final class CalyxMCPServerTests: XCTestCase {
             throw XCTSkip("Could not find a free loopback port to use as preferredPort on this host")
         }
 
-        let srv = CalyxMCPServer()
-        srv.agentEndpointDirectory = agentEndpointDir
+        let srv = CalyxMCPServer(agentEndpointDirectory: agentEndpointDir)
         srv.agentRegistry = AgentRegistry()
 
         try srv.start(token: "free-high-port-token", preferredPort: freePort)
@@ -890,8 +934,7 @@ final class CalyxMCPServerTests: XCTestCase {
     // `test_start_preferredPortZero_recordsActualBoundPortAndIsReachable`
     // intermittently seeing a 400 instead of 200 in full-suite runs.
     func test_realHTTPRequest_headersAndBodySplitAcrossTCPSegments_stillParsesCompleteRequest() async throws {
-        let srv = CalyxMCPServer()
-        srv.agentEndpointDirectory = agentEndpointDir
+        let srv = CalyxMCPServer(agentEndpointDirectory: agentEndpointDir)
         srv.agentRegistry = AgentRegistry()
         let token = "split-segment-token"
 
@@ -930,8 +973,7 @@ final class CalyxMCPServerTests: XCTestCase {
     // process by overflowing `headerLength + contentLength` inside
     // `HTTPParser.completeness(of:)`.
     func test_contentLengthNearIntMax_doesNotCrash_returns413() async throws {
-        let srv = CalyxMCPServer()
-        srv.agentEndpointDirectory = agentEndpointDir
+        let srv = CalyxMCPServer(agentEndpointDirectory: agentEndpointDir)
         srv.agentRegistry = AgentRegistry()
         let token = "overflow-token"
 
@@ -959,8 +1001,7 @@ final class CalyxMCPServerTests: XCTestCase {
     // header block arrives, without ever waiting to receive
     // maxBodySize+1 bytes of body that were never sent.
     func test_contentLengthJustOverMaxBodySize_headersOnlySent_returns413Promptly() async throws {
-        let srv = CalyxMCPServer()
-        srv.agentEndpointDirectory = agentEndpointDir
+        let srv = CalyxMCPServer(agentEndpointDirectory: agentEndpointDir)
         srv.agentRegistry = AgentRegistry()
         let token = "oversized-body-token"
 
@@ -990,8 +1031,7 @@ final class CalyxMCPServerTests: XCTestCase {
     // receive-only deadline. The real response must still come back,
     // never a spurious 408.
     func test_slowRouteProcessing_doesNotTriggerReceiveDeadline408() async throws {
-        let srv = CalyxMCPServer()
-        srv.agentEndpointDirectory = agentEndpointDir
+        let srv = CalyxMCPServer(agentEndpointDirectory: agentEndpointDir)
         srv.agentRegistry = AgentRegistry()
         srv.connectionReceiveDeadline = .milliseconds(100)
         srv._testRouteDelay = .milliseconds(400)
@@ -1023,8 +1063,7 @@ final class CalyxMCPServerTests: XCTestCase {
     // eventually be cut off with 408 by `connectionReceiveDeadline`
     // (shortened for this test), not left open indefinitely.
     func test_headersOnlyNoBodySent_hitsReceiveDeadline_returns408() async throws {
-        let srv = CalyxMCPServer()
-        srv.agentEndpointDirectory = agentEndpointDir
+        let srv = CalyxMCPServer(agentEndpointDirectory: agentEndpointDir)
         srv.agentRegistry = AgentRegistry()
         srv.connectionReceiveDeadline = .milliseconds(300)
         let token = "headers-only-token"
@@ -1065,8 +1104,7 @@ final class CalyxMCPServerTests: XCTestCase {
     // reads the complete raw response text instead and asserts there
     // is exactly one HTTP status line in it.
     func test_headersOnlyRequest_neverReceivesASecondResponseAfter408() async throws {
-        let srv = CalyxMCPServer()
-        srv.agentEndpointDirectory = agentEndpointDir
+        let srv = CalyxMCPServer(agentEndpointDirectory: agentEndpointDir)
         srv.agentRegistry = AgentRegistry()
         srv.connectionReceiveDeadline = .milliseconds(300)
         let token = "headers-only-double-send-token"
@@ -1136,8 +1174,7 @@ final class CalyxMCPServerTests: XCTestCase {
     // from a per-call `Data` parameter to the reference-typed
     // accumulator with a cached `requiredTotal`.
     func test_manySingleByteChunksAcrossTCP_stillAssemblesOneCompleteRequest() async throws {
-        let srv = CalyxMCPServer()
-        srv.agentEndpointDirectory = agentEndpointDir
+        let srv = CalyxMCPServer(agentEndpointDirectory: agentEndpointDir)
         srv.agentRegistry = AgentRegistry()
         let token = "many-chunks-token"
 
@@ -1187,7 +1224,7 @@ final class CalyxMCPServerTests: XCTestCase {
     // value — exercised directly now that this method is `internal`
     // for testability.
     func test_bindKernelAssignedListener_recordsListenersActualResolvedPort() throws {
-        let srv = CalyxMCPServer()
+        let srv = CalyxMCPServer(agentEndpointDirectory: agentEndpointDir)
 
         guard let (listener, port) = srv.bindKernelAssignedListener() else {
             XCTFail("bindKernelAssignedListener should succeed on a host with free ephemeral loopback ports available")

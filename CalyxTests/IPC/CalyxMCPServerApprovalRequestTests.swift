@@ -64,10 +64,12 @@ final class CalyxMCPServerApprovalRequestTests: XCTestCase {
     private let testToken = "approval-request-test-token"
     private let settingsSuiteName = "com.calyx.tests.CalyxMCPServerApprovalRequestTests"
 
-    /// Test-isolated `agent-endpoint.json` directory -- same rationale as
+    /// Test-isolated `agent-endpoint.json` directory, passed to every
+    /// `CalyxMCPServer` instance in this suite via the required
+    /// `agentEndpointDirectory` init parameter -- same rationale as
     /// CalyxMCPServerAgentEventTests: this suite never calls `start()`,
     /// but `tearDown`'s `server.stop()` still calls
-    /// `AgentEndpointFile.remove(directory:)`.
+    /// `AgentEndpointFile.remove(directory:port:token:)`.
     private var agentEndpointDir: String!
 
     // MARK: - Lifecycle
@@ -77,8 +79,7 @@ final class CalyxMCPServerApprovalRequestTests: XCTestCase {
         CockpitSettings._testUseSuite(named: settingsSuiteName)
         agentEndpointDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString).path
-        server = CalyxMCPServer()
-        server.agentEndpointDirectory = agentEndpointDir
+        server = CalyxMCPServer(agentEndpointDirectory: agentEndpointDir)
         server.agentRegistry = AgentRegistry()
         server.approvalInbox = ApprovalInboxStore()
         // R6 test hygiene: isolate Always-Allow memory from the shared
@@ -635,7 +636,7 @@ final class CalyxMCPServerApprovalRequestTests: XCTestCase {
     }
 
     func test_route_defaultTimeout_is570000ms() {
-        let freshServer = CalyxMCPServer()
+        let freshServer = CalyxMCPServer(agentEndpointDirectory: agentEndpointDir)
 
         XCTAssertEqual(freshServer.approvalRequestTimeoutMs, 570_000,
                        "the default approval-request long-poll timeout must be 570_000ms")

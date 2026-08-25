@@ -31,9 +31,11 @@ final class CalyxMCPServerCommandEventTests: XCTestCase {
     private var server: CalyxMCPServer!
     private let testToken = "test-token-12345"
 
-    /// Test-isolated `agent-endpoint.json` directory -- `tearDown`'s
-    /// `server.stop()` still calls `AgentEndpointFile.remove(directory:)`,
-    /// same rationale as `CalyxMCPServerAgentEventTests`.
+    /// Test-isolated `agent-endpoint.json` directory, passed to `server`
+    /// via the required `agentEndpointDirectory` init parameter --
+    /// `tearDown`'s `server.stop()` still calls
+    /// `AgentEndpointFile.remove(directory:port:token:)`, same
+    /// rationale as `CalyxMCPServerAgentEventTests`.
     private var agentEndpointDir: String!
 
     // MARK: - Lifecycle
@@ -42,8 +44,7 @@ final class CalyxMCPServerCommandEventTests: XCTestCase {
         super.setUp()
         agentEndpointDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString).path
-        server = CalyxMCPServer()
-        server.agentEndpointDirectory = agentEndpointDir
+        server = CalyxMCPServer(agentEndpointDirectory: agentEndpointDir)
         server._testSetToken(testToken)
     }
 

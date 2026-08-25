@@ -42,8 +42,7 @@ final class CalyxMCPServerSessionRoutingTests: XCTestCase {
         super.setUp()
         agentEndpointDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString).path
-        server = CalyxMCPServer()
-        server.agentEndpointDirectory = agentEndpointDir
+        server = CalyxMCPServer(agentEndpointDirectory: agentEndpointDir)
         server.agentRegistry = AgentRegistry()
         // Isolated instance — never touch .shared, which other suites read.
         server.sessionSurfaceMap = SessionSurfaceMap()

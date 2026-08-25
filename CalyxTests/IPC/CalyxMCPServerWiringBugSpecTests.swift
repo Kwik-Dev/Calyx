@@ -72,8 +72,7 @@ final class CalyxMCPServerWiringBugSpecTests: XCTestCase {
         super.setUp()
         agentEndpointDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString).path
-        server = CalyxMCPServer()
-        server.agentEndpointDirectory = agentEndpointDir
+        server = CalyxMCPServer(agentEndpointDirectory: agentEndpointDir)
         // stop() now also resets agentRegistry; agentRegistry defaults to
         // the true AgentRegistry.shared singleton, so this suite's
         // start()/stop() calls would otherwise reset shared app-wide

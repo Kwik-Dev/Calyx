@@ -76,9 +76,8 @@ final class SubagentSidebarPipelineTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: appSupportDir, withIntermediateDirectories: true)
 
         registry = AgentRegistry()
-        server = CalyxMCPServer()
+        server = CalyxMCPServer(agentEndpointDirectory: appSupportDir)
         server.agentRegistry = registry
-        server.agentEndpointDirectory = appSupportDir
         try server.start(token: testToken, preferredPort: Int.random(in: 49_152...65_000))
 
         scriptPath = try AgentHookScript.install(toDirectory: appSupportDir + "/bin")

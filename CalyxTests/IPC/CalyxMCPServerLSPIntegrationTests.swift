@@ -215,17 +215,29 @@ final class CalyxMCPServerLSPIntegrationTests: XCTestCase {
     private let workspace = URL(fileURLWithPath: "/tmp/calyx-lsp-integration")
     private let fileURI = "file:///tmp/calyx-lsp-integration/main.ts"
 
+    /// Test-isolated `agent-endpoint.json` directory, passed to `server`
+    /// via the required `agentEndpointDirectory` init parameter, so
+    /// `tearDown`'s `server.stop()` never touches the real
+    /// `~/Library/Application Support/Calyx/agent-endpoint.json`.
+    private var agentEndpointDir: String!
+
     // MARK: - Lifecycle
 
     override func setUp() {
         super.setUp()
-        server = CalyxMCPServer()
+        agentEndpointDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString).path
+        server = CalyxMCPServer(agentEndpointDirectory: agentEndpointDir)
         server._testSetToken(testToken)
     }
 
     override func tearDown() {
         server.stop()
         server = nil
+        if let agentEndpointDir {
+            try? FileManager.default.removeItem(atPath: agentEndpointDir)
+        }
+        agentEndpointDir = nil
         super.tearDown()
     }
 
