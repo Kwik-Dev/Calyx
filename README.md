@@ -17,8 +17,7 @@ https://github.com/user-attachments/assets/a04e1161-e296-4791-9b7c-3ef84d990089
 ### Homebrew
 
 ```bash
-brew tap yuuichieguchi/calyx
-brew install --cask calyx
+brew install --cask yuuichieguchi/calyx/calyx
 ```
 
 ### Manual download
