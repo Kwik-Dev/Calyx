@@ -410,8 +410,10 @@ fn connect_via_launchd(
 #[cfg(target_os = "macos")]
 fn warn_user_lookup_may_be_broken() {
     eprintln!(
-        "warning: this calyx-session daemon cannot look up your user account; new \
-         shells will lose your user name in the prompt. Restarting the daemon fixes it."
+        "warning: this calyx-session daemon cannot look up your user account; new shells \
+         will not be login shells (your login profile, such as /etc/zprofile and \
+         ~/.zprofile, will not run, so PATH may lack what it adds) and will lose your \
+         user name in the prompt. Restarting the daemon fixes it."
     );
 }
 

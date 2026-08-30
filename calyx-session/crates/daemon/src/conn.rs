@@ -555,8 +555,22 @@ impl Conn {
                 Some(entry) => {
                     // The child is a session leader (setsid in
                     // pre_exec), so its process group id is its pid;
-                    // killing the group takes down its descendants
-                    // too. ESRCH means it beat us to exiting.
+                    // killpg reaches that group. For a default macOS
+                    // session the child is login(1), whose shell runs
+                    // as login's own child in its own process group:
+                    // an interactive shell with job control makes
+                    // itself a process group leader (observed for
+                    // zsh: login pgid == login pid, zsh pgid == zsh
+                    // pid), so killpg does not reach the shell
+                    // directly. What terminates it is the kernel:
+                    // when the session leader dies, the foreground
+                    // process group of its controlling terminal gets
+                    // SIGHUP, and closing the PTY master hangs the
+                    // line up as well, the same termination ordinary
+                    // terminal panes and tmux rely on, and a process
+                    // that ignores SIGHUP outlives the session by
+                    // design (nohup). ESRCH means it beat us to
+                    // exiting.
                     let _ = nix::sys::signal::killpg(
                         nix::unistd::Pid::from_raw(entry.pid as i32),
                         nix::sys::signal::Signal::SIGKILL,

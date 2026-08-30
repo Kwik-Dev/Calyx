@@ -20,7 +20,11 @@
 //! reads the daemon's own `$SHELL` to pick a session's default argv
 //! when `spec.argv` is `None`. Putting a client-observed `$SHELL` into
 //! `spec.env` could make that default argv diverge from the value
-//! `$SHELL` itself reports inside the spawned shell.
+//! `$SHELL` itself reports inside the spawned shell. On macOS this
+//! exclusion would be moot for both keys anyway: `login(1)` overwrites
+//! `HOME` and `SHELL` from the target user's passwd entry inside every
+//! default session that starts through `login(1)`, so a forwarded
+//! copy of either could never reach the shell in that case.
 //!
 //! `PATH` is included on purpose (behavior preservation, not new
 //! scope): the attach client's `PATH` is already what a

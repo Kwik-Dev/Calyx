@@ -187,7 +187,23 @@ pub struct SessionSpec {
     pub id: String,
     pub name: Option<String>,
     pub cwd: Option<String>,
-    /// `None` means "daemon default" (the user's login shell).
+    /// `None` means "daemon default" (the user's login shell). On macOS
+    /// the daemon starts it through `login(1)` (`/usr/bin/login -flp
+    /// <user> /bin/bash --noprofile --norc -c "exec -l $SHELL"`, the
+    /// same mechanism ghostty uses for ordinary panes), so `login(1)`
+    /// itself sets `HOME`/`SHELL`/`USER`/`LOGNAME` and the utmpx entry,
+    /// and the shell reads its own profile files; elsewhere the daemon's
+    /// own `$SHELL` runs as-is. The daemon starts the login session only
+    /// when it can resolve its own passwd entry; otherwise it starts
+    /// `$SHELL` directly, with a warning on its own stderr.
+    ///
+    /// `spec.env` is applied to the child before `login(1)` runs, and
+    /// `login -p` preserves it into the wrapper bash, so a key bash
+    /// itself acts on (`BASH_ENV`) can select code that runs before the
+    /// final `exec -l`, and, when `SHELL` names a bare command rather
+    /// than a path, `PATH` can select what that name resolves to. This
+    /// is bounded by the socket's peer-uid check, not by the wrapper:
+    /// the same peer could already pass any `argv` directly.
     pub argv: Option<Vec<String>>,
     pub env: Vec<(String, String)>,
     pub cols: u16,

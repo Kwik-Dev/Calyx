@@ -436,8 +436,9 @@ pub(crate) fn spawn_session(
 
     let argv: Vec<String> = match &spec.argv {
         Some(argv) if !argv.is_empty() => argv.clone(),
-        // Contract: no argv means the user's login shell.
-        _ => vec![std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())],
+        // Contract: no argv means the user's login shell. On macOS that is a
+        // login(1) session (see crate::login_shell); elsewhere $SHELL as-is.
+        _ => crate::login_shell::default_session_argv()?,
     };
 
     let mut cmd = Command::new(&argv[0]);

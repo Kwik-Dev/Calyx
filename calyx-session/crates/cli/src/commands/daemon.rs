@@ -101,7 +101,16 @@ use crate::commands::{resolve_runtime_dir, resolve_state_dir, CommandError};
 /// reads it for a session's default argv when `spec.argv` is `None`,
 /// and it names the user's login shell, not a pane- or
 /// ghostty-scoped value, so the daemon must keep seeing it from its
-/// own environment.
+/// own environment. On macOS the daemon's own `$SHELL` only picks
+/// which shell `login(1)` execs (`choose_shell` in the daemon's
+/// `login_shell` module) and `login(1)` re-sets the `SHELL` variable
+/// inside the session from the passwd entry; with `SHELL` scrubbed,
+/// `choose_shell` falls back to that same passwd shell, so a
+/// launchd-owned macOS daemon would lose nothing, but a daemon that
+/// cannot resolve its passwd entry would then have no shell to choose
+/// and every default spawn would fail, and on other platforms the
+/// exec target would silently become this crate's `/bin/sh` fallback.
+/// Those two losses are what keep `SHELL` out of this list.
 const SCRUBBED_ENV_VARS: &[&str] = &[
     "GHOSTTY_RESOURCES_DIR",
     "ZDOTDIR",
