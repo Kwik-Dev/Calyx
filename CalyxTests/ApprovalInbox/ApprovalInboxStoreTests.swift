@@ -374,6 +374,45 @@ final class ApprovalInboxStoreTests: XCTestCase {
                        "a request targeting a different surface must remain independently decidable")
     }
 
+    // MARK: - awaitDecisionHonoringCancellation: .answered racing cancellation
+
+    /// Mirrors MCPCockpitBridgeTests.test_paneRun_cancelledAfterAllowed_...'s
+    /// own deterministic pattern (see that test's own doc comment): both
+    /// `decide()` and `waiter.cancel()` are @MainActor-isolated synchronous
+    /// calls, so resuming the awaiting Task via `decide()` only makes it
+    /// ELIGIBLE to run again -- it cannot preempt this still-running
+    /// synchronous test method. Cancelling right here, immediately after
+    /// `decide()`, therefore reliably sets `Task.isCancelled` to true
+    /// before `awaitDecisionHonoringCancellation`'s post-decision recheck
+    /// ever runs, without depending on real scheduler timing.
+    func test_awaitDecisionHonoringCancellation_answeredRacingCancellation_demotedToExpired() async throws {
+        let store = ApprovalInboxStore()
+        let request = makeRequest()
+        store.submit(request)
+
+        let prompt = AgentQuestionPrompt(
+            questions: [AgentQuestionPrompt.Question(
+                text: "Which shell?", header: nil,
+                options: [AgentQuestionPrompt.Option(label: "zsh", description: nil, preview: nil)], multiSelect: false
+            )],
+            originalToolInputJSON: try! JSONSerialization.data(withJSONObject: ["questions": [["question": "Which shell?", "options": [["label": "zsh"]]]]])
+        )
+        let answers = AgentQuestionAnswers(prompt: prompt, answers: [.selectedOne("zsh")])
+
+        let waiter = Task { @MainActor in
+            await store.awaitDecisionHonoringCancellation(id: request.id, timeoutMs: 5_000)
+        }
+        await yieldToScheduler()
+
+        store.decide(id: request.id, .answered(answers))
+        waiter.cancel()
+
+        let result = await waiter.value
+        XCTAssertEqual(result, .expired,
+                       "an .answered decision racing a concurrent cancellation of the awaiting Task must be " +
+                       "demoted to .expired, exactly like the existing .allowed demotion")
+    }
+
     func test_expireForSurface_unknownSurface_isNoOp() {
         let store = ApprovalInboxStore()
         let request = makeRequest(targetSurfaceID: UUID())

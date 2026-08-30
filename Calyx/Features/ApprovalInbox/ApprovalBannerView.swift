@@ -30,7 +30,24 @@
 // ApprovalBannerModel.advanceCursor(pastDisplayed:excluding:)'s own doc
 // comment). Drives `ApprovalBannerModel`'s own `selectedRequestID`
 // cursor -- a single queued request renders no navigator at all, since
-// there is nothing to step to.
+// there is nothing to step to. Owned entirely by this shell (it reads
+// `model` directly), for both an ordinary request and an
+// `.agentQuestion`-sourced one alike -- rendered just before whichever
+// content follows it (the ordinary Deny/Always Allow/Allow row, or
+// `AgentQuestionBannerView`, see below).
+//
+// An `.agentQuestion`-sourced request (Claude Code's AskUserQuestion,
+// see `ApprovalRequest.Source`) renders neither the Deny/Always Allow/
+// Allow row, the cross-actions menu, nor the raw payload -- instead this
+// view renders only `AgentQuestionBannerView`, the ENTIRE question form
+// (option list, free-text field, Next/Answer, the side-by-side preview
+// box, and the right column's "i / n"/[Answer in Pane]/[Skip] --
+// AgentQuestionBannerView's own file header comment covers that layout
+// and its `AgentQuestionFormState` state machine in full). Given
+// `.id(request.id)`, so a different request tears the whole child view
+// down and creates a fresh one -- this shell keeps no question-specific
+// `@State` of its own, and answering, skipping, or "Answer in Pane"
+// route through plain closures into `model`.
 
 import SwiftUI
 import AppKit
@@ -40,6 +57,11 @@ struct ApprovalBannerView: View {
     let request: ApprovalRequest
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    private var questionPrompt: AgentQuestionPrompt? {
+        guard case .agentQuestion(_, let prompt) = request.source else { return nil }
+        return prompt
+    }
 
     /// Routed through `ControlCharacterDisplay.render` same as
     /// `request.displayPayload` below -- `displayToolName` comes from the
@@ -99,60 +121,75 @@ struct ApprovalBannerView: View {
                     .font(.callout)
                     .fontWeight(.semibold)
 
-                payloadView
+                if questionPrompt == nil {
+                    payloadView
+                }
             }
 
-            Spacer(minLength: 16)
-
-            HStack {
-                // Queue navigation: leading edge of this action cluster,
-                // immediately adjacent to Deny/Always Allow/Allow -- the
-                // browse-then-decide loop (glance at each queued
-                // command, then click Previous/Next to compare before
-                // deciding) keeps the mouse in one place instead of
-                // ping-ponging across the banner's full width to a
-                // header-area control. The purely sequential loop (just
-                // clicking Allow/Deny down the queue) never needs the
-                // arrows at all, since advance-on-decide already moves
-                // the cursor forward on every decision (see
-                // ApprovalBannerModel.advanceCursor(pastDisplayed:
-                // excluding:)'s own doc comment). Only shown while more
-                // than one request is queued for this window (a single
-                // request has nothing to navigate to) -- see
-                // ApprovalBannerModel.positionInfo's own doc comment.
-                // Single source for the gate: `positionInfo.count`
-                // (derived from the same `visibleRequests` model.
-                // pendingCountForWindow itself counts), rather than also
-                // reading `model.pendingCountForWindow` here.
+            // Queue navigation: immediately adjacent to the decision
+            // controls that follow it -- Deny/Always Allow/Allow for an
+            // ordinary request, or `AgentQuestionBannerView`'s own
+            // question form for an `.agentQuestion`-sourced one -- the
+            // browse-then-decide loop (glance at each queued command,
+            // then click Previous/Next to compare before deciding) keeps
+            // the mouse in one place instead of ping-ponging across the
+            // banner's full width to a header-area control. The purely
+            // sequential loop (just clicking Allow/Deny down the queue)
+            // never needs the arrows at all, since advance-on-decide
+            // already moves the cursor forward on every decision (see
+            // ApprovalBannerModel.advanceCursor(pastDisplayed:
+            // excluding:)'s own doc comment). Only shown while more than
+            // one request is queued for this window (a single request
+            // has nothing to navigate to) -- see ApprovalBannerModel.
+            // positionInfo's own doc comment. `AgentQuestionBannerView`
+            // does not take `model`, so this is rendered once per branch
+            // rather than hoisted above the split.
+            if let questionPrompt {
                 if let positionInfo = model.positionInfo, positionInfo.count > 1 {
                     queueNavigator(positionInfo: positionInfo)
                         .padding(.trailing, 8)
                 }
+                AgentQuestionBannerView(
+                    prompt: questionPrompt,
+                    onAnswer: { answers in model.answer(id: request.id, answers: answers) },
+                    onSkip: { model.skip(id: request.id) },
+                    onAnswerInPane: { model.answerInPane(id: request.id) },
+                    onFreeTextFieldRemoved: { model.restoreTerminalFocusAfterInput() }
+                )
+                .id(request.id)
+            } else {
+                Spacer(minLength: 16)
+                HStack {
+                    if let positionInfo = model.positionInfo, positionInfo.count > 1 {
+                        queueNavigator(positionInfo: positionInfo)
+                            .padding(.trailing, 8)
+                    }
 
-                Button("Deny") {
-                    model.deny(id: request.id)
-                }
-                .controlSize(.small)
-                .accessibilityIdentifier(AccessibilityID.ApprovalBanner.denyButton)
+                    Button("Deny") {
+                        model.deny(id: request.id)
+                    }
+                    .controlSize(.small)
+                    .accessibilityIdentifier(AccessibilityID.ApprovalBanner.denyButton)
 
-                Button(alwaysAllowButtonTitle) {
-                    model.alwaysAllow(id: request.id)
-                }
-                .controlSize(.small)
-                .accessibilityIdentifier(AccessibilityID.ApprovalBanner.alwaysAllowButton)
+                    Button(alwaysAllowButtonTitle) {
+                        model.alwaysAllow(id: request.id)
+                    }
+                    .controlSize(.small)
+                    .accessibilityIdentifier(AccessibilityID.ApprovalBanner.alwaysAllowButton)
 
-                Button("Allow") {
-                    model.allow(id: request.id)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .accessibilityIdentifier(AccessibilityID.ApprovalBanner.allowButton)
+                    Button("Allow") {
+                        model.allow(id: request.id)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .accessibilityIdentifier(AccessibilityID.ApprovalBanner.allowButton)
 
-                // Stage E: only an `.agentHook`-sourced request has a
-                // cross-actions menu -- `.mcpTool` renders exactly as
-                // before it (no menu at all).
-                if let menuToolName = agentHookToolName {
-                    crossActionsMenu(toolName: menuToolName)
+                    // Stage E: only an `.agentHook`-sourced request has a
+                    // cross-actions menu -- `.mcpTool` renders exactly as
+                    // before it (no menu at all).
+                    if let menuToolName = agentHookToolName {
+                        crossActionsMenu(toolName: menuToolName)
+                    }
                 }
             }
         }

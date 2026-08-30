@@ -19,6 +19,19 @@ struct ApprovalRequest: Identifiable, Sendable {
         /// `AgentEntry.piKind`); `toolName` and `summary` come from the
         /// decoded `AgentHookToolCall`.
         case agentHook(toolName: String, kind: String, summary: String)
+        /// Claude Code's `AskUserQuestion` tool call, decoded into an
+        /// `AgentQuestionPrompt` rather than the generic `.agentHook`
+        /// summary -- the approval banner renders this as option buttons
+        /// instead of a Deny/Always Allow/Allow row. `kind` is always
+        /// `AgentEntry.claudeCodeKind` (see `AgentHookToolCall.question`'s
+        /// own doc comment for why no other kind ever produces one), kept
+        /// here rather than hardcoded so `displayToolName` stays a plain
+        /// switch over `Source` with no special-cased kind literal. No
+        /// separate `toolName`: it is always "AskUserQuestion" (the gate
+        /// that produces a `.agentQuestion` at all), so there is nothing
+        /// for a second field to carry that `displayToolName`'s own
+        /// "Question" literal doesn't already say.
+        case agentQuestion(kind: String, prompt: AgentQuestionPrompt)
     }
 
     let id: UUID
@@ -32,6 +45,9 @@ enum ApprovalDecision: Sendable, Equatable {
     case allowed
     case denied
     case expired
+    /// A human's answer to an `.agentQuestion`-sourced request's
+    /// `AskUserQuestion` prompt -- see `AgentQuestionAnswers`.
+    case answered(AgentQuestionAnswers)
 }
 
 extension ApprovalRequest {
@@ -48,6 +64,8 @@ extension ApprovalRequest {
             return name
         case .agentHook(let toolName, let kind, _):
             return "\(AgentEntry.displayName(forKind: kind)) · \(toolName)"
+        case .agentQuestion(let kind, _):
+            return "\(AgentEntry.displayName(forKind: kind)) · Question"
         }
     }
 
@@ -63,6 +81,8 @@ extension ApprovalRequest {
             return payload
         case .agentHook(_, _, let summary):
             return summary
+        case .agentQuestion(_, let prompt):
+            return prompt.questions.map(\.text).joined(separator: "\n")
         }
     }
 

@@ -9,9 +9,11 @@
 //  PermissionRequest hook-response contract both Claude Code and Codex
 //  document (hookSpecificOutput.decision.behavior), replacing the older
 //  PreToolUse-era hookSpecificOutput.permissionDecision shape entirely.
-//  permissionDecision, permissionDecisionReason, updatedInput,
-//  updatedPermissions, and interrupt are all reserved or invalid under
-//  PermissionRequest, so none of them may ever appear in this body.
+//  permissionDecision, permissionDecisionReason, updatedPermissions, and
+//  interrupt are all reserved or invalid under PermissionRequest, so none
+//  of them may ever appear in this body. updatedInput is the one
+//  documented exception: it appears only in claude-code's .answered
+//  (AskUserQuestion) body, never in an allow/deny/expired body.
 //
 //  Coverage:
 //  - claude-code / codex: allowed produces decision.behavior "allow";
@@ -26,6 +28,9 @@
 //  - the body never carries any of PermissionRequest's reserved/invalid
 //    fields, pinned via an exact key-set assertion rather than substring
 //    checks, so a stray extra field is caught too
+//  - claude-code's .answered body: behavior "allow" plus updatedInput
+//    (the original tool_input object plus an answers map), the one
+//    documented exception to the reserved-field rule above
 //
 //  Bodies are re-parsed with JSONSerialization and asserted field by
 //  field -- never by string equality, since key order in the serialized
@@ -276,6 +281,345 @@ final class AgentHookPermissionResponseTests: XCTestCase {
         XCTAssertNil(AgentHookPermissionResponse.body(kind: unknownKind, decision: .allowed))
         XCTAssertNil(AgentHookPermissionResponse.body(kind: unknownKind, decision: .denied))
         XCTAssertNil(AgentHookPermissionResponse.body(kind: unknownKind, decision: .expired))
+    }
+
+    // MARK: - claude-code: .answered (AskUserQuestion)
+    //
+    // `.answered` carries the original `questions` array back verbatim
+    // (re-parsed as an identical JSON value, not necessarily identical
+    // bytes -- key order in JSONSerialization output is unspecified) plus
+    // an `answers` object mapping each question's own text to its chosen
+    // value: a single label, multi-select labels joined with ", ", or the
+    // typed text for a free-text "Other" choice.
+
+    private func toolInputValue(_ data: Data) throws -> NSDictionary {
+        try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? NSDictionary)
+    }
+
+    private func makeAnswers() -> AgentQuestionAnswers {
+        let toolInput: [String: Any] = [
+            "questions": [
+                ["question": "Which shell?", "options": [["label": "zsh"], ["label": "bash"]]],
+                ["question": "Which editors?", "multiSelect": true,
+                 "options": [["label": "vim"], ["label": "emacs"], ["label": "nano"]]],
+                ["question": "Anything else?", "options": [["label": "Other"]]],
+            ],
+        ]
+        let originalToolInputJSON = try! JSONSerialization.data(withJSONObject: toolInput)
+        let prompt = AgentQuestionPrompt(
+            questions: [
+                AgentQuestionPrompt.Question(
+                    text: "Which shell?", header: nil,
+                    options: [
+                        AgentQuestionPrompt.Option(label: "zsh", description: nil, preview: nil),
+                        AgentQuestionPrompt.Option(label: "bash", description: nil, preview: nil),
+                    ],
+                    multiSelect: false
+                ),
+                AgentQuestionPrompt.Question(
+                    text: "Which editors?", header: nil,
+                    options: [
+                        AgentQuestionPrompt.Option(label: "vim", description: nil, preview: nil),
+                        AgentQuestionPrompt.Option(label: "emacs", description: nil, preview: nil),
+                        AgentQuestionPrompt.Option(label: "nano", description: nil, preview: nil),
+                    ],
+                    multiSelect: true
+                ),
+                AgentQuestionPrompt.Question(
+                    text: "Anything else?", header: nil,
+                    options: [AgentQuestionPrompt.Option(label: "Other", description: nil, preview: nil)],
+                    multiSelect: false
+                ),
+            ],
+            originalToolInputJSON: originalToolInputJSON
+        )
+        return AgentQuestionAnswers(
+            prompt: prompt,
+            answers: [.selectedOne("zsh"), .selectedMany(["vim", "emacs"]), .freeText("Please also install ripgrep")]
+        )
+    }
+
+    func test_body_claude_answered_isAllowBehaviorWithUpdatedInput() throws {
+        let answers = makeAnswers()
+        let data = try XCTUnwrap(
+            AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .answered(answers))
+        )
+        let output = try hookSpecificOutput(data)
+        XCTAssertEqual(output["hookEventName"] as? String, "PermissionRequest")
+
+        let decisionObject = try XCTUnwrap(output["decision"] as? [String: Any])
+        XCTAssertEqual(Set(decisionObject.keys), ["behavior", "updatedInput"],
+                       "an answered decision's decision object must contain exactly behavior and updatedInput")
+        XCTAssertEqual(decisionObject["behavior"] as? String, "allow")
+
+        let updatedInput = try XCTUnwrap(decisionObject["updatedInput"] as? [String: Any])
+        XCTAssertEqual(Set(updatedInput.keys), ["questions", "answers"],
+                       "updatedInput must contain exactly the original tool_input keys (questions) plus answers")
+
+        let questionsValue = try XCTUnwrap(updatedInput["questions"])
+        let questionsData = try JSONSerialization.data(withJSONObject: ["questions": questionsValue])
+        let originalToolInput = try toolInputValue(answers.prompt.originalToolInputJSON)
+        XCTAssertEqual(try toolInputValue(questionsData)["questions"] as? NSArray, originalToolInput["questions"] as? NSArray,
+                       "updatedInput.questions must equal originalToolInputJSON's own questions re-parsed as an identical JSON value")
+
+        let answersObject = try XCTUnwrap(updatedInput["answers"] as? [String: String])
+        XCTAssertEqual(answersObject, [
+            "Which shell?": "zsh",
+            "Which editors?": "vim, emacs",
+            "Anything else?": "Please also install ripgrep",
+        ])
+    }
+
+    /// `updatedInput`'s key set is the original `tool_input` keys plus
+    /// `answers` -- a `tool_input` carrying an unknown top-level key
+    /// (e.g. `metadata`) must round-trip that key through unchanged.
+    func test_body_claude_answered_updatedInputKeys_areOriginalToolInputKeysPlusAnswers() throws {
+        let toolInput: [String: Any] = [
+            "questions": [["question": "Which shell?", "options": [["label": "zsh"]]]],
+            "metadata": ["source": "cli"],
+        ]
+        let originalToolInputJSON = try JSONSerialization.data(withJSONObject: toolInput)
+        let prompt = AgentQuestionPrompt(
+            questions: [AgentQuestionPrompt.Question(
+                text: "Which shell?", header: nil,
+                options: [AgentQuestionPrompt.Option(label: "zsh", description: nil, preview: nil)],
+                multiSelect: false
+            )],
+            originalToolInputJSON: originalToolInputJSON
+        )
+        let answers = AgentQuestionAnswers(prompt: prompt, answers: [.selectedOne("zsh")])
+
+        let data = try XCTUnwrap(
+            AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .answered(answers))
+        )
+        let output = try hookSpecificOutput(data)
+        let decisionObject = try XCTUnwrap(output["decision"] as? [String: Any])
+        let updatedInput = try XCTUnwrap(decisionObject["updatedInput"] as? [String: Any])
+
+        XCTAssertEqual(Set(updatedInput.keys), ["questions", "metadata", "answers"],
+                       "updatedInput must carry every original tool_input key (including an unknown one like " +
+                       "metadata) plus answers -- Claude Code's own contract replaces the whole input object")
+    }
+
+    /// A `tool_input` that already carries a stale `answers` key (e.g. a
+    /// prior round's own leftover) must be OVERWRITTEN by the freshly
+    /// built object, never merged with it -- the stale key must be gone
+    /// and the fresh question-text key must be present, with the key set
+    /// staying exactly `questions` + `answers`.
+    func test_body_claude_answered_staleAnswersKeyInToolInput_isOverwrittenNotMerged() throws {
+        let toolInput: [String: Any] = [
+            "questions": [["question": "Which shell?", "options": [["label": "zsh"]]]],
+            "answers": ["stale": "value"],
+        ]
+        let originalToolInputJSON = try JSONSerialization.data(withJSONObject: toolInput)
+        let prompt = AgentQuestionPrompt(
+            questions: [AgentQuestionPrompt.Question(
+                text: "Which shell?", header: nil,
+                options: [AgentQuestionPrompt.Option(label: "zsh", description: nil, preview: nil)],
+                multiSelect: false
+            )],
+            originalToolInputJSON: originalToolInputJSON
+        )
+        let answers = AgentQuestionAnswers(prompt: prompt, answers: [.selectedOne("zsh")])
+
+        let data = try XCTUnwrap(
+            AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .answered(answers))
+        )
+        let output = try hookSpecificOutput(data)
+        let decisionObject = try XCTUnwrap(output["decision"] as? [String: Any])
+        let updatedInput = try XCTUnwrap(decisionObject["updatedInput"] as? [String: Any])
+
+        let answersObject = try XCTUnwrap(updatedInput["answers"] as? [String: String])
+        XCTAssertEqual(answersObject, ["Which shell?": "zsh"],
+                       "updatedInput.answers must be exactly the freshly built object -- the stale key must " +
+                       "be gone and the question-text key must be present")
+        XCTAssertEqual(Set(updatedInput.keys), ["questions", "answers"],
+                       "the key set must stay exactly questions + answers, not grow from a merge")
+    }
+
+    func test_body_nonClaudeCodeKinds_answered_isNil() {
+        let answers = makeAnswers()
+        for kind in [AgentEntry.codexKind, AgentEntry.grokKind, AgentEntry.piKind, "some-unrecognized-cli"] {
+            XCTAssertNil(AgentHookPermissionResponse.body(kind: kind, decision: .answered(answers)),
+                        "[\(kind)] .answered must produce no body -- only claude-code recognizes AskUserQuestion")
+        }
+    }
+
+    // MARK: - selectedLabelsAnswerValue (claude-code's multi-select answer encoding)
+    //
+    // Claude Code's own encoding (2.1.251, verbatim from the binary):
+    // labels.map(t => t.includes(", ") || t.includes('"') ? JSON.stringify(t) : t).join(", ").
+    // A label containing ", " or a double quote must be JSON-string-quoted
+    // or Claude Code's own round-trip check silently fails to recognize
+    // the answer; every other label rides through bare.
+
+    func test_selectedLabelsAnswerValue_plainLabels_joinsWithCommaSpace() {
+        XCTAssertEqual(AgentHookPermissionResponse.selectedLabelsAnswerValue(["zsh", "bash"]), "zsh, bash")
+    }
+
+    func test_selectedLabelsAnswerValue_singlePlainLabel_returnsItself() {
+        XCTAssertEqual(AgentHookPermissionResponse.selectedLabelsAnswerValue(["zsh"]), "zsh")
+    }
+
+    func test_selectedLabelsAnswerValue_labelContainingCommaSpace_isJSONQuoted() {
+        XCTAssertEqual(
+            AgentHookPermissionResponse.selectedLabelsAnswerValue(["Swift, Rust", "Go"]),
+            "\"Swift, Rust\", Go"
+        )
+    }
+
+    func test_selectedLabelsAnswerValue_labelContainingDoubleQuote_isJSONQuoted() {
+        XCTAssertEqual(
+            AgentHookPermissionResponse.selectedLabelsAnswerValue(["Say \"hi\""]),
+            "\"Say \\\"hi\\\"\""
+        )
+    }
+
+    /// Pins a one-element multi-select answer: even with nothing to join,
+    /// a lone label still goes through the quoted round-trip check when
+    /// it contains ", " or a double quote.
+    func test_selectedLabelsAnswerValue_oneElementMultiSelectAnswer_labelContainingCommaSpace_isQuotedAlone() {
+        XCTAssertEqual(
+            AgentHookPermissionResponse.selectedLabelsAnswerValue(["Swift, Rust"]),
+            "\"Swift, Rust\""
+        )
+    }
+
+    func test_selectedLabelsAnswerValue_labelContainingSlash_isNotEscaped() {
+        XCTAssertEqual(AgentHookPermissionResponse.selectedLabelsAnswerValue(["a/b"]), "a/b")
+    }
+
+    func test_selectedLabelsAnswerValue_emptyArray_returnsEmptyString() {
+        XCTAssertEqual(AgentHookPermissionResponse.selectedLabelsAnswerValue([]), "")
+    }
+
+    /// `.selectedOne` with a label containing ", " is emitted raw --
+    /// never run through `selectedLabelsAnswerValue` -- a single-select
+    /// answer is matched against the listed label set verbatim.
+    func test_body_claude_answered_selectedOne_labelContainingCommaSpace_isEmittedRaw() throws {
+        let toolInput: [String: Any] = [
+            "questions": [["question": "Which pair?", "options": [["label": "Swift, Rust"], ["label": "Go"]]]],
+        ]
+        let originalToolInputJSON = try JSONSerialization.data(withJSONObject: toolInput)
+        let prompt = AgentQuestionPrompt(
+            questions: [AgentQuestionPrompt.Question(
+                text: "Which pair?", header: nil,
+                options: [
+                    AgentQuestionPrompt.Option(label: "Swift, Rust", description: nil, preview: nil),
+                    AgentQuestionPrompt.Option(label: "Go", description: nil, preview: nil),
+                ],
+                multiSelect: false
+            )],
+            originalToolInputJSON: originalToolInputJSON
+        )
+        let answers = AgentQuestionAnswers(prompt: prompt, answers: [.selectedOne("Swift, Rust")])
+
+        let data = try XCTUnwrap(
+            AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .answered(answers))
+        )
+        let output = try hookSpecificOutput(data)
+        let decisionObject = try XCTUnwrap(output["decision"] as? [String: Any])
+        let updatedInput = try XCTUnwrap(decisionObject["updatedInput"] as? [String: Any])
+        let answersObject = try XCTUnwrap(updatedInput["answers"] as? [String: String])
+
+        XCTAssertEqual(answersObject["Which pair?"], "Swift, Rust",
+                       "a .selectedOne label must be emitted raw, never JSON-quoted -- that round-trip check " +
+                       "only ever runs for a multi-select answer")
+    }
+
+    /// `.selectedMany` is emitted through `selectedLabelsAnswerValue`
+    /// -- the multi-select answer for a label containing ", " must be
+    /// JSON-quoted, matching Claude Code's own round-trip check.
+    func test_body_claude_answered_selectedMany_isEmittedThroughSelectedLabelsAnswerValue() throws {
+        let precomputed = AgentHookPermissionResponse.selectedLabelsAnswerValue(["Swift, Rust", "Go"])
+        let toolInput: [String: Any] = [
+            "questions": [
+                ["question": "Which languages?", "multiSelect": true,
+                 "options": [["label": "Swift, Rust"], ["label": "Go"]]],
+            ],
+        ]
+        let originalToolInputJSON = try JSONSerialization.data(withJSONObject: toolInput)
+        let prompt = AgentQuestionPrompt(
+            questions: [
+                AgentQuestionPrompt.Question(
+                    text: "Which languages?", header: nil,
+                    options: [
+                        AgentQuestionPrompt.Option(label: "Swift, Rust", description: nil, preview: nil),
+                        AgentQuestionPrompt.Option(label: "Go", description: nil, preview: nil),
+                    ],
+                    multiSelect: true
+                ),
+            ],
+            originalToolInputJSON: originalToolInputJSON
+        )
+        let answers = AgentQuestionAnswers(prompt: prompt, answers: [.selectedMany(["Swift, Rust", "Go"])])
+
+        let data = try XCTUnwrap(
+            AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .answered(answers))
+        )
+        let output = try hookSpecificOutput(data)
+        let decisionObject = try XCTUnwrap(output["decision"] as? [String: Any])
+        let updatedInput = try XCTUnwrap(decisionObject["updatedInput"] as? [String: Any])
+        let answersObject = try XCTUnwrap(updatedInput["answers"] as? [String: String])
+
+        XCTAssertEqual(answersObject["Which languages?"], precomputed,
+                       "a .selectedMany answer must be run through selectedLabelsAnswerValue, quoting the " +
+                       "label that contains \", \"")
+    }
+
+    /// `.freeText` is emitted raw, including text that itself contains
+    /// ", " -- free text is meant to reach the CLI unencoded, never
+    /// matched against the listed label set at all.
+    func test_body_claude_answered_freeText_isEmittedRaw_evenContainingCommaSpace() throws {
+        let toolInput: [String: Any] = ["questions": [["question": "Anything else?", "options": [["label": "Other"]]]]]
+        let originalToolInputJSON = try JSONSerialization.data(withJSONObject: toolInput)
+        let prompt = AgentQuestionPrompt(
+            questions: [AgentQuestionPrompt.Question(
+                text: "Anything else?", header: nil,
+                options: [AgentQuestionPrompt.Option(label: "Other", description: nil, preview: nil)],
+                multiSelect: false
+            )],
+            originalToolInputJSON: originalToolInputJSON
+        )
+        let freeText = "Install ripgrep, then fd"
+        let answers = AgentQuestionAnswers(prompt: prompt, answers: [.freeText(freeText)])
+
+        let data = try XCTUnwrap(
+            AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .answered(answers))
+        )
+        let output = try hookSpecificOutput(data)
+        let decisionObject = try XCTUnwrap(output["decision"] as? [String: Any])
+        let updatedInput = try XCTUnwrap(decisionObject["updatedInput"] as? [String: Any])
+        let answersObject = try XCTUnwrap(updatedInput["answers"] as? [String: String])
+
+        XCTAssertEqual(answersObject["Anything else?"], freeText,
+                       "a .freeText answer must be emitted raw, unencoded, even though it contains \", \"")
+    }
+
+    // MARK: - denyMessage: dismissedQuestionMessage vs the default
+
+    /// A skipped question denies with `dismissedQuestionMessage`, passed
+    /// explicitly by the caller; a plain agent-hook deny with no
+    /// `denyMessage` argument keeps the default `deniedMessage`.
+    func test_body_claude_denied_dismissedQuestionMessage_vs_defaultDeniedMessage() throws {
+        let questionDenyData = try XCTUnwrap(
+            AgentHookPermissionResponse.body(
+                kind: AgentEntry.claudeCodeKind, decision: .denied,
+                denyMessage: AgentHookPermissionResponse.dismissedQuestionMessage
+            )
+        )
+        let questionOutput = try hookSpecificOutput(questionDenyData)
+        let questionDecision = try XCTUnwrap(questionOutput["decision"] as? [String: Any])
+        XCTAssertEqual(questionDecision["message"] as? String, AgentHookPermissionResponse.dismissedQuestionMessage,
+                       "a skipped question's deny body must carry dismissedQuestionMessage")
+
+        let plainDenyData = try XCTUnwrap(
+            AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .denied)
+        )
+        let plainOutput = try hookSpecificOutput(plainDenyData)
+        let plainDecision = try XCTUnwrap(plainOutput["decision"] as? [String: Any])
+        XCTAssertEqual(plainDecision["message"] as? String, AgentHookPermissionResponse.deniedMessage,
+                       "a plain agent-hook deny with no explicit denyMessage must keep the default deniedMessage")
     }
 
     // MARK: - forbidden fields (PermissionRequest reserved/invalid keys)

@@ -154,18 +154,25 @@ final class ApprovalInboxStore {
 
     /// Security-critical wrapper around `awaitDecision(id:timeoutMs:)`
     /// that itself performs the caller obligation `awaitDecision`'s own
-    /// doc comment documents: an `.allowed` result that raced a
-    /// concurrent cancellation of this call's own Task is demoted to
-    /// `.expired` here, rather than left to every individual caller to
-    /// re-check `Task.isCancelled` on its own. Centralizes that re-check
-    /// in exactly one place -- both `MCPCockpitBridge.gate` and
-    /// `CalyxMCPServer.routeApprovalRequest` call this instead of
-    /// duplicating it. Every other decision (`.denied`/`.expired`) passes
-    /// through unchanged.
+    /// doc comment documents: an `.allowed` OR `.answered` result that
+    /// raced a concurrent cancellation of this call's own Task is
+    /// demoted to `.expired` here, rather than left to every individual
+    /// caller to re-check `Task.isCancelled` on its own. Centralizes
+    /// that re-check in exactly one place -- both `MCPCockpitBridge.gate`
+    /// and `CalyxMCPServer.routeApprovalRequest` call this instead of
+    /// duplicating it. `.answered` carries the same "the caller may
+    /// already be gone" hazard `.allowed` does -- both are decisions a
+    /// human actually made, as opposed to `.denied`/`.expired`, which
+    /// pass through unchanged.
     func awaitDecisionHonoringCancellation(id: UUID, timeoutMs: Int) async -> ApprovalDecision {
         let decision = await awaitDecision(id: id, timeoutMs: timeoutMs)
-        guard decision == .allowed, Task.isCancelled else { return decision }
-        return .expired
+        switch decision {
+        case .allowed, .answered:
+            guard Task.isCancelled else { return decision }
+            return .expired
+        case .denied, .expired:
+            return decision
+        }
     }
 
     private func waitForDecision(id: UUID, timeoutMs: Int) async -> ApprovalDecision {

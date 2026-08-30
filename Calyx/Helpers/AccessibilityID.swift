@@ -139,6 +139,13 @@ enum AccessibilityID {
     /// leaves `positionLabel` unreachable from the accessibility tree:
     /// the "N / M" text is exposed as `queueMenu`'s own accessibility
     /// label instead (see ApprovalBannerView.queueNavigator(positionInfo:)).
+    /// An `.agentQuestion`-sourced request renders option buttons instead
+    /// of the Deny/Always Allow/Allow row -- `questionText`/`optionButton(_:)`/
+    /// `otherButton`/`otherTextField`/`answerButton`/`skipButton`/
+    /// `answerInPaneButton`/`questionPosition` cover that alternate layout.
+    /// `previewText` is the side-by-side markdown preview box shown only
+    /// when an option carries a `preview` (see ApprovalBannerView's own
+    /// `questionOptionsSection`).
     enum ApprovalBanner {
         static let container = "calyx.approvalBanner.container"
         static let allowButton = "calyx.approvalBanner.allowButton"
@@ -152,6 +159,15 @@ enum AccessibilityID {
         static let nextButton = "calyx.approvalBanner.nextButton"
         static let positionLabel = "calyx.approvalBanner.positionLabel"
         static let queueMenu = "calyx.approvalBanner.queueMenu"
+        static let questionText = "calyx.approvalBanner.questionText"
+        static func optionButton(_ index: Int) -> String { "calyx.approvalBanner.optionButton.\(index)" }
+        static let otherButton = "calyx.approvalBanner.otherButton"
+        static let otherTextField = "calyx.approvalBanner.otherTextField"
+        static let answerButton = "calyx.approvalBanner.answerButton"
+        static let skipButton = "calyx.approvalBanner.skipButton"
+        static let answerInPaneButton = "calyx.approvalBanner.answerInPaneButton"
+        static let questionPosition = "calyx.approvalBanner.questionPosition"
+        static let previewText = "calyx.approvalBanner.previewText"
     }
     enum Diff {
         static let container = "calyx.diff"

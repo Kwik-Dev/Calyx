@@ -255,6 +255,8 @@ final class ApprovalHookPipelineIntegrationTests: XCTestCase {
             XCTAssertEqual(summary, "ls")
         case .mcpTool:
             XCTFail("expected .agentHook source, got .mcpTool")
+        case .agentQuestion:
+            XCTFail("expected .agentHook source, got .agentQuestion")
         }
 
         approvalInbox.decide(id: request.id, .allowed)
@@ -281,6 +283,50 @@ final class ApprovalHookPipelineIntegrationTests: XCTestCase {
 
         XCTAssertEqual(exitCode, 0)
         XCTAssertEqual(try permissionBehavior(fromStdout: stdout), "deny")
+    }
+
+    // MARK: - AskUserQuestion: .answered decision
+
+    func test_answeredDecision_printsUpdatedInputAnswersJSON_exitZero() async throws {
+        CockpitSettings.agentHookApprovalEnabled = true
+        let surfaceID = UUID()
+        let hookScriptPath = scriptPath!
+        let hookHome = tempHome!
+        let askUserQuestionStdin = """
+        {"tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Which shell?","options":[{"label":"zsh"},{"label":"bash"}]}]},"hook_event_name":"PermissionRequest"}
+        """
+
+        async let hookResult = Self.runHookScript(
+            scriptPath: hookScriptPath, home: hookHome, stdinJSON: askUserQuestionStdin, surfaceID: surfaceID
+        )
+
+        let pendingRequest = await waitForPendingRequest()
+        let request = try XCTUnwrap(
+            pendingRequest, "the script's real POST must reach the injected approval inbox"
+        )
+        guard case .agentQuestion(let kind, let prompt) = request.source else {
+            XCTFail("expected .agentQuestion source, got \(request.source)")
+            return
+        }
+        XCTAssertEqual(kind, AgentEntry.claudeCodeKind)
+
+        let answers = AgentQuestionAnswers(prompt: prompt, answers: [.selectedOne("zsh")])
+        let expectedBody = try XCTUnwrap(AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .answered(answers)))
+
+        approvalInbox.decide(id: request.id, .answered(answers))
+        let (exitCode, stdout) = try await hookResult
+
+        XCTAssertEqual(exitCode, 0, "the hook script must always exit 0")
+
+        let stdoutObject = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(stdout.utf8)) as? [String: Any])
+        let expectedObject = try XCTUnwrap(try JSONSerialization.jsonObject(with: expectedBody) as? [String: Any])
+        XCTAssertEqual(stdoutObject as NSDictionary, expectedObject as NSDictionary,
+                       "the script's stdout must equal AgentHookPermissionResponse.body(kind:decision:) exactly")
+
+        let hookSpecificOutput = try XCTUnwrap(stdoutObject["hookSpecificOutput"] as? [String: Any])
+        let decision = try XCTUnwrap(hookSpecificOutput["decision"] as? [String: Any])
+        let updatedInput = try XCTUnwrap(decision["updatedInput"] as? [String: Any])
+        XCTAssertNotNil(updatedInput["answers"], "stdout must contain hookSpecificOutput.decision.updatedInput.answers")
     }
 
     // MARK: - Toggle off
@@ -416,6 +462,8 @@ final class ApprovalHookPipelineIntegrationTests: XCTestCase {
             XCTAssertEqual(kind, AgentEntry.codexKind)
         case .mcpTool:
             XCTFail("expected .agentHook source, got .mcpTool")
+        case .agentQuestion:
+            XCTFail("expected .agentHook source, got .agentQuestion")
         }
 
         approvalInbox.decide(id: request.id, .allowed)

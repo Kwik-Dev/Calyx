@@ -79,4 +79,60 @@ final class ApprovalRequestDisplayTests: XCTestCase {
                        "displayPayload must return the raw summary unescaped -- escaping for display is " +
                        "ControlCharacterDisplay's job, applied later in the view layer")
     }
+
+    // MARK: - .agentQuestion
+
+    private func makePrompt(questionTexts: [String]) -> AgentQuestionPrompt {
+        let toolInput: [String: Any] = [
+            "questions": questionTexts.map { text in
+                ["question": text, "options": [["label": "yes"], ["label": "no"]]]
+            },
+        ]
+        return AgentQuestionPrompt(
+            questions: questionTexts.map { text in
+                AgentQuestionPrompt.Question(
+                    text: text, header: nil,
+                    options: [
+                        AgentQuestionPrompt.Option(label: "yes", description: nil, preview: nil),
+                        AgentQuestionPrompt.Option(label: "no", description: nil, preview: nil),
+                    ],
+                    multiSelect: false
+                )
+            },
+            originalToolInputJSON: try! JSONSerialization.data(withJSONObject: toolInput)
+        )
+    }
+
+    func test_displayToolName_agentQuestion_combinesAgentLabelAndQuestionSuffix() {
+        let prompt = makePrompt(questionTexts: ["Which shell?"])
+        let request = makeRequest(
+            source: .agentQuestion(kind: AgentEntry.claudeCodeKind, prompt: prompt)
+        )
+
+        XCTAssertEqual(request.displayToolName, "Claude Code · Question",
+                       "displayToolName for .agentQuestion must combine the owning CLI's display label " +
+                       "with the same middle-dot separator .agentHook uses")
+    }
+
+    func test_displayPayload_agentQuestion_isQuestionTextsJoinedByNewline() {
+        let prompt = makePrompt(questionTexts: ["Which shell?", "Which editor?"])
+        let request = makeRequest(
+            source: .agentQuestion(kind: AgentEntry.claudeCodeKind, prompt: prompt)
+        )
+
+        XCTAssertEqual(request.displayPayload, "Which shell?\nWhich editor?",
+                       "displayPayload for .agentQuestion must join every question's text with a newline")
+    }
+
+    func test_previewLine_agentQuestion_multiQuestion_isSingleLineAndTruncatesSameAsOtherSources() {
+        let prompt = makePrompt(questionTexts: ["Which shell?", "Which editor?", "Any last preferences?"])
+        let request = makeRequest(
+            source: .agentQuestion(kind: AgentEntry.claudeCodeKind, prompt: prompt)
+        )
+
+        XCTAssertEqual(request.previewLine, "Claude Code · Question: Which shell? Which editor? Any last preferences?",
+                       "previewLine must collapse the newline-joined displayPayload into a single space-separated line, " +
+                       "the same whitespace-collapsing behavior every other source's previewLine already exercises")
+        XCTAssertFalse(request.previewLine.contains("\n"), "previewLine must be single-line")
+    }
 }

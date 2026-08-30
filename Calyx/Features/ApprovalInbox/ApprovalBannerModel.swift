@@ -43,6 +43,7 @@ final class ApprovalBannerModel {
     private let store: ApprovalInboxStore
     private let ownsSurface: (UUID) -> Bool
     private let isKeyWindow: () -> Bool
+    private let restoreTerminalFocus: () -> Void
     private let memory: AgentHookApprovalMemory
 
     /// This window's own navigation cursor -- see `current`'s own doc
@@ -54,11 +55,13 @@ final class ApprovalBannerModel {
         store: ApprovalInboxStore,
         ownsSurface: @escaping (UUID) -> Bool,
         isKeyWindow: @escaping () -> Bool,
+        restoreTerminalFocus: @escaping () -> Void = {},
         memory: AgentHookApprovalMemory = .shared
     ) {
         self.store = store
         self.ownsSurface = ownsSurface
         self.isKeyWindow = isKeyWindow
+        self.restoreTerminalFocus = restoreTerminalFocus
         self.memory = memory
     }
 
@@ -167,9 +170,21 @@ final class ApprovalBannerModel {
     /// filter at all -- used by the cross-actions menu's "Allow All
     /// Pending (N)" label (see `ApprovalBannerView`), distinct from
     /// `pendingCountForWindow` above, which counts only requests this
-    /// window owns/can see.
+    /// window owns/can see. Excludes every `.agentQuestion` request:
+    /// "Allow All Pending" never decides one (see `allowAllPending()`),
+    /// so counting it here would promise a number this action does not
+    /// deliver.
     var totalPendingCount: Int {
-        store.pending.count
+        allowAllCandidates.count
+    }
+
+    /// Every store-wide pending request `allowAllPending()` may decide --
+    /// every `.mcpTool`/`.agentHook` request, no `.agentQuestion`, no
+    /// window/ownership visibility filter -- shared with `totalPendingCount`
+    /// above so the count and the drain can never disagree about which
+    /// requests qualify.
+    private var allowAllCandidates: [ApprovalRequest] {
+        store.pending.filter { !isAgentQuestion($0.source) }
     }
 
     /// Every request in `visibleRequests` (same ownsSurface/isKeyWindow
@@ -320,16 +335,86 @@ final class ApprovalBannerModel {
     /// here could resolve a DIFFERENT request than the one the human
     /// looked at and clicked Allow/Deny on. A stale `id` (no longer
     /// pending) is a safe no-op -- `store.decide` itself already no-ops
-    /// for that case, so no separate guard is needed here (unlike
-    /// `alwaysAllow(id:)` below, which guards its own extra side effects).
+    /// for that case. The one guard this DOES need,
+    /// `isPendingAgentQuestion(_:)`, is not about staleness: it stops
+    /// this from ever deciding a live `.agentQuestion` request, which
+    /// only `answer(id:answers:)`/`skip(id:)`/`answerInPane(id:)` may
+    /// decide (unlike `alwaysAllow(id:)` below, whose own guard covers
+    /// its own extra side effects).
     func allow(id: UUID) {
+        guard !isPendingAgentQuestion(id) else { return }
         advanceCursor(pastDisplayed: id)
         store.decide(id: id, .allowed)
     }
 
     func deny(id: UUID) {
+        guard !isPendingAgentQuestion(id) else { return }
         advanceCursor(pastDisplayed: id)
         store.decide(id: id, .denied)
+    }
+
+    /// Whether `id` currently names a pending `.agentQuestion` request --
+    /// the no-op guard `allow(id:)`/`deny(id:)` share: neither may ever
+    /// decide a question, which is answered only through `answer(id:
+    /// answers:)`/`skip(id:)`/`answerInPane(id:)`. A stale (no longer
+    /// pending) `id` is never an agent-question by this definition, which
+    /// is fine -- `store.decide` itself already no-ops for a stale id.
+    private func isPendingAgentQuestion(_ id: UUID) -> Bool {
+        guard let request = store.pending.first(where: { $0.id == id }) else { return false }
+        return isAgentQuestion(request.source)
+    }
+
+    private func isAgentQuestion(_ source: ApprovalRequest.Source) -> Bool {
+        guard case .agentQuestion = source else { return false }
+        return true
+    }
+
+    /// Shared body of `answer(id:answers:)`/`skip(id:)`/`answerInPane(id:)`:
+    /// advances the cursor exactly like `allow(id:)`/`deny(id:)`, resolves
+    /// `decision`, then restores terminal focus once -- the banner's own
+    /// text field (the "Other" free-text option) may have taken first
+    /// responder, and resolving the request removes the banner out from
+    /// under it.
+    private func resolveQuestion(id: UUID, _ decision: ApprovalDecision) {
+        advanceCursor(pastDisplayed: id)
+        store.decide(id: id, decision)
+        restoreTerminalFocus()
+    }
+
+    /// The approval banner's answer to an `.agentQuestion`-sourced
+    /// request's `AskUserQuestion` prompt: resolves the awaiter
+    /// `.answered(answers)`.
+    func answer(id: UUID, answers: AgentQuestionAnswers) {
+        resolveQuestion(id: id, .answered(answers))
+    }
+
+    /// The banner's "Skip" action for an `.agentQuestion`-sourced
+    /// request: resolves `.denied` (the human declined to answer at all,
+    /// same terminal outcome as denying any other tool call).
+    func skip(id: UUID) {
+        resolveQuestion(id: id, .denied)
+    }
+
+    /// The banner's "Answer in Pane" action for an `.agentQuestion`-
+    /// sourced request: resolves `.expired` -- no body reaches the hook
+    /// (see `AgentHookPermissionResponse`'s own fail-safe contract), so
+    /// Claude Code's own in-pane prompt takes over.
+    func answerInPane(id: UUID) {
+        resolveQuestion(id: id, .expired)
+    }
+
+    /// Called by `AgentQuestionBannerView`'s own root-level
+    /// `.onDisappear` when the whole question view is torn down while
+    /// its free-text field still held first responder -- covers every
+    /// removal cause (the displayed request changing, the hold window
+    /// expiring, the pane closing, `expireAll`, cancellation), since
+    /// that root `.onDisappear` is the sole path this fires from (not
+    /// the field's own `.onDisappear`, which also fires mid-prompt on an
+    /// ordinary question-to-question advance). Unlike `answer(id:)`/
+    /// `skip(id:)`/`answerInPane(id:)` above, this path decides nothing
+    /// itself; it only restores terminal focus.
+    func restoreTerminalFocusAfterInput() {
+        restoreTerminalFocus()
     }
 
     /// Branches on the clicked request's own `source` (Stage E).
@@ -395,20 +480,31 @@ final class ApprovalBannerModel {
             advanceCursor(pastDisplayed: id, excluding: Set(idsToAllow))
             memory.rememberPane(surfaceID: targetSurfaceID, kind: kind, toolName: toolName)
             store.decide(ids: idsToAllow, .allowed)
+
+        case .agentQuestion:
+            // A question is never decided by this action: see
+            // `allow(id:)`'s own doc comment on why `.agentQuestion`
+            // requests only ever resolve through `answer(id:answers:)`/
+            // `skip(id:)`/`answerInPane(id:)`.
+            return
         }
     }
 
     /// Decides EVERY pending request in the store `.allowed`, store-wide,
-    /// with NO window/ownership visibility filter and no source filter
-    /// at all. Leaves no Always-Allow memory behind and never touches
-    /// any setting -- called by the cross-actions menu's "Allow All
-    /// Pending" item (see `ApprovalBannerView`). Clears the navigation
-    /// cursor outright (rather than advancing it, unlike `allow(id:)`/
-    /// `deny(id:)`/`alwaysAllow(id:)`/`alwaysAllowAcrossPanes(id:)`
-    /// above): nothing is left pending store-wide to point at.
+    /// with NO window/ownership visibility filter at all, EXCEPT every
+    /// `.agentQuestion` request -- this action must never answer a
+    /// question on a human's behalf, same rationale as `allow(id:)`'s own
+    /// no-op guard. Leaves no Always-Allow memory behind and never
+    /// touches any setting -- called by the cross-actions menu's "Allow
+    /// All Pending" item (see `ApprovalBannerView`). Clears the
+    /// navigation cursor outright (rather than advancing it, unlike
+    /// `allow(id:)`/`deny(id:)`/`alwaysAllow(id:)`/
+    /// `alwaysAllowAcrossPanes(id:)` above): nothing this action decides
+    /// is left pending store-wide to point at.
     func allowAllPending() {
         selectedRequestID = nil
-        store.decide(ids: store.pending.map(\.id), .allowed)
+        let idsToAllow = allowAllCandidates.map(\.id)
+        store.decide(ids: idsToAllow, .allowed)
     }
 
     /// Only meaningful for an `.agentHook`-sourced request: records
