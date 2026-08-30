@@ -394,7 +394,9 @@ fn renderReplayAlloc(term: *const vt.Terminal) ![]u8 {
 
     // Known-blank slate even on a non-blank target terminal: RIS
     // restores default modes/screens/tabstops, 3J drops scrollback
-    // (RIS alone keeps it).
+    // (RIS alone keeps it). These bytes must stay identical to
+    // `proto::BLANK_SLATE` in crates/proto/src/frame.rs (a daemon test
+    // pins the Replay payload prefix to it).
     try w.writeAll("\x1bc\x1b[3J");
 
     // Palette entries modified via OSC 4, and dynamic fg/bg/cursor

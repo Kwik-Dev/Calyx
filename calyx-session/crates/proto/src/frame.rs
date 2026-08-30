@@ -17,6 +17,21 @@ use crate::error::ProtoError;
 /// peer's ability to force an unbounded allocation.
 pub const MAX_FRAME_LEN: u32 = 16 * 1024 * 1024;
 
+/// RIS (`\x1bc`) restores default modes, screens and tab stops, and
+/// `\x1b[3J` drops scrollback, which RIS alone leaves intact.
+///
+/// The daemon's Replay renderer (`shim/src/gvt.zig`) writes it as the
+/// first bytes of every `Replay` frame's payload, committing a
+/// successful attach's takeover of the pane. The attach client's own
+/// pre-connect preamble is a different, plain erase-display sequence
+/// (`VIEWPORT_CLEAR` in `crates/cli/src/commands/attach.rs`) that
+/// deliberately does not drop scrollback: it runs before the attach can
+/// succeed, so a failed attach must leave the user's history intact.
+///
+/// `crates/daemon/tests/attach.rs` pins the Replay payload prefix to
+/// this constant.
+pub const BLANK_SLATE: &[u8] = b"\x1bc\x1b[3J";
+
 /// Identifies what a frame's payload contains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -29,6 +44,7 @@ pub enum FrameType {
     Output = 3,
     /// Raw bytes reconstructing a session's current state on attach,
     /// sent once immediately after `AttachOk` and before any `Output`.
+    /// The payload begins with [`BLANK_SLATE`].
     Replay = 4,
 }
 

@@ -7,37 +7,16 @@
 //! daemon that fails to start surfaces as a bounded-time failure
 //! instead of hanging the suite.
 
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::path::Path;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-struct DaemonGuard(Child);
-
-impl Drop for DaemonGuard {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
-fn bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_calyx-session"))
-}
-
-fn wait_for_socket(path: &Path, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if path.exists() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    false
-}
+mod common;
+use common::{bin, wait_for_socket, ChildGuard};
 
 /// Spawns `calyx-session --runtime-dir <dir> --state-dir <dir> daemon
 /// --foreground` and waits (bounded) for its socket to appear.
-fn spawn_foreground_daemon(runtime_dir: &Path, state_dir: &Path) -> DaemonGuard {
+fn spawn_foreground_daemon(runtime_dir: &Path, state_dir: &Path) -> ChildGuard {
     let child = Command::new(bin())
         .args([
             "--runtime-dir".as_ref(),
@@ -51,7 +30,7 @@ fn spawn_foreground_daemon(runtime_dir: &Path, state_dir: &Path) -> DaemonGuard 
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn `calyx-session daemon --foreground`");
-    let guard = DaemonGuard(child);
+    let guard = ChildGuard(child);
 
     let socket_path = runtime_dir.join("sessiond.sock");
     assert!(

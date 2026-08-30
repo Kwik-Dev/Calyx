@@ -15,36 +15,27 @@
 //! being checked out, which `ghostty_zsh_resources_dir` asserts
 //! explicitly (a real, actionable failure if it isn't, not a silent
 //! skip).
+//!
+//! The spawned zsh's `ZDOTDIR` points at a scratch directory holding
+//! only a comment-only `.zshrc`, not the developer's real dotfiles.
+//! `resolve_shell_integration_env` (same module) relays whatever
+//! `ZDOTDIR` the attach client sees as `GHOSTTY_ZSH_ZDOTDIR`, and the
+//! bundled `.zshenv` restores `ZDOTDIR` to that value before zsh's own
+//! startup sequence sources `$ZDOTDIR/.zshrc` -- so pointing that
+//! relayed value at an empty scratch directory keeps the shell that
+//! actually runs hermetic while the real ghostty integration scripts
+//! (which don't depend on the user's rc files at all) still load and
+//! emit OSC 7 from their precmd hook. Without this, the session's zsh
+//! falls back to `$HOME/.zshrc`, and this developer's real one takes
+//! several seconds to source, well past this test's 5s budget.
 
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-struct ChildGuard(Child);
-
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
-fn bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_calyx-session"))
-}
-
-fn wait_for_socket(path: &Path, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if path.exists() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    false
-}
+mod common;
+use common::{bin, drain_into, wait_for_socket, ChildGuard};
 
 /// The real ghostty zsh shell-integration scripts, at their submodule
 /// SOURCE location. Present in any checkout with the `ghostty`
@@ -97,6 +88,19 @@ fn attach_create_with_ghostty_resources_dir_emits_osc7_for_an_interactive_zsh_se
 
     let resources_dir = ghostty_zsh_resources_dir();
 
+    // A scratch ZDOTDIR so the session's zsh reads a comment-only
+    // .zshrc instead of this developer's real one: `.zshenv` (read
+    // above) relays this value back in as `ZDOTDIR` once the bundled
+    // integration's own setup is done, so zsh's normal startup
+    // sequence sources `.zshrc` from here, not from `$HOME`.
+    let zdotdir = tempdir.path().join("zdotdir");
+    std::fs::create_dir(&zdotdir).expect("create scratch zdotdir");
+    std::fs::write(
+        zdotdir.join(".zshrc"),
+        "# scratch .zshrc for shell_integration_attach test: intentionally empty\n",
+    )
+    .expect("write scratch .zshrc");
+
     let mut attach_child = Command::new(bin())
         .args(["--runtime-dir", runtime_dir.to_str().unwrap()])
         .args(["--state-dir", state_dir.to_str().unwrap()])
@@ -115,14 +119,14 @@ fn attach_create_with_ghostty_resources_dir_emits_osc7_for_an_interactive_zsh_se
         // session.
         .env("GHOSTTY_RESOURCES_DIR", resources_dir.as_os_str())
         .env("SHELL", "/bin/zsh")
-        .env_remove("ZDOTDIR")
+        .env("ZDOTDIR", zdotdir.as_os_str())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn `calyx-session attach --create`");
-    let mut stdout = attach_child.stdout.take().expect("attach child stdout");
-    let mut stderr = attach_child.stderr.take().expect("attach child stderr");
+    let stdout = attach_child.stdout.take().expect("attach child stdout");
+    let stderr = attach_child.stderr.take().expect("attach child stderr");
     let _attach_guard = ChildGuard(attach_child);
 
     // Read the attach client's stdout (the session's raw PTY output,
@@ -130,41 +134,13 @@ fn attach_create_with_ghostty_resources_dir_emits_osc7_for_an_interactive_zsh_se
     // live interactive shell never closes it on its own; the main
     // thread polls a bounded snapshot instead of blocking on `read`.
     let acc = Arc::new(Mutex::new(Vec::<u8>::new()));
-    {
-        let acc = Arc::clone(&acc);
-        std::thread::spawn(move || {
-            let mut buf = [0u8; 4096];
-            loop {
-                match stdout.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => acc
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .extend_from_slice(&buf[..n]),
-                }
-            }
-        });
-    }
+    drain_into(stdout, Arc::clone(&acc));
     // Drained so a failing attach client can't block on a full stderr
     // pipe; not asserted on directly, but kept around so a captured
     // error message can be attached to the eventual timeout failure
     // below for a clearer diagnosis.
     let stderr_acc = Arc::new(Mutex::new(Vec::<u8>::new()));
-    {
-        let stderr_acc = Arc::clone(&stderr_acc);
-        std::thread::spawn(move || {
-            let mut buf = [0u8; 4096];
-            loop {
-                match stderr.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => stderr_acc
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .extend_from_slice(&buf[..n]),
-                }
-            }
-        });
-    }
+    drain_into(stderr, Arc::clone(&stderr_acc));
 
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {

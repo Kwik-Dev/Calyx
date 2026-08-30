@@ -36,54 +36,12 @@
 //! which path was exec'd.
 
 use std::fs;
-use std::io::Read;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-struct ChildGuard(Child);
-
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
-fn bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_calyx-session"))
-}
-
-fn wait_for_socket(path: &Path, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if path.exists() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    false
-}
-
-/// Drains `reader` into `acc` on a background thread until EOF or an
-/// error, mirroring `shell_integration_attach.rs`'s stdout/stderr
-/// drain pattern: a live session's pipes never close on their own, so
-/// the main thread must never block a direct `read` on them.
-fn drain_into(mut reader: impl Read + Send + 'static, acc: Arc<Mutex<Vec<u8>>>) {
-    std::thread::spawn(move || {
-        let mut buf = [0u8; 4096];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => acc
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .extend_from_slice(&buf[..n]),
-            }
-        }
-    });
-}
+mod common;
+use common::{bin, drain_into, wait_for_socket, ChildGuard};
 
 #[test]
 fn attach_create_with_no_argv_runs_a_real_login_session_on_macos() {

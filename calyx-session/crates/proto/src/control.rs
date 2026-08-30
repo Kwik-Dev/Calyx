@@ -171,7 +171,15 @@ pub enum ControlMsg {
 /// A server-pushed event not requested by any specific `ControlMsg`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SessionEvent {
-    /// The session's child process exited with `code`.
+    /// The session's child process exited with `code`. For a default
+    /// macOS session the reaped child is `login(1)`, whose parent
+    /// always exits 0 after the shell ends, so `code` is 0 regardless
+    /// of the shell's own exit status, unless a signal kills `login`
+    /// itself (137 after `Kill`). The daemon starts `login(1)` only
+    /// when it can resolve its own passwd entry; in the degraded state
+    /// where that lookup fails it starts `$SHELL` directly, and `code`
+    /// is then the shell's real exit status. Explicit-argv sessions and
+    /// other platforms carry the child's real exit status.
     Exited { id: String, code: i32 },
 }
 
@@ -214,7 +222,15 @@ pub struct SessionSpec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionState {
     Running,
-    Exited { code: i32 },
+    /// See `SessionEvent::Exited`'s doc for what `code` means for a
+    /// default macOS session (the reaped child is `login(1)`, whose
+    /// own exit status, not the shell's, is recorded, except in the
+    /// degraded state where the daemon cannot resolve its own passwd
+    /// entry and starts `$SHELL` directly, in which case `code` is the
+    /// shell's own exit status).
+    Exited {
+        code: i32,
+    },
 }
 
 /// A session as reported by `ListOk`, `NewOk`, and `AttachOk`.

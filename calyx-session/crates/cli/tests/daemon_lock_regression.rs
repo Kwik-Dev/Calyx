@@ -13,30 +13,17 @@
 //! ORDINARY, non-handoff path (`run_daemonized`, untouched by that
 //! work) still behaves exactly as before.
 //!
-//! `wait_for_socket`/`bin`/`run_cli` duplicate `smoke.rs`'s and
-//! `history_cli.rs`'s own copies of the same small helpers rather than
-//! sharing them, matching this crate's existing precedent for this
-//! situation (see `history_cli.rs`'s header) at the time this test was
-//! written.
+//! `wait_for_socket`/`bin` come from `tests/common/mod.rs`, shared
+//! across this crate's integration tests; `run_cli` stays local to
+//! this file, duplicating `smoke.rs`'s and `history_cli.rs`'s own
+//! copies of the same small helper.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-fn bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_calyx-session"))
-}
-
-fn wait_for_socket(path: &Path, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if path.exists() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    false
-}
+mod common;
+use common::{bin, wait_for_socket};
 
 fn run_cli(runtime_dir: &Path, state_dir: &Path, args: &[&str]) -> Output {
     Command::new(bin())

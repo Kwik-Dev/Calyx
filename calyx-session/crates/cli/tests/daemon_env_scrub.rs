@@ -87,8 +87,11 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
+
+mod common;
+use common::{bin, wait_for_socket, ChildGuard};
 
 /// Variables poisoned on the daemon's own process environment before
 /// it starts: `SCRUBBED_ENV_VARS`'s own members
@@ -147,19 +150,6 @@ const KNOWN_GHOSTTY_BIN_DIR: &str = "poisoned-but-must-survive-ghostty-bin-dir";
 /// unchanged.
 const KNOWN_XDG_DATA_DIRS: &str = "poisoned-but-must-survive-xdg-data-dirs";
 
-struct DaemonGuard(Child);
-
-impl Drop for DaemonGuard {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
-fn bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_calyx-session"))
-}
-
 /// Writes an executable script at `<dir>/dumper-shell` that dumps
 /// this process's environment to `dump_path` (via `/usr/bin/env`,
 /// mirroring the shape every other test in this crate reads) and
@@ -180,17 +170,6 @@ fn write_dumper_shell(dir: &Path, dump_path: &Path) -> PathBuf {
     perms.set_mode(0o755);
     fs::set_permissions(&script_path, perms).expect("chmod dumper shell script executable");
     script_path
-}
-
-fn wait_for_socket(path: &Path, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if path.exists() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    false
 }
 
 fn run_cli(runtime_dir: &Path, state_dir: &Path, args: &[&str]) -> Output {
@@ -266,7 +245,7 @@ fn session_shell_never_sees_the_daemons_inherited_pane_scoped_env() {
     let daemon_child = daemon_cmd
         .spawn()
         .expect("spawn `calyx-session daemon --foreground`");
-    let _daemon_guard = DaemonGuard(daemon_child);
+    let _daemon_guard = ChildGuard(daemon_child);
 
     let socket_path = runtime_dir.join("sessiond.sock");
     if !wait_for_socket(&socket_path, Duration::from_secs(5)) {

@@ -21,8 +21,14 @@ use crate::session::{spawn_session, SessionRequest};
 use crate::state::Shared;
 
 /// Upper bound on waiting for a killed session's teardown before
-/// giving up and reporting failure (SIGKILL cannot be ignored, so in
-/// practice this resolves in milliseconds).
+/// giving up and reporting failure. The SIGKILL goes to the process
+/// group of the child the daemon reaps (for a default macOS session
+/// that child is `login(1)`); SIGKILL cannot be ignored, so that
+/// reaped child is gone within milliseconds. The shell and its jobs
+/// end afterward through the terminal hangup that follows (see the
+/// `Kill` handler's comment), not through this signal directly, and a
+/// process that ignores SIGHUP and never touches the tty outlives the
+/// session by design.
 const KILL_WAIT: Duration = Duration::from_secs(5);
 
 /// Upper bound on waiting for a mid-teardown session's ledger record

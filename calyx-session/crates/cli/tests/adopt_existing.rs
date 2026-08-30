@@ -23,24 +23,12 @@
 //! per test run, and excluding the `--adopt-existing` invocation's own
 //! matching command line so the two are never confused).
 
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::path::Path;
+use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-fn bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_calyx-session"))
-}
-
-fn wait_for_socket(path: &Path, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if path.exists() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    false
-}
+mod common;
+use common::{bin, wait_for_socket, ChildGuard};
 
 fn run_cli(runtime_dir: &Path, state_dir: &Path, args: &[&str]) -> Output {
     Command::new(bin())
@@ -79,15 +67,6 @@ fn process_alive(pid: i32) -> bool {
     // and permission, which this test (same uid, its own child tree)
     // always has.
     unsafe { libc::kill(pid, 0) == 0 }
-}
-
-struct ChildGuard(Child);
-
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
 }
 
 /// Terminates daemon A on drop. A is a detached, double-forked

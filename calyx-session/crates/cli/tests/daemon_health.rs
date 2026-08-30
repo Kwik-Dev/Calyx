@@ -8,52 +8,31 @@
 //! instead talks the control-channel protocol directly against the
 //! real `calyx-session daemon --foreground` binary, exactly as
 //! `crates/daemon/tests/common/mod.rs`'s in-process harness does for
-//! the daemon crate's own integration tests. Duplicated here rather
-//! than shared, matching this crate's existing precedent for small
-//! per-binary test helpers (see `history_cli.rs`'s header note and
-//! `daemon_lock_regression.rs`'s copy of `wait_for_socket`/`bin`).
+//! the daemon crate's own integration tests. `bin`/`wait_for_socket`
+//! come from `tests/common/mod.rs`, shared across this crate's
+//! integration tests; `roundtrip` stays local to this file, since no
+//! other test here talks the control-channel protocol directly.
 //!
 //! `IO_TIMEOUT` bounds every read/write on the probe connection so a
 //! daemon that accepts but never replies fails this test instead of
 //! hanging the suite.
 
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::path::Path;
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use proto::{
     decode_control, encode_control, ControlMsg, FrameReader, FrameType, FrameWriter,
     PROTOCOL_VERSION,
 };
 
+mod common;
+use common::{bin, wait_for_socket, ChildGuard};
+
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 
-struct DaemonGuard(Child);
-
-impl Drop for DaemonGuard {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
-fn bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_calyx-session"))
-}
-
-fn wait_for_socket(path: &Path, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if path.exists() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    false
-}
-
-fn spawn_foreground_daemon(runtime_dir: &Path, state_dir: &Path) -> DaemonGuard {
+fn spawn_foreground_daemon(runtime_dir: &Path, state_dir: &Path) -> ChildGuard {
     let child = Command::new(bin())
         .args([
             "--runtime-dir".as_ref(),
@@ -67,7 +46,7 @@ fn spawn_foreground_daemon(runtime_dir: &Path, state_dir: &Path) -> DaemonGuard 
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn `calyx-session daemon --foreground`");
-    let guard = DaemonGuard(child);
+    let guard = ChildGuard(child);
 
     let socket_path = runtime_dir.join("sessiond.sock");
     assert!(

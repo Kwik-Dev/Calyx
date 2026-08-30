@@ -1,6 +1,16 @@
 //! Builds the macOS `login(1)` session argv, matching the darwin
 //! branch of ghostty's own `execCommand` in
-//! `ghostty/src/termio/Exec.zig`, and its POSIX single-quote helper.
+//! `ghostty/src/termio/Exec.zig`. ghostty's darwin `execCommand`
+//! interpolates its command string raw, as `exec -l {s}`; it has no
+//! quoting helper because it passes a whole command line. Calyx passes
+//! a pathname (`$SHELL`), so it single-quotes it here (see
+//! [`shell_single_quote`]), which keeps a path containing spaces
+//! working. A consequence: a `$SHELL` value containing a `/` must be
+//! an absolute path to an executable regular file, and a bare name
+//! (no `/`) must be a single word; either failure is rejected at the
+//! daemon boundary so it reaches the client as a spawn error instead
+//! of bash's `exec -l` printing `not found` inside an already-started
+//! session while `login` itself still exits 0.
 //!
 //! `login(1)` forks: the parent keeps running as a root-euid session
 //! leader, `waitpid`s the child, and always exits 0, so the daemon's
@@ -36,11 +46,11 @@
 //! the session's own `SHELL` variable); `$SHELL` is honored first
 //! when it is set and non-empty because it is the user's explicit
 //! per-session choice, the same order ghostty uses. When `$SHELL`
-//! names a path that does not exist or is not executable, that is
-//! rejected at the daemon boundary so the failure reaches the client
-//! as a spawn error, rather than surfacing as bash's `exec -l`
-//! printing `not found` inside an already-started session while
-//! `login` itself still exits 0.
+//! contains a `/`, it must be an absolute path, and that path must
+//! exist and be executable; either failure is rejected at the daemon
+//! boundary so it reaches the client as a spawn error, rather than
+//! surfacing as bash's `exec -l` printing `not found` inside an
+//! already-started session while `login` itself still exits 0.
 //!
 //! If the daemon cannot resolve the passwd entry for its own uid, it
 //! cannot build a login(1) session at all (no username, no home
@@ -99,14 +109,17 @@ pub(crate) fn shell_single_quote(s: &str) -> String {
 /// entry).
 ///
 /// A bare command name in `env_shell` (no `/`) is returned as-is
-/// without consulting `is_executable`: it is resolved through the
-/// session's `PATH` by bash's `exec -l`, the same PATH resolution
-/// `Command::new` performs for a bare name. A path (containing `/`)
-/// is checked with `is_executable` so a stale or
-/// misspelled `$SHELL` is rejected here, at the daemon boundary,
-/// rather than surfacing later as bash's `exec -l` printing `exec:
-/// ...: not found` inside an already-started session while `login`
-/// itself still exits 0.
+/// without consulting `is_executable`, provided it is a single word:
+/// it is resolved through the session's `PATH` by bash's `exec -l`,
+/// the same PATH resolution `Command::new` performs for a bare name.
+/// A bare name containing whitespace is rejected (without consulting
+/// `is_executable`), since `exec -l` would otherwise split it into a
+/// command and arguments. A path (containing `/`) must be absolute
+/// (checked without consulting `is_executable`) and pass
+/// `is_executable`, so a relative, stale, or misspelled `$SHELL` is
+/// rejected here, at the daemon boundary, rather than surfacing later
+/// as bash's `exec -l` printing `exec: ...: not found` inside an
+/// already-started session while `login` itself still exits 0.
 #[cfg(any(target_os = "macos", test))]
 pub(crate) fn choose_shell(
     env_shell: Option<&str>,
@@ -116,11 +129,22 @@ pub(crate) fn choose_shell(
     if let Some(shell) = env_shell.filter(|s| !s.is_empty()) {
         if shell.contains('/') {
             let path = Path::new(shell);
+            if !path.is_absolute() {
+                return Err(format!(
+                    "SHELL is set to {shell}, which is not an absolute path; SHELL must be an \
+                     absolute path"
+                ));
+            }
             if !is_executable(path) {
                 return Err(format!(
                     "SHELL is set to {shell}, which is not an executable file"
                 ));
             }
+        } else if shell.contains(char::is_whitespace) {
+            return Err(format!(
+                "SHELL is set to {shell}, which contains whitespace; SHELL must be a single \
+                 command name or an absolute path"
+            ));
         }
         return Ok(shell.to_string());
     }
@@ -140,13 +164,22 @@ pub(crate) fn choose_shell(
     }
 }
 
+/// True only for a regular file (symlinks followed) that the current
+/// process may execute.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn is_executable_file(path: &Path) -> bool {
+    let is_regular_file = std::fs::metadata(path)
+        .map(|meta| meta.is_file())
+        .unwrap_or(false);
+    is_regular_file && nix::unistd::access(path, nix::unistd::AccessFlags::X_OK).is_ok()
+}
+
 /// Resolves the argv for a default session (`spec.argv == None`). On
 /// macOS this builds a real `login(1)` session for the current uid;
 /// elsewhere it is `$SHELL` as-is, unchanged from prior behavior.
 #[cfg(target_os = "macos")]
 pub(crate) fn default_session_argv() -> Result<Vec<String>, String> {
     let env_shell = std::env::var("SHELL").ok();
-    let is_executable = |p: &Path| nix::unistd::access(p, nix::unistd::AccessFlags::X_OK).is_ok();
 
     // `login(1)`'s own `-f` compares the caller's real uid with the
     // target user, so the real uid is the right key for this lookup
@@ -156,7 +189,7 @@ pub(crate) fn default_session_argv() -> Result<Vec<String>, String> {
     let lookup = nix::unistd::User::from_uid(uid);
     match lookup {
         Ok(Some(user)) => {
-            let shell = choose_shell(env_shell.as_deref(), Some(&user.shell), is_executable)?;
+            let shell = choose_shell(env_shell.as_deref(), Some(&user.shell), is_executable_file)?;
             let hushlogin = user.dir.join(".hushlogin").exists();
             Ok(login_session_argv(&user.name, hushlogin, &shell))
         }
@@ -172,7 +205,7 @@ pub(crate) fn default_session_argv() -> Result<Vec<String>, String> {
             Ok(vec![choose_shell(
                 env_shell.as_deref(),
                 None,
-                is_executable,
+                is_executable_file,
             )?])
         }
     }
@@ -294,5 +327,74 @@ mod tests {
                     .to_string()
             )
         );
+    }
+
+    #[test]
+    fn choose_shell_rejects_relative_env_path_without_consulting_predicate() {
+        let result = choose_shell(Some("bin/zsh"), None, |_| {
+            panic!("is_executable must not be consulted for a relative path")
+        });
+        let err = result.expect_err("a relative SHELL path must be rejected");
+        assert!(
+            err.contains("bin/zsh"),
+            "error message should name the offending value, got: {err}"
+        );
+        assert!(
+            err.contains("absolute"),
+            "error message should say the path must be absolute, got: {err}"
+        );
+    }
+
+    #[test]
+    fn choose_shell_rejects_bare_name_with_whitespace_without_consulting_predicate() {
+        let result = choose_shell(Some("zsh -l"), None, |_| {
+            panic!("is_executable must not be consulted for a bare name")
+        });
+        let err = result.expect_err("a SHELL value with whitespace must be rejected");
+        assert!(
+            err.contains("zsh -l"),
+            "error message should name the offending value, got: {err}"
+        );
+        assert!(
+            err.contains("absolute"),
+            "error message should say SHELL must be a single command name or an absolute path, \
+             got: {err}"
+        );
+    }
+
+    #[test]
+    fn choose_shell_accepts_absolute_env_path_unchanged() {
+        let result = choose_shell(Some("/bin/zsh"), None, |_| true);
+        assert_eq!(result, Ok("/bin/zsh".to_string()));
+    }
+
+    #[test]
+    fn is_executable_file_is_false_for_a_directory() {
+        let dir = tempfile::tempdir().expect("create scratch tempdir");
+        assert!(!is_executable_file(dir.path()));
+    }
+
+    #[test]
+    fn is_executable_file_is_false_for_a_non_executable_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("create scratch tempdir");
+        let file_path = dir.path().join("not-executable");
+        std::fs::write(&file_path, b"#!/bin/sh\n").expect("write scratch file");
+        std::fs::set_permissions(&file_path, std::fs::Permissions::from_mode(0o644))
+            .expect("set scratch file permissions");
+        assert!(!is_executable_file(&file_path));
+    }
+
+    #[test]
+    fn is_executable_file_is_true_for_an_executable_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("create scratch tempdir");
+        let file_path = dir.path().join("executable");
+        std::fs::write(&file_path, b"#!/bin/sh\n").expect("write scratch file");
+        std::fs::set_permissions(&file_path, std::fs::Permissions::from_mode(0o755))
+            .expect("set scratch file permissions");
+        assert!(is_executable_file(&file_path));
     }
 }

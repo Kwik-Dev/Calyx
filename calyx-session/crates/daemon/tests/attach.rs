@@ -134,6 +134,13 @@ fn new_attach_receives_a_replay_frame_with_prior_output() {
         "replay frame should contain prior output, got {:?}",
         String::from_utf8_lossy(&replay_frame.payload)
     );
+    assert!(
+        replay_frame.payload.starts_with(proto::BLANK_SLATE),
+        "every Replay payload must begin with the shared blank-slate \
+         sequence (proto::BLANK_SLATE), so the attach client's own \
+         preamble matches what the daemon actually sends; got {:?}",
+        replay_frame.payload
+    );
 }
 
 // ==================== Test 9 ====================
