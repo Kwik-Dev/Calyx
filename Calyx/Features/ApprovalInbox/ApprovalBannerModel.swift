@@ -338,8 +338,9 @@ final class ApprovalBannerModel {
     /// for that case. The one guard this DOES need,
     /// `isPendingAgentQuestion(_:)`, is not about staleness: it stops
     /// this from ever deciding a live `.agentQuestion` request, which
-    /// only `answer(id:answers:)`/`skip(id:)`/`answerInPane(id:)` may
-    /// decide (unlike `alwaysAllow(id:)` below, whose own guard covers
+    /// only `answer(id:answers:)`/`cancelQuestion(id:)`/
+    /// `chatAboutQuestion(id:)`/`answerInPane(id:)` may decide (unlike
+    /// `alwaysAllow(id:)` below, whose own guard covers
     /// its own extra side effects).
     func allow(id: UUID) {
         guard !isPendingAgentQuestion(id) else { return }
@@ -350,13 +351,78 @@ final class ApprovalBannerModel {
     func deny(id: UUID) {
         guard !isPendingAgentQuestion(id) else { return }
         advanceCursor(pastDisplayed: id)
-        store.decide(id: id, .denied)
+        store.decide(id: id, .denied(.userRejected))
     }
 
-    /// Whether `id` currently names a pending `.agentQuestion` request --
-    /// the no-op guard `allow(id:)`/`deny(id:)` share: neither may ever
-    /// decide a question, which is answered only through `answer(id:
-    /// answers:)`/`skip(id:)`/`answerInPane(id:)`. A stale (no longer
+    /// `AgentToolApprovalView`'s per-`AgentHookOffers.permissionUpdates`
+    /// choice row: accepts `offer`, the CLI's own always-allow choice
+    /// (`.allowedWithPermissions(offer)`, echoed verbatim). A no-op for
+    /// an `.agentQuestion`/`.mcpTool`-sourced `id` -- only an
+    /// `.agentHook` request ever carries `AgentHookOffers.permissionUpdates`
+    /// to click.
+    func allowWithPermissions(id: UUID, offer: AgentPermissionOffer) {
+        guard isPendingAgentHook(id) else { return }
+        advanceCursor(pastDisplayed: id)
+        store.decide(id: id, .allowedWithPermissions(offer))
+    }
+
+    /// `AgentToolApprovalView`'s "Allow amended" action: accepts
+    /// `toolInput`, the whole original `tool_input` with `AgentHookOffers.
+    /// amendableField`'s value replaced (`.allowedWithInput(toolInput)`).
+    /// A no-op for an `.agentQuestion`/`.mcpTool`-sourced `id`, same
+    /// scoping as `allowWithPermissions(id:offer:)` above.
+    func allowWithInput(id: UUID, toolInput: Data) {
+        guard isPendingAgentHook(id) else { return }
+        advanceCursor(pastDisplayed: id)
+        store.decide(id: id, .allowedWithInput(toolInput))
+    }
+
+    /// `AgentToolApprovalView`'s [Cancel] action, shown only while
+    /// `AgentHookOffers.canStop`: resolves `.interrupted(.cancelled)`,
+    /// telling the CLI to stop and wait for the human rather than that
+    /// the call was refused. A no-op for an `.agentQuestion`/`.mcpTool`-
+    /// sourced `id` -- an `.mcpTool` request has no CLI hook to interrupt
+    /// at all, and a question's own cancel is `cancelQuestion(id:)` below.
+    func cancel(id: UUID) {
+        guard isPendingAgentHook(id) else { return }
+        advanceCursor(pastDisplayed: id)
+        store.decide(id: id, .interrupted(.cancelled))
+    }
+
+    /// Whether `id` currently names a pending `.agentHook` request -- the
+    /// scoping guard `allowWithPermissions(id:offer:)`/`allowWithInput(id:
+    /// toolInput:)`/`cancel(id:)` share: none of the three ever applies to
+    /// `.mcpTool` (no CLI hook behind it) or `.agentQuestion` (its own,
+    /// separate action set below).
+    private func isPendingAgentHook(_ id: UUID) -> Bool {
+        guard let request = store.pending.first(where: { $0.id == id }) else { return false }
+        guard case .agentHook = request.source else { return false }
+        return true
+    }
+
+    /// Whether `id` currently names a pending request `answerInPane(id:)`
+    /// may resolve: an `.agentQuestion` request always, an `.agentHook`
+    /// request only when its own `offers.canAnswerInPane` is true,
+    /// `.mcpTool` never, a stale (no longer pending) `id` never.
+    private func canAnswerInPane(_ id: UUID) -> Bool {
+        guard let request = store.pending.first(where: { $0.id == id }) else { return false }
+        switch request.source {
+        case .mcpTool:
+            return false
+        case .agentHook(_, _, _, let offers):
+            return offers.canAnswerInPane
+        case .agentQuestion:
+            return true
+        }
+    }
+
+    /// Whether `id` currently names a pending `.agentQuestion` request.
+    /// `allow(id:)`/`deny(id:)` negate this as their own no-op guard:
+    /// neither may ever decide a question, which is answered only
+    /// through `answer(id:answers:)`/`cancelQuestion(id:)`/
+    /// `chatAboutQuestion(id:)`/`answerInPane(id:)`; those last two use
+    /// this same check directly, as their own no-op guard against ever
+    /// deciding a non-`.agentQuestion` request. A stale (no longer
     /// pending) `id` is never an agent-question by this definition, which
     /// is fine -- `store.decide` itself already no-ops for a stale id.
     private func isPendingAgentQuestion(_ id: UUID) -> Bool {
@@ -369,10 +435,12 @@ final class ApprovalBannerModel {
         return true
     }
 
-    /// Shared body of `answer(id:answers:)`/`skip(id:)`/`answerInPane(id:)`:
-    /// advances the cursor exactly like `allow(id:)`/`deny(id:)`, resolves
-    /// `decision`, then restores terminal focus once -- the banner's own
-    /// text field (the "Other" free-text option) may have taken first
+    /// Shared body of `answer(id:answers:)`/`cancelQuestion(id:)`/
+    /// `chatAboutQuestion(id:)`/`answerInPane(id:)`: advances the cursor
+    /// exactly like `allow(id:)`/`deny(id:)`, resolves `decision`, then
+    /// restores terminal focus once -- the banner's own text field (an
+    /// `.agentQuestion` banner's "Other"/notes free-text field, or an
+    /// `.agentHook` tool banner's amend field) may have taken first
     /// responder, and resolving the request removes the banner out from
     /// under it.
     private func resolveQuestion(id: UUID, _ decision: ApprovalDecision) {
@@ -388,31 +456,55 @@ final class ApprovalBannerModel {
         resolveQuestion(id: id, .answered(answers))
     }
 
-    /// The banner's "Skip" action for an `.agentQuestion`-sourced
-    /// request: resolves `.denied` (the human declined to answer at all,
-    /// same terminal outcome as denying any other tool call).
-    func skip(id: UUID) {
-        resolveQuestion(id: id, .denied)
+    /// The question banner's [Cancel] action (replaces the earlier
+    /// "Skip"): resolves `.denied(.questionNotAnswered)` -- the human
+    /// dismissed the question without answering it, distinct from
+    /// declining an ordinary tool call. A no-op for a non-`.agentQuestion`
+    /// `id`, unlike `cancel(id:)` above, which only ever makes sense for
+    /// `.agentHook`.
+    func cancelQuestion(id: UUID) {
+        guard isPendingAgentQuestion(id) else { return }
+        resolveQuestion(id: id, .denied(.questionNotAnswered))
     }
 
-    /// The banner's "Answer in Pane" action for an `.agentQuestion`-
-    /// sourced request: resolves `.expired` -- no body reaches the hook
-    /// (see `AgentHookPermissionResponse`'s own fail-safe contract), so
-    /// Claude Code's own in-pane prompt takes over.
+    /// The question banner's [Chat about this] action: resolves
+    /// `.interrupted(.chatAboutQuestion)` -- the human wants to reply
+    /// free-form in the pane instead of answering the structured prompt.
+    /// `resolveQuestion(id:_:)`'s own `restoreTerminalFocus()` call is
+    /// exactly what lets the human start typing in the pane right away.
+    /// A no-op for a non-`.agentQuestion` `id`.
+    func chatAboutQuestion(id: UUID) {
+        guard isPendingAgentQuestion(id) else { return }
+        resolveQuestion(id: id, .interrupted(.chatAboutQuestion))
+    }
+
+    /// The banner's "Answer in Pane" action: resolves `.expired` -- no
+    /// body reaches the hook (see `AgentHookPermissionResponse`'s own
+    /// fail-safe contract), so that kind's own in-pane prompt takes over.
+    /// Always applies to an `.agentQuestion`-sourced request. For an
+    /// `.agentHook`-sourced request, a no-op unless its own `offers.
+    /// canAnswerInPane` is true -- a kind whose hook has no prompt to hand
+    /// the call over to (see `AgentHookOffers.canAnswerInPane`'s own doc
+    /// comment) must never resolve `.expired` here, since for that kind
+    /// `.expired` encodes as an explicit deny, not a handoff. Also a
+    /// no-op for an `.mcpTool`-sourced or stale `id`.
     func answerInPane(id: UUID) {
+        guard canAnswerInPane(id) else { return }
         resolveQuestion(id: id, .expired)
     }
 
-    /// Called by `AgentQuestionBannerView`'s own root-level
-    /// `.onDisappear` when the whole question view is torn down while
-    /// its free-text field still held first responder -- covers every
-    /// removal cause (the displayed request changing, the hold window
-    /// expiring, the pane closing, `expireAll`, cancellation), since
-    /// that root `.onDisappear` is the sole path this fires from (not
-    /// the field's own `.onDisappear`, which also fires mid-prompt on an
-    /// ordinary question-to-question advance). Unlike `answer(id:)`/
-    /// `skip(id:)`/`answerInPane(id:)` above, this path decides nothing
-    /// itself; it only restores terminal focus.
+    /// Called by `AgentQuestionBannerView`'s and `AgentToolApprovalView`'s
+    /// own root-level `.onDisappear` when the whole view is torn down
+    /// while one of its text fields (the question banner's "Other"/notes
+    /// free-text field, or the tool banner's amend field) still held
+    /// first responder -- covers every removal cause (the displayed
+    /// request changing, the hold window expiring, the pane closing,
+    /// `expireAll`, cancellation), since that root `.onDisappear` is the
+    /// sole path this fires from (not the field's own `.onDisappear`,
+    /// which also fires mid-prompt, e.g. on an ordinary question-to-
+    /// question advance). Unlike `answer(id:)`/`cancelQuestion(id:)`/
+    /// `chatAboutQuestion(id:)`/`answerInPane(id:)` above, this path
+    /// decides nothing itself; it only restores terminal focus.
     func restoreTerminalFocusAfterInput() {
         restoreTerminalFocus()
     }
@@ -472,7 +564,16 @@ final class ApprovalBannerModel {
             CockpitSettings.autoApproveEnabled = true
             store.decide(ids: idsToAllow, .allowed)
 
-        case .agentHook(let toolName, let kind, _):
+        case .agentHook(let toolName, let kind, _, let offers):
+            // `cliOwnsPersistence`: the CLI itself already offers (and
+            // can persist) its own always-allow choices for this kind --
+            // see `AgentHookOffers.cliOwnsPersistence`'s own doc comment
+            // for why recording Calyx's OWN pane memory alongside that
+            // would be redundant. This action is gated on the CLICKED
+            // request's own `offers`, never on `kind` alone -- keeping
+            // kind-specific knowledge confined to the wire boundary
+            // (`AgentHookToolCall.decode`), not duplicated here.
+            guard !offers.cliOwnsPersistence else { return }
             guard let targetSurfaceID = request.targetSurfaceID else { return }
             let idsToAllow = store.pending
                 .filter { $0.targetSurfaceID == targetSurfaceID && matchesAgentHook($0.source, kind: kind, toolName: toolName) }
@@ -485,7 +586,8 @@ final class ApprovalBannerModel {
             // A question is never decided by this action: see
             // `allow(id:)`'s own doc comment on why `.agentQuestion`
             // requests only ever resolve through `answer(id:answers:)`/
-            // `skip(id:)`/`answerInPane(id:)`.
+            // `cancelQuestion(id:)`/`chatAboutQuestion(id:)`/
+            // `answerInPane(id:)`.
             return
         }
     }
@@ -512,13 +614,13 @@ final class ApprovalBannerModel {
     /// `surfaceID`) via the injected `memory`, then drains every pending
     /// request store-wide sharing that (`kind`, `toolName`), regardless
     /// of window/pane ownership. A no-op (no memory recorded, nothing
-    /// drained, no setting touched) if `id` is no longer pending or its
-    /// source is `.mcpTool` -- this action only makes sense for an
-    /// agent-hook tool call, which has its own `toolName`/`kind` to key
-    /// off of.
+    /// drained, no setting touched) if `id` is no longer pending, its
+    /// source is `.mcpTool`, or its own `offers.cliOwnsPersistence` is
+    /// true -- same rationale as `alwaysAllow(id:)`'s own guard.
     func alwaysAllowAcrossPanes(id: UUID) {
         guard let request = store.pending.first(where: { $0.id == id }) else { return }
-        guard case .agentHook(let toolName, let kind, _) = request.source else { return }
+        guard case .agentHook(let toolName, let kind, _, let offers) = request.source else { return }
+        guard !offers.cliOwnsPersistence else { return }
 
         let idsToAllow = store.pending
             .filter { matchesAgentHook($0.source, kind: kind, toolName: toolName) }
@@ -532,10 +634,11 @@ final class ApprovalBannerModel {
     /// (`kind`, `toolName`) pair -- the batch-drain match key both the
     /// pane-scoped half of `alwaysAllow(id:)` and
     /// `alwaysAllowAcrossPanes(id:)` use, deliberately ignoring
-    /// `summary` (a per-call, human-readable description, not part of
-    /// the tool identity these actions key off of).
+    /// `summary`/`offers` (a per-call, human-readable description and
+    /// this specific call's own offers, neither part of the tool
+    /// identity these actions key off of).
     private func matchesAgentHook(_ source: ApprovalRequest.Source, kind: String, toolName: String) -> Bool {
-        guard case .agentHook(let sourceToolName, let sourceKind, _) = source else { return false }
+        guard case .agentHook(let sourceToolName, let sourceKind, _, _) = source else { return false }
         return sourceToolName == toolName && sourceKind == kind
     }
 }

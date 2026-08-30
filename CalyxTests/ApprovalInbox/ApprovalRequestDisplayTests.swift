@@ -49,19 +49,19 @@ final class ApprovalRequestDisplayTests: XCTestCase {
 
     func test_displayToolName_agentHook_combinesAgentLabelAndTool() {
         let claudeRequest = makeRequest(
-            source: .agentHook(toolName: "Bash", kind: AgentEntry.claudeCodeKind, summary: "ls -la")
+            source: .agentHook(toolName: "Bash", kind: AgentEntry.claudeCodeKind, summary: "ls -la", offers: .none)
         )
         XCTAssertEqual(claudeRequest.displayToolName, "Claude Code · Bash")
 
         let codexRequest = makeRequest(
-            source: .agentHook(toolName: "Write", kind: AgentEntry.codexKind, summary: "/tmp/x.swift")
+            source: .agentHook(toolName: "Write", kind: AgentEntry.codexKind, summary: "/tmp/x.swift", offers: .none)
         )
         XCTAssertEqual(codexRequest.displayToolName, "Codex · Write")
     }
 
     func test_displayPayload_agentHook_isSummary() {
         let request = makeRequest(
-            source: .agentHook(toolName: "Bash", kind: AgentEntry.claudeCodeKind, summary: "ls -la /tmp"),
+            source: .agentHook(toolName: "Bash", kind: AgentEntry.claudeCodeKind, summary: "ls -la /tmp", offers: .none),
             payload: "{\"command\":\"ls -la /tmp\"}"
         )
 
@@ -72,7 +72,7 @@ final class ApprovalRequestDisplayTests: XCTestCase {
     func test_displayPayload_agentHook_hostileControlCharacters_passThroughRaw() {
         let hostileSummary = "\u{202E}rm -rf /\u{0003}"
         let request = makeRequest(
-            source: .agentHook(toolName: "Bash", kind: AgentEntry.claudeCodeKind, summary: hostileSummary)
+            source: .agentHook(toolName: "Bash", kind: AgentEntry.claudeCodeKind, summary: hostileSummary, offers: .none)
         )
 
         XCTAssertEqual(request.displayPayload, hostileSummary,

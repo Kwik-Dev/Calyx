@@ -78,11 +78,12 @@ final class ApprovalBannerModelTests: XCTestCase {
         targetSurfaceID: UUID?,
         kind: String = AgentEntry.claudeCodeKind,
         toolName: String = "Bash",
-        createdAt: Date = Date()
+        createdAt: Date = Date(),
+        offers: AgentHookOffers = .none
     ) -> ApprovalRequest {
         ApprovalRequest(
             id: UUID(),
-            source: .agentHook(toolName: toolName, kind: kind, summary: "ls -la /tmp"),
+            source: .agentHook(toolName: toolName, kind: kind, summary: "ls -la /tmp", offers: offers),
             targetSurfaceID: targetSurfaceID,
             payload: "{\"command\":\"ls -la /tmp\"}",
             createdAt: createdAt
@@ -107,7 +108,7 @@ final class ApprovalBannerModelTests: XCTestCase {
             from: json(["tool_name": toolName, "tool_input": toolInput]), kind: AgentEntry.claudeCodeKind
         ))
         return ApprovalRequest(
-            id: UUID(), source: .agentHook(toolName: call.toolName, kind: AgentEntry.claudeCodeKind, summary: call.summary),
+            id: UUID(), source: .agentHook(toolName: call.toolName, kind: AgentEntry.claudeCodeKind, summary: call.summary, offers: .none),
             targetSurfaceID: nil, payload: call.payload, createdAt: Date()
         )
     }
@@ -244,7 +245,7 @@ final class ApprovalBannerModelTests: XCTestCase {
         XCTAssertNil(model.current, "the banner must clear once its current request has been decided")
 
         let result = await waiter.value
-        XCTAssertEqual(result, .denied, "deny(id:) must resolve the in-flight awaitDecision with .denied")
+        XCTAssertEqual(result, .denied(.userRejected), "deny(id:) must resolve the in-flight awaitDecision with .denied(.userRejected)")
     }
 
     /// F5: the id threaded through must be the one the caller actually
@@ -279,9 +280,9 @@ final class ApprovalBannerModelTests: XCTestCase {
         XCTAssertEqual(store.pending.map(\.id), [requestB.id],
                        "a stale deny(id: A) must not touch B, which is still pending")
 
-        store.decide(id: requestB.id, .denied)
+        store.decide(id: requestB.id, .denied(.userRejected))
         let result = await waiterB.value
-        XCTAssertEqual(result, .denied,
+        XCTAssertEqual(result, .denied(.userRejected),
                        "B must remain independently decidable after the stale deny(id: A) no-op")
     }
 
@@ -1418,10 +1419,17 @@ final class ApprovalBannerModelTests: XCTestCase {
             AccessibilityID.ApprovalBanner.otherButton,
             AccessibilityID.ApprovalBanner.otherTextField,
             AccessibilityID.ApprovalBanner.answerButton,
-            AccessibilityID.ApprovalBanner.skipButton,
             AccessibilityID.ApprovalBanner.answerInPaneButton,
             AccessibilityID.ApprovalBanner.questionPosition,
             AccessibilityID.ApprovalBanner.previewText,
+            AccessibilityID.ApprovalBanner.amendButton,
+            AccessibilityID.ApprovalBanner.amendTextField,
+            AccessibilityID.ApprovalBanner.amendConfirmButton,
+            AccessibilityID.ApprovalBanner.cancelButton,
+            AccessibilityID.ApprovalBanner.chatButton,
+            AccessibilityID.ApprovalBanner.backButton,
+            AccessibilityID.ApprovalBanner.notesButton,
+            AccessibilityID.ApprovalBanner.notesTextField,
         ]
 
         for identifier in newIdentifiers {
@@ -1455,7 +1463,7 @@ final class ApprovalBannerModelTests: XCTestCase {
     // MARK: - answer(id:answers:) / skip(id:) / answerInPane(id:) (AskUserQuestion prompt)
 
     private func makeAnswers(for prompt: AgentQuestionPrompt) -> AgentQuestionAnswers {
-        AgentQuestionAnswers(prompt: prompt, answers: prompt.questions.map { _ in .selectedOne("zsh") })
+        AgentQuestionAnswers(prompt: prompt, entries: prompt.questions.map { _ in .init(answer: .selectedOne("zsh"), notes: nil) })
     }
 
     func test_answer_resolvesAnswered_advancesCursor_invokesRestoreFocusOnce() async throws {
@@ -1490,7 +1498,7 @@ final class ApprovalBannerModelTests: XCTestCase {
         XCTAssertEqual(result, .answered(answers), "answer(id:answers:) must resolve the awaiter with .answered(answers)")
     }
 
-    func test_skip_resolvesDenied_advancesCursor_invokesRestoreFocusOnce() async throws {
+    func test_cancelQuestion_resolvesDeniedQuestionNotAnswered_advancesCursor_invokesRestoreFocusOnce() async throws {
         let store = ApprovalInboxStore()
         let surfaceID = UUID()
         let request = makeAgentQuestionRequest(targetSurfaceID: surfaceID)
@@ -1506,14 +1514,290 @@ final class ApprovalBannerModelTests: XCTestCase {
         }
         await yieldToScheduler()
 
-        model.skip(id: request.id)
+        model.cancelQuestion(id: request.id)
 
-        XCTAssertTrue(store.pending.isEmpty, "skip(id:) must decide that request, removing it from pending")
+        XCTAssertTrue(store.pending.isEmpty, "cancelQuestion(id:) must decide that request, removing it from pending")
         XCTAssertNil(model.current, "the banner must clear once its current request has been decided")
-        XCTAssertEqual(spy.callCount, 1, "skip(id:) must invoke restoreTerminalFocus exactly once")
+        XCTAssertEqual(spy.callCount, 1, "cancelQuestion(id:) must invoke restoreTerminalFocus exactly once")
 
         let result = await waiter.value
-        XCTAssertEqual(result, .denied, "skip(id:) must resolve the awaiter with .denied")
+        XCTAssertEqual(result, .denied(.questionNotAnswered), "cancelQuestion(id:) must resolve the awaiter with .denied(.questionNotAnswered)")
+    }
+
+    /// `cancelQuestion(id:)` is a no-op for a non-question id -- unlike
+    /// `cancel(id:)`, which only ever makes sense for `.agentHook`.
+    func test_cancelQuestion_onNonQuestionID_isNoOp() {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let request = makeRequest(targetSurfaceID: surfaceID)
+        store.submit(request)
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true })
+
+        model.cancelQuestion(id: request.id)
+
+        XCTAssertEqual(store.pending.map(\.id), [request.id], "cancelQuestion(id:) must never decide a non-.agentQuestion request")
+    }
+
+    // MARK: - chatAboutQuestion(id:)
+
+    func test_chatAboutQuestion_resolvesInterruptedChatAboutQuestion_advancesCursor_invokesRestoreFocusOnce() async throws {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let request = makeAgentQuestionRequest(targetSurfaceID: surfaceID)
+        store.submit(request)
+        let spy = RestoreFocusSpy()
+
+        let model = ApprovalBannerModel(
+            store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true }, restoreTerminalFocus: { spy.call() }
+        )
+
+        let waiter = Task { @MainActor in
+            await store.awaitDecision(id: request.id, timeoutMs: 5_000)
+        }
+        await yieldToScheduler()
+
+        model.chatAboutQuestion(id: request.id)
+
+        XCTAssertTrue(store.pending.isEmpty, "chatAboutQuestion(id:) must decide that request, removing it from pending")
+        XCTAssertEqual(spy.callCount, 1, "chatAboutQuestion(id:) must invoke restoreTerminalFocus exactly once")
+
+        let result = await waiter.value
+        XCTAssertEqual(result, .interrupted(.chatAboutQuestion))
+    }
+
+    /// Mirrors test_allow_onDisplayedRequest_advancesToSuccessor:
+    /// chatAboutQuestion(id:) must advance the banner's cursor to the next
+    /// queued request, not just clear the queue down to one element.
+    func test_chatAboutQuestion_onDisplayedRequest_advancesToSuccessor() async throws {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let first = makeAgentQuestionRequest(targetSurfaceID: surfaceID, createdAt: Date(timeIntervalSince1970: 1_700_000_000))
+        let second = makeAgentQuestionRequest(targetSurfaceID: surfaceID, createdAt: Date(timeIntervalSince1970: 1_700_000_100))
+        let third = makeAgentQuestionRequest(targetSurfaceID: surfaceID, createdAt: Date(timeIntervalSince1970: 1_700_000_200))
+        store.submit(first)
+        store.submit(second)
+        store.submit(third)
+
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true })
+        model.selectNext()
+        XCTAssertEqual(model.current?.id, second.id, "precondition: current is the displayed (middle) request")
+
+        let waiter = Task { @MainActor in await store.awaitDecision(id: second.id, timeoutMs: 5_000) }
+        await yieldToScheduler()
+
+        model.chatAboutQuestion(id: second.id)
+
+        XCTAssertEqual(model.current?.id, third.id,
+                       "chatAboutQuestion(id:) on the currently-displayed request must advance the cursor to its successor in the visible queue")
+
+        let result = await waiter.value
+        XCTAssertEqual(result, .interrupted(.chatAboutQuestion))
+    }
+
+    func test_chatAboutQuestion_onNonQuestionID_isNoOp() {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let request = makeRequest(targetSurfaceID: surfaceID)
+        store.submit(request)
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true })
+
+        model.chatAboutQuestion(id: request.id)
+
+        XCTAssertEqual(store.pending.map(\.id), [request.id], "chatAboutQuestion(id:) must never decide a non-.agentQuestion request")
+    }
+
+    // MARK: - allowWithPermissions(id:offer:) / allowWithInput(id:toolInput:) / cancel(id:)
+
+    private func makeOffer() -> AgentPermissionOffer {
+        AgentPermissionOffer(
+            label: "Yes, and always allow access to /tmp",
+            entryJSON: try! JSONSerialization.data(withJSONObject: ["type": "addDirectories", "directories": ["/tmp"]])
+        )
+    }
+
+    func test_allowWithPermissions_decidesAllowedWithPermissions_forAgentHookRequest() async throws {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let request = makeAgentHookRequest(targetSurfaceID: surfaceID)
+        store.submit(request)
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true })
+        let offer = makeOffer()
+
+        let waiter = Task { @MainActor in await store.awaitDecision(id: request.id, timeoutMs: 5_000) }
+        await yieldToScheduler()
+
+        model.allowWithPermissions(id: request.id, offer: offer)
+
+        XCTAssertTrue(store.pending.isEmpty)
+        let result = await waiter.value
+        XCTAssertEqual(result, .allowedWithPermissions(offer))
+    }
+
+    func test_allowWithPermissions_onAgentQuestionID_isNoOp() {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let request = makeAgentQuestionRequest(targetSurfaceID: surfaceID)
+        store.submit(request)
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true })
+
+        model.allowWithPermissions(id: request.id, offer: makeOffer())
+
+        XCTAssertEqual(store.pending.map(\.id), [request.id])
+    }
+
+    func test_allowWithPermissions_onMcpToolID_isNoOp() {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let request = makeRequest(targetSurfaceID: surfaceID)
+        store.submit(request)
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true })
+
+        model.allowWithPermissions(id: request.id, offer: makeOffer())
+
+        XCTAssertEqual(store.pending.map(\.id), [request.id])
+    }
+
+    func test_allowWithInput_decidesAllowedWithInput_forAgentHookRequest() async throws {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let request = makeAgentHookRequest(targetSurfaceID: surfaceID)
+        store.submit(request)
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true })
+        let amendedInput = try! JSONSerialization.data(withJSONObject: ["command": "ls -la /amended"])
+
+        let waiter = Task { @MainActor in await store.awaitDecision(id: request.id, timeoutMs: 5_000) }
+        await yieldToScheduler()
+
+        model.allowWithInput(id: request.id, toolInput: amendedInput)
+
+        XCTAssertTrue(store.pending.isEmpty)
+        let result = await waiter.value
+        XCTAssertEqual(result, .allowedWithInput(amendedInput))
+    }
+
+    func test_allowWithInput_onAgentQuestionID_isNoOp() {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let request = makeAgentQuestionRequest(targetSurfaceID: surfaceID)
+        store.submit(request)
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true })
+
+        model.allowWithInput(id: request.id, toolInput: Data("{}".utf8))
+
+        XCTAssertEqual(store.pending.map(\.id), [request.id])
+    }
+
+    func test_cancel_decidesInterruptedCancelled_forAgentHookRequest() async throws {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let request = makeAgentHookRequest(targetSurfaceID: surfaceID)
+        store.submit(request)
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true })
+
+        let waiter = Task { @MainActor in await store.awaitDecision(id: request.id, timeoutMs: 5_000) }
+        await yieldToScheduler()
+
+        model.cancel(id: request.id)
+
+        XCTAssertTrue(store.pending.isEmpty)
+        let result = await waiter.value
+        XCTAssertEqual(result, .interrupted(.cancelled))
+    }
+
+    /// Mirrors test_allow_onDisplayedRequest_advancesToSuccessor: cancel(id:)
+    /// must advance the banner's cursor to the next queued request, not just
+    /// clear the queue down to one element.
+    func test_cancel_onDisplayedRequest_advancesToSuccessor() async throws {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let first = makeAgentHookRequest(targetSurfaceID: surfaceID, toolName: "Bash", createdAt: Date(timeIntervalSince1970: 1_700_000_000))
+        let second = makeAgentHookRequest(targetSurfaceID: surfaceID, toolName: "Bash", createdAt: Date(timeIntervalSince1970: 1_700_000_100))
+        let third = makeAgentHookRequest(targetSurfaceID: surfaceID, toolName: "Bash", createdAt: Date(timeIntervalSince1970: 1_700_000_200))
+        store.submit(first)
+        store.submit(second)
+        store.submit(third)
+
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true })
+        model.selectNext()
+        XCTAssertEqual(model.current?.id, second.id, "precondition: current is the displayed (middle) request")
+
+        let waiter = Task { @MainActor in await store.awaitDecision(id: second.id, timeoutMs: 5_000) }
+        await yieldToScheduler()
+
+        model.cancel(id: second.id)
+
+        XCTAssertEqual(model.current?.id, third.id,
+                       "cancel(id:) on the currently-displayed request must advance the cursor to its successor in the visible queue")
+
+        let result = await waiter.value
+        XCTAssertEqual(result, .interrupted(.cancelled))
+    }
+
+    func test_cancel_onAgentQuestionID_isNoOp() {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let request = makeAgentQuestionRequest(targetSurfaceID: surfaceID)
+        store.submit(request)
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true })
+
+        model.cancel(id: request.id)
+
+        XCTAssertEqual(store.pending.map(\.id), [request.id])
+    }
+
+    func test_cancel_onMcpToolID_isNoOp() {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let request = makeRequest(targetSurfaceID: surfaceID)
+        store.submit(request)
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true })
+
+        model.cancel(id: request.id)
+
+        XCTAssertEqual(store.pending.map(\.id), [request.id])
+    }
+
+    // MARK: - alwaysAllow/alwaysAllowAcrossPanes no-op when offers.cliOwnsPersistence
+
+    func test_alwaysAllow_agentHookRequest_cliOwnsPersistence_isNoOp() {
+        let store = ApprovalInboxStore()
+        let memory = AgentHookApprovalMemory()
+        let surfaceID = UUID()
+        let request = makeAgentHookRequest(
+            targetSurfaceID: surfaceID,
+            offers: AgentHookOffers(
+                permissionUpdates: [], amendableField: nil, originalToolInputJSON: nil,
+                canStop: true, canAnswerInPane: true, cliOwnsPersistence: true
+            )
+        )
+        store.submit(request)
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true }, memory: memory)
+
+        model.alwaysAllow(id: request.id)
+
+        XCTAssertEqual(store.pending.map(\.id), [request.id],
+                       "alwaysAllow(id:) must be a no-op when the CLI itself owns persistence of the permission decision")
+        XCTAssertFalse(memory.isAutoAllowed(surfaceID: surfaceID, kind: AgentEntry.claudeCodeKind, toolName: "Bash"),
+                       "no pane memory may be recorded either")
+    }
+
+    func test_alwaysAllowAcrossPanes_agentHookRequest_cliOwnsPersistence_isNoOp() {
+        let store = ApprovalInboxStore()
+        let memory = AgentHookApprovalMemory()
+        let surfaceID = UUID()
+        let request = makeAgentHookRequest(
+            targetSurfaceID: surfaceID,
+            offers: AgentHookOffers(
+                permissionUpdates: [], amendableField: nil, originalToolInputJSON: nil,
+                canStop: true, canAnswerInPane: true, cliOwnsPersistence: true
+            )
+        )
+        store.submit(request)
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true }, memory: memory)
+
+        model.alwaysAllowAcrossPanes(id: request.id)
+
+        XCTAssertEqual(store.pending.map(\.id), [request.id])
     }
 
     func test_answerInPane_resolvesExpired_advancesCursor_invokesRestoreFocusOnce() async throws {
@@ -1540,6 +1824,75 @@ final class ApprovalBannerModelTests: XCTestCase {
 
         let result = await waiter.value
         XCTAssertEqual(result, .expired, "answerInPane(id:) must resolve the awaiter with .expired")
+    }
+
+    func test_answerInPane_agentHookRequest_canAnswerInPane_resolvesExpired_invokesRestoreFocusOnce() async throws {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let request = makeAgentHookRequest(
+            targetSurfaceID: surfaceID,
+            offers: AgentHookOffers(
+                permissionUpdates: [], amendableField: nil, originalToolInputJSON: nil,
+                canStop: true, canAnswerInPane: true, cliOwnsPersistence: true
+            )
+        )
+        store.submit(request)
+        let spy = RestoreFocusSpy()
+
+        let model = ApprovalBannerModel(
+            store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true }, restoreTerminalFocus: { spy.call() }
+        )
+
+        let waiter = Task { @MainActor in
+            await store.awaitDecision(id: request.id, timeoutMs: 5_000)
+        }
+        await yieldToScheduler()
+
+        model.answerInPane(id: request.id)
+
+        XCTAssertTrue(store.pending.isEmpty,
+                      "answerInPane(id:) must decide an .agentHook request whose offers.canAnswerInPane is true")
+        XCTAssertEqual(spy.callCount, 1, "answerInPane(id:) must invoke restoreTerminalFocus exactly once")
+
+        let result = await waiter.value
+        XCTAssertEqual(result, .expired, "answerInPane(id:) must resolve the awaiter with .expired")
+    }
+
+    func test_answerInPane_agentHookRequest_cannotAnswerInPane_isNoOp() {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let request = makeAgentHookRequest(targetSurfaceID: surfaceID, offers: .none)
+        store.submit(request)
+        let spy = RestoreFocusSpy()
+
+        let model = ApprovalBannerModel(
+            store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true }, restoreTerminalFocus: { spy.call() }
+        )
+
+        model.answerInPane(id: request.id)
+
+        XCTAssertEqual(store.pending.map(\.id), [request.id],
+                       "answerInPane(id:) must be a no-op for an .agentHook request whose offers.canAnswerInPane " +
+                       "is false: no body reaches the hook, so no CLI-side prompt is waiting to take over")
+        XCTAssertEqual(spy.callCount, 0, "a no-op answerInPane(id:) must never invoke restoreTerminalFocus")
+    }
+
+    func test_answerInPane_onMcpToolID_isNoOp() {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let request = makeRequest(targetSurfaceID: surfaceID)
+        store.submit(request)
+        let spy = RestoreFocusSpy()
+
+        let model = ApprovalBannerModel(
+            store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true }, restoreTerminalFocus: { spy.call() }
+        )
+
+        model.answerInPane(id: request.id)
+
+        XCTAssertEqual(store.pending.map(\.id), [request.id],
+                       "answerInPane(id:) must be a no-op for an .mcpTool-sourced request")
+        XCTAssertEqual(spy.callCount, 0, "a no-op answerInPane(id:) must never invoke restoreTerminalFocus")
     }
 
     func test_answer_onDisplayedRequest_advancesToSuccessor() async throws {

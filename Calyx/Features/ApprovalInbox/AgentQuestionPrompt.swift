@@ -67,9 +67,20 @@ enum AgentQuestionAnswer: Sendable, Equatable {
     case freeText(String)
 }
 
-/// The human's answer to an `AgentQuestionPrompt`: one `AgentQuestionAnswer`
-/// per question, in question order.
+/// The human's answer to an `AgentQuestionPrompt`: one `Entry` per
+/// question, in question order.
 struct AgentQuestionAnswers: Sendable, Equatable {
+    /// One question's answer plus its optional "Add notes" text -- the
+    /// TUI's own "n: add notes" affordance. `notes` is `nil` when the
+    /// human never opened or never typed into that field (trimmed to nil
+    /// at commit time by `AgentQuestionFormState`, not by this type or by
+    /// the encoder -- see `AgentQuestionFormState.showNotes()`'s own doc
+    /// comment).
+    struct Entry: Sendable, Equatable {
+        let answer: AgentQuestionAnswer
+        let notes: String?
+    }
+
     let prompt: AgentQuestionPrompt
-    let answers: [AgentQuestionAnswer]
+    let entries: [Entry]
 }

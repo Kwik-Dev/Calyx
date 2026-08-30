@@ -9,28 +9,28 @@
 //  PermissionRequest hook-response contract both Claude Code and Codex
 //  document (hookSpecificOutput.decision.behavior), replacing the older
 //  PreToolUse-era hookSpecificOutput.permissionDecision shape entirely.
-//  permissionDecision, permissionDecisionReason, updatedPermissions, and
-//  interrupt are all reserved or invalid under PermissionRequest, so none
-//  of them may ever appear in this body. updatedInput is the one
-//  documented exception: it appears only in claude-code's .answered
-//  (AskUserQuestion) body, never in an allow/deny/expired body.
 //
 //  Coverage:
 //  - claude-code / codex: allowed produces decision.behavior "allow";
-//    denied produces decision.behavior "deny" with a non-empty message;
-//    both share hookEventName "PermissionRequest"
-//  - claude-code / codex: expired produces nil for both kinds -- neither
-//    CLI has a fallback body under PermissionRequest, so no output lets
-//    that CLI's own confirmation prompt take over
-//  - any kind other than claude-code/codex produces nil for every
-//    decision -- Calyx must never inject a decision into a CLI it
-//    doesn't recognize
+//    denied produces decision.behavior "deny" with a non-empty message,
+//    claude-code selecting the message from the DenyReason, codex always
+//    using deniedMessage regardless of reason
+//  - claude-code / codex: expired produces nil for both kinds
+//  - claude-code: allowedWithPermissions echoes the offer's entryJSON as
+//    the sole element of updatedPermissions; allowedWithInput echoes the
+//    amended tool_input as updatedInput; interrupted produces a deny
+//    body with interrupt: true and a reason-specific message
+//  - grok / pi: flat top-level decision vocabulary; allowedWithPermissions/
+//    allowedWithInput/interrupted/answered are unexpressible and produce
+//    a body byte-identical to expired for that kind; codex produces nil
+//    for the same four, same as expired
+//  - any kind other than claude-code/codex/grok/pi produces nil for
+//    every decision
 //  - the body never carries any of PermissionRequest's reserved/invalid
-//    fields, pinned via an exact key-set assertion rather than substring
-//    checks, so a stray extra field is caught too
+//    fields, pinned via an exact key-set assertion
 //  - claude-code's .answered body: behavior "allow" plus updatedInput
-//    (the original tool_input object plus an answers map), the one
-//    documented exception to the reserved-field rule above
+//    (the original tool_input object plus answers, plus annotations
+//    when a question's entry carries notes or a selected preview)
 //
 //  Bodies are re-parsed with JSONSerialization and asserted field by
 //  field -- never by string equality, since key order in the serialized
@@ -49,16 +49,25 @@ final class AgentHookPermissionResponseTests: XCTestCase {
         return try XCTUnwrap(object["hookSpecificOutput"] as? [String: Any])
     }
 
-    /// Asserts `body(kind:decision:)`'s decoded shape: `hookEventName`
-    /// is always `PermissionRequest`, `decision.behavior` matches
-    /// `expectedBehavior`, and -- only for a denied decision, whose
-    /// contract additionally carries a human-readable reason --
-    /// `decision.message` is present and non-empty.
+    private func decisionObject(_ data: Data) throws -> [String: Any] {
+        let output = try hookSpecificOutput(data)
+        return try XCTUnwrap(output["decision"] as? [String: Any])
+    }
+
+    /// Strict JSON-boolean check: `JSONSerialization` bridges a JSON
+    /// number to `NSNumber` too, so a plain `as? Bool` cast would also
+    /// accept `1`. Mirrors `AgentHookToolCall.strictJSONBool`'s own
+    /// `CFGetTypeID` check, computed independently here.
+    private func isJSONBoolean(_ value: Any?) -> Bool {
+        guard let number = value as? NSNumber else { return false }
+        return CFGetTypeID(number) == CFBooleanGetTypeID()
+    }
+
     private func assertPermissionDecision(
         kind: String,
         decision: ApprovalDecision,
         expectedBehavior: String,
-        expectsMessage: Bool,
+        expectedMessage: String?,
         file: StaticString = #filePath,
         line: UInt = #line
     ) throws {
@@ -72,69 +81,147 @@ final class AgentHookPermissionResponseTests: XCTestCase {
         let decisionObject = try XCTUnwrap(output["decision"] as? [String: Any], file: file, line: line)
         XCTAssertEqual(decisionObject["behavior"] as? String, expectedBehavior, file: file, line: line)
 
-        if expectsMessage {
-            let message = try XCTUnwrap(decisionObject["message"] as? String, file: file, line: line)
-            XCTAssertFalse(message.isEmpty, "a denied decision's message must be non-empty", file: file, line: line)
+        if let expectedMessage {
+            XCTAssertEqual(decisionObject["message"] as? String, expectedMessage, file: file, line: line)
         }
     }
 
-    // MARK: - claude-code
+    // MARK: - claude-code: allowed / denied / expired
 
     func test_body_claude_allowed_isAllowBehavior() throws {
         try assertPermissionDecision(
-            kind: AgentEntry.claudeCodeKind, decision: .allowed, expectedBehavior: "allow", expectsMessage: false
+            kind: AgentEntry.claudeCodeKind, decision: .allowed, expectedBehavior: "allow", expectedMessage: nil
         )
     }
 
-    func test_body_claude_denied_isDenyBehaviorWithNonEmptyMessage() throws {
+    func test_body_claude_denied_userRejected_isDenyBehaviorWithClaudeCodeRejectedMessage() throws {
         try assertPermissionDecision(
-            kind: AgentEntry.claudeCodeKind, decision: .denied, expectedBehavior: "deny", expectsMessage: true
+            kind: AgentEntry.claudeCodeKind, decision: .denied(.userRejected), expectedBehavior: "deny",
+            expectedMessage: AgentHookPermissionResponse.claudeCodeRejectedMessage
+        )
+    }
+
+    func test_body_claude_denied_questionNotAnswered_isDenyBehaviorWithQuestionNotAnsweredMessage() throws {
+        try assertPermissionDecision(
+            kind: AgentEntry.claudeCodeKind, decision: .denied(.questionNotAnswered), expectedBehavior: "deny",
+            expectedMessage: AgentHookPermissionResponse.questionNotAnsweredMessage
         )
     }
 
     func test_body_claude_expired_isNil() {
         XCTAssertNil(AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .expired),
                     "PermissionRequest has no fallback body for an expired decision -- no output lets " +
-                    "Claude Code's own confirmation prompt take over, the same fail-safe principle " +
-                    "ApprovalHookScript's stdout silence upholds")
+                    "Claude Code's own confirmation prompt take over")
     }
 
-    // MARK: - codex
+    // MARK: - codex: allowed / denied (any reason) / expired
 
     func test_body_codex_allowed_isAllowBehavior() throws {
         try assertPermissionDecision(
-            kind: AgentEntry.codexKind, decision: .allowed, expectedBehavior: "allow", expectsMessage: false
+            kind: AgentEntry.codexKind, decision: .allowed, expectedBehavior: "allow", expectedMessage: nil
         )
     }
 
-    func test_body_codex_denied_isDenyBehaviorWithNonEmptyMessage() throws {
-        try assertPermissionDecision(
-            kind: AgentEntry.codexKind, decision: .denied, expectedBehavior: "deny", expectsMessage: true
-        )
+    func test_body_codex_denied_anyReason_alwaysUsesDeniedMessage() throws {
+        for reason in [DenyReason.userRejected, .questionNotAnswered] {
+            try assertPermissionDecision(
+                kind: AgentEntry.codexKind, decision: .denied(reason), expectedBehavior: "deny",
+                expectedMessage: AgentHookPermissionResponse.deniedMessage
+            )
+        }
     }
 
     func test_body_codex_expired_isNil() {
         XCTAssertNil(AgentHookPermissionResponse.body(kind: AgentEntry.codexKind, decision: .expired),
-                    "Codex has no fallback body for an expired decision either -- no output lets Codex's " +
-                    "own confirmation prompt take over")
+                    "Codex has no fallback body for an expired decision either")
+    }
+
+    // MARK: - claude-code: allowedWithPermissions
+
+    private func makeOffer(entry: [String: Any], label: String) -> AgentPermissionOffer {
+        AgentPermissionOffer(label: label, entryJSON: try! JSONSerialization.data(withJSONObject: entry))
+    }
+
+    func test_body_claude_allowedWithPermissions_echoesEntryAsSoleUpdatedPermissionsElement() throws {
+        let entry: [String: Any] = ["type": "addDirectories", "directories": ["/tmp"], "destination": "session"]
+        let offer = makeOffer(entry: entry, label: "Yes, and always allow access to /tmp for this session")
+
+        let data = try XCTUnwrap(
+            AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .allowedWithPermissions(offer))
+        )
+        let decision = try decisionObject(data)
+        XCTAssertEqual(decision["behavior"] as? String, "allow")
+        XCTAssertEqual(Set(decision.keys), ["behavior", "updatedPermissions"])
+
+        let updatedPermissions = try XCTUnwrap(decision["updatedPermissions"] as? [[String: Any]])
+        XCTAssertEqual(updatedPermissions.count, 1, "updatedPermissions must contain exactly the one echoed entry")
+        XCTAssertEqual(updatedPermissions[0] as NSDictionary, entry as NSDictionary,
+                       "the echoed entry must equal the offer's own entryJSON, unknown keys included")
+    }
+
+    func test_body_codex_allowedWithPermissions_isNil() {
+        let offer = makeOffer(entry: ["type": "addDirectories", "directories": ["/tmp"]], label: "x")
+        XCTAssertNil(AgentHookPermissionResponse.body(kind: AgentEntry.codexKind, decision: .allowedWithPermissions(offer)),
+                    "codex fails closed on updatedPermissions, same as .expired")
+    }
+
+    // MARK: - claude-code: allowedWithInput
+
+    func test_body_claude_allowedWithInput_echoesAmendedToolInputAsUpdatedInput() throws {
+        let amendedInput: [String: Any] = ["command": "ls -la /amended"]
+        let amendedInputData = try JSONSerialization.data(withJSONObject: amendedInput)
+
+        let data = try XCTUnwrap(
+            AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .allowedWithInput(amendedInputData))
+        )
+        let decision = try decisionObject(data)
+        XCTAssertEqual(decision["behavior"] as? String, "allow")
+        XCTAssertEqual(Set(decision.keys), ["behavior", "updatedInput"])
+
+        let updatedInput = try XCTUnwrap(decision["updatedInput"] as? [String: Any])
+        XCTAssertEqual(updatedInput as NSDictionary, amendedInput as NSDictionary,
+                       "updatedInput must equal the amended tool_input passed to allowedWithInput exactly")
+    }
+
+    func test_body_codex_allowedWithInput_isNil() throws {
+        let data = try JSONSerialization.data(withJSONObject: ["command": "ls"])
+        XCTAssertNil(AgentHookPermissionResponse.body(kind: AgentEntry.codexKind, decision: .allowedWithInput(data)),
+                    "codex fails closed on updatedInput, same as .expired")
+    }
+
+    // MARK: - claude-code: interrupted
+
+    func test_body_claude_interrupted_cancelled_isDenyWithCancelledMessageAndInterruptTrue() throws {
+        let data = try XCTUnwrap(
+            AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .interrupted(.cancelled))
+        )
+        let decision = try decisionObject(data)
+        XCTAssertEqual(decision["behavior"] as? String, "deny")
+        XCTAssertEqual(decision["message"] as? String, AgentHookPermissionResponse.cancelledMessage)
+        XCTAssertTrue(isJSONBoolean(decision["interrupt"]), "interrupt must be an actual JSON boolean, not a JSON number")
+        XCTAssertEqual(decision["interrupt"] as? Bool, true)
+    }
+
+    func test_body_claude_interrupted_chatAboutQuestion_isDenyWithChatAboutQuestionMessageAndInterruptTrue() throws {
+        let data = try XCTUnwrap(
+            AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .interrupted(.chatAboutQuestion))
+        )
+        let decision = try decisionObject(data)
+        XCTAssertEqual(decision["behavior"] as? String, "deny")
+        XCTAssertEqual(decision["message"] as? String, AgentHookPermissionResponse.chatAboutQuestionMessage)
+        XCTAssertEqual(decision["interrupt"] as? Bool, true)
+    }
+
+    func test_body_codex_interrupted_isNil() {
+        XCTAssertNil(AgentHookPermissionResponse.body(kind: AgentEntry.codexKind, decision: .interrupted(.cancelled)),
+                    "codex fails closed on interrupt, same as .expired")
     }
 
     // MARK: - grok
     //
     // Grok's PreToolUse decision vocabulary is a flat, top-level
-    // `{"decision":"allow"}` / `{"decision":"deny","reason":"..."}`,
-    // not Claude Code's and Codex's nested
-    // `hookSpecificOutput.decision.behavior`.
-    //
-    // Grok has no "ask" analog, and an expired decision maps to deny.
-    // Silence at Grok's gate hands the call back to Grok's own
-    // permission pipeline rather than to a guaranteed prompt, and the
-    // route only ever holds a grok request under `bypassPermissions`
-    // (`ApprovalHookEvent.gateIsSoleAuthority`), the mode in which that
-    // pipeline runs the call without asking anyone. A banner nobody
-    // answered within the hold window is not an approval.
+    // `{"decision":"allow"}` / `{"decision":"deny","reason":"..."}`.
 
-    /// Parses Grok's flat decision body.
     private func grokDecision(_ data: Data) throws -> [String: Any] {
         try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
@@ -146,62 +233,47 @@ final class AgentHookPermissionResponseTests: XCTestCase {
         let object = try grokDecision(data)
 
         XCTAssertEqual(object["decision"] as? String, "allow")
-        XCTAssertEqual(Set(object.keys), ["decision"],
-                       "An allow carries the decision alone. Grok reads hookSpecificOutput only for " +
-                       "updatedInput, and an updatedInput that fails the tool's schema BLOCKS the call, " +
-                       "so nothing extra may ride along here")
+        XCTAssertEqual(Set(object.keys), ["decision"])
     }
 
     func test_body_grok_denied_isFlatDenyDecisionWithReason() throws {
-        let data = try XCTUnwrap(
-            AgentHookPermissionResponse.body(kind: AgentEntry.grokKind, decision: .denied)
-        )
-        let object = try grokDecision(data)
+        for reason in [DenyReason.userRejected, .questionNotAnswered] {
+            let data = try XCTUnwrap(
+                AgentHookPermissionResponse.body(kind: AgentEntry.grokKind, decision: .denied(reason))
+            )
+            let object = try grokDecision(data)
 
-        XCTAssertEqual(object["decision"] as? String, "deny")
-        XCTAssertEqual(Set(object.keys), ["decision", "reason"],
-                       "A deny carries exactly decision and reason: Grok names the field reason, not " +
-                       "Claude Code's and Codex's message")
-        let reason = try XCTUnwrap(object["reason"] as? String)
-        XCTAssertFalse(reason.isEmpty,
-                       "The reason is shown to the model as the deny explanation, so it must not be empty")
+            XCTAssertEqual(object["decision"] as? String, "deny")
+            XCTAssertEqual(Set(object.keys), ["decision", "reason"])
+            XCTAssertEqual(object["reason"] as? String, AgentHookPermissionResponse.deniedMessage)
+        }
     }
 
     func test_body_grok_expired_isADenyDecision() throws {
         let data = try XCTUnwrap(
-            AgentHookPermissionResponse.body(kind: AgentEntry.grokKind, decision: .expired),
-            "A grok request is only held for a decision under bypassPermissions, where silence lets " +
-            "Grok run the call without asking anyone. An unanswered banner must therefore produce an " +
-            "explicit deny, not no body"
+            AgentHookPermissionResponse.body(kind: AgentEntry.grokKind, decision: .expired)
         )
         let object = try grokDecision(data)
 
         XCTAssertEqual(object["decision"] as? String, "deny")
         let reason = try XCTUnwrap(object["reason"] as? String)
-        XCTAssertFalse(reason.isEmpty,
-                       "The model is told why the call was refused, so an expiry states its own reason")
+        XCTAssertFalse(reason.isEmpty)
     }
 
     func test_body_grok_expired_differsFromTheOtherKinds() {
         for kind in [AgentEntry.claudeCodeKind, AgentEntry.codexKind] {
             XCTAssertNil(AgentHookPermissionResponse.body(kind: kind, decision: .expired),
-                         "[\(kind)] answers an expiry with silence so its own confirmation prompt takes " +
-                         "over. Grok cannot: the only mode its requests are held in is bypassPermissions, " +
-                         "where no prompt waits behind the gate, so the two contracts must stay distinct")
+                         "[\(kind)] answers an expiry with silence")
         }
     }
 
     func test_body_grok_neverUsesTheClaudeCodeEnvelope() throws {
-        for decision in [ApprovalDecision.allowed, .denied, .expired] {
+        for decision in [ApprovalDecision.allowed, .denied(.userRejected), .expired] {
             let data = try XCTUnwrap(
                 AgentHookPermissionResponse.body(kind: AgentEntry.grokKind, decision: decision)
             )
             let object = try grokDecision(data)
-            XCTAssertNil(object["hookSpecificOutput"],
-                         "Grok parses a top-level decision. Nesting it the Claude Code way would make " +
-                         "the hook look like it returned no decision at all, handing the call back to " +
-                         "Grok's own pipeline: under bypassPermissions, the mode these bodies are " +
-                         "written in, that runs a call a human may have just denied")
+            XCTAssertNil(object["hookSpecificOutput"])
         }
     }
 
@@ -209,88 +281,95 @@ final class AgentHookPermissionResponseTests: XCTestCase {
         for kind in [AgentEntry.claudeCodeKind, AgentEntry.codexKind] {
             let data = try XCTUnwrap(AgentHookPermissionResponse.body(kind: kind, decision: .allowed))
             let object = try grokDecision(data)
-            XCTAssertNotNil(object["hookSpecificOutput"],
-                            "[\(kind)] adding grok must not flatten the existing kinds' envelope")
-            XCTAssertNil(object["decision"],
-                         "[\(kind)] must not gain a top-level decision key")
+            XCTAssertNotNil(object["hookSpecificOutput"])
+            XCTAssertNil(object["decision"])
         }
     }
 
     // MARK: - pi
-    //
-    // pi's gate is a `tool_call` extension handler that reads this body
-    // itself and returns `{ block: true, reason }` on a deny, so it uses
-    // the same flat, top-level decision vocabulary Grok does rather than
-    // Claude Code's and Codex's nested hookSpecificOutput envelope.
-    //
-    // An expired decision denies. pi ships no permission prompt of its
-    // own (`docs/usage.md`: it intentionally does not include permission
-    // popups), so there is nothing behind Calyx's gate to defer to: a
-    // silent answer would let an unreviewed call run, and a banner nobody
-    // answered within the hold window is not an approval.
 
     func test_body_pi_allowed_isFlatAllowDecision() throws {
         let data = try XCTUnwrap(
-            AgentHookPermissionResponse.body(kind: AgentEntry.piKind, decision: .allowed),
-            "pi must not fall into the fail-safe default branch: an unrecognized kind answers with no " +
-            "body at all, which the extension reads as no opinion, and the call runs unreviewed"
+            AgentHookPermissionResponse.body(kind: AgentEntry.piKind, decision: .allowed)
         )
         let object = try grokDecision(data)
 
         XCTAssertEqual(object["decision"] as? String, "allow")
-        XCTAssertEqual(Set(object.keys), ["decision"],
-                       "An allow carries the decision alone. The extension reads a top-level decision " +
-                       "field and nothing else")
+        XCTAssertEqual(Set(object.keys), ["decision"])
     }
 
     func test_body_pi_denied_isFlatDenyDecisionWithReason() throws {
         let data = try XCTUnwrap(
-            AgentHookPermissionResponse.body(kind: AgentEntry.piKind, decision: .denied)
-        )
-        let object = try grokDecision(data)
-
-        XCTAssertEqual(object["decision"] as? String, "deny")
-        XCTAssertEqual(Set(object.keys), ["decision", "reason"],
-                       "A deny carries exactly decision and reason")
-        let reason = try XCTUnwrap(object["reason"] as? String)
-        XCTAssertFalse(reason.isEmpty,
-                       "pi hands the block reason to the model as the tool result content, so an empty " +
-                       "reason would tell the model nothing about why the call failed")
-    }
-
-    func test_body_pi_expired_isADenyDecision() throws {
-        let data = try XCTUnwrap(
-            AgentHookPermissionResponse.body(kind: AgentEntry.piKind, decision: .expired),
-            "pi has no confirmation prompt of its own to fall back on, so silence here would run the " +
-            "call unreviewed. An expiry must deny explicitly"
+            AgentHookPermissionResponse.body(kind: AgentEntry.piKind, decision: .denied(.userRejected))
         )
         let object = try grokDecision(data)
 
         XCTAssertEqual(object["decision"] as? String, "deny")
         XCTAssertEqual(Set(object.keys), ["decision", "reason"])
         let reason = try XCTUnwrap(object["reason"] as? String)
-        XCTAssertFalse(reason.isEmpty,
-                       "The model is told why the call was refused, so an expiry states its own reason")
+        XCTAssertFalse(reason.isEmpty)
+    }
+
+    func test_body_pi_expired_isADenyDecision() throws {
+        let data = try XCTUnwrap(
+            AgentHookPermissionResponse.body(kind: AgentEntry.piKind, decision: .expired)
+        )
+        let object = try grokDecision(data)
+
+        XCTAssertEqual(object["decision"] as? String, "deny")
+        XCTAssertEqual(Set(object.keys), ["decision", "reason"])
+    }
+
+    // MARK: - grok / pi: the four unexpressible decisions are byte-identical to .expired
+
+    func test_body_grokAndPi_unexpressibleDecisions_byteIdenticalToExpired() throws {
+        let offer = makeOffer(entry: ["type": "addDirectories", "directories": ["/tmp"]], label: "x")
+        let amendedInputData = try JSONSerialization.data(withJSONObject: ["command": "ls"])
+        let answers = makeAnswers()
+
+        for kind in [AgentEntry.grokKind, AgentEntry.piKind] {
+            let expiredBody = try XCTUnwrap(AgentHookPermissionResponse.body(kind: kind, decision: .expired))
+
+            let unexpressible: [ApprovalDecision] = [
+                .allowedWithPermissions(offer), .allowedWithInput(amendedInputData), .interrupted(.cancelled), .answered(answers),
+            ]
+            for decision in unexpressible {
+                let body = try XCTUnwrap(AgentHookPermissionResponse.body(kind: kind, decision: decision), "kind=\(kind)")
+                XCTAssertEqual(body, expiredBody, "kind=\(kind) decision=\(decision) must byte-match .expired's own body")
+            }
+        }
+    }
+
+    func test_body_codex_unexpressibleDecisions_areNil_sameAsExpired() throws {
+        let offer = makeOffer(entry: ["type": "addDirectories", "directories": ["/tmp"]], label: "x")
+        let amendedInputData = try JSONSerialization.data(withJSONObject: ["command": "ls"])
+        let answers = makeAnswers()
+
+        let unexpressible: [ApprovalDecision] = [
+            .allowedWithPermissions(offer), .allowedWithInput(amendedInputData), .interrupted(.cancelled), .answered(answers),
+        ]
+        for decision in unexpressible {
+            XCTAssertNil(AgentHookPermissionResponse.body(kind: AgentEntry.codexKind, decision: decision))
+        }
     }
 
     // MARK: - unrecognized kind
 
-    func test_body_unknownKind_isNilForAllDecisions() {
+    func test_body_unknownKind_isNilForAllDecisions() throws {
         let unknownKind = "some-unrecognized-cli"
+        let offer = makeOffer(entry: ["type": "addDirectories", "directories": ["/tmp"]], label: "x")
+        let amendedInputData = try JSONSerialization.data(withJSONObject: ["command": "ls"])
 
         XCTAssertNil(AgentHookPermissionResponse.body(kind: unknownKind, decision: .allowed))
-        XCTAssertNil(AgentHookPermissionResponse.body(kind: unknownKind, decision: .denied))
+        XCTAssertNil(AgentHookPermissionResponse.body(kind: unknownKind, decision: .denied(.userRejected)))
         XCTAssertNil(AgentHookPermissionResponse.body(kind: unknownKind, decision: .expired))
+        XCTAssertNil(AgentHookPermissionResponse.body(kind: unknownKind, decision: .allowedWithPermissions(offer)))
+        XCTAssertNil(AgentHookPermissionResponse.body(kind: unknownKind, decision: .allowedWithInput(amendedInputData)))
+        XCTAssertNil(AgentHookPermissionResponse.body(kind: unknownKind, decision: .interrupted(.cancelled)))
+        XCTAssertNil(AgentHookPermissionResponse.body(kind: unknownKind, decision: .answered(makeAnswers())))
     }
 
     // MARK: - claude-code: .answered (AskUserQuestion)
-    //
-    // `.answered` carries the original `questions` array back verbatim
-    // (re-parsed as an identical JSON value, not necessarily identical
-    // bytes -- key order in JSONSerialization output is unspecified) plus
-    // an `answers` object mapping each question's own text to its chosen
-    // value: a single label, multi-select labels joined with ", ", or the
-    // typed text for a free-text "Other" choice.
 
     private func toolInputValue(_ data: Data) throws -> NSDictionary {
         try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? NSDictionary)
@@ -335,7 +414,11 @@ final class AgentHookPermissionResponseTests: XCTestCase {
         )
         return AgentQuestionAnswers(
             prompt: prompt,
-            answers: [.selectedOne("zsh"), .selectedMany(["vim", "emacs"]), .freeText("Please also install ripgrep")]
+            entries: [
+                .init(answer: .selectedOne("zsh"), notes: nil),
+                .init(answer: .selectedMany(["vim", "emacs"]), notes: nil),
+                .init(answer: .freeText("Please also install ripgrep"), notes: nil),
+            ]
         )
     }
 
@@ -348,19 +431,17 @@ final class AgentHookPermissionResponseTests: XCTestCase {
         XCTAssertEqual(output["hookEventName"] as? String, "PermissionRequest")
 
         let decisionObject = try XCTUnwrap(output["decision"] as? [String: Any])
-        XCTAssertEqual(Set(decisionObject.keys), ["behavior", "updatedInput"],
-                       "an answered decision's decision object must contain exactly behavior and updatedInput")
+        XCTAssertEqual(Set(decisionObject.keys), ["behavior", "updatedInput"])
         XCTAssertEqual(decisionObject["behavior"] as? String, "allow")
 
         let updatedInput = try XCTUnwrap(decisionObject["updatedInput"] as? [String: Any])
         XCTAssertEqual(Set(updatedInput.keys), ["questions", "answers"],
-                       "updatedInput must contain exactly the original tool_input keys (questions) plus answers")
+                       "no question in this fixture carries notes or a previewed selection, so annotations must be absent")
 
         let questionsValue = try XCTUnwrap(updatedInput["questions"])
         let questionsData = try JSONSerialization.data(withJSONObject: ["questions": questionsValue])
         let originalToolInput = try toolInputValue(answers.prompt.originalToolInputJSON)
-        XCTAssertEqual(try toolInputValue(questionsData)["questions"] as? NSArray, originalToolInput["questions"] as? NSArray,
-                       "updatedInput.questions must equal originalToolInputJSON's own questions re-parsed as an identical JSON value")
+        XCTAssertEqual(try toolInputValue(questionsData)["questions"] as? NSArray, originalToolInput["questions"] as? NSArray)
 
         let answersObject = try XCTUnwrap(updatedInput["answers"] as? [String: String])
         XCTAssertEqual(answersObject, [
@@ -370,9 +451,6 @@ final class AgentHookPermissionResponseTests: XCTestCase {
         ])
     }
 
-    /// `updatedInput`'s key set is the original `tool_input` keys plus
-    /// `answers` -- a `tool_input` carrying an unknown top-level key
-    /// (e.g. `metadata`) must round-trip that key through unchanged.
     func test_body_claude_answered_updatedInputKeys_areOriginalToolInputKeysPlusAnswers() throws {
         let toolInput: [String: Any] = [
             "questions": [["question": "Which shell?", "options": [["label": "zsh"]]]],
@@ -387,7 +465,7 @@ final class AgentHookPermissionResponseTests: XCTestCase {
             )],
             originalToolInputJSON: originalToolInputJSON
         )
-        let answers = AgentQuestionAnswers(prompt: prompt, answers: [.selectedOne("zsh")])
+        let answers = AgentQuestionAnswers(prompt: prompt, entries: [.init(answer: .selectedOne("zsh"), notes: nil)])
 
         let data = try XCTUnwrap(
             AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .answered(answers))
@@ -396,16 +474,9 @@ final class AgentHookPermissionResponseTests: XCTestCase {
         let decisionObject = try XCTUnwrap(output["decision"] as? [String: Any])
         let updatedInput = try XCTUnwrap(decisionObject["updatedInput"] as? [String: Any])
 
-        XCTAssertEqual(Set(updatedInput.keys), ["questions", "metadata", "answers"],
-                       "updatedInput must carry every original tool_input key (including an unknown one like " +
-                       "metadata) plus answers -- Claude Code's own contract replaces the whole input object")
+        XCTAssertEqual(Set(updatedInput.keys), ["questions", "metadata", "answers"])
     }
 
-    /// A `tool_input` that already carries a stale `answers` key (e.g. a
-    /// prior round's own leftover) must be OVERWRITTEN by the freshly
-    /// built object, never merged with it -- the stale key must be gone
-    /// and the fresh question-text key must be present, with the key set
-    /// staying exactly `questions` + `answers`.
     func test_body_claude_answered_staleAnswersKeyInToolInput_isOverwrittenNotMerged() throws {
         let toolInput: [String: Any] = [
             "questions": [["question": "Which shell?", "options": [["label": "zsh"]]]],
@@ -420,7 +491,7 @@ final class AgentHookPermissionResponseTests: XCTestCase {
             )],
             originalToolInputJSON: originalToolInputJSON
         )
-        let answers = AgentQuestionAnswers(prompt: prompt, answers: [.selectedOne("zsh")])
+        let answers = AgentQuestionAnswers(prompt: prompt, entries: [.init(answer: .selectedOne("zsh"), notes: nil)])
 
         let data = try XCTUnwrap(
             AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .answered(answers))
@@ -430,28 +501,112 @@ final class AgentHookPermissionResponseTests: XCTestCase {
         let updatedInput = try XCTUnwrap(decisionObject["updatedInput"] as? [String: Any])
 
         let answersObject = try XCTUnwrap(updatedInput["answers"] as? [String: String])
-        XCTAssertEqual(answersObject, ["Which shell?": "zsh"],
-                       "updatedInput.answers must be exactly the freshly built object -- the stale key must " +
-                       "be gone and the question-text key must be present")
-        XCTAssertEqual(Set(updatedInput.keys), ["questions", "answers"],
-                       "the key set must stay exactly questions + answers, not grow from a merge")
+        XCTAssertEqual(answersObject, ["Which shell?": "zsh"])
+        XCTAssertEqual(Set(updatedInput.keys), ["questions", "answers"])
     }
 
     func test_body_nonClaudeCodeKinds_answered_isNil() {
         let answers = makeAnswers()
         for kind in [AgentEntry.codexKind, AgentEntry.grokKind, AgentEntry.piKind, "some-unrecognized-cli"] {
+            if kind == AgentEntry.grokKind || kind == AgentEntry.piKind { continue } // covered by the byte-identical-to-expired tests above
             XCTAssertNil(AgentHookPermissionResponse.body(kind: kind, decision: .answered(answers)),
-                        "[\(kind)] .answered must produce no body -- only claude-code recognizes AskUserQuestion")
+                        "[\(kind)] .answered must produce no body")
         }
     }
 
+    // MARK: - annotations
+
+    private func makeSingleQuestionAnswers(
+        optionPreview: String?, notes: String?, answer: AgentQuestionAnswer = .selectedOne("zsh"),
+        preexistingAnnotations: [String: Any]? = nil
+    ) -> AgentQuestionAnswers {
+        var option: [String: Any] = ["label": "zsh"]
+        if let optionPreview { option["preview"] = optionPreview }
+        var toolInput: [String: Any] = [
+            "questions": [["question": "Which shell?", "options": [option]]],
+        ]
+        if let preexistingAnnotations {
+            toolInput["annotations"] = preexistingAnnotations
+        }
+        let originalToolInputJSON = try! JSONSerialization.data(withJSONObject: toolInput)
+        let prompt = AgentQuestionPrompt(
+            questions: [AgentQuestionPrompt.Question(
+                text: "Which shell?", header: nil,
+                options: [AgentQuestionPrompt.Option(label: "zsh", description: nil, preview: optionPreview)],
+                multiSelect: false
+            )],
+            originalToolInputJSON: originalToolInputJSON
+        )
+        return AgentQuestionAnswers(prompt: prompt, entries: [.init(answer: answer, notes: notes)])
+    }
+
+    private func updatedInput(for answers: AgentQuestionAnswers) throws -> [String: Any] {
+        let data = try XCTUnwrap(
+            AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .answered(answers))
+        )
+        let output = try hookSpecificOutput(data)
+        let decisionObject = try XCTUnwrap(output["decision"] as? [String: Any])
+        return try XCTUnwrap(decisionObject["updatedInput"] as? [String: Any])
+    }
+
+    func test_body_claude_answered_annotations_notesOnly() throws {
+        let answers = makeSingleQuestionAnswers(optionPreview: nil, notes: "please double check")
+        let input = try updatedInput(for: answers)
+
+        XCTAssertTrue(Set(input.keys).contains("annotations"))
+        let annotations = try XCTUnwrap(input["annotations"] as? [String: Any])
+        let entry = try XCTUnwrap(annotations["Which shell?"] as? [String: Any])
+        XCTAssertEqual(entry as NSDictionary, ["notes": "please double check"] as NSDictionary)
+    }
+
+    func test_body_claude_answered_annotations_previewOnly() throws {
+        let answers = makeSingleQuestionAnswers(optionPreview: "the current default", notes: nil)
+        let input = try updatedInput(for: answers)
+
+        let annotations = try XCTUnwrap(input["annotations"] as? [String: Any])
+        let entry = try XCTUnwrap(annotations["Which shell?"] as? [String: Any])
+        XCTAssertEqual(entry as NSDictionary, ["preview": "the current default"] as NSDictionary)
+    }
+
+    func test_body_claude_answered_annotations_notesAndPreview() throws {
+        let answers = makeSingleQuestionAnswers(optionPreview: "the current default", notes: "please double check")
+        let input = try updatedInput(for: answers)
+
+        let annotations = try XCTUnwrap(input["annotations"] as? [String: Any])
+        let entry = try XCTUnwrap(annotations["Which shell?"] as? [String: Any])
+        XCTAssertEqual(entry as NSDictionary, ["notes": "please double check", "preview": "the current default"] as NSDictionary)
+    }
+
+    func test_body_claude_answered_annotations_neitherNotesNorPreview_keyAbsent() throws {
+        let answers = makeSingleQuestionAnswers(optionPreview: nil, notes: nil)
+        let input = try updatedInput(for: answers)
+
+        XCTAssertFalse(Set(input.keys).contains("annotations"),
+                       "annotations must be absent entirely when no question contributes anything")
+    }
+
+    func test_body_claude_answered_annotations_multiSelectAnswer_neverGetsPreview() throws {
+        let answers = makeSingleQuestionAnswers(
+            optionPreview: "the current default", notes: nil, answer: .selectedMany(["zsh"])
+        )
+        let input = try updatedInput(for: answers)
+
+        XCTAssertFalse(Set(input.keys).contains("annotations"),
+                       "preview is only ever attached for a .selectedOne answer, never .selectedMany")
+    }
+
+    func test_body_claude_answered_annotations_staleAnnotationsKey_isOverwrittenNotMerged() throws {
+        let answers = makeSingleQuestionAnswers(
+            optionPreview: nil, notes: "please double check", preexistingAnnotations: ["stale": "value"]
+        )
+        let input = try updatedInput(for: answers)
+
+        let annotations = try XCTUnwrap(input["annotations"] as? [String: Any])
+        XCTAssertNil(annotations["stale"], "the stale pre-existing annotations key must be gone")
+        XCTAssertEqual(Set(annotations.keys), ["Which shell?"])
+    }
+
     // MARK: - selectedLabelsAnswerValue (claude-code's multi-select answer encoding)
-    //
-    // Claude Code's own encoding (2.1.251, verbatim from the binary):
-    // labels.map(t => t.includes(", ") || t.includes('"') ? JSON.stringify(t) : t).join(", ").
-    // A label containing ", " or a double quote must be JSON-string-quoted
-    // or Claude Code's own round-trip check silently fails to recognize
-    // the answer; every other label rides through bare.
 
     func test_selectedLabelsAnswerValue_plainLabels_joinsWithCommaSpace() {
         XCTAssertEqual(AgentHookPermissionResponse.selectedLabelsAnswerValue(["zsh", "bash"]), "zsh, bash")
@@ -475,9 +630,6 @@ final class AgentHookPermissionResponseTests: XCTestCase {
         )
     }
 
-    /// Pins a one-element multi-select answer: even with nothing to join,
-    /// a lone label still goes through the quoted round-trip check when
-    /// it contains ", " or a double quote.
     func test_selectedLabelsAnswerValue_oneElementMultiSelectAnswer_labelContainingCommaSpace_isQuotedAlone() {
         XCTAssertEqual(
             AgentHookPermissionResponse.selectedLabelsAnswerValue(["Swift, Rust"]),
@@ -493,9 +645,6 @@ final class AgentHookPermissionResponseTests: XCTestCase {
         XCTAssertEqual(AgentHookPermissionResponse.selectedLabelsAnswerValue([]), "")
     }
 
-    /// `.selectedOne` with a label containing ", " is emitted raw --
-    /// never run through `selectedLabelsAnswerValue` -- a single-select
-    /// answer is matched against the listed label set verbatim.
     func test_body_claude_answered_selectedOne_labelContainingCommaSpace_isEmittedRaw() throws {
         let toolInput: [String: Any] = [
             "questions": [["question": "Which pair?", "options": [["label": "Swift, Rust"], ["label": "Go"]]]],
@@ -512,7 +661,7 @@ final class AgentHookPermissionResponseTests: XCTestCase {
             )],
             originalToolInputJSON: originalToolInputJSON
         )
-        let answers = AgentQuestionAnswers(prompt: prompt, answers: [.selectedOne("Swift, Rust")])
+        let answers = AgentQuestionAnswers(prompt: prompt, entries: [.init(answer: .selectedOne("Swift, Rust"), notes: nil)])
 
         let data = try XCTUnwrap(
             AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .answered(answers))
@@ -522,14 +671,9 @@ final class AgentHookPermissionResponseTests: XCTestCase {
         let updatedInput = try XCTUnwrap(decisionObject["updatedInput"] as? [String: Any])
         let answersObject = try XCTUnwrap(updatedInput["answers"] as? [String: String])
 
-        XCTAssertEqual(answersObject["Which pair?"], "Swift, Rust",
-                       "a .selectedOne label must be emitted raw, never JSON-quoted -- that round-trip check " +
-                       "only ever runs for a multi-select answer")
+        XCTAssertEqual(answersObject["Which pair?"], "Swift, Rust")
     }
 
-    /// `.selectedMany` is emitted through `selectedLabelsAnswerValue`
-    /// -- the multi-select answer for a label containing ", " must be
-    /// JSON-quoted, matching Claude Code's own round-trip check.
     func test_body_claude_answered_selectedMany_isEmittedThroughSelectedLabelsAnswerValue() throws {
         let precomputed = AgentHookPermissionResponse.selectedLabelsAnswerValue(["Swift, Rust", "Go"])
         let toolInput: [String: Any] = [
@@ -552,7 +696,7 @@ final class AgentHookPermissionResponseTests: XCTestCase {
             ],
             originalToolInputJSON: originalToolInputJSON
         )
-        let answers = AgentQuestionAnswers(prompt: prompt, answers: [.selectedMany(["Swift, Rust", "Go"])])
+        let answers = AgentQuestionAnswers(prompt: prompt, entries: [.init(answer: .selectedMany(["Swift, Rust", "Go"]), notes: nil)])
 
         let data = try XCTUnwrap(
             AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .answered(answers))
@@ -562,14 +706,9 @@ final class AgentHookPermissionResponseTests: XCTestCase {
         let updatedInput = try XCTUnwrap(decisionObject["updatedInput"] as? [String: Any])
         let answersObject = try XCTUnwrap(updatedInput["answers"] as? [String: String])
 
-        XCTAssertEqual(answersObject["Which languages?"], precomputed,
-                       "a .selectedMany answer must be run through selectedLabelsAnswerValue, quoting the " +
-                       "label that contains \", \"")
+        XCTAssertEqual(answersObject["Which languages?"], precomputed)
     }
 
-    /// `.freeText` is emitted raw, including text that itself contains
-    /// ", " -- free text is meant to reach the CLI unencoded, never
-    /// matched against the listed label set at all.
     func test_body_claude_answered_freeText_isEmittedRaw_evenContainingCommaSpace() throws {
         let toolInput: [String: Any] = ["questions": [["question": "Anything else?", "options": [["label": "Other"]]]]]
         let originalToolInputJSON = try JSONSerialization.data(withJSONObject: toolInput)
@@ -582,7 +721,7 @@ final class AgentHookPermissionResponseTests: XCTestCase {
             originalToolInputJSON: originalToolInputJSON
         )
         let freeText = "Install ripgrep, then fd"
-        let answers = AgentQuestionAnswers(prompt: prompt, answers: [.freeText(freeText)])
+        let answers = AgentQuestionAnswers(prompt: prompt, entries: [.init(answer: .freeText(freeText), notes: nil)])
 
         let data = try XCTUnwrap(
             AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .answered(answers))
@@ -592,64 +731,26 @@ final class AgentHookPermissionResponseTests: XCTestCase {
         let updatedInput = try XCTUnwrap(decisionObject["updatedInput"] as? [String: Any])
         let answersObject = try XCTUnwrap(updatedInput["answers"] as? [String: String])
 
-        XCTAssertEqual(answersObject["Anything else?"], freeText,
-                       "a .freeText answer must be emitted raw, unencoded, even though it contains \", \"")
-    }
-
-    // MARK: - denyMessage: dismissedQuestionMessage vs the default
-
-    /// A skipped question denies with `dismissedQuestionMessage`, passed
-    /// explicitly by the caller; a plain agent-hook deny with no
-    /// `denyMessage` argument keeps the default `deniedMessage`.
-    func test_body_claude_denied_dismissedQuestionMessage_vs_defaultDeniedMessage() throws {
-        let questionDenyData = try XCTUnwrap(
-            AgentHookPermissionResponse.body(
-                kind: AgentEntry.claudeCodeKind, decision: .denied,
-                denyMessage: AgentHookPermissionResponse.dismissedQuestionMessage
-            )
-        )
-        let questionOutput = try hookSpecificOutput(questionDenyData)
-        let questionDecision = try XCTUnwrap(questionOutput["decision"] as? [String: Any])
-        XCTAssertEqual(questionDecision["message"] as? String, AgentHookPermissionResponse.dismissedQuestionMessage,
-                       "a skipped question's deny body must carry dismissedQuestionMessage")
-
-        let plainDenyData = try XCTUnwrap(
-            AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .denied)
-        )
-        let plainOutput = try hookSpecificOutput(plainDenyData)
-        let plainDecision = try XCTUnwrap(plainOutput["decision"] as? [String: Any])
-        XCTAssertEqual(plainDecision["message"] as? String, AgentHookPermissionResponse.deniedMessage,
-                       "a plain agent-hook deny with no explicit denyMessage must keep the default deniedMessage")
+        XCTAssertEqual(answersObject["Anything else?"], freeText)
     }
 
     // MARK: - forbidden fields (PermissionRequest reserved/invalid keys)
 
-    /// PermissionRequest's own contract reserves or rejects
-    /// permissionDecision, permissionDecisionReason, updatedInput,
-    /// updatedPermissions, and interrupt (all valid on the older
-    /// PreToolUse hook, none valid here) -- pinned via an EXACT key-set
-    /// assertion on both hookSpecificOutput and decision, rather than
-    /// separate substring checks per forbidden name, so any stray extra
-    /// field (not just these five) is caught too.
     func test_body_neverContainsForbiddenPermissionRequestFields() throws {
         let allowData = try XCTUnwrap(
             AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .allowed)
         )
         let allowOutput = try hookSpecificOutput(allowData)
-        XCTAssertEqual(Set(allowOutput.keys), ["hookEventName", "decision"],
-                       "an allowed decision's hookSpecificOutput must contain exactly hookEventName and decision")
+        XCTAssertEqual(Set(allowOutput.keys), ["hookEventName", "decision"])
         let allowDecision = try XCTUnwrap(allowOutput["decision"] as? [String: Any])
-        XCTAssertEqual(Set(allowDecision.keys), ["behavior"],
-                       "an allowed decision's decision object must contain exactly behavior")
+        XCTAssertEqual(Set(allowDecision.keys), ["behavior"])
 
         let denyData = try XCTUnwrap(
-            AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .denied)
+            AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .denied(.userRejected))
         )
         let denyOutput = try hookSpecificOutput(denyData)
-        XCTAssertEqual(Set(denyOutput.keys), ["hookEventName", "decision"],
-                       "a denied decision's hookSpecificOutput must contain exactly hookEventName and decision")
+        XCTAssertEqual(Set(denyOutput.keys), ["hookEventName", "decision"])
         let denyDecision = try XCTUnwrap(denyOutput["decision"] as? [String: Any])
-        XCTAssertEqual(Set(denyDecision.keys), ["behavior", "message"],
-                       "a denied decision's decision object must contain exactly behavior and message")
+        XCTAssertEqual(Set(denyDecision.keys), ["behavior", "message"])
     }
 }

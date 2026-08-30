@@ -548,11 +548,17 @@ final class CalyxMCPServerApprovalRequestTests: XCTestCase {
                        "payload must be AgentHookToolCall's decoded compact-JSON tool_input")
 
         switch pendingRequest.source {
-        case .agentHook(let toolName, let kind, let summary):
+        case .agentHook(let toolName, let kind, let summary, let offers):
             XCTAssertEqual(toolName, "Bash")
             XCTAssertEqual(kind, AgentEntry.claudeCodeKind,
                            "a missing X-Calyx-Agent-Kind header must default to claude-code, same as /agent-event")
             XCTAssertEqual(summary, command, "Bash's summary must be its tool_input.command")
+            XCTAssertTrue(offers.canStop, "claude-code accepts interrupt")
+            XCTAssertFalse(offers.cliOwnsPersistence,
+                           "no CLI always-allow row was offered, so Calyx's own pane memory is the only " +
+                           "persistence available")
+            XCTAssertEqual(offers.amendableField, "command")
+            XCTAssertTrue(offers.canAnswerInPane, "claude-code shows its own permission prompt when no hook decides")
         case .mcpTool:
             XCTFail("expected source .agentHook(...), got .mcpTool")
         case .agentQuestion:
@@ -583,7 +589,7 @@ final class CalyxMCPServerApprovalRequestTests: XCTestCase {
         await yieldToScheduler()
 
         let requestID = try XCTUnwrap(approvalInbox.pending.first?.id)
-        approvalInbox.decide(id: requestID, .denied)
+        approvalInbox.decide(id: requestID, .denied(.userRejected))
         let response = await task.value
 
         XCTAssertEqual(response.statusCode, 200)
@@ -1004,10 +1010,12 @@ final class CalyxMCPServerApprovalRequestTests: XCTestCase {
                       "same guard as every other agent-hook call")
     }
 
-    /// A skipped question's deny body carries `dismissedQuestionMessage`;
-    /// an ordinary `.agentHook` deny in the same server still carries
-    /// the default `deniedMessage`.
-    func test_route_askUserQuestion_deniedDecision_carriesDismissedQuestionMessage_agentHookDenyKeepsDefault() async throws {
+    /// A `.denied(.questionNotAnswered)` question deny body carries
+    /// `questionNotAnsweredMessage`; an ordinary `.agentHook`
+    /// `.denied(.userRejected)` deny in the same server carries
+    /// `claudeCodeRejectedMessage` instead -- the two DenyReasons select
+    /// different messages for claude-code.
+    func test_route_askUserQuestion_questionNotAnsweredDeny_agentHookUserRejectedDeny_selectDifferentMessages() async throws {
         CockpitSettings.agentHookApprovalEnabled = true
         let approvalInbox = ApprovalInboxStore()
         server.approvalInbox = approvalInbox
@@ -1021,14 +1029,14 @@ final class CalyxMCPServerApprovalRequestTests: XCTestCase {
         }
         await yieldToScheduler()
 
-        approvalInbox.decide(id: try XCTUnwrap(approvalInbox.pending.first?.id), .denied)
+        approvalInbox.decide(id: try XCTUnwrap(approvalInbox.pending.first?.id), .denied(.questionNotAnswered))
         let questionResponse = await questionTask.value
 
         let questionJSON = try responseJSON(questionResponse.body)
         let questionHookOutput = try XCTUnwrap(questionJSON["hookSpecificOutput"] as? [String: Any])
         let questionDecision = try XCTUnwrap(questionHookOutput["decision"] as? [String: Any])
-        XCTAssertEqual(questionDecision["message"] as? String, AgentHookPermissionResponse.dismissedQuestionMessage,
-                       "a skipped question's deny body must carry dismissedQuestionMessage")
+        XCTAssertEqual(questionDecision["message"] as? String, AgentHookPermissionResponse.questionNotAnsweredMessage,
+                       "a .denied(.questionNotAnswered) body must carry questionNotAnsweredMessage")
 
         let agentHookRequest = approvalRequestRequest(
             token: testToken, surfaceIDHeader: UUID().uuidString, body: validToolCallBody()
@@ -1038,14 +1046,14 @@ final class CalyxMCPServerApprovalRequestTests: XCTestCase {
         }
         await yieldToScheduler()
 
-        approvalInbox.decide(id: try XCTUnwrap(approvalInbox.pending.first?.id), .denied)
+        approvalInbox.decide(id: try XCTUnwrap(approvalInbox.pending.first?.id), .denied(.userRejected))
         let agentHookResponse = await agentHookTask.value
 
         let agentHookJSON = try responseJSON(agentHookResponse.body)
         let agentHookOutput = try XCTUnwrap(agentHookJSON["hookSpecificOutput"] as? [String: Any])
         let agentHookDecision = try XCTUnwrap(agentHookOutput["decision"] as? [String: Any])
-        XCTAssertEqual(agentHookDecision["message"] as? String, AgentHookPermissionResponse.deniedMessage,
-                       "an ordinary agent-hook deny in the same server must still carry the default deniedMessage")
+        XCTAssertEqual(agentHookDecision["message"] as? String, AgentHookPermissionResponse.claudeCodeRejectedMessage,
+                       "a .denied(.userRejected) agent-hook deny must carry claudeCodeRejectedMessage, not deniedMessage")
     }
 
     /// The toggle short-circuit applies to a question body exactly as it
@@ -1095,14 +1103,14 @@ final class CalyxMCPServerApprovalRequestTests: XCTestCase {
                        "auto-allowed even with global auto-approve on")
         let pendingRequest = try XCTUnwrap(approvalInbox.pending.first)
         switch pendingRequest.source {
-        case .agentHook(let toolName, let kind, _):
+        case .agentHook(let toolName, let kind, _, _):
             XCTAssertEqual(toolName, "AskUserQuestion")
             XCTAssertEqual(kind, AgentEntry.claudeCodeKind)
         case .agentQuestion, .mcpTool:
             XCTFail("a decode failure must fall back to the generic .agentHook source, never .agentQuestion")
         }
 
-        approvalInbox.decide(id: pendingRequest.id, .denied)
+        approvalInbox.decide(id: pendingRequest.id, .denied(.userRejected))
         _ = await task.value
     }
 
@@ -1127,7 +1135,7 @@ final class CalyxMCPServerApprovalRequestTests: XCTestCase {
             _ = await task.value
             return
         }
-        let answers = AgentQuestionAnswers(prompt: prompt, answers: [.selectedOne("zsh")])
+        let answers = AgentQuestionAnswers(prompt: prompt, entries: [.init(answer: .selectedOne("zsh"), notes: nil)])
         approvalInbox.decide(id: pendingRequest.id, .answered(answers))
         let response = await task.value
 
@@ -1240,15 +1248,201 @@ final class CalyxMCPServerApprovalRequestTests: XCTestCase {
 
         let pendingRequest = try XCTUnwrap(approvalInbox.pending.first)
         switch pendingRequest.source {
-        case .agentHook(let toolName, let kind, _):
+        case .agentHook(let toolName, let kind, _, let offers):
             XCTAssertEqual(toolName, "AskUserQuestion")
             XCTAssertEqual(kind, AgentEntry.codexKind)
+            XCTAssertEqual(offers.permissionUpdates, [], "codex must never carry permission updates")
+            XCTAssertNil(offers.amendableField, "codex must never carry an amendable field")
+            XCTAssertFalse(offers.canStop)
+            XCTAssertFalse(offers.cliOwnsPersistence)
+            XCTAssertTrue(offers.canAnswerInPane, "codex uses its normal approval flow when no hook decides")
         case .agentQuestion, .mcpTool:
             XCTFail("a codex-kind AskUserQuestion-shaped body must never be recognized as a question -- " +
                     "only claude-code decodes it")
         }
 
-        approvalInbox.decide(id: pendingRequest.id, .denied)
+        approvalInbox.decide(id: pendingRequest.id, .denied(.userRejected))
         _ = await task.value
+    }
+
+    // MARK: - permission_suggestions -> offers.permissionUpdates
+
+    /// A claude-code Bash body carrying `permission_suggestions` and a
+    /// `command` string must submit as `.agentHook` whose `offers` carry
+    /// one permission update with the expected label, `amendableField ==
+    /// "command"`, and `canStop`/`cliOwnsPersistence` both true.
+    func test_route_claudeCodeBashWithPermissionSuggestions_offersCarryOneUpdate_amendableCommand() async throws {
+        CockpitSettings.agentHookApprovalEnabled = true
+        let approvalInbox = ApprovalInboxStore()
+        server.approvalInbox = approvalInbox
+        server.approvalSurfaceExists = { _ in true }
+
+        let body = Data("""
+        {"tool_name":"Bash","tool_input":{"command":"rm -rf node_modules"},"permission_suggestions":[\
+        {"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"rm -rf node_modules"}],"behavior":"allow","destination":"localSettings"}\
+        ],"hook_event_name":"PermissionRequest"}
+        """.utf8)
+        let request = approvalRequestRequest(token: testToken, surfaceIDHeader: UUID().uuidString, body: body)
+        let task = Task { @MainActor in
+            await self.server.route(request: request)
+        }
+        await yieldToScheduler()
+
+        let pendingRequest = try XCTUnwrap(approvalInbox.pending.first)
+        guard case .agentHook(_, _, _, let offers) = pendingRequest.source else {
+            XCTFail("expected .agentHook source")
+            approvalInbox.decide(id: pendingRequest.id, .denied(.userRejected))
+            _ = await task.value
+            return
+        }
+        XCTAssertEqual(offers.permissionUpdates.count, 1)
+        XCTAssertEqual(offers.permissionUpdates.first?.label,
+                       "Yes, and don't ask again for Bash: rm -rf node_modules from this project")
+        XCTAssertEqual(offers.amendableField, "command")
+        XCTAssertTrue(offers.canStop)
+        XCTAssertTrue(offers.cliOwnsPersistence)
+        XCTAssertTrue(offers.canAnswerInPane, "claude-code shows its own permission prompt when no hook decides")
+
+        approvalInbox.decide(id: pendingRequest.id, .denied(.userRejected))
+        _ = await task.value
+    }
+
+    /// `permission_suggestions` present at the top level but carrying only
+    /// an entry with nothing to offer (an `addRules` with an empty `rules`
+    /// array) must decode zero permission updates, so claude-code falls
+    /// back to Calyx's own pane-scoped Always-Allow row.
+    func test_route_claudeCodeBashWithOnlyUnusableSuggestions_cliOwnsPersistenceFalse() async throws {
+        CockpitSettings.agentHookApprovalEnabled = true
+        let approvalInbox = ApprovalInboxStore()
+        server.approvalInbox = approvalInbox
+        server.approvalSurfaceExists = { _ in true }
+
+        let body = Data("""
+        {"tool_name":"Bash","tool_input":{"command":"rm -rf node_modules"},"permission_suggestions":[\
+        {"type":"addRules","rules":[],"behavior":"allow"}\
+        ],"hook_event_name":"PermissionRequest"}
+        """.utf8)
+        let request = approvalRequestRequest(token: testToken, surfaceIDHeader: UUID().uuidString, body: body)
+        let task = Task { @MainActor in
+            await self.server.route(request: request)
+        }
+        await yieldToScheduler()
+
+        let pendingRequest = try XCTUnwrap(approvalInbox.pending.first)
+        guard case .agentHook(_, _, _, let offers) = pendingRequest.source else {
+            XCTFail("expected .agentHook source")
+            approvalInbox.decide(id: pendingRequest.id, .denied(.userRejected))
+            _ = await task.value
+            return
+        }
+        XCTAssertEqual(offers.permissionUpdates, [])
+        XCTAssertFalse(offers.cliOwnsPersistence,
+                       "the only suggestion decoded to nothing, so no CLI always-allow row was offered")
+        XCTAssertTrue(offers.canStop)
+        XCTAssertTrue(offers.canAnswerInPane)
+        XCTAssertEqual(offers.amendableField, "command")
+
+        approvalInbox.decide(id: pendingRequest.id, .denied(.userRejected))
+        _ = await task.value
+    }
+
+    func test_route_codexBashWithPermissionSuggestions_offersAreNoneLikeEmpty() async throws {
+        CockpitSettings.agentHookApprovalEnabled = true
+        let approvalInbox = ApprovalInboxStore()
+        server.approvalInbox = approvalInbox
+        server.approvalSurfaceExists = { _ in true }
+
+        let body = Data("""
+        {"tool_name":"Bash","tool_input":{"command":"rm -rf node_modules"},"permission_suggestions":[\
+        {"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"rm -rf node_modules"}],"behavior":"allow","destination":"localSettings"}\
+        ],"hook_event_name":"PermissionRequest"}
+        """.utf8)
+        let request = approvalRequestRequest(
+            token: testToken, surfaceIDHeader: UUID().uuidString, body: body, kindHeader: "codex"
+        )
+        let task = Task { @MainActor in
+            await self.server.route(request: request)
+        }
+        await yieldToScheduler()
+
+        let pendingRequest = try XCTUnwrap(approvalInbox.pending.first)
+        guard case .agentHook(_, _, _, let offers) = pendingRequest.source else {
+            XCTFail("expected .agentHook source")
+            approvalInbox.decide(id: pendingRequest.id, .denied(.userRejected))
+            _ = await task.value
+            return
+        }
+        XCTAssertEqual(offers.permissionUpdates, [], "codex's capabilities.acceptsPermissionUpdates is false")
+        XCTAssertNil(offers.amendableField)
+        XCTAssertFalse(offers.canStop)
+        XCTAssertFalse(offers.cliOwnsPersistence)
+        XCTAssertTrue(offers.canAnswerInPane, "codex uses its normal approval flow when no hook decides")
+
+        approvalInbox.decide(id: pendingRequest.id, .denied(.userRejected))
+        _ = await task.value
+    }
+
+    // MARK: - deciding .allowedWithPermissions / .interrupted
+
+    func test_route_allowedWithPermissionsDecision_returnsEncoderBody() async throws {
+        CockpitSettings.agentHookApprovalEnabled = true
+        let approvalInbox = ApprovalInboxStore()
+        server.approvalInbox = approvalInbox
+        server.approvalSurfaceExists = { _ in true }
+
+        let request = approvalRequestRequest(
+            token: testToken, surfaceIDHeader: UUID().uuidString, body: validToolCallBody()
+        )
+        let task = Task { @MainActor in
+            await self.server.route(request: request)
+        }
+        await yieldToScheduler()
+
+        let pendingRequest = try XCTUnwrap(approvalInbox.pending.first)
+        let offer = AgentPermissionOffer(
+            label: "Yes, and always allow access to /tmp",
+            entryJSON: try JSONSerialization.data(withJSONObject: ["type": "addDirectories", "directories": ["/tmp"]])
+        )
+        let expectedBody = try XCTUnwrap(
+            AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .allowedWithPermissions(offer))
+        )
+
+        approvalInbox.decide(id: pendingRequest.id, .allowedWithPermissions(offer))
+        let response = await task.value
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(
+            try responseJSON(response.body) as NSDictionary, try responseJSON(expectedBody) as NSDictionary,
+            "route's .allowedWithPermissions response body must equal AgentHookPermissionResponse.body(kind:decision:) exactly"
+        )
+    }
+
+    func test_route_interruptedCancelledDecision_returnsEncoderBody() async throws {
+        CockpitSettings.agentHookApprovalEnabled = true
+        let approvalInbox = ApprovalInboxStore()
+        server.approvalInbox = approvalInbox
+        server.approvalSurfaceExists = { _ in true }
+
+        let request = approvalRequestRequest(
+            token: testToken, surfaceIDHeader: UUID().uuidString, body: validToolCallBody()
+        )
+        let task = Task { @MainActor in
+            await self.server.route(request: request)
+        }
+        await yieldToScheduler()
+
+        let pendingRequest = try XCTUnwrap(approvalInbox.pending.first)
+        let expectedBody = try XCTUnwrap(
+            AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .interrupted(.cancelled))
+        )
+
+        approvalInbox.decide(id: pendingRequest.id, .interrupted(.cancelled))
+        let response = await task.value
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(
+            try responseJSON(response.body) as NSDictionary, try responseJSON(expectedBody) as NSDictionary,
+            "route's .interrupted response body must equal AgentHookPermissionResponse.body(kind:decision:) exactly"
+        )
     }
 }

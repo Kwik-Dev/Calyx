@@ -248,7 +248,7 @@ final class ApprovalHookPipelineIntegrationTests: XCTestCase {
         XCTAssertEqual(request.payload, "{\"command\":\"ls\"}",
                        "payload must be the compact JSON of tool_input")
         switch request.source {
-        case .agentHook(let toolName, let kind, let summary):
+        case .agentHook(let toolName, let kind, let summary, _):
             XCTAssertEqual(toolName, "Bash")
             XCTAssertEqual(kind, AgentEntry.claudeCodeKind,
                            "no kind argument was passed -- the script's own $1 default is claude-code")
@@ -278,11 +278,75 @@ final class ApprovalHookPipelineIntegrationTests: XCTestCase {
 
         let pendingRequest = await waitForPendingRequest()
         let request = try XCTUnwrap(pendingRequest)
-        approvalInbox.decide(id: request.id, .denied)
+        approvalInbox.decide(id: request.id, .denied(.userRejected))
         let (exitCode, stdout) = try await hookResult
 
         XCTAssertEqual(exitCode, 0)
         XCTAssertEqual(try permissionBehavior(fromStdout: stdout), "deny")
+    }
+
+    // MARK: - allowedWithPermissions decision
+
+    /// The script's stdout for an `.allowedWithPermissions` decision must
+    /// equal `AgentHookPermissionResponse.body(kind:decision:)` exactly,
+    /// the same real-installation-and-wiring proof
+    /// `test_answeredDecision_printsUpdatedInputAnswersJSON_exitZero`
+    /// already gives `.answered`.
+    func test_allowedWithPermissionsDecision_printsUpdatedPermissionsJSON_exitZero() async throws {
+        CockpitSettings.agentHookApprovalEnabled = true
+        let surfaceID = UUID()
+        let hookScriptPath = scriptPath!
+        let hookHome = tempHome!
+        let permissionBashStdin = """
+        {"tool_name":"Bash","tool_input":{"command":"ls"},"permission_suggestions":[\
+        {"type":"addDirectories","directories":["/tmp"],"destination":"session"}],"hook_event_name":"PermissionRequest"}
+        """
+
+        async let hookResult = Self.runHookScript(
+            scriptPath: hookScriptPath, home: hookHome, stdinJSON: permissionBashStdin, surfaceID: surfaceID
+        )
+
+        let pendingRequest = await waitForPendingRequest()
+        let request = try XCTUnwrap(pendingRequest)
+        guard case .agentHook(_, _, _, let offers) = request.source else {
+            XCTFail("expected .agentHook source, got \(request.source)")
+            return
+        }
+        let offer = try XCTUnwrap(offers.permissionUpdates.first, "the script's real POST must decode the permission_suggestions entry")
+        let expectedBody = try XCTUnwrap(AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .allowedWithPermissions(offer)))
+
+        approvalInbox.decide(id: request.id, .allowedWithPermissions(offer))
+        let (exitCode, stdout) = try await hookResult
+
+        XCTAssertEqual(exitCode, 0, "the hook script must always exit 0")
+        let stdoutObject = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(stdout.utf8)) as? [String: Any])
+        let expectedObject = try XCTUnwrap(try JSONSerialization.jsonObject(with: expectedBody) as? [String: Any])
+        XCTAssertEqual(stdoutObject as NSDictionary, expectedObject as NSDictionary,
+                       "the script's stdout must equal AgentHookPermissionResponse.body(kind:decision:) exactly")
+    }
+
+    // MARK: - denied(.userRejected) decision
+
+    func test_deniedUserRejectedDecision_printsClaudeCodeRejectedMessage_exitZero() async throws {
+        CockpitSettings.agentHookApprovalEnabled = true
+        let surfaceID = UUID()
+        let hookScriptPath = scriptPath!
+        let hookHome = tempHome!
+
+        async let hookResult = Self.runHookScript(
+            scriptPath: hookScriptPath, home: hookHome, stdinJSON: bashLsStdin, surfaceID: surfaceID
+        )
+
+        let pendingRequest = await waitForPendingRequest()
+        let request = try XCTUnwrap(pendingRequest)
+        approvalInbox.decide(id: request.id, .denied(.userRejected))
+        let (exitCode, stdout) = try await hookResult
+
+        XCTAssertEqual(exitCode, 0)
+        let stdoutObject = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(stdout.utf8)) as? [String: Any])
+        let hookSpecificOutput = try XCTUnwrap(stdoutObject["hookSpecificOutput"] as? [String: Any])
+        let decision = try XCTUnwrap(hookSpecificOutput["decision"] as? [String: Any])
+        XCTAssertEqual(decision["message"] as? String, AgentHookPermissionResponse.claudeCodeRejectedMessage)
     }
 
     // MARK: - AskUserQuestion: .answered decision
@@ -310,7 +374,7 @@ final class ApprovalHookPipelineIntegrationTests: XCTestCase {
         }
         XCTAssertEqual(kind, AgentEntry.claudeCodeKind)
 
-        let answers = AgentQuestionAnswers(prompt: prompt, answers: [.selectedOne("zsh")])
+        let answers = AgentQuestionAnswers(prompt: prompt, entries: [.init(answer: .selectedOne("zsh"), notes: nil)])
         let expectedBody = try XCTUnwrap(AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .answered(answers)))
 
         approvalInbox.decide(id: request.id, .answered(answers))
@@ -458,7 +522,7 @@ final class ApprovalHookPipelineIntegrationTests: XCTestCase {
         let pendingRequest = await waitForPendingRequest()
         let request = try XCTUnwrap(pendingRequest)
         switch request.source {
-        case .agentHook(_, let kind, _):
+        case .agentHook(_, let kind, _, _):
             XCTAssertEqual(kind, AgentEntry.codexKind)
         case .mcpTool:
             XCTFail("expected .agentHook source, got .mcpTool")

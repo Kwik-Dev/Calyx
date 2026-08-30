@@ -96,10 +96,10 @@ final class ApprovalInboxStoreTests: XCTestCase {
         }
         await yieldToScheduler()
 
-        store.decide(id: request.id, .denied)
+        store.decide(id: request.id, .denied(.userRejected))
 
         let result = await task.value
-        XCTAssertEqual(result, .denied, "decide(.denied) must resume the awaiter with .denied")
+        XCTAssertEqual(result, .denied(.userRejected), "decide(.denied) must resume the awaiter with .denied")
         XCTAssertTrue(store.pending.isEmpty, "a decided request must be removed from pending")
     }
 
@@ -148,7 +148,7 @@ final class ApprovalInboxStoreTests: XCTestCase {
 
         let notifyCountBeforeBatch = store._testNotifyCount
 
-        store.decide(ids: [request.id], .denied)
+        store.decide(ids: [request.id], .denied(.userRejected))
 
         XCTAssertEqual(store._testNotifyCount, notifyCountBeforeBatch,
                        "a batch where every id is already stale must post no notification at all")
@@ -397,7 +397,7 @@ final class ApprovalInboxStoreTests: XCTestCase {
             )],
             originalToolInputJSON: try! JSONSerialization.data(withJSONObject: ["questions": [["question": "Which shell?", "options": [["label": "zsh"]]]]])
         )
-        let answers = AgentQuestionAnswers(prompt: prompt, answers: [.selectedOne("zsh")])
+        let answers = AgentQuestionAnswers(prompt: prompt, entries: [.init(answer: .selectedOne("zsh"), notes: nil)])
 
         let waiter = Task { @MainActor in
             await store.awaitDecisionHonoringCancellation(id: request.id, timeoutMs: 5_000)
@@ -411,6 +411,49 @@ final class ApprovalInboxStoreTests: XCTestCase {
         XCTAssertEqual(result, .expired,
                        "an .answered decision racing a concurrent cancellation of the awaiting Task must be " +
                        "demoted to .expired, exactly like the existing .allowed demotion")
+    }
+
+    /// `.allowedWithPermissions` carries the same "the caller may already
+    /// be gone" hazard `.allowed`/`.answered` do -- a human really did
+    /// decide, so it must be demoted to `.expired` on the same
+    /// cancellation race, never silently delivered to a Task that is
+    /// already gone.
+    func test_awaitDecisionHonoringCancellation_allowedWithPermissionsRacingCancellation_demotedToExpired() async throws {
+        let store = ApprovalInboxStore()
+        let request = makeRequest()
+        store.submit(request)
+        let offer = AgentPermissionOffer(
+            label: "x", entryJSON: try! JSONSerialization.data(withJSONObject: ["type": "addDirectories", "directories": ["/tmp"]])
+        )
+
+        let waiter = Task { @MainActor in
+            await store.awaitDecisionHonoringCancellation(id: request.id, timeoutMs: 5_000)
+        }
+        await yieldToScheduler()
+
+        store.decide(id: request.id, .allowedWithPermissions(offer))
+        waiter.cancel()
+
+        let result = await waiter.value
+        XCTAssertEqual(result, .expired)
+    }
+
+    func test_awaitDecisionHonoringCancellation_allowedWithInputRacingCancellation_demotedToExpired() async throws {
+        let store = ApprovalInboxStore()
+        let request = makeRequest()
+        store.submit(request)
+        let amendedInputData = try! JSONSerialization.data(withJSONObject: ["command": "ls"])
+
+        let waiter = Task { @MainActor in
+            await store.awaitDecisionHonoringCancellation(id: request.id, timeoutMs: 5_000)
+        }
+        await yieldToScheduler()
+
+        store.decide(id: request.id, .allowedWithInput(amendedInputData))
+        waiter.cancel()
+
+        let result = await waiter.value
+        XCTAssertEqual(result, .expired)
     }
 
     func test_expireForSurface_unknownSurface_isNoOp() {

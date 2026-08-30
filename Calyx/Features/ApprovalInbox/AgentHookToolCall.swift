@@ -67,6 +67,45 @@ struct AgentHookToolCall: Sendable {
     /// silent allow.
     let isQuestionTool: Bool
 
+    /// Which PermissionRequest capabilities this call's own `kind`
+    /// grants -- see `AgentHookCapabilities`'s own doc comment. Decided
+    /// once, from `kind` alone, the same wire-boundary placement as
+    /// every other per-kind branch in this file.
+    let capabilities: AgentHookCapabilities
+
+    /// This call's own top-level `permission_suggestions` array (a
+    /// sibling of `tool_input` in the hook payload, never a key inside
+    /// it), decoded into the choices `AgentToolApprovalView` renders
+    /// alongside the plain "Yes"/"No" -- always empty when `capabilities.
+    /// acceptsPermissionUpdates` is false, regardless of whether
+    /// `permission_suggestions` is present. See `decodePermissionOffers
+    /// (from:capabilities:)` for the full leniency contract.
+    let permissionOffers: [AgentPermissionOffer]
+
+    /// `"command"` iff `tool_input.command` is a present `String` (any
+    /// string, including empty) AND `capabilities.acceptsUpdatedInput` is
+    /// true; `nil` otherwise -- the one field
+    /// `AgentToolApprovalView`'s "Amend…" flow may rewrite before
+    /// resubmitting the whole `tool_input` via `.allowedWithInput(_:)`.
+    /// `nil` on a kind whose hook fails closed on `updatedInput` even
+    /// though `tool_input.command` itself decodes fine -- an amend
+    /// option that could never actually be sent must never appear.
+    let amendableField: String?
+
+    /// The whole `tool_input` object (not just a subset of it),
+    /// re-serialized verbatim with `JSONSerialization` -- `nil` only when
+    /// `tool_input` itself is absent from the hook payload. Built from
+    /// the PARSED `toolInput` dictionary, independent of `payload`'s own
+    /// `maxPayloadBytes` truncation, so a large `tool_input` still
+    /// amends/round-trips whole. `AgentToolApprovalView`'s amend flow
+    /// reads the amendable field's current value from this; `.
+    /// allowedWithInput(_:)` replaces that one field and resubmits the
+    /// whole object. Same construction as `AgentQuestionPrompt.
+    /// originalToolInputJSON`, kept as a separate field here since a
+    /// question call and a plain tool call are never the same
+    /// `AgentHookToolCall`.
+    let originalToolInputJSON: Data?
+
     /// `payload`'s cap, in UTF-8 bytes -- see `decode(from:)` for the
     /// character-boundary truncation contract.
     static let maxPayloadBytes = 16_384
@@ -146,12 +185,16 @@ struct AgentHookToolCall: Sendable {
         let hookEventName = object[envelope.hookEventNameKey] as? String
         let permissionMode = object[permissionModeKey] as? String
         let isQuestionTool = kind == AgentEntry.claudeCodeKind && toolName == "AskUserQuestion"
+        let capabilities = decodeCapabilities(kind: kind)
+        let permissionSuggestions = object["permission_suggestions"]
 
         guard let toolInput = object[envelope.toolInputKey] as? [String: Any] else {
             return AgentHookToolCall(
                 toolName: toolName, payload: "", summary: "",
                 hookEventName: hookEventName, permissionMode: permissionMode, question: nil,
-                isQuestionTool: isQuestionTool
+                isQuestionTool: isQuestionTool, capabilities: capabilities,
+                permissionOffers: decodePermissionOffers(from: permissionSuggestions, capabilities: capabilities),
+                amendableField: nil, originalToolInputJSON: nil
             )
         }
 
@@ -163,12 +206,83 @@ struct AgentHookToolCall: Sendable {
         )
 
         let question = isQuestionTool ? decodeQuestions(from: toolInput) : nil
+        let permissionOffers = decodePermissionOffers(from: permissionSuggestions, capabilities: capabilities)
+        let amendableField = (capabilities.acceptsUpdatedInput && toolInput["command"] is String) ? "command" : nil
+        let originalToolInputJSON = try? JSONSerialization.data(withJSONObject: toolInput)
 
         return AgentHookToolCall(
             toolName: toolName, payload: payload, summary: String(derivedSummary.prefix(maxSummaryLength)),
             hookEventName: hookEventName, permissionMode: permissionMode, question: question,
-            isQuestionTool: isQuestionTool
+            isQuestionTool: isQuestionTool, capabilities: capabilities, permissionOffers: permissionOffers,
+            amendableField: amendableField, originalToolInputJSON: originalToolInputJSON
         )
+    }
+
+    /// `kind` -> `AgentHookCapabilities`: only claude-code's PermissionRequest
+    /// hook accepts `updatedPermissions`/`updatedInput`/`interrupt` at all
+    /// (codex fails closed on all three; grok/pi have no such fields in
+    /// their own flat vocabulary) -- see `AgentHookPermissionResponse`'s
+    /// own file header for the per-kind contract this mirrors. Codex
+    /// fails closed on those three response extensions but still falls
+    /// back to its own normal approval flow when no hook decides, so it
+    /// alone joins claude-code with `promptsWhenUndecided: true`; grok and
+    /// pi have no such fallback (see `AgentHookCapabilities.
+    /// promptsWhenUndecided`'s own doc comment).
+    private static func decodeCapabilities(kind: String) -> AgentHookCapabilities {
+        if kind == AgentEntry.claudeCodeKind {
+            return AgentHookCapabilities(
+                acceptsPermissionUpdates: true, acceptsUpdatedInput: true, acceptsInterrupt: true,
+                promptsWhenUndecided: true
+            )
+        }
+        if kind == AgentEntry.codexKind {
+            return AgentHookCapabilities(
+                acceptsPermissionUpdates: false, acceptsUpdatedInput: false, acceptsInterrupt: false,
+                promptsWhenUndecided: true
+            )
+        }
+        return AgentHookCapabilities(
+            acceptsPermissionUpdates: false, acceptsUpdatedInput: false, acceptsInterrupt: false,
+            promptsWhenUndecided: false
+        )
+    }
+
+    /// Decodes the hook payload's top-level `permission_suggestions`
+    /// array (a sibling of `tool_input`, never a key inside it -- see
+    /// `decode(from:kind:)`'s own call sites) into `[AgentPermissionOffer]`,
+    /// leniently: always empty when `capabilities.acceptsPermissionUpdates`
+    /// is false, or `suggestionsValue` is absent/non-array. An element is
+    /// offered iff it is a JSON object, passes the `behavior` rule below,
+    /// AND `AgentPermissionOffer.label(for:)` returns a non-nil label for
+    /// it -- everything else (not an object, a `behavior`-rejected
+    /// `addRules`/`replaceRules`, or an entry `label(for:)` has nothing to
+    /// offer for) is dropped individually. For `addRules`/`replaceRules`,
+    /// a PRESENT `behavior` must be the `String` `"allow"` -- any other
+    /// string, or a non-string value, drops the entry, since
+    /// `updatedPermissions` is allow-only and a suggestion documenting a
+    /// `deny`/other behavior must never be offered as an always-allow
+    /// choice; an ABSENT `behavior` keeps passing (the hooks.md-
+    /// documented shapes for `replaceRules`/`removeRules`/
+    /// `removeDirectories`/`setMode` carry no `behavior` field at all).
+    private static func decodePermissionOffers(
+        from suggestionsValue: Any?, capabilities: AgentHookCapabilities
+    ) -> [AgentPermissionOffer] {
+        guard capabilities.acceptsPermissionUpdates,
+              let suggestionsArray = suggestionsValue as? [Any] else {
+            return []
+        }
+        var offers: [AgentPermissionOffer] = []
+        for suggestionValue in suggestionsArray {
+            guard let entry = suggestionValue as? [String: Any] else { continue }
+            let type = entry["type"] as? String
+            if type == "addRules" || type == "replaceRules", let behaviorValue = entry["behavior"] {
+                guard let behavior = behaviorValue as? String, behavior == "allow" else { continue }
+            }
+            guard let label = AgentPermissionOffer.label(for: entry),
+                  let entryJSON = try? JSONSerialization.data(withJSONObject: entry) else { continue }
+            offers.append(AgentPermissionOffer(label: label, entryJSON: entryJSON))
+        }
+        return offers
     }
 
     /// Reads `value` as a strict JSON boolean, `nil` for anything else --

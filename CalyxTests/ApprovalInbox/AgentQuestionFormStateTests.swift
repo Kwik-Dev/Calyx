@@ -63,7 +63,8 @@ final class AgentQuestionFormStateTests: XCTestCase {
         var form = AgentQuestionFormState(prompt: prompt([q]))
 
         let answers = try XCTUnwrap(form.selectOption(0))
-        XCTAssertEqual(answers.answers, [.selectedOne("zsh")])
+        XCTAssertEqual(answers.entries.map(\.answer), [.selectedOne("zsh")])
+        XCTAssertNil(answers.entries[0].notes, "notesText was never populated, so notes must be nil")
     }
 
     // MARK: - single-select: two questions accumulate, advance, complete on last
@@ -78,13 +79,13 @@ final class AgentQuestionFormStateTests: XCTestCase {
 
         XCTAssertNil(firstResult, "the first of two questions must not complete the prompt")
         XCTAssertEqual(form.questionIndex, 1, "answering the first question must advance to the second")
-        XCTAssertEqual(form.collected, [.selectedOne("bash")])
+        XCTAssertEqual(form.collected.map(\.answer), [.selectedOne("bash")])
         XCTAssertEqual(form.position.index, 2)
         XCTAssertEqual(form.position.count, 2)
         XCTAssertTrue(form.isLastQuestion)
 
         let answers = try XCTUnwrap(form.selectOption(0))
-        XCTAssertEqual(answers.answers, [.selectedOne("bash"), .selectedOne("vim")],
+        XCTAssertEqual(answers.entries.map(\.answer), [.selectedOne("bash"), .selectedOne("vim")],
                        "the completed answers must carry both questions' answers in question order")
     }
 
@@ -110,7 +111,7 @@ final class AgentQuestionFormStateTests: XCTestCase {
         _ = form.selectOption(0)
 
         let answers = try XCTUnwrap(form.confirm())
-        XCTAssertEqual(answers.answers, [.selectedMany(["vim", "nano"])],
+        XCTAssertEqual(answers.entries.map(\.answer), [.selectedMany(["vim", "nano"])],
                        "selectedMany must list labels in the question's own option order, regardless of click order")
     }
 
@@ -150,7 +151,7 @@ final class AgentQuestionFormStateTests: XCTestCase {
         form.otherText = "  install ripgrep  "
 
         let answers = try XCTUnwrap(form.confirm())
-        XCTAssertEqual(answers.answers, [.freeText("install ripgrep")])
+        XCTAssertEqual(answers.entries.map(\.answer), [.freeText("install ripgrep")])
     }
 
     func test_confirm_freeText_emptyAfterTrim_isNoOp() {
@@ -190,7 +191,7 @@ final class AgentQuestionFormStateTests: XCTestCase {
 
         form.otherText = "please also install fd"
         let answers = try XCTUnwrap(form.confirm())
-        XCTAssertEqual(answers.answers, [.freeText("please also install fd")])
+        XCTAssertEqual(answers.entries.map(\.answer), [.freeText("please also install fd")])
     }
 
     // MARK: - single-select canConfirm: false with options only, true once free text shows
@@ -292,5 +293,165 @@ final class AgentQuestionFormStateTests: XCTestCase {
         _ = form.selectOption(0)
 
         XCTAssertTrue(form.isLastQuestion)
+    }
+
+    // MARK: - notes: showNotes / notesText committed into Entry.notes
+
+    func test_showNotes_makesNotesVisible() {
+        let q = question("Which shell?", options: [option("zsh"), option("bash")])
+        var form = AgentQuestionFormState(prompt: prompt([q]))
+
+        XCTAssertFalse(form.notesVisible, "notes must start hidden")
+        form.showNotes()
+        XCTAssertTrue(form.notesVisible)
+    }
+
+    func test_selectOption_commitsTrimmedNotesText_intoEntryNotes() throws {
+        let q = question("Which shell?", options: [option("zsh"), option("bash")])
+        var form = AgentQuestionFormState(prompt: prompt([q]))
+        form.showNotes()
+        form.notesText = "  please double check  "
+
+        let answers = try XCTUnwrap(form.selectOption(0))
+        XCTAssertEqual(answers.entries[0].notes, "please double check", "notes must be trimmed")
+    }
+
+    func test_selectOption_emptyNotesText_commitsNilNotes() throws {
+        let q = question("Which shell?", options: [option("zsh"), option("bash")])
+        var form = AgentQuestionFormState(prompt: prompt([q]))
+        form.showNotes()
+        form.notesText = "   "
+
+        let answers = try XCTUnwrap(form.selectOption(0))
+        XCTAssertNil(answers.entries[0].notes, "whitespace-only notes must trim to nil")
+    }
+
+    func test_confirm_commitsTrimmedNotesText_intoEntryNotes() throws {
+        let q = question("Anything else?", options: [option("Other")])
+        var form = AgentQuestionFormState(prompt: prompt([q]))
+        form.chooseOther()
+        form.otherText = "install ripgrep"
+        form.showNotes()
+        form.notesText = "for the search feature"
+
+        let answers = try XCTUnwrap(form.confirm())
+        XCTAssertEqual(answers.entries[0].answer, .freeText("install ripgrep"))
+        XCTAssertEqual(answers.entries[0].notes, "for the search feature")
+    }
+
+    func test_advancingToNextQuestion_resetsNotesTextAndVisibility() {
+        let q1 = question("Which shell?", options: [option("zsh"), option("bash")])
+        let q2 = question("Which editor?", options: [option("vim"), option("emacs")])
+        var form = AgentQuestionFormState(prompt: prompt([q1, q2]))
+        form.showNotes()
+        form.notesText = "leftover notes"
+
+        _ = form.selectOption(0)
+
+        XCTAssertFalse(form.notesVisible, "notesVisible must reset on advance")
+        XCTAssertEqual(form.notesText, "", "notesText must reset on advance")
+    }
+
+    // MARK: - goBack
+
+    func test_canGoBack_falseOnFirstQuestion_trueAfterAdvancing() {
+        let q1 = question("Which shell?", options: [option("zsh"), option("bash")])
+        let q2 = question("Which editor?", options: [option("vim"), option("emacs")])
+        var form = AgentQuestionFormState(prompt: prompt([q1, q2]))
+
+        XCTAssertFalse(form.canGoBack, "the first question has nothing to go back to")
+
+        _ = form.selectOption(0)
+
+        XCTAssertTrue(form.canGoBack)
+    }
+
+    func test_goBack_onFirstQuestion_isNoOp() {
+        let q = question("Which shell?", options: [option("zsh"), option("bash")])
+        var form = AgentQuestionFormState(prompt: prompt([q]))
+        let before = form
+
+        form.goBack()
+
+        XCTAssertEqual(form, before, "goBack() on the first question must leave state completely untouched")
+    }
+
+    func test_goBack_removesLastCollectedEntry_movesBackOneQuestion() {
+        let q1 = question("Which shell?", options: [option("zsh"), option("bash")])
+        let q2 = question("Which editor?", options: [option("vim"), option("emacs")])
+        var form = AgentQuestionFormState(prompt: prompt([q1, q2]))
+        _ = form.selectOption(0)
+        XCTAssertEqual(form.questionIndex, 1, "precondition: advanced to question 2")
+
+        form.goBack()
+
+        XCTAssertEqual(form.questionIndex, 0, "goBack() must move back one question")
+        XCTAssertEqual(form.collected, [], "goBack() must remove the last collected entry")
+    }
+
+    func test_goBack_restoresSelectedOne_intoSelectedOptionIndices() {
+        let q1 = question("Which shell?", options: [option("zsh"), option("bash")])
+        let q2 = question("Which editor?", options: [option("vim"), option("emacs")])
+        var form = AgentQuestionFormState(prompt: prompt([q1, q2]))
+        _ = form.selectOption(1) // "bash", index 1
+
+        form.goBack()
+
+        XCTAssertEqual(form.selectedOptionIndices, [1], "goBack() must restore the .selectedOne answer's own option index")
+        XCTAssertFalse(form.otherSelected)
+    }
+
+    func test_goBack_restoresSelectedMany_intoSelectedOptionIndices() {
+        let q1 = question("Which editors?", options: [option("vim"), option("emacs"), option("nano")], multiSelect: true)
+        let q2 = question("Which shell?", options: [option("zsh"), option("bash")])
+        var form = AgentQuestionFormState(prompt: prompt([q1, q2]))
+        _ = form.selectOption(2) // nano
+        _ = form.selectOption(0) // vim
+        _ = form.confirm() // .selectedMany(["vim", "nano"]) -> advances to q2
+
+        form.goBack()
+
+        XCTAssertEqual(form.selectedOptionIndices, [0, 2], "goBack() must restore every selected index of the .selectedMany answer")
+    }
+
+    func test_goBack_restoresFreeText_intoOtherSelectedAndOtherText() {
+        let q1 = question("Anything else?", options: [option("Other")])
+        let q2 = question("Which shell?", options: [option("zsh"), option("bash")])
+        var form = AgentQuestionFormState(prompt: prompt([q1, q2]))
+        form.chooseOther()
+        form.otherText = "install ripgrep"
+        _ = form.confirm()
+
+        form.goBack()
+
+        XCTAssertTrue(form.otherSelected, "goBack() must restore otherSelected for a .freeText answer")
+        XCTAssertEqual(form.otherText, "install ripgrep", "goBack() must restore the typed free text")
+    }
+
+    func test_goBack_restoresNotesTextAndVisibility() {
+        let q1 = question("Which shell?", options: [option("zsh"), option("bash")])
+        let q2 = question("Which editor?", options: [option("vim"), option("emacs")])
+        var form = AgentQuestionFormState(prompt: prompt([q1, q2]))
+        form.showNotes()
+        form.notesText = "please double check"
+        _ = form.selectOption(0)
+        XCTAssertFalse(form.notesVisible, "precondition: notes reset on advance")
+
+        form.goBack()
+
+        XCTAssertTrue(form.notesVisible, "goBack() must restore notesVisible from the removed entry's own notes")
+        XCTAssertEqual(form.notesText, "please double check", "goBack() must restore notesText from the removed entry")
+    }
+
+    func test_goBack_noNotesOnRemovedEntry_leavesNotesHidden() {
+        let q1 = question("Which shell?", options: [option("zsh"), option("bash")])
+        let q2 = question("Which editor?", options: [option("vim"), option("emacs")])
+        var form = AgentQuestionFormState(prompt: prompt([q1, q2]))
+        _ = form.selectOption(0)
+
+        form.goBack()
+
+        XCTAssertFalse(form.notesVisible, "an entry with no notes must restore notesVisible as false")
+        XCTAssertEqual(form.notesText, "")
     }
 }

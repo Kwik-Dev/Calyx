@@ -903,4 +903,314 @@ final class AgentHookToolCallTests: XCTestCase {
         XCTAssertEqual(prompt.questions.count, 1)
         XCTAssertEqual(prompt.questions.first?.options.map(\.label), ["zsh", "bash"])
     }
+
+    // MARK: - capabilities
+
+    func test_capabilities_claudeCode_allTrue() throws {
+        let data = json(["tool_name": "Bash", "tool_input": ["command": "ls"]])
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.claudeCodeKind))
+
+        XCTAssertEqual(call.capabilities, AgentHookCapabilities(
+            acceptsPermissionUpdates: true, acceptsUpdatedInput: true, acceptsInterrupt: true,
+            promptsWhenUndecided: true
+        ))
+    }
+
+    func test_capabilities_codex_promptsWhenUndecidedOnly() throws {
+        let data = json(["tool_name": "Bash", "tool_input": ["command": "ls"]])
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.codexKind))
+
+        XCTAssertEqual(call.capabilities, AgentHookCapabilities(
+            acceptsPermissionUpdates: false, acceptsUpdatedInput: false, acceptsInterrupt: false,
+            promptsWhenUndecided: true
+        ), "codex shows its own approval prompt when no hook decides, even though it carries none of " +
+           "claude-code's other PermissionRequest capabilities")
+    }
+
+    func test_capabilities_grokPiAndUnknown_allFalse() throws {
+        let data = json(["tool_name": "Bash", "tool_input": ["command": "ls"]])
+        for kind in [AgentEntry.grokKind, AgentEntry.piKind, "some-unrecognized-cli"] {
+            let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: kind), "kind=\(kind)")
+            XCTAssertEqual(call.capabilities, AgentHookCapabilities(
+                acceptsPermissionUpdates: false, acceptsUpdatedInput: false, acceptsInterrupt: false,
+                promptsWhenUndecided: false
+            ), "kind=\(kind)")
+        }
+    }
+
+    // MARK: - permissionOffers: hooks.md example
+
+    /// The exact `permission_suggestions` entry hooks.md documents,
+    /// carried as a top-level sibling of `tool_input` in the hook payload.
+    func test_decode_permissionOffers_hooksMdExample_decodesOneOfferWithExactLabelAndEntryJSON() throws {
+        let entry: [String: Any] = [
+            "type": "addRules",
+            "rules": [["toolName": "Bash", "ruleContent": "rm -rf node_modules"]],
+            "behavior": "allow",
+            "destination": "localSettings",
+        ]
+        let data = json([
+            "tool_name": "Bash", "tool_input": ["command": "rm -rf node_modules"],
+            "permission_suggestions": [entry],
+        ])
+
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.claudeCodeKind))
+
+        XCTAssertEqual(call.permissionOffers.count, 1)
+        let offer = try XCTUnwrap(call.permissionOffers.first)
+        XCTAssertEqual(offer.label, "Yes, and don't ask again for Bash: rm -rf node_modules from this project")
+        let decodedEntry = try XCTUnwrap(JSONSerialization.jsonObject(with: offer.entryJSON) as? NSDictionary)
+        XCTAssertEqual(decodedEntry, entry as NSDictionary,
+                       "entryJSON must be the permission_suggestions entry re-serialized verbatim")
+    }
+
+    // MARK: - permissionOffers: only when capabilities.acceptsPermissionUpdates
+
+    func test_decode_permissionOffers_nonClaudeCodeKind_alwaysEmpty_evenWithSuggestionsPresent() throws {
+        let entry: [String: Any] = ["type": "addDirectories", "directories": ["/tmp"]]
+        let data = json([
+            "tool_name": "Bash", "tool_input": ["command": "ls"], "permission_suggestions": [entry],
+        ])
+
+        for kind in [AgentEntry.codexKind, AgentEntry.grokKind, AgentEntry.piKind] {
+            let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: kind), "kind=\(kind)")
+            XCTAssertEqual(call.permissionOffers, [], "kind=\(kind)")
+        }
+    }
+
+    // MARK: - permissionOffers: required-fields-only fixture per type
+
+    func test_decode_permissionOffers_requiredFieldsOnlyFixture_perType() throws {
+        let fixtures: [[String: Any]] = [
+            ["type": "addDirectories", "directories": ["/tmp"]],
+            ["type": "addRules", "rules": [["toolName": "Bash"]], "behavior": "allow"],
+            ["type": "setMode", "mode": "acceptEdits"],
+            ["type": "replaceRules", "rules": [["toolName": "Bash"]]],
+            ["type": "removeRules", "rules": [["toolName": "Bash"]]],
+            ["type": "removeDirectories", "directories": ["/tmp"]],
+            ["type": "someUnknownFutureType"],
+        ]
+        for fixture in fixtures {
+            let data = json([
+                "tool_name": "Bash", "tool_input": ["command": "ls"], "permission_suggestions": [fixture],
+            ])
+            let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.claudeCodeKind), "fixture=\(fixture)")
+            XCTAssertEqual(call.permissionOffers.count, 1, "fixture=\(fixture)")
+        }
+    }
+
+    // MARK: - permissionOffers: non-array / non-object element / missing or non-string type
+
+    func test_decode_permissionOffers_nonArraySuggestions_yieldsEmpty() throws {
+        let data = json([
+            "tool_name": "Bash", "tool_input": ["command": "ls"], "permission_suggestions": "not-an-array",
+        ])
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.claudeCodeKind))
+        XCTAssertEqual(call.permissionOffers, [])
+    }
+
+    func test_decode_permissionOffers_missingSuggestionsKey_yieldsEmpty() throws {
+        let data = json(["tool_name": "Bash", "tool_input": ["command": "ls"]])
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.claudeCodeKind))
+        XCTAssertEqual(call.permissionOffers, [])
+    }
+
+    func test_decode_permissionOffers_nonObjectElement_droppedIndividually_siblingSurvives() throws {
+        let valid: [String: Any] = ["type": "addDirectories", "directories": ["/tmp"]]
+        let data = json([
+            "tool_name": "Bash", "tool_input": ["command": "ls"], "permission_suggestions": [valid, "junk", 7],
+        ])
+
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.claudeCodeKind))
+        XCTAssertEqual(call.permissionOffers.count, 1, "the non-object elements must each be dropped alone")
+    }
+
+    func test_decode_permissionOffers_elementMissingType_dropped() throws {
+        let missingType: [String: Any] = ["directories": ["/tmp"]]
+        let nonStringType: [String: Any] = ["type": 42, "directories": ["/tmp"]]
+        let valid: [String: Any] = ["type": "addDirectories", "directories": ["/var"]]
+        let data = json([
+            "tool_name": "Bash", "tool_input": ["command": "ls"],
+            "permission_suggestions": [missingType, nonStringType, valid],
+        ])
+
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.claudeCodeKind))
+        XCTAssertEqual(call.permissionOffers.count, 1,
+                       "an element missing type or with a non-string type must be dropped alone")
+        XCTAssertEqual(call.permissionOffers.first?.label, "Yes, and always allow access to /var")
+    }
+
+    // MARK: - permissionOffers: an entry with nothing to offer is dropped individually
+
+    func test_decode_permissionOffers_entryWithNothingToOffer_droppedIndividually_siblingSurvives() throws {
+        let nothingToOffer: [String: Any] = ["type": "addRules", "rules": [], "behavior": "allow"]
+        let valid: [String: Any] = ["type": "addDirectories", "directories": ["/tmp"]]
+        let data = json([
+            "tool_name": "Bash", "tool_input": ["command": "ls"],
+            "permission_suggestions": [nothingToOffer, valid],
+        ])
+
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.claudeCodeKind))
+        XCTAssertEqual(call.permissionOffers.count, 1,
+                       "an entry AgentPermissionOffer.label(for:) returns nil for must be dropped alone")
+        XCTAssertEqual(call.permissionOffers.first?.label, "Yes, and always allow access to /tmp")
+    }
+
+    func test_decode_permissionOffers_setModeWithoutMode_dropped() throws {
+        let entry: [String: Any] = ["type": "setMode"]
+        let data = json([
+            "tool_name": "Bash", "tool_input": ["command": "ls"], "permission_suggestions": [entry],
+        ])
+
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.claudeCodeKind))
+        XCTAssertEqual(call.permissionOffers, [])
+    }
+
+    // MARK: - permissionOffers: addRules/replaceRules behavior: "deny" dropped
+
+    func test_decode_permissionOffers_addRulesBehaviorDeny_dropped() throws {
+        let denyEntry: [String: Any] = ["type": "addRules", "rules": [["toolName": "Bash"]], "behavior": "deny"]
+        let allowEntry: [String: Any] = ["type": "addRules", "rules": [["toolName": "Read"]], "behavior": "allow"]
+        let data = json([
+            "tool_name": "Bash", "tool_input": ["command": "ls"],
+            "permission_suggestions": [denyEntry, allowEntry],
+        ])
+
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.claudeCodeKind))
+        XCTAssertEqual(call.permissionOffers.count, 1,
+                       "an addRules entry whose behavior is not allow must be dropped")
+        XCTAssertEqual(call.permissionOffers.first?.label, "Yes, and always allow Read")
+    }
+
+    // MARK: - permissionOffers: unknown keys preserved in entryJSON
+
+    func test_decode_permissionOffers_unknownKeysPreservedInEntryJSON() throws {
+        let entry: [String: Any] = ["type": "addDirectories", "directories": ["/tmp"], "futureField": ["nested": 1]]
+        let data = json([
+            "tool_name": "Bash", "tool_input": ["command": "ls"], "permission_suggestions": [entry],
+        ])
+
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.claudeCodeKind))
+        let offer = try XCTUnwrap(call.permissionOffers.first)
+        let decodedEntry = try XCTUnwrap(JSONSerialization.jsonObject(with: offer.entryJSON) as? NSDictionary)
+        XCTAssertEqual(decodedEntry, entry as NSDictionary, "unknown keys must survive verbatim in entryJSON")
+    }
+
+    // MARK: - permissionOffers: top-level key only, tool_input's own key ignored
+
+    /// Claude Code sends `permission_suggestions` as a top-level sibling of
+    /// `tool_input`, never nested inside it. A `permission_suggestions` key
+    /// that happens to appear inside `tool_input` is just part of the
+    /// tool's own input and must not be read as an offer.
+    func test_decode_permissionOffers_keyInsideToolInput_isNotRead_offersEmpty() throws {
+        let data = json([
+            "tool_name": "Bash",
+            "tool_input": [
+                "command": "ls",
+                "permission_suggestions": [["type": "addDirectories", "directories": ["/tmp"]]],
+            ],
+        ])
+
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.claudeCodeKind))
+
+        XCTAssertEqual(call.permissionOffers, [],
+                       "permission_suggestions nested inside tool_input is not the hook's offers field")
+        XCTAssertTrue(call.payload.contains("permission_suggestions"),
+                      "the key is still part of tool_input and must survive in payload verbatim")
+        let originalToolInputJSON = try XCTUnwrap(call.originalToolInputJSON)
+        let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: originalToolInputJSON) as? NSDictionary)
+        XCTAssertNotNil(decoded["permission_suggestions"],
+                        "originalToolInputJSON must round-trip tool_input's own permission_suggestions key")
+    }
+
+    func test_decode_permissionOffers_topLevelKey_readEvenWhenToolInputAbsent() throws {
+        let data = json([
+            "tool_name": "Bash",
+            "permission_suggestions": [["type": "addDirectories", "directories": ["/tmp"]]],
+        ])
+
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.claudeCodeKind))
+
+        XCTAssertEqual(call.permissionOffers.count, 1)
+        XCTAssertEqual(call.permissionOffers.first?.label, "Yes, and always allow access to /tmp")
+        XCTAssertEqual(call.payload, "")
+        XCTAssertNil(call.originalToolInputJSON)
+        XCTAssertNil(call.amendableField)
+    }
+
+    func test_decode_permissionOffers_addRulesNonStringBehavior_dropped() throws {
+        let data = json([
+            "tool_name": "Bash",
+            "permission_suggestions": [["type": "addRules", "rules": [["toolName": "Bash"]], "behavior": 42]],
+        ])
+
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.claudeCodeKind))
+        XCTAssertEqual(call.permissionOffers, [],
+                       "a present but non-String behavior must drop the entry")
+    }
+
+    // MARK: - amendableField
+
+    func test_decode_amendableField_commandStringPresent_claudeCode_isCommand() throws {
+        let data = json(["tool_name": "Bash", "tool_input": ["command": "ls -la"]])
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.claudeCodeKind))
+        XCTAssertEqual(call.amendableField, "command")
+    }
+
+    func test_decode_amendableField_commandAbsent_isNil() throws {
+        let data = json(["tool_name": "Write", "tool_input": ["file_path": "/tmp/x"]])
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.claudeCodeKind))
+        XCTAssertNil(call.amendableField)
+    }
+
+    func test_decode_amendableField_commandNonString_isNil() throws {
+        let data = json(["tool_name": "Bash", "tool_input": ["command": 42]])
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.claudeCodeKind))
+        XCTAssertNil(call.amendableField)
+    }
+
+    func test_decode_amendableField_codexKind_isNilEvenWithCommandPresent() throws {
+        let data = json(["tool_name": "Bash", "tool_input": ["command": "ls -la"]])
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.codexKind))
+        XCTAssertNil(call.amendableField,
+                     "codex's capabilities.acceptsUpdatedInput is false, so amendableField must stay nil " +
+                     "even though tool_input.command is a String")
+    }
+
+    // MARK: - originalToolInputJSON
+
+    func test_decode_originalToolInputJSON_present_roundTripsWholeToolInput() throws {
+        let toolInput: [String: Any] = ["command": "ls -la", "metadata": ["source": "cli"]]
+        let data = json(["tool_name": "Bash", "tool_input": toolInput])
+
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.claudeCodeKind))
+        let originalToolInputJSON = try XCTUnwrap(call.originalToolInputJSON)
+        let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: originalToolInputJSON) as? NSDictionary)
+        XCTAssertEqual(decoded, toolInput as NSDictionary)
+    }
+
+    func test_decode_originalToolInputJSON_toolInputAbsent_isNil() throws {
+        let data = json(["tool_name": "Bash"])
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.claudeCodeKind))
+        XCTAssertNil(call.originalToolInputJSON)
+    }
+
+    func test_decode_originalToolInputJSON_survivesPayloadTruncation_independentOfCap() throws {
+        let bigValue = String(repeating: "a", count: 20_000)
+        let toolInput: [String: Any] = ["command": bigValue]
+        let data = json(["tool_name": "Bash", "tool_input": toolInput])
+
+        let toolInputJSON = try compactJSON(toolInput)
+        XCTAssertGreaterThan(toolInputJSON.utf8.count, AgentHookToolCall.maxPayloadBytes,
+                            "Precondition: the fixture's tool_input must actually exceed maxPayloadBytes")
+
+        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.claudeCodeKind))
+        XCTAssertLessThanOrEqual(call.payload.utf8.count, AgentHookToolCall.maxPayloadBytes,
+                                "payload must still be truncated to the byte cap")
+
+        let originalToolInputJSON = try XCTUnwrap(call.originalToolInputJSON)
+        let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: originalToolInputJSON) as? NSDictionary)
+        XCTAssertEqual(decoded, toolInput as NSDictionary,
+                       "originalToolInputJSON must survive the 16 KB payload truncation whole")
+    }
 }

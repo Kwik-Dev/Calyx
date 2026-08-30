@@ -25,10 +25,10 @@ struct AgentQuestionFormState: Equatable {
     /// decodeQuestions`'s own contract, so this is always a valid index.
     private(set) var questionIndex = 0
 
-    /// One `AgentQuestionAnswer` per question already confirmed, in
-    /// question order -- does NOT include the question currently being
-    /// answered.
-    private(set) var collected: [AgentQuestionAnswer] = []
+    /// One `AgentQuestionAnswers.Entry` per question already confirmed,
+    /// in question order -- does NOT include the question currently
+    /// being answered.
+    private(set) var collected: [AgentQuestionAnswers.Entry] = []
 
     /// The in-progress multi-select membership for `currentQuestion`.
     /// Meaningless (and always empty) while `otherSelected` is true --
@@ -57,6 +57,21 @@ struct AgentQuestionFormState: Equatable {
     /// priority for `previewText`.
     var hoveredOptionIndex: Int?
 
+    /// Whether the "Add notes" field is showing for `currentQuestion` --
+    /// the TUI's own "n: add notes" affordance, toggled on by
+    /// `showNotes()`. Resets to `false` on advance/goBack, restored by
+    /// `goBack()` from the removed entry's own `notes`.
+    private(set) var notesVisible = false
+
+    /// The notes field's own contents -- bound directly by the view
+    /// (`var`, not `private(set)`, same as `otherText`), reset to `""`
+    /// whenever the question advances. Trimmed at COMMIT time (inside
+    /// `advance(with:)`, via `trimmedNotes()`) into the completed
+    /// `AgentQuestionAnswers.Entry.notes` -- `nil` when empty after
+    /// trimming, never an empty string -- so `AgentHookPermissionResponse`'s
+    /// own `annotations` output never has to re-trim.
+    var notesText = ""
+
     init(prompt: AgentQuestionPrompt) {
         self.prompt = prompt
     }
@@ -69,6 +84,12 @@ struct AgentQuestionFormState: Equatable {
 
     var isLastQuestion: Bool {
         questionIndex == prompt.questions.count - 1
+    }
+
+    /// Whether `goBack()` would do anything right now -- false on the
+    /// first question (nothing collected yet to return to).
+    var canGoBack: Bool {
+        questionIndex > 0
     }
 
     /// 1-based (index, count) position within `prompt.questions`, for the
@@ -155,6 +176,14 @@ struct AgentQuestionFormState: Equatable {
         return nil
     }
 
+    /// The "Add notes" button's own click: reveals `notesText`'s field.
+    /// No reverse action -- once shown, the field stays showing for the
+    /// rest of `currentQuestion` (mirrors `chooseOther()`'s one-directional
+    /// reveal).
+    mutating func showNotes() {
+        notesVisible = true
+    }
+
     /// The standing "Other…" choice's own click: reveals the free-text
     /// field and deselects every listed option -- exclusive with them,
     /// single- or multi-select alike, same as a listed click clears this
@@ -183,19 +212,25 @@ struct AgentQuestionFormState: Equatable {
         return advance(with: .selectedMany(labels))
     }
 
-    /// Records `answer` as `currentQuestion`'s answer. Moves to the next
+    /// Records `answer` (plus the trimmed `notesText`, `nil` when empty
+    /// after trimming) as `currentQuestion`'s answer. Moves to the next
     /// question (resetting only the per-question selection state, not
     /// `questionIndex`/`collected` themselves) while more remain, else
     /// returns the completed `AgentQuestionAnswers` with every collected
-    /// answer in question order.
+    /// entry in question order.
     private mutating func advance(with answer: AgentQuestionAnswer) -> AgentQuestionAnswers? {
-        collected.append(answer)
+        collected.append(AgentQuestionAnswers.Entry(answer: answer, notes: trimmedNotes()))
         guard questionIndex + 1 < prompt.questions.count else {
-            return AgentQuestionAnswers(prompt: prompt, answers: collected)
+            return AgentQuestionAnswers(prompt: prompt, entries: collected)
         }
         questionIndex += 1
         resetSelection()
         return nil
+    }
+
+    private func trimmedNotes() -> String? {
+        let trimmed = notesText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private mutating func resetSelection() {
@@ -204,5 +239,46 @@ struct AgentQuestionFormState: Equatable {
         otherText = ""
         hoveredOptionIndex = nil
         lastInteractedOptionIndex = nil
+        notesVisible = false
+        notesText = ""
+    }
+
+    /// Steps back to the previous question: removes the last collected
+    /// entry, decrements `questionIndex`, and restores every piece of
+    /// per-question state that entry's own answer carried -- a
+    /// `.selectedOne`/`.selectedMany` restores `selectedOptionIndices`
+    /// (matched by label against `currentQuestion.options`, since the
+    /// entry stores labels, not indices); `.freeText` restores
+    /// `otherSelected`/`otherText`; `notesVisible`/`notesText` restore
+    /// from the entry's own `notes` regardless of answer case. A no-op --
+    /// touching NOTHING, not even `lastInteractedOptionIndex`/
+    /// `hoveredOptionIndex` -- when `canGoBack` is false: there is
+    /// nothing collected to return to on the first question.
+    mutating func goBack() {
+        guard canGoBack, let removed = collected.popLast() else { return }
+        questionIndex -= 1
+        selectedOptionIndices = []
+        otherSelected = false
+        otherText = ""
+        hoveredOptionIndex = nil
+        lastInteractedOptionIndex = nil
+
+        switch removed.answer {
+        case .selectedOne(let label):
+            if let index = currentQuestion.options.firstIndex(where: { $0.label == label }) {
+                selectedOptionIndices = [index]
+            }
+        case .selectedMany(let labels):
+            let indices = currentQuestion.options.enumerated()
+                .filter { labels.contains($0.element.label) }
+                .map(\.offset)
+            selectedOptionIndices = Set(indices)
+        case .freeText(let text):
+            otherSelected = true
+            otherText = text
+        }
+
+        notesVisible = removed.notes != nil
+        notesText = removed.notes ?? ""
     }
 }

@@ -586,9 +586,12 @@ final class CalyxMCPServer {
     /// redacted; a question's notification title is "... asks a
     /// question" and its body is the first question's own text), and
     /// long-polls `approvalInbox.awaitDecisionHonoringCancellation`. The
-    /// final response's `denyMessage` is `AgentHookPermissionResponse.
-    /// dismissedQuestionMessage` for a question, `deniedMessage`
-    /// otherwise -- see those two `static let`s' own doc comments.
+    /// resolved `ApprovalDecision` already carries its own `DenyReason`/
+    /// `InterruptReason` (the model/view picked it when the human
+    /// decided) -- `AgentHookPermissionResponse.body(kind:decision:)`
+    /// alone maps that reason to the message/reason text a given `kind`'s
+    /// hook actually reads; this route never passes a message string of
+    /// its own.
     ///
     /// Three invariants a future change here must preserve:
     ///
@@ -735,7 +738,15 @@ final class CalyxMCPServer {
             notificationTitle = "\(AgentEntry.displayName(forKind: kind)) asks a question"
             notificationBody = SecretRedactor.redact(question.questions[0].text)
         } else {
-            source = .agentHook(toolName: call.toolName, kind: kind, summary: call.summary)
+            let offers = AgentHookOffers(
+                permissionUpdates: call.permissionOffers,
+                amendableField: call.amendableField,
+                originalToolInputJSON: call.originalToolInputJSON,
+                canStop: call.capabilities.acceptsInterrupt,
+                canAnswerInPane: call.capabilities.promptsWhenUndecided,
+                cliOwnsPersistence: call.capabilities.acceptsPermissionUpdates && !call.permissionOffers.isEmpty
+            )
+            source = .agentHook(toolName: call.toolName, kind: kind, summary: call.summary, offers: offers)
             notificationTitle = "\(AgentEntry.displayName(forKind: kind)) wants to run \(call.toolName)"
             notificationBody = SecretRedactor.redact("\(call.toolName): \(call.summary)")
         }
@@ -767,11 +778,9 @@ final class CalyxMCPServer {
         )
 
         let decision = await approvalInbox.awaitDecisionHonoringCancellation(id: requestID, timeoutMs: approvalRequestTimeoutMs)
-        let denyMessage = call.question == nil
-            ? AgentHookPermissionResponse.deniedMessage : AgentHookPermissionResponse.dismissedQuestionMessage
         return HTTPParser.response(
             statusCode: 200,
-            body: AgentHookPermissionResponse.body(kind: kind, decision: decision, denyMessage: denyMessage)
+            body: AgentHookPermissionResponse.body(kind: kind, decision: decision)
         )
     }
 
