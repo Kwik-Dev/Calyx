@@ -56,7 +56,13 @@
 //! path, so this genuinely exercises that default-argv resolution
 //! instead of only proving `SHELL` is inherited (an explicit `--argv`
 //! session would prove just the latter, since `session.rs` never reads
-//! `$SHELL` once `spec.argv` is `Some`).
+//! `$SHELL` once `spec.argv` is `Some`). On macOS that default-argv
+//! path now runs the dumper through a real `login(1)` session, which
+//! overwrites the `SHELL` variable the dumper itself observes with the
+//! current account's passwd-entry shell; `dumper_shell_path` still
+//! decides what `login`'s `exec -l` ultimately execs, so the dumper
+//! still runs and still writes its dump, but its own `$SHELL` no
+//! longer equals `dumper_shell_path` on that platform.
 //!
 //! `TERMINFO` is forwarded by `resolve_terminal_env`, so this test sets
 //! it explicitly on the `new` invocation itself (`CLIENT_TERMINFO`,
@@ -67,11 +73,11 @@
 //! `XDG_DATA_DIRS` are deliberately absent from both `POISONED_ENV` and
 //! `resolve_terminal_env`'s own key list, so this test asserts the
 //! daemon-inheritance fall-through for both instead: they DO survive
-//! into the session shell with the exact value set on the daemon,
-//! mirroring the `SHELL` assertion. `GHOSTTY_BIN_DIR` survives for one
-//! reason: nothing on any path a session shell can take ever
-//! re-supplies it, so scrubbing it would be a pure loss, not a fix,
-//! even though the daemon's own inherited copy can go stale.
+//! into the session shell with the exact value set on the daemon.
+//! `GHOSTTY_BIN_DIR` survives for one reason: nothing on any path a
+//! session shell can take ever re-supplies it, so scrubbing it would
+//! be a pure loss, not a fix, even though the daemon's own inherited
+//! copy can go stale.
 //! `XDG_DATA_DIRS` survives for a different reason: its inherited copy
 //! carries the user's own real entries alongside whatever Calyx or
 //! ghostty appended, not just a stale pointer with nothing else riding
@@ -81,8 +87,11 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
+
+mod common;
+use common::{bin, wait_for_socket, ChildGuard};
 
 /// Variables poisoned on the daemon's own process environment before
 /// it starts: `SCRUBBED_ENV_VARS`'s own members
@@ -131,29 +140,15 @@ const CLIENT_TERMINFO: &str = "resupplied-by-new-client-terminfo";
 /// (see that const's own doc comment): nothing re-supplies a fresh
 /// value on any path a session shell can take, so a value the daemon
 /// inherited for it, however stale, must still reach the session
-/// shell unchanged rather than being dropped, the same way `SHELL`
-/// does.
+/// shell unchanged rather than being dropped.
 const KNOWN_GHOSTTY_BIN_DIR: &str = "poisoned-but-must-survive-ghostty-bin-dir";
 
 /// `resolve_shell_integration_env` forwards `XDG_DATA_DIRS` verbatim
 /// whenever the attaching client's own env has it, but `SCRUBBED_ENV_VARS`
 /// deliberately leaves it out of the scrub (see that const's own doc
 /// comment): it must keep reaching a `new`-created session's shell
-/// unchanged, the same way `SHELL` does.
+/// unchanged.
 const KNOWN_XDG_DATA_DIRS: &str = "poisoned-but-must-survive-xdg-data-dirs";
-
-struct DaemonGuard(Child);
-
-impl Drop for DaemonGuard {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
-fn bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_calyx-session"))
-}
 
 /// Writes an executable script at `<dir>/dumper-shell` that dumps
 /// this process's environment to `dump_path` (via `/usr/bin/env`,
@@ -161,7 +156,10 @@ fn bin() -> PathBuf {
 /// exits 0. Pointed at by `$SHELL` on the daemon so `new`, called
 /// with no `--argv`, genuinely exercises `session.rs`'s default-argv
 /// resolution (`spawn_session` reads `$SHELL` only when `spec.argv`
-/// is `None`) rather than a path that would fail to spawn at all.
+/// is `None`) rather than a path that would fail to spawn at all. On
+/// macOS this executable is what `login(1)`'s `exec -l` ultimately
+/// runs, not what the dumper's own `$SHELL` observes once it runs;
+/// see the `SHELL` assertion below for that distinction.
 fn write_dumper_shell(dir: &Path, dump_path: &Path) -> PathBuf {
     let script_path = dir.join("dumper-shell");
     let script = format!("#!/bin/sh\n/usr/bin/env > '{}'\n", dump_path.display());
@@ -172,17 +170,6 @@ fn write_dumper_shell(dir: &Path, dump_path: &Path) -> PathBuf {
     perms.set_mode(0o755);
     fs::set_permissions(&script_path, perms).expect("chmod dumper shell script executable");
     script_path
-}
-
-fn wait_for_socket(path: &Path, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if path.exists() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    false
 }
 
 fn run_cli(runtime_dir: &Path, state_dir: &Path, args: &[&str]) -> Output {
@@ -258,7 +245,7 @@ fn session_shell_never_sees_the_daemons_inherited_pane_scoped_env() {
     let daemon_child = daemon_cmd
         .spawn()
         .expect("spawn `calyx-session daemon --foreground`");
-    let _daemon_guard = DaemonGuard(daemon_child);
+    let _daemon_guard = ChildGuard(daemon_child);
 
     let socket_path = runtime_dir.join("sessiond.sock");
     if !wait_for_socket(&socket_path, Duration::from_secs(5)) {
@@ -339,13 +326,32 @@ fn session_shell_never_sees_the_daemons_inherited_pane_scoped_env() {
         );
     }
 
+    #[cfg(target_os = "macos")]
+    let expected_shell = nix::unistd::User::from_uid(nix::unistd::getuid())
+        .expect("look up the current uid's passwd entry")
+        .expect("the current uid must have a passwd entry")
+        .shell
+        .to_str()
+        .expect("account shell path is valid utf8")
+        .to_string();
+    #[cfg(not(target_os = "macos"))]
+    let expected_shell = dumper_shell_path
+        .to_str()
+        .expect("dumper shell path is valid utf8")
+        .to_string();
+
     assert_eq!(
         dumped_env.get("SHELL").map(String::as_str),
-        dumper_shell_path.to_str(),
-        "SHELL must still reach the session shell after the scrub, and session.rs must have \
-         genuinely resolved it for the default argv (this session was created with no --argv \
-         at all, so a wrong or dropped SHELL would fail the session's own spawn, not just this \
-         assertion). Got dumped env: {dumped:?}"
+        Some(expected_shell.as_str()),
+        "the daemon's own $SHELL still decides what runs when a session has no --argv: on \
+         macOS this session's default-argv path now runs the dumper THROUGH a login(1) session \
+         (`login -flp` -> bash -> `exec -l '<dumper_shell_path>'`, and since the dumper is a \
+         `#!/bin/sh` script, the kernel runs it through /bin/sh regardless of the dash argv0 \
+         `exec -l` gives it), so the SHELL variable the dumper itself observes is the one \
+         login(1) sets from the current account's passwd entry, not dumper_shell_path (which \
+         only decides what the login session ultimately execs). On other platforms session.rs \
+         still runs dumper_shell_path directly with no login(1) involved, so SHELL there is \
+         still dumper_shell_path unchanged. Got dumped env: {dumped:?}"
     );
 
     assert_eq!(

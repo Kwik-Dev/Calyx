@@ -436,8 +436,9 @@ pub(crate) fn spawn_session(
 
     let argv: Vec<String> = match &spec.argv {
         Some(argv) if !argv.is_empty() => argv.clone(),
-        // Contract: no argv means the user's login shell.
-        _ => vec![std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())],
+        // Contract: no argv means the user's login shell. On macOS that is a
+        // login(1) session (see crate::login_shell); elsewhere $SHELL as-is.
+        _ => crate::login_shell::default_session_argv()?,
     };
 
     let mut cmd = Command::new(&argv[0]);
@@ -1074,7 +1075,10 @@ fn session_thread(ctx: SessionThread) {
 /// snapshot whole even when it exceeds the per-client OUTPUT budget.
 /// A render failure still sends the (empty) frame: the protocol
 /// promises Replay-before-Output, and an empty payload degrades to
-/// "no catch-up" rather than a protocol violation.
+/// "no catch-up" rather than a protocol violation. For a mirror that
+/// has never been fed, `render_replay` itself yields an empty payload,
+/// so the attaching pane keeps its existing content and the session's
+/// output simply follows (see `proto::BLANK_SLATE`).
 fn push_replay(terminal: &mut vt::Terminal, queue: &Arc<OutQueue>, id: &str) {
     match terminal.render_replay() {
         Ok(replay) => {

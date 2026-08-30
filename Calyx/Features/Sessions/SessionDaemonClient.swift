@@ -17,7 +17,16 @@ enum SessionQueryResult: Sendable, Equatable {
     /// disconnected (e.g. the ghostty surface's process bridge was
     /// torn down without the daemon's child exiting) — reconnect.
     case running
-    /// The session's child process actually exited with `code`.
+    /// The session's child process actually exited. On macOS, a session
+    /// started with no explicit argv runs under `login(1)`, whose parent
+    /// process always exits 0 once the shell ends, so `code` is 0
+    /// regardless of the shell's own exit status unless a signal kills
+    /// `login` itself; sessions started with an explicit argv, and
+    /// sessions on non-macOS hosts, carry the child's real exit status.
+    /// The daemon only starts `login(1)` when it can resolve its own
+    /// passwd entry; in the degraded state where that lookup fails
+    /// (never observed for the launchd-owned production daemon) it
+    /// starts `$SHELL` directly and `code` is the shell's real status.
     case exited(code: Int32)
     /// The daemon could not be reached at all (not running, socket
     /// gone, timed out). Treated as "assume reconnectable": `attach

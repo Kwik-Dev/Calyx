@@ -10,13 +10,23 @@
 //!   [`peer::verify_peer_uid`] before any protocol bytes are trusted.
 //! - **Sessions**: each is a PTY (`openpty` + `fork` + `setsid` +
 //!   `TIOCSCTTY` + `execvp`), with `CALYX_SESSION_ID=<id>` injected into
-//!   the child's environment. All PTY output is fed into a `vt::Terminal`
-//!   (P1) so a newly attaching client can be caught up.
+//!   the child's environment. With no `spec.argv`, the child is the
+//!   user's login shell (macOS: through a real `login(1)` session, see
+//!   `login_shell`, started only when the daemon can resolve its own
+//!   passwd entry; otherwise it starts `$SHELL` directly, with a
+//!   warning on its own stderr); for that default macOS session the
+//!   recorded child pid is login's own, whose exit status is always
+//!   0, and the session's own `login(1)` is always quiet (`-q`). All
+//!   PTY output is fed into a `vt::Terminal` so a newly attaching
+//!   client can be caught up.
 //! - **Attach**: sends one `Replay` frame (from `Terminal::render_replay`)
 //!   immediately after `AttachOk`, then mirrors all further PTY output as
 //!   `Output` frames. `Input` frames from any attached client go to the
 //!   PTY; multiple clients may be attached to one session at once (all
-//!   receive `Output`, all their `Input` is merged).
+//!   receive `Output`, all their `Input` is merged). The Replay is empty
+//!   for a session whose terminal has not been fed any byte yet, so a
+//!   pane attaching to a brand-new session keeps what was already on it
+//!   (such as `login(1)`'s banner).
 //! - **Resize**: `Resize` sets both the PTY's `TIOCSWINSZ` and the
 //!   `vt::Terminal`'s size; last write from any attached client wins.
 //! - **Backpressure**: a client whose outbound queue exceeds 1 MiB is
@@ -49,6 +59,7 @@ mod handoff;
 mod health;
 mod history;
 mod ledger;
+mod login_shell;
 mod outq;
 pub mod peer;
 mod session;

@@ -3,63 +3,26 @@
 //! for `attach`'s exit-code contract (raw-tty bridging itself is not
 //! automatable, per spec, so this only covers the immediate-exit case).
 //!
-//! `wait_for_socket` bounds the wait for the daemon's socket so a
-//! daemon that fails to start surfaces as a bounded-time failure
-//! instead of hanging the suite.
+//! `common::spawn_foreground_daemon` bounds the wait for the daemon's
+//! socket so a daemon that fails to start surfaces as a bounded-time
+//! failure instead of hanging the suite.
 
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::path::Path;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-struct DaemonGuard(Child);
+mod common;
+use common::{bin, spawn_foreground_daemon, ChildGuard};
 
-impl Drop for DaemonGuard {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
-fn bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_calyx-session"))
-}
-
-fn wait_for_socket(path: &Path, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if path.exists() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    false
-}
-
-/// Spawns `calyx-session --runtime-dir <dir> --state-dir <dir> daemon
-/// --foreground` and waits (bounded) for its socket to appear.
-fn spawn_foreground_daemon(runtime_dir: &Path, state_dir: &Path) -> DaemonGuard {
-    let child = Command::new(bin())
-        .args([
-            "--runtime-dir".as_ref(),
-            runtime_dir.as_os_str(),
-            "--state-dir".as_ref(),
-            state_dir.as_os_str(),
-            "daemon".as_ref(),
-            "--foreground".as_ref(),
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn `calyx-session daemon --foreground`");
-    let guard = DaemonGuard(child);
-
-    let socket_path = runtime_dir.join("sessiond.sock");
-    assert!(
-        wait_for_socket(&socket_path, Duration::from_secs(5)),
-        "daemon --foreground should create {} within 5s",
-        socket_path.display()
-    );
-    guard
+fn spawn(runtime_dir: &Path, state_dir: &Path) -> ChildGuard {
+    spawn_foreground_daemon(
+        runtime_dir,
+        state_dir,
+        |cmd| {
+            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        },
+        String::new,
+    )
 }
 
 #[test]
@@ -67,7 +30,7 @@ fn daemon_foreground_serves_new_ls_kill_over_scratch_dirs() {
     let tempdir = tempfile::tempdir().expect("create scratch tempdir");
     let runtime_dir = tempdir.path().join("run");
     let state_dir = tempdir.path().join("state");
-    let _guard = spawn_foreground_daemon(&runtime_dir, &state_dir);
+    let _guard = spawn(&runtime_dir, &state_dir);
 
     let run_cli = |args: &[&str]| {
         Command::new(bin())
@@ -143,7 +106,7 @@ fn ls_all_reports_exited_sessions_with_their_real_exit_code() {
     let tempdir = tempfile::tempdir().expect("create scratch tempdir");
     let runtime_dir = tempdir.path().join("run");
     let state_dir = tempdir.path().join("state");
-    let _guard = spawn_foreground_daemon(&runtime_dir, &state_dir);
+    let _guard = spawn(&runtime_dir, &state_dir);
 
     let run_cli = |args: &[&str]| {
         Command::new(bin())
@@ -228,7 +191,7 @@ fn ls_all_includes_running_sessions_too() {
     let tempdir = tempfile::tempdir().expect("create scratch tempdir");
     let runtime_dir = tempdir.path().join("run");
     let state_dir = tempdir.path().join("state");
-    let _guard = spawn_foreground_daemon(&runtime_dir, &state_dir);
+    let _guard = spawn(&runtime_dir, &state_dir);
 
     let run_cli = |args: &[&str]| {
         Command::new(bin())
@@ -277,7 +240,7 @@ fn attach_to_an_immediately_exiting_session_returns_exit_code_0() {
     let tempdir = tempfile::tempdir().expect("create scratch tempdir");
     let runtime_dir = tempdir.path().join("run");
     let state_dir = tempdir.path().join("state");
-    let _guard = spawn_foreground_daemon(&runtime_dir, &state_dir);
+    let _guard = spawn(&runtime_dir, &state_dir);
 
     let attach_result = Command::new(bin())
         .args(["--runtime-dir", runtime_dir.to_str().unwrap()])

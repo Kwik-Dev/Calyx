@@ -134,6 +134,14 @@ fn new_attach_receives_a_replay_frame_with_prior_output() {
         "replay frame should contain prior output, got {:?}",
         String::from_utf8_lossy(&replay_frame.payload)
     );
+    assert!(
+        replay_frame.payload.starts_with(proto::BLANK_SLATE),
+        "every Replay payload for a fed mirror must begin with \
+         proto::BLANK_SLATE (RIS plus erase scrollback), so the replay \
+         rebuilds the mirror's state on a target terminal that is not \
+         blank; got {:?}",
+        replay_frame.payload
+    );
 }
 
 // ==================== Test 9 ====================
@@ -178,6 +186,86 @@ fn resize_propagates_to_the_pty_and_is_visible_via_stty_size() {
         output.contains("30 100"),
         "expected `stty size` output '30 100' after Resize{{100,30}}, got {output:?}"
     );
+}
+
+// ==================== Never-fed mirror ====================
+
+/// Reads frames (skipping any interleaved `Control` frames) until the
+/// first `Replay` frame arrives.
+fn read_until_replay(reader: &mut FrameReader<UnixStream>) -> proto::Frame {
+    loop {
+        let frame = reader
+            .read_frame()
+            .expect("read frame while waiting for a Replay frame");
+        match frame.frame_type {
+            FrameType::Replay => return frame,
+            FrameType::Control => continue,
+            other => panic!(
+                "expected a Replay frame (with only Control frames interleaved before it), got \
+                 {other:?}; the protocol promises Replay before any Output on a fresh attach"
+            ),
+        }
+    }
+}
+
+#[test]
+fn attach_to_a_session_that_has_produced_no_output_receives_an_empty_replay() {
+    let daemon = common::ScratchDaemon::spawn();
+    let s = spec("01J-p2-empty-replay-test", vec!["/bin/sleep", "30"]);
+
+    let first = daemon.connect().expect("connect first stream");
+    common::hello(&first);
+    let reply = common::roundtrip(
+        &first,
+        &ControlMsg::Attach {
+            id: s.id.clone(),
+            create: Some(s.clone()),
+            cols: 80,
+            rows: 24,
+        },
+    )
+    .expect("first Attach round-trip");
+    assert!(matches!(reply, ControlMsg::AttachOk { .. }));
+
+    let mut reader = FrameReader::new(first.try_clone().expect("clone for reader"));
+    let replay = read_until_replay(&mut reader);
+    assert_eq!(
+        replay.payload.len(),
+        0,
+        "a mirror that has never been fed any byte should render an empty \
+         Replay payload, got {:?}",
+        replay.payload
+    );
+
+    // A second, independent attach to the same session must observe the
+    // same empty replay: this is a property of the mirror, not of which
+    // client created the session.
+    let second = daemon.connect().expect("connect second stream");
+    common::hello(&second);
+    let reply2 = common::roundtrip(
+        &second,
+        &ControlMsg::Attach {
+            id: s.id.clone(),
+            create: None,
+            cols: 80,
+            rows: 24,
+        },
+    )
+    .expect("second Attach round-trip");
+    assert!(matches!(reply2, ControlMsg::AttachOk { .. }));
+
+    let mut reader2 = FrameReader::new(second.try_clone().expect("clone for reader2"));
+    let replay2 = read_until_replay(&mut reader2);
+    assert_eq!(
+        replay2.payload.len(),
+        0,
+        "a second attach to the same never-fed session should also \
+         receive an empty Replay payload, got {:?}",
+        replay2.payload
+    );
+
+    common::roundtrip(&second, &ControlMsg::Kill { id: s.id.clone() })
+        .expect("Kill round-trip so the daemon doesn't wait for `sleep 30`");
 }
 
 // ==================== Test 11 ====================

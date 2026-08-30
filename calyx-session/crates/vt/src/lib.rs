@@ -1,6 +1,9 @@
 //! Safe wrapper around `vt-sys` (`libgvt`): a VT terminal that can dump
 //! its state as plain text and render a replay byte sequence sufficient
 //! to reconstruct that state on a blank terminal of the same size.
+//!
+//! A terminal that has never been fed a byte renders an empty replay;
+//! `resize` alone does not count as feeding.
 
 mod error;
 
@@ -56,6 +59,11 @@ impl Terminal {
     /// state (screen + scrollback + modes + cursor) when fed into a
     /// blank terminal of the same size. Non-destructive: may be called
     /// repeatedly without changing this terminal's state.
+    ///
+    /// Returns an empty `Vec` for a terminal that has never been fed
+    /// any byte; `resize` does not change that. Once fed, the sequence
+    /// begins with RIS and `\x1b[3J` so it also rebuilds the state on a
+    /// non-blank target.
     pub fn render_replay(&mut self) -> Result<Vec<u8>, VtError> {
         let mut out_ptr: *mut u8 = ptr::null_mut();
         let mut out_len: usize = 0;

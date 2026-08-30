@@ -12,4 +12,4 @@ pub use control::{
     SessionState, PROTOCOL_VERSION,
 };
 pub use error::ProtoError;
-pub use frame::{Frame, FrameReader, FrameType, FrameWriter, MAX_FRAME_LEN};
+pub use frame::{Frame, FrameReader, FrameType, FrameWriter, BLANK_SLATE, MAX_FRAME_LEN};
