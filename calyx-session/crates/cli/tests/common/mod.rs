@@ -12,13 +12,55 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Child;
+use std::process::{Child, Command};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Resolves the `calyx-session` binary built for this test run.
 pub fn bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_calyx-session"))
+}
+
+/// Spawns `calyx-session --runtime-dir <runtime_dir> --state-dir
+/// <state_dir> daemon --foreground` and waits (bounded, 5s) for its
+/// control socket to appear at `<runtime_dir>/sessiond.sock`.
+/// `configure` runs on the `Command` before it is spawned, so callers
+/// can add env vars, `env_remove` calls, extra args, or redirect
+/// stdout/stderr. `on_timeout` is called only if the socket never
+/// appears, and its return value is appended to the timeout panic:
+/// the daemon's own output when the caller redirected it to a file,
+/// so a failed start is diagnosable, or an empty `String` when the
+/// caller didn't capture it to a file.
+pub fn spawn_foreground_daemon(
+    runtime_dir: &Path,
+    state_dir: &Path,
+    configure: impl FnOnce(&mut Command),
+    on_timeout: impl FnOnce() -> String,
+) -> ChildGuard {
+    let mut command = Command::new(bin());
+    command.args([
+        "--runtime-dir".as_ref(),
+        runtime_dir.as_os_str(),
+        "--state-dir".as_ref(),
+        state_dir.as_os_str(),
+        "daemon".as_ref(),
+        "--foreground".as_ref(),
+    ]);
+    configure(&mut command);
+    let child = command
+        .spawn()
+        .expect("spawn `calyx-session daemon --foreground`");
+    let guard = ChildGuard(child);
+
+    let socket_path = runtime_dir.join("sessiond.sock");
+    if !wait_for_socket(&socket_path, Duration::from_secs(5)) {
+        panic!(
+            "daemon --foreground should create {} within 5s; daemon output:\n{}",
+            socket_path.display(),
+            on_timeout()
+        );
+    }
+    guard
 }
 
 /// Polls for `path` to exist, up to `timeout`, returning whether it

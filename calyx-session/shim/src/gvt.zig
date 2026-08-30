@@ -67,6 +67,14 @@ const GvtTerminal = struct {
     responder_ctx: ?*anyopaque = null,
     responder: ?gvt_responder_fn = null,
 
+    /// Whether at least one byte has ever been handed to the VT parser.
+    /// A terminal that has never been fed has no state to reconstruct,
+    /// so its replay is empty and a pane attaching to it keeps what its
+    /// host wrote before (on macOS the `login(1)` banner), the way a
+    /// Ghostty pane keeps that banner above the shell's first output.
+    /// `resize` and a zero-length feed do not count.
+    fed: bool = false,
+
     /// Trims the oldest history rows once the scrollback exceeds the
     /// byte budget, approximating each row's cost by its cell array
     /// plus row header at the current width (styles and grapheme data
@@ -345,6 +353,7 @@ pub export fn gvt_terminal_feed(
     const self = fromHandle(t) orelse return err_invalid;
     if (len == 0) return 0;
     const b = bytes orelse return err_invalid;
+    self.fed = true;
     self.stream.nextSlice(b[0..len]) catch |err| return switch (err) {
         error.OutOfMemory => err_nomem,
         else => err_stream,
@@ -375,6 +384,9 @@ pub export fn gvt_render_replay(
 ) callconv(.c) i32 {
     const out = OutBuf.init(out_ptr, out_len) orelse return err_invalid;
     const self = fromHandle(t) orelse return err_invalid;
+    // `OutBuf.init` already stored a null pointer and length 0, which
+    // is the empty replay.
+    if (!self.fed) return 0;
     const buf = renderReplayAlloc(&self.terminal) catch return err_nomem;
     out.set(buf);
     return 0;
@@ -396,7 +408,9 @@ fn renderReplayAlloc(term: *const vt.Terminal) ![]u8 {
     // restores default modes/screens/tabstops, 3J drops scrollback
     // (RIS alone keeps it). These bytes must stay identical to
     // `proto::BLANK_SLATE` in crates/proto/src/frame.rs (a daemon test
-    // pins the Replay payload prefix to it).
+    // pins the Replay payload prefix to it). A never-fed terminal does
+    // not reach this function: `gvt_render_replay` returns an empty
+    // buffer for it.
     try w.writeAll("\x1bc\x1b[3J");
 
     // Palette entries modified via OSC 4, and dynamic fg/bg/cursor
@@ -693,7 +707,7 @@ test "feed and dump round-trip" {
     try std.testing.expectEqualStrings("hi", ptr.?[0..len]);
 }
 
-test "replay of a blank terminal feeds cleanly into another" {
+test "replay of a never-fed terminal is empty" {
     const a = gvt_terminal_new(80, 24, 65536);
     try std.testing.expect(a != null);
     defer gvt_terminal_free(a);
@@ -702,12 +716,39 @@ test "replay of a blank terminal feeds cleanly into another" {
     var len: usize = 0;
     try std.testing.expectEqual(@as(i32, 0), gvt_render_replay(a, &ptr, &len));
     defer gvt_buffer_free(ptr, len);
-    try std.testing.expect(len > 0);
+    try std.testing.expectEqual(@as(usize, 0), len);
+    try std.testing.expect(ptr == null);
+}
 
-    const b = gvt_terminal_new(80, 24, 65536);
-    try std.testing.expect(b != null);
-    defer gvt_terminal_free(b);
-    try std.testing.expectEqual(@as(i32, 0), gvt_terminal_feed(b, ptr.?, len));
+test "replay after a zero-length feed is still empty" {
+    const a = gvt_terminal_new(80, 24, 65536);
+    try std.testing.expect(a != null);
+    defer gvt_terminal_free(a);
+
+    try std.testing.expectEqual(@as(i32, 0), gvt_terminal_feed(a, "", 0));
+
+    var ptr: ?[*]u8 = null;
+    var len: usize = 0;
+    try std.testing.expectEqual(@as(i32, 0), gvt_render_replay(a, &ptr, &len));
+    defer gvt_buffer_free(ptr, len);
+    try std.testing.expectEqual(@as(usize, 0), len);
+    try std.testing.expect(ptr == null);
+}
+
+test "replay after one fed byte starts with the blank-slate sequence" {
+    const a = gvt_terminal_new(80, 24, 65536);
+    try std.testing.expect(a != null);
+    defer gvt_terminal_free(a);
+
+    try std.testing.expectEqual(@as(i32, 0), gvt_terminal_feed(a, "x", 1));
+
+    var ptr: ?[*]u8 = null;
+    var len: usize = 0;
+    try std.testing.expectEqual(@as(i32, 0), gvt_render_replay(a, &ptr, &len));
+    defer gvt_buffer_free(ptr, len);
+    const blank_slate = "\x1bc\x1b[3J";
+    try std.testing.expect(len >= blank_slate.len);
+    try std.testing.expectEqualStrings(blank_slate, ptr.?[0..blank_slate.len]);
 }
 
 test "total rows of a fresh terminal equals its height" {

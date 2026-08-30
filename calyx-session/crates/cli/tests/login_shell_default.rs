@@ -41,7 +41,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 mod common;
-use common::{bin, drain_into, wait_for_socket, ChildGuard};
+use common::{bin, drain_into, spawn_foreground_daemon, ChildGuard};
 
 #[test]
 fn attach_create_with_no_argv_runs_a_real_login_session_on_macos() {
@@ -73,7 +73,14 @@ fn attach_create_with_no_argv_runs_a_real_login_session_on_macos() {
 
     // Written in zsh syntax: `[[ -o login ]]` is true only when this
     // shell instance was actually started as a login shell, which is
-    // the one fact this whole test exists to observe.
+    // the one fact this whole test exists to observe. The block
+    // redirects into a `.tmp` sibling and then renames it onto the
+    // real marker path: zsh's block redirect creates the target file
+    // (empty) before the block starts running, so if the block wrote
+    // straight to the marker path the poll below could see it exist
+    // while still empty or partially written. `mv` is a single
+    // rename, so the marker only ever exists once its content is
+    // complete.
     let zprofile = format!(
         "{{\n\
          \x20 login=$([[ -o login ]] && print yes || print no)\n\
@@ -86,7 +93,8 @@ fn attach_create_with_no_argv_runs_a_real_login_session_on_macos() {
          \x20 print -r -- \"pid=$$ ppid=$PPID\"\n\
          \x20 print -r -- \"ZSH_ARGZERO=$ZSH_ARGZERO\"\n\
          \x20 print -r -- \"PWD=$PWD\"\n\
-         }} > \"{marker}\"\n\
+         }} > \"{marker}.tmp\"\n\
+         mv \"{marker}.tmp\" \"{marker}\"\n\
          exit 0\n",
         marker = marker_path.display()
     );
@@ -97,25 +105,16 @@ fn attach_create_with_no_argv_runs_a_real_login_session_on_macos() {
         .try_clone()
         .expect("clone daemon log file handle");
 
-    let daemon_child = Command::new(bin())
-        .args(["--runtime-dir", runtime_dir.to_str().unwrap()])
-        .args(["--state-dir", state_dir.to_str().unwrap()])
-        .args(["daemon", "--foreground"])
-        .env("SHELL", &symlinked_shell)
-        .stdout(daemon_stdout_log)
-        .stderr(daemon_stderr_log)
-        .spawn()
-        .expect("spawn `calyx-session daemon --foreground`");
-    let _daemon_guard = ChildGuard(daemon_child);
-
-    let socket_path = runtime_dir.join("sessiond.sock");
-    if !wait_for_socket(&socket_path, Duration::from_secs(5)) {
-        let log = fs::read_to_string(&daemon_log_path).unwrap_or_default();
-        panic!(
-            "daemon --foreground should create {} within 5s; daemon stdout/stderr:\n{log}",
-            socket_path.display()
-        );
-    }
+    let _daemon_guard = spawn_foreground_daemon(
+        &runtime_dir,
+        &state_dir,
+        |cmd| {
+            cmd.env("SHELL", &symlinked_shell)
+                .stdout(daemon_stdout_log)
+                .stderr(daemon_stderr_log);
+        },
+        || fs::read_to_string(&daemon_log_path).unwrap_or_default(),
+    );
 
     let session_id = "01J-p2-login-shell-default";
     let session_path = format!(

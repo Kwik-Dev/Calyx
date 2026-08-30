@@ -16,13 +16,17 @@
 //!   passwd entry; otherwise it starts `$SHELL` directly, with a
 //!   warning on its own stderr); for that default macOS session the
 //!   recorded child pid is login's own, whose exit status is always
-//!   0. All PTY output is fed into a `vt::Terminal` so a newly
-//!   attaching client can be caught up.
+//!   0, and the session's own `login(1)` is always quiet (`-q`). All
+//!   PTY output is fed into a `vt::Terminal` so a newly attaching
+//!   client can be caught up.
 //! - **Attach**: sends one `Replay` frame (from `Terminal::render_replay`)
 //!   immediately after `AttachOk`, then mirrors all further PTY output as
 //!   `Output` frames. `Input` frames from any attached client go to the
 //!   PTY; multiple clients may be attached to one session at once (all
-//!   receive `Output`, all their `Input` is merged).
+//!   receive `Output`, all their `Input` is merged). The Replay is empty
+//!   for a session whose terminal has not been fed any byte yet, so a
+//!   pane attaching to a brand-new session keeps what was already on it
+//!   (such as `login(1)`'s banner).
 //! - **Resize**: `Resize` sets both the PTY's `TIOCSWINSZ` and the
 //!   `vt::Terminal`'s size; last write from any attached client wins.
 //! - **Backpressure**: a client whose outbound queue exceeds 1 MiB is

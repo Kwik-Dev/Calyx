@@ -737,6 +737,8 @@ fn accept_and_offer(shared: &Arc<Shared>, listener: &UnixListener) -> Result<(),
 
 #[cfg(test)]
 mod tests {
+    use std::io;
+    use std::io::Write;
     use std::os::unix::net::UnixStream;
 
     use proto::{FrameReader, FrameType, SessionSpec, SessionState};
@@ -1256,14 +1258,16 @@ mod tests {
     /// different and already-handled case). To force a real kernel write
     /// to block against it reliably, the offerer socket's send buffer
     /// and the peer socket's receive buffer are both shrunk (via
-    /// `SO_SNDBUF`/`SO_RCVBUF`) below the manifest size, so the send
-    /// cannot be fully queued with nobody draining the other end. This
-    /// is deliberately independent of the replay's own size: a live
-    /// `cat` session on this platform's default (canonical-mode) PTY
-    /// truncates newline-free input to `MAX_CANON`, so a session's
-    /// `render_replay` here is only a couple of KiB, comfortably under
-    /// the default 8 KiB AF_UNIX buffer -- shrinking the buffers is the
-    /// robust way to guarantee the blocking send this test needs.
+    /// `SO_SNDBUF`/`SO_RCVBUF`), then the peer's now-small receive
+    /// capacity is filled completely from the offerer side before
+    /// `offer_handoff` is ever called. With the receive buffer already
+    /// full and nobody draining it, `offer_handoff`'s manifest write
+    /// blocks whatever the manifest's size, including an empty replay
+    /// from a session whose mirror terminal has never been fed a byte
+    /// (`render_replay` returns an empty `Vec` for such a terminal, as a
+    /// freshly spawned `cat` session's does before this test writes
+    /// anything to it). Shrinking the buffers first only bounds how
+    /// much filler this setup has to write.
     #[test]
     fn offer_handoff_bounds_the_fd_send_with_a_write_timeout_and_resumes_on_stall() {
         let tmp = tempfile::tempdir().expect("create scratch state dir");
@@ -1284,11 +1288,10 @@ mod tests {
         // peer_side is intentionally never read from and kept open for
         // the whole attempt below (a stalled, not closed, receiver).
         //
-        // Shrink both buffers well under the manifest size so the very
-        // first manifest write blocks with nobody draining, regardless
-        // of how small a real cat session's replay is on this platform
-        // (see the doc comment). setsockopt is the only way to reach
-        // SO_SNDBUF/SO_RCVBUF from a std UnixStream.
+        // Shrink both buffers so the peer's receive capacity is small
+        // and cheap to fill completely below (see the doc comment).
+        // setsockopt is the only way to reach SO_SNDBUF/SO_RCVBUF from a
+        // std UnixStream.
         fn shrink_buf(stream: &UnixStream, opt: libc::c_int) {
             let val: libc::c_int = 256;
             // SAFETY: a plain setsockopt with a valid fd, level, option,
@@ -1309,6 +1312,32 @@ mod tests {
         }
         shrink_buf(&offerer_side, libc::SO_SNDBUF);
         shrink_buf(&peer_side, libc::SO_RCVBUF);
+
+        // Fill the peer's receive capacity from the offerer side before
+        // offer_handoff runs, so its manifest write is guaranteed to
+        // block regardless of the manifest's own size (see the doc
+        // comment).
+        offerer_side
+            .set_nonblocking(true)
+            .expect("set the scratch offerer socket non-blocking to fill it");
+        let filler = [0u8; 64];
+        loop {
+            match (&offerer_side).write(&filler) {
+                Ok(0) => panic!(
+                    "filling the scratch peer's receive buffer wrote 0 bytes without \
+                     reaching WouldBlock"
+                ),
+                Ok(_) => continue,
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
+                Err(err) => panic!(
+                    "filling the scratch peer's receive buffer failed before reaching \
+                     WouldBlock: {err}"
+                ),
+            }
+        }
+        offerer_side
+            .set_nonblocking(false)
+            .expect("restore the scratch offerer socket to blocking after filling it");
 
         let (result_tx, result_rx) = mpsc::channel();
         let shared_for_thread = Arc::clone(&shared);

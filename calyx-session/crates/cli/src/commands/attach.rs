@@ -2,12 +2,6 @@
 //!
 //! Exit code contract: `0` on a clean session exit (the daemon's
 //! `Event(Exited)`), `2` on disconnect/daemon loss.
-//!
-//! stdout is a terminal viewport, not a byte log: the client's first
-//! written bytes are `VIEWPORT_CLEAR`, so any output that reached the
-//! pane before the client started is hidden at once. The daemon's
-//! `Replay` frame, which follows once the attach succeeds, begins with
-//! `proto::BLANK_SLATE` and commits the takeover.
 
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
@@ -32,11 +26,6 @@ use crate::commands::{resolve_runtime_dir, resolve_state_dir, socket_path, Comma
 
 /// Exit code for "the connection or the daemon went away".
 const EXIT_DISCONNECTED: u8 = 2;
-/// Cursor home + erase display: blanks the visible screen without
-/// dropping scrollback. Written as this process's very first stdout
-/// bytes, before it has even connected to the daemon; see
-/// `write_viewport_clear_preamble`.
-const VIEWPORT_CLEAR: &[u8] = b"\x1b[H\x1b[2J";
 /// Bound on auto-start + reconnect attempts.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Bound on waiting for a kickstarted launchd-owned daemon to become
@@ -54,10 +43,6 @@ pub fn run(
     state_dir: &Option<PathBuf>,
     args: AttachArgs,
 ) -> Result<u8, CommandError> {
-    if let Err(code) = write_viewport_clear_preamble() {
-        return Ok(code);
-    }
-
     let socket = socket_path(runtime_dir);
     let client = match connect_or_spawn(&socket, runtime_dir, state_dir) {
         Ok(client) => client,
@@ -92,32 +77,6 @@ pub fn run(
     }
 
     bridge(client.stream)
-}
-
-/// Writes `VIEWPORT_CLEAR` to stdout and flushes it, before this
-/// process has even connected to the daemon.
-///
-/// The pane may already carry output the client did not produce: on
-/// macOS, libghostty wraps every pane command in `/usr/bin/login`,
-/// which prints its "Last login: ..." banner before the client is even
-/// exec'ed. This preamble blanks the visible screen at once, without
-/// dropping scrollback: it runs before the attach can succeed, and a
-/// failed attach in an interactive terminal (wrong session id,
-/// unreachable daemon) must leave the user's history intact. The
-/// daemon's own `Replay` frame, sent only once the attach succeeds,
-/// begins with `proto::BLANK_SLATE` (reset plus erase scrollback) and
-/// commits the takeover. Not conditioned on stdout being a tty: the
-/// `Replay` write in `bridge` isn't either.
-fn write_viewport_clear_preamble() -> Result<(), u8> {
-    let mut stdout = std::io::stdout();
-    if let Err(e) = stdout
-        .write_all(VIEWPORT_CLEAR)
-        .and_then(|()| stdout.flush())
-    {
-        eprintln!("calyx-session: cannot write to the terminal: {e}");
-        return Err(EXIT_DISCONNECTED);
-    }
-    Ok(())
 }
 
 /// Runs the attached bridge until the session exits (0) or the

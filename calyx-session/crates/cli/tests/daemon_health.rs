@@ -18,8 +18,7 @@
 //! hanging the suite.
 
 use std::os::unix::net::UnixStream;
-use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::Duration;
 
 use proto::{
@@ -28,34 +27,9 @@ use proto::{
 };
 
 mod common;
-use common::{bin, wait_for_socket, ChildGuard};
+use common::spawn_foreground_daemon;
 
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
-
-fn spawn_foreground_daemon(runtime_dir: &Path, state_dir: &Path) -> ChildGuard {
-    let child = Command::new(bin())
-        .args([
-            "--runtime-dir".as_ref(),
-            runtime_dir.as_os_str(),
-            "--state-dir".as_ref(),
-            state_dir.as_os_str(),
-            "daemon".as_ref(),
-            "--foreground".as_ref(),
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn `calyx-session daemon --foreground`");
-    let guard = ChildGuard(child);
-
-    let socket_path = runtime_dir.join("sessiond.sock");
-    assert!(
-        wait_for_socket(&socket_path, Duration::from_secs(5)),
-        "daemon --foreground should create {} within 5s",
-        socket_path.display()
-    );
-    guard
-}
 
 /// Sends `msg` as a single `Control` frame and reads frames until a
 /// non-`Event` `Control` frame arrives. Mirrors
@@ -85,7 +59,14 @@ fn get_health_on_a_healthy_daemon_reports_user_lookup_ok_true() {
     let tempdir = tempfile::tempdir().expect("create scratch tempdir");
     let runtime_dir = tempdir.path().join("run");
     let state_dir = tempdir.path().join("state");
-    let _guard = spawn_foreground_daemon(&runtime_dir, &state_dir);
+    let _guard = spawn_foreground_daemon(
+        &runtime_dir,
+        &state_dir,
+        |cmd| {
+            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        },
+        String::new,
+    );
 
     let socket_path = runtime_dir.join("sessiond.sock");
     let stream = UnixStream::connect(&socket_path).expect("connect to daemon socket");

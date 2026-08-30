@@ -1,10 +1,8 @@
 //! `calyx-session history <on|off|status>`: exercises the daemon-wide
 //! on-disk history-persistence toggle CLI surface end to end, against
-//! a real `calyx-session daemon --foreground` (mirrors smoke.rs's
-//! `spawn_foreground_daemon`/`run_cli` harness; duplicated here rather
-//! than shared, since smoke.rs is this crate's only other integration
-//! test file so far -- see this codebase's "introduce an abstraction
-//! only at the third duplication" convention).
+//! a real `calyx-session daemon --foreground` (spawned via
+//! `common::spawn_foreground_daemon`; `run_cli` stays local to this
+//! file, mirroring smoke.rs's own `run_cli` closure).
 //!
 //! TDD Red phase, P6 RED2: `commands::history::run` is
 //! `unimplemented!()` (see that module's own header), so calling it at
@@ -20,34 +18,19 @@
 
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::Duration;
 
 mod common;
-use common::{bin, wait_for_socket, ChildGuard};
+use common::{bin, spawn_foreground_daemon, ChildGuard};
 
-fn spawn_foreground_daemon(runtime_dir: &Path, state_dir: &Path) -> ChildGuard {
-    let child = Command::new(bin())
-        .args([
-            "--runtime-dir".as_ref(),
-            runtime_dir.as_os_str(),
-            "--state-dir".as_ref(),
-            state_dir.as_os_str(),
-            "daemon".as_ref(),
-            "--foreground".as_ref(),
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn `calyx-session daemon --foreground`");
-    let guard = ChildGuard(child);
-
-    let socket_path = runtime_dir.join("sessiond.sock");
-    assert!(
-        wait_for_socket(&socket_path, Duration::from_secs(5)),
-        "daemon --foreground should create {} within 5s",
-        socket_path.display()
-    );
-    guard
+fn spawn(runtime_dir: &Path, state_dir: &Path) -> ChildGuard {
+    spawn_foreground_daemon(
+        runtime_dir,
+        state_dir,
+        |cmd| {
+            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        },
+        String::new,
+    )
 }
 
 fn run_cli(runtime_dir: &Path, state_dir: &Path, args: &[&str]) -> std::process::Output {
@@ -67,7 +50,7 @@ fn history_on_enables_and_prints_confirmed_state() {
     let tempdir = tempfile::tempdir().expect("create scratch tempdir");
     let runtime_dir = tempdir.path().join("run");
     let state_dir = tempdir.path().join("state");
-    let _guard = spawn_foreground_daemon(&runtime_dir, &state_dir);
+    let _guard = spawn(&runtime_dir, &state_dir);
 
     let result = run_cli(&runtime_dir, &state_dir, &["history", "on"]);
     assert!(
@@ -87,7 +70,7 @@ fn history_off_disables_and_prints_confirmed_state() {
     let tempdir = tempfile::tempdir().expect("create scratch tempdir");
     let runtime_dir = tempdir.path().join("run");
     let state_dir = tempdir.path().join("state");
-    let _guard = spawn_foreground_daemon(&runtime_dir, &state_dir);
+    let _guard = spawn(&runtime_dir, &state_dir);
 
     // Flip on first so `off` is an observable transition, not a no-op
     // against the bind-time default (already off).
@@ -117,7 +100,7 @@ fn history_status_reports_without_mutating() {
     let tempdir = tempfile::tempdir().expect("create scratch tempdir");
     let runtime_dir = tempdir.path().join("run");
     let state_dir = tempdir.path().join("state");
-    let _guard = spawn_foreground_daemon(&runtime_dir, &state_dir);
+    let _guard = spawn(&runtime_dir, &state_dir);
 
     let initial = run_cli(&runtime_dir, &state_dir, &["history", "status"]);
     assert!(

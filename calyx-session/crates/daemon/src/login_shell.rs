@@ -23,10 +23,13 @@
 //! everything in `spec.env` and the daemon's `CALYX_SESSION_ID`
 //! survives. `-l` prevents login's own chdir to `$HOME` (so
 //! `spec.cwd` still holds) and suppresses login's own argv0 dash,
-//! which bash's `exec -l` restores instead. `-q` mirrors
-//! `~/.hushlogin`: the caller checks the home directory itself
-//! because `login(1)` on macOS 14.3 and earlier looked for
-//! `.hushlogin` in the current working directory instead. bash runs
+//! which bash's `exec -l` restores instead. `-q` is always passed
+//! because this session is not a new login from the user's point of
+//! view: the pane that runs the attach client was itself started
+//! through `login(1)` by libghostty (or the user typed `attach` into a
+//! terminal that already showed its own banner), so that login already
+//! printed `Last login:` and honored `~/.hushlogin`; a banner here
+//! would only report that pane-side login as the last one. bash runs
 //! with `--noprofile --norc` so no user startup file runs before the
 //! final exec.
 //!
@@ -35,9 +38,8 @@
 //! Rust's stdio dup2) guarantees.
 //!
 //! Prepending `-` to argv0 alone is not used instead of `login(1)`
-//! because `getlogin()`, the `SHELL`/`USER`/`LOGNAME` variables,
-//! utmpx, and hushlogin handling would all differ from ordinary
-//! ghostty panes.
+//! because `getlogin()`, the `SHELL`/`USER`/`LOGNAME` variables, and
+//! utmpx would all differ from ordinary ghostty panes.
 //!
 //! The shell to exec comes from [`choose_shell`]: the passwd entry
 //! for the current uid, looked up through the same `nix::unistd::User`
@@ -50,12 +52,14 @@
 //! exist and be executable; either failure is rejected at the daemon
 //! boundary so it reaches the client as a spawn error, rather than
 //! surfacing as bash's `exec -l` printing `not found` inside an
-//! already-started session while `login` itself still exits 0.
+//! already-started session while `login` itself still exits 0. The
+//! passwd entry's shell is validated the same way: it must be an
+//! absolute path that exists and is executable.
 //!
 //! If the daemon cannot resolve the passwd entry for its own uid, it
-//! cannot build a login(1) session at all (no username, no home
-//! directory for `.hushlogin`, no passwd shell to fall back to). That
-//! is the documented degraded state of a daemon that lost its
+//! cannot build a login(1) session at all (no username, no passwd
+//! shell to fall back to). That is the documented degraded state of a
+//! daemon that lost its
 //! spawning app's jetsam coalition and can no longer reach
 //! opendirectoryd (`crate::health`, `warn_user_lookup_may_be_broken`
 //! in the CLI's `attach` command); the production launchd-owned
@@ -67,23 +71,22 @@
 #[cfg(any(target_os = "macos", test))]
 use std::path::Path;
 
-/// Builds `["/usr/bin/login", ["-q"], "-flp", username, "/bin/bash",
+/// Builds `["/usr/bin/login", "-q", "-flp", username, "/bin/bash",
 /// "--noprofile", "--norc", "-c", "exec -l '<shell>'"]`, matching
-/// ghostty's own login-shell argv layout.
+/// ghostty's own login-shell argv layout with `-q` always present.
 #[cfg(any(target_os = "macos", test))]
-pub(crate) fn login_session_argv(username: &str, hushlogin: bool, shell: &str) -> Vec<String> {
-    let mut argv = vec!["/usr/bin/login".to_string()];
-    if hushlogin {
-        argv.push("-q".to_string());
-    }
-    argv.push("-flp".to_string());
-    argv.push(username.to_string());
-    argv.push("/bin/bash".to_string());
-    argv.push("--noprofile".to_string());
-    argv.push("--norc".to_string());
-    argv.push("-c".to_string());
-    argv.push(format!("exec -l {}", shell_single_quote(shell)));
-    argv
+pub(crate) fn login_session_argv(username: &str, shell: &str) -> Vec<String> {
+    vec![
+        "/usr/bin/login".to_string(),
+        "-q".to_string(),
+        "-flp".to_string(),
+        username.to_string(),
+        "/bin/bash".to_string(),
+        "--noprofile".to_string(),
+        "--norc".to_string(),
+        "-c".to_string(),
+        format!("exec -l {}", shell_single_quote(shell)),
+    ]
 }
 
 /// Wraps `s` in single quotes for a POSIX shell, escaping any
@@ -120,6 +123,9 @@ pub(crate) fn shell_single_quote(s: &str) -> String {
 /// rejected here, at the daemon boundary, rather than surfacing later
 /// as bash's `exec -l` printing `exec: ...: not found` inside an
 /// already-started session while `login` itself still exits 0.
+/// `passwd_shell` is validated the same way: it must be an absolute
+/// path that passes `is_executable`, or `choose_shell` returns `Err`
+/// naming the path, for the same reason.
 #[cfg(any(target_os = "macos", test))]
 pub(crate) fn choose_shell(
     env_shell: Option<&str>,
@@ -150,12 +156,26 @@ pub(crate) fn choose_shell(
     }
 
     match passwd_shell {
-        Some(path) => path.to_str().map(str::to_string).ok_or_else(|| {
-            format!(
-                "the passwd entry's shell {} is not valid UTF-8",
-                path.display()
-            )
-        }),
+        Some(path) => {
+            if !path.is_absolute() {
+                return Err(format!(
+                    "the passwd entry's login shell {} is not an absolute path",
+                    path.display()
+                ));
+            }
+            if !is_executable(path) {
+                return Err(format!(
+                    "the passwd entry's login shell {} is not an executable file",
+                    path.display()
+                ));
+            }
+            path.to_str().map(str::to_string).ok_or_else(|| {
+                format!(
+                    "the passwd entry's shell {} is not valid UTF-8",
+                    path.display()
+                )
+            })
+        }
         None => Err(
             "cannot determine the user's shell: SHELL is unset and the passwd entry is \
              unavailable"
@@ -190,8 +210,7 @@ pub(crate) fn default_session_argv() -> Result<Vec<String>, String> {
     match lookup {
         Ok(Some(user)) => {
             let shell = choose_shell(env_shell.as_deref(), Some(&user.shell), is_executable_file)?;
-            let hushlogin = user.dir.join(".hushlogin").exists();
-            Ok(login_session_argv(&user.name, hushlogin, &shell))
+            Ok(login_session_argv(&user.name, &shell))
         }
         Ok(None) | Err(_) => {
             let why = match &lookup {
@@ -226,27 +245,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn login_session_argv_without_hushlogin_matches_ghostty_layout() {
-        let argv = login_session_argv("testuser", false, "/bin/zsh");
-        assert_eq!(
-            argv,
-            vec![
-                "/usr/bin/login".to_string(),
-                "-flp".to_string(),
-                "testuser".to_string(),
-                "/bin/bash".to_string(),
-                "--noprofile".to_string(),
-                "--norc".to_string(),
-                "-c".to_string(),
-                "exec -l '/bin/zsh'".to_string(),
-            ]
-        );
-        assert_eq!(argv.len(), 8);
-    }
-
-    #[test]
-    fn login_session_argv_with_hushlogin_inserts_dash_q_at_index_1() {
-        let argv = login_session_argv("testuser", true, "/bin/zsh");
+    fn login_session_argv_matches_ghostty_layout_and_is_always_quiet() {
+        let argv = login_session_argv("testuser", "/bin/zsh");
         assert_eq!(
             argv,
             vec![
@@ -272,7 +272,7 @@ mod tests {
             shell_single_quote("/opt/it's here/zsh"),
             "'/opt/it'\\''s here/zsh'"
         );
-        let argv = login_session_argv("u", false, "/opt/it's here/zsh");
+        let argv = login_session_argv("u", "/opt/it's here/zsh");
         assert_eq!(
             argv.last().map(String::as_str),
             Some("exec -l '/opt/it'\\''s here/zsh'")
@@ -366,6 +366,30 @@ mod tests {
     fn choose_shell_accepts_absolute_env_path_unchanged() {
         let result = choose_shell(Some("/bin/zsh"), None, |_| true);
         assert_eq!(result, Ok("/bin/zsh".to_string()));
+    }
+
+    #[test]
+    fn choose_shell_rejects_passwd_shell_that_is_not_executable() {
+        let result = choose_shell(None, Some(Path::new("/bin/bash")), |_| false);
+        assert_eq!(
+            result,
+            Err("the passwd entry's login shell /bin/bash is not an executable file".to_string())
+        );
+    }
+
+    #[test]
+    fn choose_shell_accepts_absolute_executable_passwd_shell() {
+        let result = choose_shell(None, Some(Path::new("/bin/bash")), |_| true);
+        assert_eq!(result, Ok("/bin/bash".to_string()));
+    }
+
+    #[test]
+    fn choose_shell_rejects_passwd_shell_that_is_not_absolute() {
+        let result = choose_shell(None, Some(Path::new("bin/bash")), |_| true);
+        assert_eq!(
+            result,
+            Err("the passwd entry's login shell bin/bash is not an absolute path".to_string())
+        );
     }
 
     #[test]

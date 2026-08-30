@@ -35,7 +35,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 mod common;
-use common::{bin, drain_into, wait_for_socket, ChildGuard};
+use common::{bin, drain_into, spawn_foreground_daemon, ChildGuard};
 
 /// The real ghostty zsh shell-integration scripts, at their submodule
 /// SOURCE location. Present in any checkout with the `ghostty`
@@ -64,26 +64,13 @@ fn attach_create_with_ghostty_resources_dir_emits_osc7_for_an_interactive_zsh_se
     let runtime_dir = tempdir.path().join("run");
     let state_dir = tempdir.path().join("state");
 
-    let daemon_child = Command::new(bin())
-        .args([
-            "--runtime-dir".as_ref(),
-            runtime_dir.as_os_str(),
-            "--state-dir".as_ref(),
-            state_dir.as_os_str(),
-            "daemon".as_ref(),
-            "--foreground".as_ref(),
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn `calyx-session daemon --foreground`");
-    let _daemon_guard = ChildGuard(daemon_child);
-
-    let socket_path = runtime_dir.join("sessiond.sock");
-    assert!(
-        wait_for_socket(&socket_path, Duration::from_secs(5)),
-        "daemon --foreground should create {} within 5s",
-        socket_path.display()
+    let _daemon_guard = spawn_foreground_daemon(
+        &runtime_dir,
+        &state_dir,
+        |cmd| {
+            cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        },
+        String::new,
     );
 
     let resources_dir = ghostty_zsh_resources_dir();

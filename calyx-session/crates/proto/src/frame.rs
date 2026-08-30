@@ -20,16 +20,26 @@ pub const MAX_FRAME_LEN: u32 = 16 * 1024 * 1024;
 /// RIS (`\x1bc`) restores default modes, screens and tab stops, and
 /// `\x1b[3J` drops scrollback, which RIS alone leaves intact.
 ///
-/// The daemon's Replay renderer (`shim/src/gvt.zig`) writes it as the
-/// first bytes of every `Replay` frame's payload, committing a
-/// successful attach's takeover of the pane. The attach client's own
-/// pre-connect preamble is a different, plain erase-display sequence
-/// (`VIEWPORT_CLEAR` in `crates/cli/src/commands/attach.rs`) that
-/// deliberately does not drop scrollback: it runs before the attach can
-/// succeed, so a failed attach must leave the user's history intact.
+/// The daemon's Replay renderer (`shim/src/gvt.zig`) writes these bytes
+/// first in every Replay payload rendered for a mirror terminal that
+/// has been fed at least one byte, committing the attach's takeover of
+/// the pane. A mirror that has never been fed renders an empty Replay
+/// instead, because there is nothing to reconstruct, and the pane then
+/// keeps whatever its host wrote before the attach (on macOS, the
+/// `Last login:` banner of the `login(1)` wrapper libghostty starts
+/// every pane command through), the same way a Ghostty pane keeps that
+/// banner above the shell's first output. Such an attach also leaves
+/// the target terminal's cursor and modes exactly where its host left
+/// them, so the pane's rows sit below the mirror's by the height of
+/// what the host wrote (the banner) until the first absolute cursor
+/// positioning or full-screen redraw, and a later attach renders the
+/// mirror's own rows without that offset; a terminal that an earlier
+/// program left in a non-default mode (alternate screen, mouse
+/// tracking) is not reset by such an attach, just as starting a shell
+/// in it would not reset it.
 ///
-/// `crates/daemon/tests/attach.rs` pins the Replay payload prefix to
-/// this constant.
+/// `crates/daemon/tests/attach.rs` pins both the prefix for a fed
+/// mirror and the empty payload for a never-fed one.
 pub const BLANK_SLATE: &[u8] = b"\x1bc\x1b[3J";
 
 /// Identifies what a frame's payload contains.
@@ -44,7 +54,9 @@ pub enum FrameType {
     Output = 3,
     /// Raw bytes reconstructing a session's current state on attach,
     /// sent once immediately after `AttachOk` and before any `Output`.
-    /// The payload begins with [`BLANK_SLATE`].
+    /// The payload begins with [`BLANK_SLATE`] when the session's
+    /// mirror terminal has been fed at least one byte, and is empty
+    /// when it has not.
     Replay = 4,
 }
 

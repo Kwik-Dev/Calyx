@@ -1075,7 +1075,10 @@ fn session_thread(ctx: SessionThread) {
 /// snapshot whole even when it exceeds the per-client OUTPUT budget.
 /// A render failure still sends the (empty) frame: the protocol
 /// promises Replay-before-Output, and an empty payload degrades to
-/// "no catch-up" rather than a protocol violation.
+/// "no catch-up" rather than a protocol violation. For a mirror that
+/// has never been fed, `render_replay` itself yields an empty payload,
+/// so the attaching pane keeps its existing content and the session's
+/// output simply follows (see `proto::BLANK_SLATE`).
 fn push_replay(terminal: &mut vt::Terminal, queue: &Arc<OutQueue>, id: &str) {
     match terminal.render_replay() {
         Ok(replay) => {
