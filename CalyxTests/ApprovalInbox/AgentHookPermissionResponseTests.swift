@@ -17,13 +17,12 @@
 //    using deniedMessage regardless of reason
 //  - claude-code / codex: expired produces nil for both kinds
 //  - claude-code: allowedWithPermissions echoes the offer's entryJSON as
-//    the sole element of updatedPermissions; allowedWithInput echoes the
-//    amended tool_input as updatedInput; interrupted produces a deny
+//    the sole element of updatedPermissions; interrupted produces a deny
 //    body with interrupt: true and a reason-specific message
 //  - grok / pi: flat top-level decision vocabulary; allowedWithPermissions/
-//    allowedWithInput/interrupted/answered are unexpressible and produce
-//    a body byte-identical to expired for that kind; codex produces nil
-//    for the same four, same as expired
+//    interrupted/answered are unexpressible and produce a body
+//    byte-identical to expired for that kind; codex produces nil for the
+//    same three, same as expired
 //  - any kind other than claude-code/codex/grok/pi produces nil for
 //    every decision
 //  - the body never carries any of PermissionRequest's reserved/invalid
@@ -101,13 +100,6 @@ final class AgentHookPermissionResponseTests: XCTestCase {
         )
     }
 
-    func test_body_claude_denied_questionNotAnswered_isDenyBehaviorWithQuestionNotAnsweredMessage() throws {
-        try assertPermissionDecision(
-            kind: AgentEntry.claudeCodeKind, decision: .denied(.questionNotAnswered), expectedBehavior: "deny",
-            expectedMessage: AgentHookPermissionResponse.questionNotAnsweredMessage
-        )
-    }
-
     func test_body_claude_expired_isNil() {
         XCTAssertNil(AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .expired),
                     "PermissionRequest has no fallback body for an expired decision -- no output lets " +
@@ -123,12 +115,10 @@ final class AgentHookPermissionResponseTests: XCTestCase {
     }
 
     func test_body_codex_denied_anyReason_alwaysUsesDeniedMessage() throws {
-        for reason in [DenyReason.userRejected, .questionNotAnswered] {
-            try assertPermissionDecision(
-                kind: AgentEntry.codexKind, decision: .denied(reason), expectedBehavior: "deny",
-                expectedMessage: AgentHookPermissionResponse.deniedMessage
-            )
-        }
+        try assertPermissionDecision(
+            kind: AgentEntry.codexKind, decision: .denied(.userRejected), expectedBehavior: "deny",
+            expectedMessage: AgentHookPermissionResponse.deniedMessage
+        )
     }
 
     func test_body_codex_expired_isNil() {
@@ -165,42 +155,7 @@ final class AgentHookPermissionResponseTests: XCTestCase {
                     "codex fails closed on updatedPermissions, same as .expired")
     }
 
-    // MARK: - claude-code: allowedWithInput
-
-    func test_body_claude_allowedWithInput_echoesAmendedToolInputAsUpdatedInput() throws {
-        let amendedInput: [String: Any] = ["command": "ls -la /amended"]
-        let amendedInputData = try JSONSerialization.data(withJSONObject: amendedInput)
-
-        let data = try XCTUnwrap(
-            AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .allowedWithInput(amendedInputData))
-        )
-        let decision = try decisionObject(data)
-        XCTAssertEqual(decision["behavior"] as? String, "allow")
-        XCTAssertEqual(Set(decision.keys), ["behavior", "updatedInput"])
-
-        let updatedInput = try XCTUnwrap(decision["updatedInput"] as? [String: Any])
-        XCTAssertEqual(updatedInput as NSDictionary, amendedInput as NSDictionary,
-                       "updatedInput must equal the amended tool_input passed to allowedWithInput exactly")
-    }
-
-    func test_body_codex_allowedWithInput_isNil() throws {
-        let data = try JSONSerialization.data(withJSONObject: ["command": "ls"])
-        XCTAssertNil(AgentHookPermissionResponse.body(kind: AgentEntry.codexKind, decision: .allowedWithInput(data)),
-                    "codex fails closed on updatedInput, same as .expired")
-    }
-
     // MARK: - claude-code: interrupted
-
-    func test_body_claude_interrupted_cancelled_isDenyWithCancelledMessageAndInterruptTrue() throws {
-        let data = try XCTUnwrap(
-            AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .interrupted(.cancelled))
-        )
-        let decision = try decisionObject(data)
-        XCTAssertEqual(decision["behavior"] as? String, "deny")
-        XCTAssertEqual(decision["message"] as? String, AgentHookPermissionResponse.cancelledMessage)
-        XCTAssertTrue(isJSONBoolean(decision["interrupt"]), "interrupt must be an actual JSON boolean, not a JSON number")
-        XCTAssertEqual(decision["interrupt"] as? Bool, true)
-    }
 
     func test_body_claude_interrupted_chatAboutQuestion_isDenyWithChatAboutQuestionMessageAndInterruptTrue() throws {
         let data = try XCTUnwrap(
@@ -209,11 +164,12 @@ final class AgentHookPermissionResponseTests: XCTestCase {
         let decision = try decisionObject(data)
         XCTAssertEqual(decision["behavior"] as? String, "deny")
         XCTAssertEqual(decision["message"] as? String, AgentHookPermissionResponse.chatAboutQuestionMessage)
+        XCTAssertTrue(isJSONBoolean(decision["interrupt"]), "interrupt must be an actual JSON boolean, not a JSON number")
         XCTAssertEqual(decision["interrupt"] as? Bool, true)
     }
 
     func test_body_codex_interrupted_isNil() {
-        XCTAssertNil(AgentHookPermissionResponse.body(kind: AgentEntry.codexKind, decision: .interrupted(.cancelled)),
+        XCTAssertNil(AgentHookPermissionResponse.body(kind: AgentEntry.codexKind, decision: .interrupted(.chatAboutQuestion)),
                     "codex fails closed on interrupt, same as .expired")
     }
 
@@ -237,16 +193,14 @@ final class AgentHookPermissionResponseTests: XCTestCase {
     }
 
     func test_body_grok_denied_isFlatDenyDecisionWithReason() throws {
-        for reason in [DenyReason.userRejected, .questionNotAnswered] {
-            let data = try XCTUnwrap(
-                AgentHookPermissionResponse.body(kind: AgentEntry.grokKind, decision: .denied(reason))
-            )
-            let object = try grokDecision(data)
+        let data = try XCTUnwrap(
+            AgentHookPermissionResponse.body(kind: AgentEntry.grokKind, decision: .denied(.userRejected))
+        )
+        let object = try grokDecision(data)
 
-            XCTAssertEqual(object["decision"] as? String, "deny")
-            XCTAssertEqual(Set(object.keys), ["decision", "reason"])
-            XCTAssertEqual(object["reason"] as? String, AgentHookPermissionResponse.deniedMessage)
-        }
+        XCTAssertEqual(object["decision"] as? String, "deny")
+        XCTAssertEqual(Set(object.keys), ["decision", "reason"])
+        XCTAssertEqual(object["reason"] as? String, AgentHookPermissionResponse.deniedMessage)
     }
 
     func test_body_grok_expired_isADenyDecision() throws {
@@ -320,18 +274,17 @@ final class AgentHookPermissionResponseTests: XCTestCase {
         XCTAssertEqual(Set(object.keys), ["decision", "reason"])
     }
 
-    // MARK: - grok / pi: the four unexpressible decisions are byte-identical to .expired
+    // MARK: - grok / pi: the three unexpressible decisions are byte-identical to .expired
 
     func test_body_grokAndPi_unexpressibleDecisions_byteIdenticalToExpired() throws {
         let offer = makeOffer(entry: ["type": "addDirectories", "directories": ["/tmp"]], label: "x")
-        let amendedInputData = try JSONSerialization.data(withJSONObject: ["command": "ls"])
         let answers = makeAnswers()
 
         for kind in [AgentEntry.grokKind, AgentEntry.piKind] {
             let expiredBody = try XCTUnwrap(AgentHookPermissionResponse.body(kind: kind, decision: .expired))
 
             let unexpressible: [ApprovalDecision] = [
-                .allowedWithPermissions(offer), .allowedWithInput(amendedInputData), .interrupted(.cancelled), .answered(answers),
+                .allowedWithPermissions(offer), .interrupted(.chatAboutQuestion), .answered(answers),
             ]
             for decision in unexpressible {
                 let body = try XCTUnwrap(AgentHookPermissionResponse.body(kind: kind, decision: decision), "kind=\(kind)")
@@ -342,11 +295,10 @@ final class AgentHookPermissionResponseTests: XCTestCase {
 
     func test_body_codex_unexpressibleDecisions_areNil_sameAsExpired() throws {
         let offer = makeOffer(entry: ["type": "addDirectories", "directories": ["/tmp"]], label: "x")
-        let amendedInputData = try JSONSerialization.data(withJSONObject: ["command": "ls"])
         let answers = makeAnswers()
 
         let unexpressible: [ApprovalDecision] = [
-            .allowedWithPermissions(offer), .allowedWithInput(amendedInputData), .interrupted(.cancelled), .answered(answers),
+            .allowedWithPermissions(offer), .interrupted(.chatAboutQuestion), .answered(answers),
         ]
         for decision in unexpressible {
             XCTAssertNil(AgentHookPermissionResponse.body(kind: AgentEntry.codexKind, decision: decision))
@@ -358,14 +310,12 @@ final class AgentHookPermissionResponseTests: XCTestCase {
     func test_body_unknownKind_isNilForAllDecisions() throws {
         let unknownKind = "some-unrecognized-cli"
         let offer = makeOffer(entry: ["type": "addDirectories", "directories": ["/tmp"]], label: "x")
-        let amendedInputData = try JSONSerialization.data(withJSONObject: ["command": "ls"])
 
         XCTAssertNil(AgentHookPermissionResponse.body(kind: unknownKind, decision: .allowed))
         XCTAssertNil(AgentHookPermissionResponse.body(kind: unknownKind, decision: .denied(.userRejected)))
         XCTAssertNil(AgentHookPermissionResponse.body(kind: unknownKind, decision: .expired))
         XCTAssertNil(AgentHookPermissionResponse.body(kind: unknownKind, decision: .allowedWithPermissions(offer)))
-        XCTAssertNil(AgentHookPermissionResponse.body(kind: unknownKind, decision: .allowedWithInput(amendedInputData)))
-        XCTAssertNil(AgentHookPermissionResponse.body(kind: unknownKind, decision: .interrupted(.cancelled)))
+        XCTAssertNil(AgentHookPermissionResponse.body(kind: unknownKind, decision: .interrupted(.chatAboutQuestion)))
         XCTAssertNil(AgentHookPermissionResponse.body(kind: unknownKind, decision: .answered(makeAnswers())))
     }
 

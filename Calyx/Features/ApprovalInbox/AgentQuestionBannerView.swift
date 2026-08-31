@@ -9,26 +9,20 @@
 // `AgentHookToolCall.decodeQuestions`'s own doc comment), the standing
 // "Other" row with its own inline text field, the "Add notes" field, the
 // side-by-side markdown preview box (when any option has a `preview`),
-// the Next/Answer button, and the right cluster's "i / n" progress
-// label plus [Back]/[Answer in Pane]/[Chat about this]/[Cancel]. Hosted
-// by `ApprovalBannerView`, which renders only this view (plus the
-// banner-level header and, separately, the queue navigator -- see that
-// file's own header comment) for a `.agentQuestion`-sourced request.
+// the Next/Answer button, and a bottom row with the "i / n" progress
+// label plus [Back]/[Chat about this]. Hosted by `ApprovalBannerView`,
+// which renders only this view (plus the banner-level header and,
+// separately, the queue navigator -- see that file's own header comment)
+// for a `.agentQuestion`-sourced request.
 //
-// The question content spans the WHOLE banner width (`questionContent`'s
-// own `.frame(maxWidth: .infinity, alignment: .leading)`, and this
-// view's own root claiming the same from `ApprovalBannerView`'s outer
-// HStack) -- the earlier layout squeezed it into a narrow middle column
-// with unused space on both sides, since neither this view's own root
-// nor its `questionContent` child ever told their parent HStack they
-// could expand. Choice rows share `ChoiceRowStyle` with
-// `AgentToolApprovalView`'s own rows, which visibly tracks hover/
-// pressed/selected -- the earlier plain `.buttonStyle(.bordered)` gave
-// no hover feedback at all. [Cancel] (`.denied(.questionNotAnswered)`)
-// and [Chat about this] (`.interrupted(.chatAboutQuestion)`) are now two
-// separate, explicitly labeled actions -- the earlier single "Skip"
-// button conflated the TUI's own distinct "3: cancel" and "4: chat about
-// this" options into one.
+// A single column, top to bottom: the question content, then the bottom
+// row, both spanning the WHOLE banner width. Choice rows share
+// `ChoiceRowStyle` with `AgentToolApprovalView`'s own rows. The view's
+// interactive content is exactly what the header comment above already
+// lists: the choice rows, the "Other" row (its own tap gesture plus its
+// inline text field), the zero-option free-text field, the "Add notes"
+// button and its revealed field, the Next/Answer button, and the bottom
+// row's [Back]/[Chat about this] buttons.
 //
 // Owns `@State private var form: AgentQuestionFormState` -- the state
 // machine, testable without SwiftUI (`AgentQuestionFormState.swift`).
@@ -68,16 +62,11 @@ import SwiftUI
 struct AgentQuestionBannerView: View {
     let prompt: AgentQuestionPrompt
     let onAnswer: (AgentQuestionAnswers) -> Void
-    /// The right cluster's [Cancel] action -- replaces the earlier
-    /// "Skip". Resolves `.denied(.questionNotAnswered)` via
-    /// `ApprovalBannerModel.cancelQuestion(id:)`.
-    let onCancel: () -> Void
-    /// The right cluster's [Chat about this] action, the TUI's own
+    /// The bottom row's [Chat about this] action, the TUI's own
     /// "4: chat about this" choice. Resolves `.interrupted(
     /// .chatAboutQuestion)` via `ApprovalBannerModel.chatAboutQuestion(
     /// id:)`.
     let onChatAboutQuestion: () -> Void
-    let onAnswerInPane: () -> Void
     /// Called (deferred past the current transaction, see this view's
     /// own root-level `.onDisappear`) when the whole question view is
     /// torn down while either text field ("Other"/the zero-option
@@ -117,24 +106,20 @@ struct AgentQuestionBannerView: View {
     init(
         prompt: AgentQuestionPrompt,
         onAnswer: @escaping (AgentQuestionAnswers) -> Void,
-        onCancel: @escaping () -> Void,
         onChatAboutQuestion: @escaping () -> Void,
-        onAnswerInPane: @escaping () -> Void,
         onTextFieldRemoved: @escaping () -> Void
     ) {
         self.prompt = prompt
         self.onAnswer = onAnswer
-        self.onCancel = onCancel
         self.onChatAboutQuestion = onChatAboutQuestion
-        self.onAnswerInPane = onAnswerInPane
         self.onTextFieldRemoved = onTextFieldRemoved
         self._form = State(initialValue: AgentQuestionFormState(prompt: prompt))
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 16) {
+        VStack(alignment: .leading, spacing: 8) {
             questionContent
-            actionCluster
+            bottomRow
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         // Fires only when this whole view (not just one of its text
@@ -401,8 +386,7 @@ struct AgentQuestionBannerView: View {
     /// The TUI's own "n: add notes" affordance: a button that reveals a
     /// field bound to `form.notesText`, shown below the options (or the
     /// free-text field, for a zero-option question) -- Return confirms,
-    /// same as the "Other" field, the zero-option field, and the tool
-    /// banner's amend field.
+    /// same as the "Other" field and the zero-option field.
     private var notesSection: some View {
         Group {
             if form.notesVisible {
@@ -435,15 +419,15 @@ struct AgentQuestionBannerView: View {
         }
     }
 
-    // MARK: - Right cluster: top-aligned actions
+    // MARK: - Bottom row
 
     /// "i / n" (while more than one question is queued in THIS prompt --
     /// distinct from `ApprovalBannerView`'s own queue navigator "N / M",
     /// which browses every pending request queued for this WINDOW, not
     /// the questions within this one prompt), [Back] (once `form.
-    /// canGoBack`), [Answer in Pane], [Chat about this], [Cancel] --
-    /// top-aligned alongside the now full-width `questionContent`.
-    private var actionCluster: some View {
+    /// canGoBack`), [Chat about this] -- a small, leading-aligned row
+    /// below the full-width `questionContent`.
+    private var bottomRow: some View {
         HStack(spacing: 8) {
             if form.prompt.questions.count > 1 {
                 Text("\(form.position.index) / \(form.position.count)")
@@ -461,23 +445,11 @@ struct AgentQuestionBannerView: View {
                 .accessibilityIdentifier(AccessibilityID.ApprovalBanner.backButton)
             }
 
-            Button("Answer in Pane") {
-                onAnswerInPane()
-            }
-            .controlSize(.small)
-            .accessibilityIdentifier(AccessibilityID.ApprovalBanner.answerInPaneButton)
-
             Button("Chat about this") {
                 onChatAboutQuestion()
             }
             .controlSize(.small)
             .accessibilityIdentifier(AccessibilityID.ApprovalBanner.chatButton)
-
-            Button("Cancel") {
-                onCancel()
-            }
-            .controlSize(.small)
-            .accessibilityIdentifier(AccessibilityID.ApprovalBanner.cancelButton)
         }
         .fixedSize()
     }

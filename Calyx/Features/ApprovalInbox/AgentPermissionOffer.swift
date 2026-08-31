@@ -16,7 +16,7 @@
 // fields (`type`/`rules`/`directories`/`mode`/`destination`), never from
 // the CLI's own dialog strings or implementation. Kept a pure function,
 // independent of `AgentHookToolCall.decode`'s own kind-gated
-// `acceptsPermissionUpdates` check, so it is directly unit-testable.
+// `acceptsPermissionUpdates(kind:)` check, so it is directly unit-testable.
 // Returns `nil` for an entry with nothing to offer -- see its own doc
 // comment for the full contract -- which `AgentHookToolCall.
 // decodePermissionOffers` treats as a per-element drop, mirroring Claude
@@ -24,36 +24,6 @@
 // label would render empty.
 
 import Foundation
-
-/// Which of a CLI's PermissionRequest capabilities this call's own kind
-/// grants -- decided once, from `kind` alone, in `AgentHookToolCall.
-/// decode(from:kind:)` (the same wire-boundary placement as its existing
-/// per-kind encoder branches). Everything downstream of decode (the
-/// model, the views) reads these flags instead of branching on `kind`
-/// itself, keeping CLI-specific knowledge confined to the wire boundary.
-struct AgentHookCapabilities: Sendable, Equatable {
-    /// Whether this kind's hook can accept `updatedPermissions` (claude-
-    /// code only) -- gates `permissionOffers`'s own non-emptiness below,
-    /// and `AgentHookOffers.cliOwnsPersistence`.
-    let acceptsPermissionUpdates: Bool
-    /// Whether this kind's hook can accept `updatedInput` (claude-code
-    /// only) -- gates `amendableField`.
-    let acceptsUpdatedInput: Bool
-    /// Whether this kind's hook can accept `interrupt: true` (claude-code
-    /// only) -- gates `AgentHookOffers.canStop`.
-    let acceptsInterrupt: Bool
-    /// Whether this kind shows its OWN permission prompt in the pane when
-    /// the hook returns no decision at all (an empty body). True for
-    /// claude-code (hooks.md: "When no hook decides, the normal
-    /// permission prompt is shown with these suggestions as buttons") and
-    /// codex (Codex hooks docs: "If no matching hook decides, Codex uses
-    /// the normal approval flow"). False for grok and pi: for both,
-    /// `AgentHookPermissionResponse` encodes `.expired` as an explicit
-    /// deny because nothing behind the gate would ask anyone (see that
-    /// file's header), so there is no prompt in the pane to hand the
-    /// request to. Gates `AgentHookOffers.canAnswerInPane`.
-    let promptsWhenUndecided: Bool
-}
 
 /// One `permission_suggestions` entry, decoded leniently (an entry with
 /// nothing to offer is dropped individually, same contract as

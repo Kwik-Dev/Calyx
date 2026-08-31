@@ -81,9 +81,6 @@ final class AwaitBridgeTests: XCTestCase {
             case .allowedWithPermissions:
                 XCTFail("this race only ever resumes with .expired (cancel) or .allowed (resume) -- " +
                         ".allowedWithPermissions is unreachable")
-            case .allowedWithInput:
-                XCTFail("this race only ever resumes with .expired (cancel) or .allowed (resume) -- " +
-                        ".allowedWithInput is unreachable")
             case .interrupted:
                 XCTFail("this race only ever resumes with .expired (cancel) or .allowed (resume) -- " +
                         ".interrupted is unreachable")

@@ -567,9 +567,9 @@ final class CalyxMCPServer {
     /// same -> for a non-question-tool call (`!call.isQuestionTool`):
     /// global auto-approve (`!ApprovalPolicy.requiresApproval()`)
     /// short-circuits to 200 with an ALLOW body, also without ever
-    /// submitting -> an `agentHookApprovalMemory.isAutoAllowed` hit (pane
-    /// OR cross scope) short-circuits the same way, also without
-    /// submitting. Neither of those two short-circuits ever applies to a
+    /// submitting -> an `agentHookApprovalMemory.isAutoAllowed` (pane
+    /// scope) hit short-circuits the same way, also without submitting.
+    /// Neither of those two short-circuits ever applies to a
     /// claude-code `AskUserQuestion` call (`call.isQuestionTool`) --
     /// gated on the TOOL, not on whether `tool_input.questions` happened
     /// to decode: a question must always reach a human, even one whose
@@ -695,17 +695,19 @@ final class CalyxMCPServer {
         }
 
         // An AskUserQuestion call must always ask a human: neither global
-        // auto-approve nor Always-Allow memory (pane or cross scope) may
-        // ever short-circuit a question the way they do a plain tool
-        // call -- a "yes always allow this tool" memory says nothing
-        // about which OPTION a human would have picked. Gated on
-        // `call.isQuestionTool`, not `call.question == nil`: a malformed
-        // `tool_input.questions` (decoded to `nil` by `decodeQuestions`)
-        // still reaches the generic `.agentHook` banner below, but must
-        // still never be auto-allowed just because decoding failed to
-        // produce option buttons to answer with -- only the explicit
-        // "Answer in Pane" action may ever hand an AskUserQuestion call
-        // to Claude Code's own in-pane prompt.
+        // auto-approve nor pane-scoped Always-Allow memory may ever
+        // short-circuit a question the way they do a plain tool call --
+        // a "yes always allow this tool" memory says nothing about which
+        // OPTION a human would have picked. Gated on `call.isQuestionTool`,
+        // not `call.question == nil`: a malformed `tool_input.questions`
+        // (decoded to `nil` by `decodeQuestions`) still reaches the
+        // generic `.agentHook` banner below, but must still never be
+        // auto-allowed just because decoding failed to produce option
+        // buttons to answer with -- the only path that ever hands an
+        // AskUserQuestion call to Claude Code's own in-pane prompt is the
+        // hold window expiring with no decision made (`.expired`, no
+        // body -- see `AgentHookPermissionResponse`'s own fail-safe
+        // contract).
         if !call.isQuestionTool {
             guard ApprovalPolicy.requiresApproval() else {
                 return HTTPParser.response(
@@ -740,11 +742,7 @@ final class CalyxMCPServer {
         } else {
             let offers = AgentHookOffers(
                 permissionUpdates: call.permissionOffers,
-                amendableField: call.amendableField,
-                originalToolInputJSON: call.originalToolInputJSON,
-                canStop: call.capabilities.acceptsInterrupt,
-                canAnswerInPane: call.capabilities.promptsWhenUndecided,
-                cliOwnsPersistence: call.capabilities.acceptsPermissionUpdates && !call.permissionOffers.isEmpty
+                cliOwnsPersistence: !call.permissionOffers.isEmpty
             )
             source = .agentHook(toolName: call.toolName, kind: kind, summary: call.summary, offers: offers)
             notificationTitle = "\(AgentEntry.displayName(forKind: kind)) wants to run \(call.toolName)"

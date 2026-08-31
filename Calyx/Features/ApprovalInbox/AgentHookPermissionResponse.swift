@@ -18,11 +18,10 @@
 //
 // Claude Code accepts the widest vocabulary: `updatedPermissions`
 // (`.allowedWithPermissions`, echoing an `AgentPermissionOffer`'s own
-// `entryJSON`), `updatedInput` (`.allowedWithInput`, the whole amended
-// `tool_input`, and `.answered`'s own AskUserQuestion `updatedInput`),
-// and `interrupt: true` (`.interrupted`) are all valid for it. Codex
-// fails closed on all three -- Codex rejects the whole response if any
-// of them is present -- so `.allowedWithPermissions`/`.allowedWithInput`/
+// `entryJSON`), `updatedInput` (`.answered`'s own AskUserQuestion
+// `updatedInput`), and `interrupt: true` (`.interrupted`) are all valid
+// for it. Codex fails closed on all three -- Codex rejects the whole
+// response if any of them is present -- so `.allowedWithPermissions`/
 // `.interrupted`/`.answered` all produce nil for codex, exactly like
 // `.expired` (no fallback body under PermissionRequest for either CLI --
 // absent output lets that CLI's own confirmation prompt take over).
@@ -56,14 +55,14 @@
 // would run the call unreviewed.
 //
 // Since grok/pi have no vocabulary for `.allowedWithPermissions`/
-// `.allowedWithInput`/`.interrupted`/`.answered` at all (there is no
-// question tool, no permission-suggestion offer, no amend, and no
-// cancel/chat-about-this reachable for either kind today), those four
-// produce a body BYTE-IDENTICAL to `.expired`'s own -- the same
-// "nothing behind the gate would ask anyone, so an unrepresentable
-// decision must still deny explicitly" reasoning `.expired` itself
-// follows, reached through the very same code path rather than a
-// second, separately-written deny body that could drift from it.
+// `.interrupted`/`.answered` at all (there is no question tool, no
+// permission-suggestion offer, and no chat-about-this reachable for
+// either kind today), those three produce a body BYTE-IDENTICAL to
+// `.expired`'s own -- the same "nothing behind the gate would ask
+// anyone, so an unrepresentable decision must still deny explicitly"
+// reasoning `.expired` itself follows, reached through the very same
+// code path rather than a second, separately-written deny body that
+// could drift from it.
 //
 // `.answered` is claude-code's own AskUserQuestion decision (see
 // `ApprovalDecision.answered(_:)`): `behavior: "allow"` plus
@@ -93,10 +92,9 @@ import Foundation
 
 enum AgentHookPermissionResponse {
 
-    /// codex's/grok's/pi's own deny message -- the same text for either
-    /// `DenyReason`, since none of the three kinds has a question tool
-    /// reaching their gate to distinguish "declined a tool call" from
-    /// "dismissed a question" the way claude-code's own two messages do.
+    /// codex's/grok's/pi's own deny message -- the only `DenyReason` any
+    /// of the three kinds' gates ever reaches is `.userRejected`, so one
+    /// message covers it.
     static let deniedMessage = "Denied from the Calyx approval inbox."
 
     /// claude-code's own `.denied(.userRejected)` message -- VERBATIM
@@ -105,16 +103,6 @@ enum AgentHookPermissionResponse {
     /// banner reads identically to declining in Claude Code's own
     /// dialog.
     static let claudeCodeRejectedMessage = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed."
-
-    /// claude-code's own `.denied(.questionNotAnswered)` message -- the
-    /// TUI's own Esc-to-cancel result on an AskUserQuestion prompt.
-    static let questionNotAnsweredMessage = "The user did not answer the questions."
-
-    /// claude-code's own `.interrupted(.cancelled)` message -- the
-    /// banner's [Cancel] action on an `.agentHook` request, paired with
-    /// `interrupt: true` (the TUI's own Esc "[Request interrupted by
-    /// user for tool use]" result).
-    static let cancelledMessage = "The user cancelled this tool call in the Calyx approval inbox and will say what to do next."
 
     /// claude-code's own `.interrupted(.chatAboutQuestion)` message --
     /// the question banner's [Chat about this] action, paired with
@@ -191,9 +179,6 @@ enum AgentHookPermissionResponse {
         case .allowedWithPermissions(let offer):
             guard let entry = try? JSONSerialization.jsonObject(with: offer.entryJSON) else { return nil }
             return envelope(decision: ["behavior": "allow", "updatedPermissions": [entry]])
-        case .allowedWithInput(let amendedToolInput):
-            guard let updatedInput = try? JSONSerialization.jsonObject(with: amendedToolInput) else { return nil }
-            return envelope(decision: ["behavior": "allow", "updatedInput": updatedInput])
         case .denied(let reason):
             return envelope(decision: ["behavior": "deny", "message": claudeCodeDenyMessage(for: reason)])
         case .interrupted(let reason):
@@ -210,30 +195,26 @@ enum AgentHookPermissionResponse {
     private static func claudeCodeDenyMessage(for reason: DenyReason) -> String {
         switch reason {
         case .userRejected: return claudeCodeRejectedMessage
-        case .questionNotAnswered: return questionNotAnsweredMessage
         }
     }
 
     private static func claudeCodeInterruptMessage(for reason: InterruptReason) -> String {
         switch reason {
-        case .cancelled: return cancelledMessage
         case .chatAboutQuestion: return chatAboutQuestionMessage
         }
     }
 
     /// codex's own vocabulary: `allow`/`deny` only, `message` always
-    /// `deniedMessage` regardless of `DenyReason` (codex has no question
-    /// tool to distinguish a dismissed one from a declined call). Every
-    /// decision codex fails closed on (`.allowedWithPermissions`/`.
-    /// allowedWithInput`/`.interrupted`/`.answered`) produces `nil`,
-    /// exactly like `.expired`.
+    /// `deniedMessage`. Every decision codex fails closed on
+    /// (`.allowedWithPermissions`/`.interrupted`/`.answered`) produces
+    /// `nil`, exactly like `.expired`.
     private static func codexBody(for decision: ApprovalDecision) -> Data? {
         switch decision {
         case .allowed:
             return envelope(decision: ["behavior": "allow"])
         case .denied:
             return envelope(decision: ["behavior": "deny", "message": deniedMessage])
-        case .allowedWithPermissions, .allowedWithInput, .interrupted, .expired, .answered:
+        case .allowedWithPermissions, .interrupted, .expired, .answered:
             return nil
         }
     }
@@ -242,12 +223,12 @@ enum AgentHookPermissionResponse {
     /// `decision` plus `reason: deniedMessage` for a deny (their spelling
     /// of the field Claude Code and Codex call `message`), and an
     /// explicit deny with its own reason for an expiry. Every decision
-    /// neither kind has a vocabulary for
-    /// (`.allowedWithPermissions`/`.allowedWithInput`/`.interrupted`/`.
-    /// answered`) routes back through `body(kind:decision:)` with `.
-    /// expired`, so the produced bytes are byte-identical to an actual
-    /// expiry's own body rather than a second, separately-written deny
-    /// that could drift from it -- see this file's own header comment.
+    /// neither kind has a vocabulary for (`.allowedWithPermissions`/`.
+    /// interrupted`/`.answered`) routes back through
+    /// `body(kind:decision:)` with `.expired`, so the produced bytes are
+    /// byte-identical to an actual expiry's own body rather than a
+    /// second, separately-written deny that could drift from it -- see
+    /// this file's own header comment.
     private static func flatBody(for decision: ApprovalDecision, kind: String) -> Data? {
         switch decision {
         case .allowed:
@@ -259,7 +240,7 @@ enum AgentHookPermissionResponse {
                 "decision": "deny",
                 "reason": "No approval was given in the Calyx approval inbox before the request expired.",
             ])
-        case .allowedWithPermissions, .allowedWithInput, .interrupted, .answered:
+        case .allowedWithPermissions, .interrupted, .answered:
             return body(kind: kind, decision: .expired)
         }
     }

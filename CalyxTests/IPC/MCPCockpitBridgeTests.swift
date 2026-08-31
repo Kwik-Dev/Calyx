@@ -720,11 +720,11 @@ final class MCPCockpitBridgeTests: XCTestCase {
         XCTAssertEqual(access.sendCommandCallCount, 0, "an answered decision must never reach access.sendCommand")
     }
 
-    /// `.allowedWithPermissions`/`.allowedWithInput`/`.interrupted` are
-    /// only ever produced for an `.agentHook`-sourced request, never for
-    /// an `.mcpTool`-sourced one like `pane_run` -- but `gate`'s switch
-    /// over `ApprovalDecision` must still handle each exhaustively, and
-    /// map every one of them to `{"status": "denied"}`, never `.proceed`.
+    /// `.allowedWithPermissions`/`.interrupted` are only ever produced
+    /// for an `.agentHook`-sourced request, never for an
+    /// `.mcpTool`-sourced one like `pane_run` -- but `gate`'s switch over
+    /// `ApprovalDecision` must still handle each exhaustively, and map
+    /// every one of them to `{"status": "denied"}`, never `.proceed`.
     func test_paneRun_everyNonAllowedNonExpiredDecision_returnsStatusDenied_neverExecutes() async throws {
         let suiteName = "com.calyx.tests.MCPCockpitBridgeTests.paneRunNonAllowedDecisions"
         CockpitSettings._testUseSuite(named: suiteName)
@@ -733,9 +733,8 @@ final class MCPCockpitBridgeTests: XCTestCase {
         let offer = AgentPermissionOffer(
             label: "x", entryJSON: try! JSONSerialization.data(withJSONObject: ["type": "addDirectories", "directories": ["/tmp"]])
         )
-        let amendedInputData = try! JSONSerialization.data(withJSONObject: ["command": "ls"])
         let decisions: [ApprovalDecision] = [
-            .allowedWithPermissions(offer), .allowedWithInput(amendedInputData), .interrupted(.cancelled),
+            .allowedWithPermissions(offer), .interrupted(.chatAboutQuestion),
         ]
 
         for decision in decisions {

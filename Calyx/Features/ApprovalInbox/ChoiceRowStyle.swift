@@ -58,9 +58,9 @@ struct ChoiceRowStyle: ButtonStyle {
             return Color.accentColor.opacity(0.25)
         }
         if isHovering {
-            return Color.primary.opacity(0.08)
+            return Color.primary.opacity(0.12)
         }
-        return .clear
+        return Color.primary.opacity(0.06)
     }
 
     private struct Row: View {
@@ -71,8 +71,11 @@ struct ChoiceRowStyle: ButtonStyle {
         @State private var isHovering = false
 
         /// `.contentShape` after `.clipShape` makes the whole rounded rect the
-        /// hit-test/hover target, not just the label text, since the row's
-        /// background is `.clear` when neither selected nor hovered.
+        /// hit-test/hover target, not just the label text -- the row's own
+        /// tinted background draws behind the label either way, but without
+        /// this, hovering/clicking the row's own padding (outside the
+        /// label's tight bounds) would neither highlight nor register a
+        /// click.
         var body: some View {
             HStack(alignment: .top, spacing: 8) {
                 if let glyphText {
@@ -108,11 +111,12 @@ struct ChoiceRowStyle: ButtonStyle {
         /// selected+hovered row -- the row IS being clicked right now),
         /// selected (accent tint, so the chosen row/answer stays
         /// visually distinct even after the pointer moves away), hovered
-        /// (a light `Color.primary` wash -- neutral, works in both light
-        /// and dark appearance since it is relative to the current
-        /// foreground color rather than a fixed RGB value), plain (no
-        /// fill at all, letting the banner's own background show
-        /// through).
+        /// (a brighter `Color.primary` wash), resting (a faint
+        /// `Color.primary` wash, always visible -- this is what makes the
+        /// row read as a full-width strip spanning the banner even when
+        /// idle, rather than bare text with no visible extent). Every
+        /// tier uses `Color.primary` rather than a fixed RGB value, so it
+        /// stays legible in both light and dark appearance.
         private var backgroundColor: Color {
             ChoiceRowStyle.backgroundColor(isSelected: isSelected, isHovering: isHovering, isPressed: configuration.isPressed)
         }

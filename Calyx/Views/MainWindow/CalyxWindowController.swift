@@ -121,7 +121,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         restoreTerminalFocus: { [weak self] in
             // This closure only returns first responder to the terminal
             // and never refreshes the hosting view. A path that reached
-            // a real decision (answer/skip/answerInPane) already went
+            // a real decision (answer / chat-about-this) already went
             // through ApprovalInboxStore.decide, which posts
             // .calyxApprovalInboxChanged synchronously and so reaches
             // handleApprovalInboxChanged -> refreshHostingView() on its

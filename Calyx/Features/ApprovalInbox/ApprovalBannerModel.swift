@@ -3,10 +3,10 @@
 //
 // Per-window view-model behind the Cockpit approval banner, choosing
 // which single pending ApprovalRequest (if any) this window should show
-// and forwarding Allow/Deny/Always Allow/Allow All Pending to
-// ApprovalInboxStore.decide(id:_:) / CockpitSettings.autoApproveEnabled /
-// AgentHookApprovalMemory (Stage E -- see alwaysAllow(id:)'s own doc
-// comment for the .mcpTool vs .agentHook source split).
+// and forwarding Allow/Deny/Always Allow to ApprovalInboxStore.decide(
+// id:_:) / CockpitSettings.autoApproveEnabled / AgentHookApprovalMemory
+// (see alwaysAllow(id:)'s own doc comment for the .mcpTool vs .agentHook
+// source split).
 // Mirrors RecoveryBarModel's shape: UI-independent, injected closures
 // instead of reaching for CalyxWindowController/NSWindow directly, one
 // instance per window.
@@ -100,8 +100,7 @@ final class ApprovalBannerModel {
     /// request -- it just keeps missing every lookup here (falling back
     /// to the oldest visible request) until some action explicitly
     /// reassigns it (`selectNext()`/`selectPrevious()`/
-    /// `advanceCursor(pastDisplayed:)`), or clears it outright
-    /// (`allowAllPending()`).
+    /// `advanceCursor(pastDisplayed:)`).
     var current: ApprovalRequest? {
         let visible = visibleRequests
         guard !visible.isEmpty else { return nil }
@@ -164,27 +163,6 @@ final class ApprovalBannerModel {
     /// it directly (`test_pendingCountForWindow_countsOnlyOwnedRequests`).
     var pendingCountForWindow: Int {
         visibleRequests.count
-    }
-
-    /// Store-wide pending count, with NO window/ownership visibility
-    /// filter at all -- used by the cross-actions menu's "Allow All
-    /// Pending (N)" label (see `ApprovalBannerView`), distinct from
-    /// `pendingCountForWindow` above, which counts only requests this
-    /// window owns/can see. Excludes every `.agentQuestion` request:
-    /// "Allow All Pending" never decides one (see `allowAllPending()`),
-    /// so counting it here would promise a number this action does not
-    /// deliver.
-    var totalPendingCount: Int {
-        allowAllCandidates.count
-    }
-
-    /// Every store-wide pending request `allowAllPending()` may decide --
-    /// every `.mcpTool`/`.agentHook` request, no `.agentQuestion`, no
-    /// window/ownership visibility filter -- shared with `totalPendingCount`
-    /// above so the count and the drain can never disagree about which
-    /// requests qualify.
-    private var allowAllCandidates: [ApprovalRequest] {
-        store.pending.filter { !isAgentQuestion($0.source) }
     }
 
     /// Every request in `visibleRequests` (same ownsSurface/isKeyWindow
@@ -277,42 +255,38 @@ final class ApprovalBannerModel {
 
     /// Called immediately before the `store.decide`/`store.decide(ids:)`
     /// that actually resolves `id`, in every action below (`allow`/
-    /// `deny`/`alwaysAllow`/`alwaysAllowAcrossPanes`) -- for `allow`/
-    /// `deny` that's still their very first line (neither has an
-    /// intervening bail-out guard); for `alwaysAllow`'s `.agentHook`
-    /// branch and `alwaysAllowAcrossPanes`, this call is placed AFTER
-    /// their own early-return guards (a missing `targetSurfaceID`, or a
-    /// `.mcpTool`-sourced click for `alwaysAllowAcrossPanes`) -- a path
-    /// that bails out without deciding anything must never advance the
-    /// cursor either. `store.pending` hasn't been mutated yet at the
-    /// point this actually runs, so `visibleRequests` here still
-    /// includes `id`, letting this compute its successor/predecessor
-    /// within the PRE-removal queue, same as `selectNext()`/
-    /// `selectPrevious()` do. A no-op unless `id` is the request this
-    /// window is actually DISPLAYING right now (`current?.id`) -- a
-    /// stale `id` (already decided by some other path, see `allow(id:)`'s
-    /// own stale-id contract below) can never equal `current?.id` in the
-    /// first place (a non-pending request is never in `visibleRequests`),
-    /// so this guard also doubles as that same stale-id no-op, keeping
-    /// the cursor exactly where `current` has already independently
-    /// fallen back to.
+    /// `deny`/`alwaysAllow`) -- for `allow`/`deny` that's still their very
+    /// first line (neither has an intervening bail-out guard); for
+    /// `alwaysAllow`'s `.agentHook` branch, this call is placed AFTER its
+    /// own early-return guard (a missing `targetSurfaceID`) -- a path that
+    /// bails out without deciding anything must never advance the cursor
+    /// either. `store.pending` hasn't been mutated yet at the point this
+    /// actually runs, so `visibleRequests` here still includes `id`,
+    /// letting this compute its successor/predecessor within the
+    /// PRE-removal queue, same as `selectNext()`/`selectPrevious()` do. A
+    /// no-op unless `id` is the request this window is actually
+    /// DISPLAYING right now (`current?.id`) -- a stale `id` (already
+    /// decided by some other path, see `allow(id:)`'s own stale-id
+    /// contract below) can never equal `current?.id` in the first place
+    /// (a non-pending request is never in `visibleRequests`), so this
+    /// guard also doubles as that same stale-id no-op, keeping the cursor
+    /// exactly where `current` has already independently fallen back to.
     ///
-    /// `drainedIDs` (default empty, used only by the batch-drain callers
-    /// below) closes a gap the plain immediate-neighbor pick left open:
-    /// `alwaysAllow`'s drains (the `.mcpTool` branch's all-visible-
-    /// `.mcpTool` sweep; the `.agentHook` branch's same-(surface, kind,
-    /// toolName) sweep) and `alwaysAllowAcrossPanes`'s same-(kind,
-    /// toolName) store-wide sweep can decide MORE than just `id` in the
-    /// very same call -- including the immediate successor this method
-    /// would otherwise pick as the new cursor. Once that neighbor is
-    /// itself swept, `current`'s `selectedRequestID` lookup misses and
-    /// falls all the way back to the OLDEST visible request, snapping the
-    /// banner backward instead of stepping to the nearest request that
-    /// actually survives the drain. Scans forward from `index + 1` for
-    /// the first element NOT in `drainedIDs`; if every forward element is
-    /// drained, scans backward from `index - 1` for the nearest element
-    /// NOT in `drainedIDs`; nil if nothing survives either direction.
-    /// With `drainedIDs` empty (`allow(id:)`/`deny(id:)`'s case), every
+    /// `drainedIDs` (default empty, used only by `alwaysAllow`'s own
+    /// batch drains -- the `.mcpTool` branch's all-visible-`.mcpTool`
+    /// sweep, the `.agentHook` branch's same-(surface, kind, toolName)
+    /// sweep) closes a gap the plain immediate-neighbor pick left open:
+    /// either drain can decide MORE than just `id` in the very same call
+    /// -- including the immediate successor this method would otherwise
+    /// pick as the new cursor. Once that neighbor is itself swept,
+    /// `current`'s `selectedRequestID` lookup misses and falls all the
+    /// way back to the OLDEST visible request, snapping the banner
+    /// backward instead of stepping to the nearest request that actually
+    /// survives the drain. Scans forward from `index + 1` for the first
+    /// element NOT in `drainedIDs`; if every forward element is drained,
+    /// scans backward from `index - 1` for the nearest element NOT in
+    /// `drainedIDs`; nil if nothing survives either direction. With
+    /// `drainedIDs` empty (`allow(id:)`/`deny(id:)`'s case), every
     /// forward/backward element trivially survives the exclusion check,
     /// so this reduces exactly to the plain immediate-neighbor behavior.
     private func advanceCursor(pastDisplayed id: UUID, excluding drainedIDs: Set<UUID> = []) {
@@ -338,10 +312,9 @@ final class ApprovalBannerModel {
     /// for that case. The one guard this DOES need,
     /// `isPendingAgentQuestion(_:)`, is not about staleness: it stops
     /// this from ever deciding a live `.agentQuestion` request, which
-    /// only `answer(id:answers:)`/`cancelQuestion(id:)`/
-    /// `chatAboutQuestion(id:)`/`answerInPane(id:)` may decide (unlike
-    /// `alwaysAllow(id:)` below, whose own guard covers
-    /// its own extra side effects).
+    /// only `answer(id:answers:)`/`chatAboutQuestion(id:)` may decide
+    /// (unlike `alwaysAllow(id:)` below, whose own guard covers its own
+    /// extra side effects).
     func allow(id: UUID) {
         guard !isPendingAgentQuestion(id) else { return }
         advanceCursor(pastDisplayed: id)
@@ -366,81 +339,34 @@ final class ApprovalBannerModel {
         store.decide(id: id, .allowedWithPermissions(offer))
     }
 
-    /// `AgentToolApprovalView`'s "Allow amended" action: accepts
-    /// `toolInput`, the whole original `tool_input` with `AgentHookOffers.
-    /// amendableField`'s value replaced (`.allowedWithInput(toolInput)`).
-    /// A no-op for an `.agentQuestion`/`.mcpTool`-sourced `id`, same
-    /// scoping as `allowWithPermissions(id:offer:)` above.
-    func allowWithInput(id: UUID, toolInput: Data) {
-        guard isPendingAgentHook(id) else { return }
-        advanceCursor(pastDisplayed: id)
-        store.decide(id: id, .allowedWithInput(toolInput))
-    }
-
-    /// `AgentToolApprovalView`'s [Cancel] action, shown only while
-    /// `AgentHookOffers.canStop`: resolves `.interrupted(.cancelled)`,
-    /// telling the CLI to stop and wait for the human rather than that
-    /// the call was refused. A no-op for an `.agentQuestion`/`.mcpTool`-
-    /// sourced `id` -- an `.mcpTool` request has no CLI hook to interrupt
-    /// at all, and a question's own cancel is `cancelQuestion(id:)` below.
-    func cancel(id: UUID) {
-        guard isPendingAgentHook(id) else { return }
-        advanceCursor(pastDisplayed: id)
-        store.decide(id: id, .interrupted(.cancelled))
-    }
-
     /// Whether `id` currently names a pending `.agentHook` request -- the
-    /// scoping guard `allowWithPermissions(id:offer:)`/`allowWithInput(id:
-    /// toolInput:)`/`cancel(id:)` share: none of the three ever applies to
-    /// `.mcpTool` (no CLI hook behind it) or `.agentQuestion` (its own,
-    /// separate action set below).
+    /// scoping guard `allowWithPermissions(id:offer:)` uses: it never
+    /// applies to `.mcpTool` (no CLI hook behind it) or `.agentQuestion`
+    /// (its own, separate action set below).
     private func isPendingAgentHook(_ id: UUID) -> Bool {
         guard let request = store.pending.first(where: { $0.id == id }) else { return false }
         guard case .agentHook = request.source else { return false }
         return true
     }
 
-    /// Whether `id` currently names a pending request `answerInPane(id:)`
-    /// may resolve: an `.agentQuestion` request always, an `.agentHook`
-    /// request only when its own `offers.canAnswerInPane` is true,
-    /// `.mcpTool` never, a stale (no longer pending) `id` never.
-    private func canAnswerInPane(_ id: UUID) -> Bool {
-        guard let request = store.pending.first(where: { $0.id == id }) else { return false }
-        switch request.source {
-        case .mcpTool:
-            return false
-        case .agentHook(_, _, _, let offers):
-            return offers.canAnswerInPane
-        case .agentQuestion:
-            return true
-        }
-    }
-
     /// Whether `id` currently names a pending `.agentQuestion` request.
     /// `allow(id:)`/`deny(id:)` negate this as their own no-op guard:
-    /// neither may ever decide a question, which is answered only
-    /// through `answer(id:answers:)`/`cancelQuestion(id:)`/
-    /// `chatAboutQuestion(id:)`/`answerInPane(id:)`; those last two use
-    /// this same check directly, as their own no-op guard against ever
+    /// neither may ever decide a question, which is answered only through
+    /// `answer(id:answers:)`/`chatAboutQuestion(id:)`; that latter uses
+    /// this same check directly, as its own no-op guard against ever
     /// deciding a non-`.agentQuestion` request. A stale (no longer
     /// pending) `id` is never an agent-question by this definition, which
     /// is fine -- `store.decide` itself already no-ops for a stale id.
     private func isPendingAgentQuestion(_ id: UUID) -> Bool {
         guard let request = store.pending.first(where: { $0.id == id }) else { return false }
-        return isAgentQuestion(request.source)
-    }
-
-    private func isAgentQuestion(_ source: ApprovalRequest.Source) -> Bool {
-        guard case .agentQuestion = source else { return false }
+        guard case .agentQuestion = request.source else { return false }
         return true
     }
 
-    /// Shared body of `answer(id:answers:)`/`cancelQuestion(id:)`/
-    /// `chatAboutQuestion(id:)`/`answerInPane(id:)`: advances the cursor
-    /// exactly like `allow(id:)`/`deny(id:)`, resolves `decision`, then
-    /// restores terminal focus once -- the banner's own text field (an
-    /// `.agentQuestion` banner's "Other"/notes free-text field, or an
-    /// `.agentHook` tool banner's amend field) may have taken first
+    /// Shared body of `answer(id:answers:)`/`chatAboutQuestion(id:)`:
+    /// advances the cursor exactly like `allow(id:)`/`deny(id:)`, resolves
+    /// `decision`, then restores terminal focus once -- the question
+    /// banner's own "Other"/notes free-text field may have taken first
     /// responder, and resolving the request removes the banner out from
     /// under it.
     private func resolveQuestion(id: UUID, _ decision: ApprovalDecision) {
@@ -456,17 +382,6 @@ final class ApprovalBannerModel {
         resolveQuestion(id: id, .answered(answers))
     }
 
-    /// The question banner's [Cancel] action (replaces the earlier
-    /// "Skip"): resolves `.denied(.questionNotAnswered)` -- the human
-    /// dismissed the question without answering it, distinct from
-    /// declining an ordinary tool call. A no-op for a non-`.agentQuestion`
-    /// `id`, unlike `cancel(id:)` above, which only ever makes sense for
-    /// `.agentHook`.
-    func cancelQuestion(id: UUID) {
-        guard isPendingAgentQuestion(id) else { return }
-        resolveQuestion(id: id, .denied(.questionNotAnswered))
-    }
-
     /// The question banner's [Chat about this] action: resolves
     /// `.interrupted(.chatAboutQuestion)` -- the human wants to reply
     /// free-form in the pane instead of answering the structured prompt.
@@ -478,38 +393,21 @@ final class ApprovalBannerModel {
         resolveQuestion(id: id, .interrupted(.chatAboutQuestion))
     }
 
-    /// The banner's "Answer in Pane" action: resolves `.expired` -- no
-    /// body reaches the hook (see `AgentHookPermissionResponse`'s own
-    /// fail-safe contract), so that kind's own in-pane prompt takes over.
-    /// Always applies to an `.agentQuestion`-sourced request. For an
-    /// `.agentHook`-sourced request, a no-op unless its own `offers.
-    /// canAnswerInPane` is true -- a kind whose hook has no prompt to hand
-    /// the call over to (see `AgentHookOffers.canAnswerInPane`'s own doc
-    /// comment) must never resolve `.expired` here, since for that kind
-    /// `.expired` encodes as an explicit deny, not a handoff. Also a
-    /// no-op for an `.mcpTool`-sourced or stale `id`.
-    func answerInPane(id: UUID) {
-        guard canAnswerInPane(id) else { return }
-        resolveQuestion(id: id, .expired)
-    }
-
-    /// Called by `AgentQuestionBannerView`'s and `AgentToolApprovalView`'s
-    /// own root-level `.onDisappear` when the whole view is torn down
-    /// while one of its text fields (the question banner's "Other"/notes
-    /// free-text field, or the tool banner's amend field) still held
-    /// first responder -- covers every removal cause (the displayed
-    /// request changing, the hold window expiring, the pane closing,
-    /// `expireAll`, cancellation), since that root `.onDisappear` is the
-    /// sole path this fires from (not the field's own `.onDisappear`,
-    /// which also fires mid-prompt, e.g. on an ordinary question-to-
-    /// question advance). Unlike `answer(id:)`/`cancelQuestion(id:)`/
-    /// `chatAboutQuestion(id:)`/`answerInPane(id:)` above, this path
-    /// decides nothing itself; it only restores terminal focus.
+    /// Called by `AgentQuestionBannerView`'s own root-level `.onDisappear`
+    /// when the whole view is torn down while its "Other"/notes free-text
+    /// field still held first responder -- covers every removal cause
+    /// (the displayed request changing, the hold window expiring, the
+    /// pane closing, `expireAll`, cancellation), since that root
+    /// `.onDisappear` is the sole path this fires from (not the field's
+    /// own `.onDisappear`, which also fires mid-prompt, e.g. on an
+    /// ordinary question-to-question advance). Unlike `answer(id:)`/
+    /// `chatAboutQuestion(id:)` above, this path decides nothing itself;
+    /// it only restores terminal focus.
     func restoreTerminalFocusAfterInput() {
         restoreTerminalFocus()
     }
 
-    /// Branches on the clicked request's own `source` (Stage E).
+    /// Branches on the clicked request's own `source`.
     ///
     /// For an `.mcpTool`-sourced request: turns on auto-approve for every
     /// FUTURE gated action, resolves the clicked `id` allowed first (the
@@ -528,7 +426,7 @@ final class ApprovalBannerModel {
     /// Always-Allow memory; only that request's own always-allow action
     /// (the `.agentHook` branch below) may ever decide it.
     ///
-    /// For an `.agentHook`-sourced request (Stage E, new): NEVER touches
+    /// For an `.agentHook`-sourced request: NEVER touches
     /// `CockpitSettings.autoApproveEnabled` at all. Instead records PANE
     /// Always-Allow memory (the clicked request's own `targetSurfaceID`,
     /// `kind`, `toolName`) via the injected `memory`, then drains only
@@ -586,57 +484,17 @@ final class ApprovalBannerModel {
             // A question is never decided by this action: see
             // `allow(id:)`'s own doc comment on why `.agentQuestion`
             // requests only ever resolve through `answer(id:answers:)`/
-            // `cancelQuestion(id:)`/`chatAboutQuestion(id:)`/
-            // `answerInPane(id:)`.
+            // `chatAboutQuestion(id:)`.
             return
         }
     }
 
-    /// Decides EVERY pending request in the store `.allowed`, store-wide,
-    /// with NO window/ownership visibility filter at all, EXCEPT every
-    /// `.agentQuestion` request -- this action must never answer a
-    /// question on a human's behalf, same rationale as `allow(id:)`'s own
-    /// no-op guard. Leaves no Always-Allow memory behind and never
-    /// touches any setting -- called by the cross-actions menu's "Allow
-    /// All Pending" item (see `ApprovalBannerView`). Clears the
-    /// navigation cursor outright (rather than advancing it, unlike
-    /// `allow(id:)`/`deny(id:)`/`alwaysAllow(id:)`/
-    /// `alwaysAllowAcrossPanes(id:)` above): nothing this action decides
-    /// is left pending store-wide to point at.
-    func allowAllPending() {
-        selectedRequestID = nil
-        let idsToAllow = allowAllCandidates.map(\.id)
-        store.decide(ids: idsToAllow, .allowed)
-    }
-
-    /// Only meaningful for an `.agentHook`-sourced request: records
-    /// CROSS Always-Allow memory (`kind`, `toolName` only -- no
-    /// `surfaceID`) via the injected `memory`, then drains every pending
-    /// request store-wide sharing that (`kind`, `toolName`), regardless
-    /// of window/pane ownership. A no-op (no memory recorded, nothing
-    /// drained, no setting touched) if `id` is no longer pending, its
-    /// source is `.mcpTool`, or its own `offers.cliOwnsPersistence` is
-    /// true -- same rationale as `alwaysAllow(id:)`'s own guard.
-    func alwaysAllowAcrossPanes(id: UUID) {
-        guard let request = store.pending.first(where: { $0.id == id }) else { return }
-        guard case .agentHook(let toolName, let kind, _, let offers) = request.source else { return }
-        guard !offers.cliOwnsPersistence else { return }
-
-        let idsToAllow = store.pending
-            .filter { matchesAgentHook($0.source, kind: kind, toolName: toolName) }
-            .map(\.id)
-        advanceCursor(pastDisplayed: id, excluding: Set(idsToAllow))
-        memory.rememberCross(kind: kind, toolName: toolName)
-        store.decide(ids: idsToAllow, .allowed)
-    }
-
     /// Whether `source` is an `.agentHook` request sharing the exact
-    /// (`kind`, `toolName`) pair -- the batch-drain match key both the
-    /// pane-scoped half of `alwaysAllow(id:)` and
-    /// `alwaysAllowAcrossPanes(id:)` use, deliberately ignoring
-    /// `summary`/`offers` (a per-call, human-readable description and
-    /// this specific call's own offers, neither part of the tool
-    /// identity these actions key off of).
+    /// (`kind`, `toolName`) pair -- the batch-drain match key
+    /// `alwaysAllow(id:)`'s own pane-scoped branch uses, deliberately
+    /// ignoring `summary`/`offers` (a per-call, human-readable
+    /// description and this specific call's own offers, neither part of
+    /// the tool identity this action keys off of).
     private func matchesAgentHook(_ source: ApprovalRequest.Source, kind: String, toolName: String) -> Bool {
         guard case .agentHook(let sourceToolName, let sourceKind, _, _) = source else { return false }
         return sourceToolName == toolName && sourceKind == kind

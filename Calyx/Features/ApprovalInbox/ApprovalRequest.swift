@@ -43,61 +43,28 @@ struct ApprovalRequest: Identifiable, Sendable {
 
 /// What an `.agentHook`-sourced request may offer beyond the plain
 /// "Yes"/"No" -- everything `AgentToolApprovalView` reads to decide which
-/// rows/buttons to render, all derived once at decode time
-/// (`AgentHookToolCall`) so the view never branches on `kind` itself.
+/// choice rows to render, derived once at decode time (`AgentHookToolCall`)
+/// so the view never branches on `kind` itself.
 struct AgentHookOffers: Sendable, Equatable {
     /// One choice row per element -- see `AgentPermissionOffer`.
     let permissionUpdates: [AgentPermissionOffer]
-    /// The `tool_input` field name `AgentToolApprovalView`'s "Amend…" flow
-    /// may rewrite -- see `AgentHookToolCall.amendableField`.
-    let amendableField: String?
-    /// The whole original `tool_input`, re-serialized -- `amendableField`'s
-    /// current value is read from this, and `.allowedWithInput(_:)`
-    /// replaces that one field on a copy of this whole object. A non-nil
-    /// `amendableField` always implies a non-nil `originalToolInputJSON`
-    /// (it can only be derived from a decoded `tool_input`); the converse
-    /// does not hold, since `tool_input` decodes into this field for
-    /// every kind, not only one whose `amendableField` is non-nil.
-    let originalToolInputJSON: Data?
-    /// Whether this kind's hook accepts `interrupt: true` -- gates the
-    /// [Cancel] button (`.interrupted(.cancelled)`).
-    let canStop: Bool
-    /// Whether [Answer in Pane] renders at all -- `capabilities.
-    /// promptsWhenUndecided`. Resolving `.expired` sends that kind no
-    /// body at all, and only a kind that then shows its own prompt has
-    /// anything in the pane to answer; for grok/pi the same `.expired`
-    /// encodes as an explicit deny (`AgentHookPermissionResponse.
-    /// flatBody`), so a button promising a pane prompt would in fact
-    /// refuse the call.
-    let canAnswerInPane: Bool
-    /// Per request, not per kind: true iff `permissionUpdates` is
-    /// non-empty on a kind whose hook accepts `updatedPermissions` --
-    /// i.e. this request actually carries at least one CLI always-allow
-    /// row. When true, the CLI itself persists the human's always-allow
-    /// choice through one of those rows, so `ApprovalBannerModel.
-    /// alwaysAllow(id:)`/`alwaysAllowAcrossPanes(id:)` (Calyx's OWN
-    /// pane/cross-pane memory) are no-ops for this request: recording a
-    /// second, Calyx-side memory alongside the CLI's own would be
-    /// redundant and could silently diverge from it. When the CLI's own
-    /// kind accepts `updatedPermissions` but this particular request
-    /// offered no usable suggestion, `cliOwnsPersistence` is still
-    /// false: Calyx's own memory is the only persistence available, and
-    /// the pane-scoped row renders again.
+    /// True iff `permissionUpdates` is non-empty -- i.e. this request
+    /// actually carries at least one CLI always-allow row. When true, the
+    /// CLI itself persists the human's always-allow choice through one of
+    /// those rows, so `ApprovalBannerModel.alwaysAllow(id:)` (Calyx's OWN
+    /// pane memory) is a no-op for this request: recording a second,
+    /// Calyx-side memory alongside the CLI's own would be redundant and
+    /// could silently diverge from it. When `permissionUpdates` is empty,
+    /// `cliOwnsPersistence` is false: Calyx's own pane-scoped memory is
+    /// the only persistence available, and its row renders instead.
     let cliOwnsPersistence: Bool
 
-    /// The all-capabilities-off constant: no permission updates, no amend,
-    /// no cancel, no answer-in-pane, and Calyx's own pane/cross-pane
-    /// Always-Allow memory is the only persistence available. Used as a
-    /// default where no offers apply -- test fixtures and any caller with
-    /// no decoded call at hand -- not something `routeApprovalRequest`
-    /// itself produces. A claude-code request whose payload offered no
-    /// usable `permission_suggestions` carries `cliOwnsPersistence: false`
-    /// but is NOT this constant: it still keeps `canStop`/`canAnswerInPane`/
-    /// `amendableField` per claude-code's own capabilities.
-    static let none = AgentHookOffers(
-        permissionUpdates: [], amendableField: nil, originalToolInputJSON: nil,
-        canStop: false, canAnswerInPane: false, cliOwnsPersistence: false
-    )
+    /// The no-offers constant: no permission updates, so Calyx's own
+    /// pane-scoped Always-Allow memory is the only persistence available.
+    /// Used as a default where no offers apply -- test fixtures and any
+    /// caller with no decoded call at hand -- not something
+    /// `routeApprovalRequest` itself produces.
+    static let none = AgentHookOffers(permissionUpdates: [], cliOwnsPersistence: false)
 }
 
 /// Why a `.denied` decision was made -- the model/view pick a reason,
@@ -106,16 +73,10 @@ struct AgentHookOffers: Sendable, Equatable {
 enum DenyReason: Sendable, Equatable {
     /// The human clicked "No" on an ordinary tool-call banner.
     case userRejected
-    /// The human dismissed an `.agentQuestion` prompt (Cancel) without
-    /// answering it.
-    case questionNotAnswered
 }
 
 /// Why an `.interrupted` decision was made.
 enum InterruptReason: Sendable, Equatable {
-    /// The banner's own [Cancel] action on an `.agentHook`-sourced
-    /// request whose `offers.canStop` is true.
-    case cancelled
     /// The question banner's [Chat about this] action -- the human wants
     /// to reply free-form in the pane instead of answering the structured
     /// prompt.
@@ -127,13 +88,10 @@ enum ApprovalDecision: Sendable, Equatable {
     /// Accepting one of `AgentHookOffers.permissionUpdates` -- the CLI's
     /// own "always allow" choice, echoed back verbatim.
     case allowedWithPermissions(AgentPermissionOffer)
-    /// Accepting an "Amend…" edit -- the whole original `tool_input` with
-    /// `AgentHookOffers.amendableField` replaced.
-    case allowedWithInput(Data)
     case denied(DenyReason)
-    /// The banner's own [Cancel]/[Chat about this] action -- distinct
-    /// from `.denied`: the CLI is told to STOP and wait for the human,
-    /// not that the call was refused.
+    /// The banner's own [Chat about this] action -- distinct from
+    /// `.denied`: the CLI is told to STOP and wait for the human, not
+    /// that the call was refused.
     case interrupted(InterruptReason)
     case expired
     /// A human's answer to an `.agentQuestion`-sourced request's

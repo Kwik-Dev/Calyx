@@ -904,40 +904,6 @@ final class AgentHookToolCallTests: XCTestCase {
         XCTAssertEqual(prompt.questions.first?.options.map(\.label), ["zsh", "bash"])
     }
 
-    // MARK: - capabilities
-
-    func test_capabilities_claudeCode_allTrue() throws {
-        let data = json(["tool_name": "Bash", "tool_input": ["command": "ls"]])
-        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.claudeCodeKind))
-
-        XCTAssertEqual(call.capabilities, AgentHookCapabilities(
-            acceptsPermissionUpdates: true, acceptsUpdatedInput: true, acceptsInterrupt: true,
-            promptsWhenUndecided: true
-        ))
-    }
-
-    func test_capabilities_codex_promptsWhenUndecidedOnly() throws {
-        let data = json(["tool_name": "Bash", "tool_input": ["command": "ls"]])
-        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.codexKind))
-
-        XCTAssertEqual(call.capabilities, AgentHookCapabilities(
-            acceptsPermissionUpdates: false, acceptsUpdatedInput: false, acceptsInterrupt: false,
-            promptsWhenUndecided: true
-        ), "codex shows its own approval prompt when no hook decides, even though it carries none of " +
-           "claude-code's other PermissionRequest capabilities")
-    }
-
-    func test_capabilities_grokPiAndUnknown_allFalse() throws {
-        let data = json(["tool_name": "Bash", "tool_input": ["command": "ls"]])
-        for kind in [AgentEntry.grokKind, AgentEntry.piKind, "some-unrecognized-cli"] {
-            let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: kind), "kind=\(kind)")
-            XCTAssertEqual(call.capabilities, AgentHookCapabilities(
-                acceptsPermissionUpdates: false, acceptsUpdatedInput: false, acceptsInterrupt: false,
-                promptsWhenUndecided: false
-            ), "kind=\(kind)")
-        }
-    }
-
     // MARK: - permissionOffers: hooks.md example
 
     /// The exact `permission_suggestions` entry hooks.md documents,
@@ -964,7 +930,7 @@ final class AgentHookToolCallTests: XCTestCase {
                        "entryJSON must be the permission_suggestions entry re-serialized verbatim")
     }
 
-    // MARK: - permissionOffers: only when capabilities.acceptsPermissionUpdates
+    // MARK: - permissionOffers: only when acceptsPermissionUpdates(kind:)
 
     func test_decode_permissionOffers_nonClaudeCodeKind_alwaysEmpty_evenWithSuggestionsPresent() throws {
         let entry: [String: Any] = ["type": "addDirectories", "directories": ["/tmp"]]
@@ -1117,10 +1083,6 @@ final class AgentHookToolCallTests: XCTestCase {
                        "permission_suggestions nested inside tool_input is not the hook's offers field")
         XCTAssertTrue(call.payload.contains("permission_suggestions"),
                       "the key is still part of tool_input and must survive in payload verbatim")
-        let originalToolInputJSON = try XCTUnwrap(call.originalToolInputJSON)
-        let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: originalToolInputJSON) as? NSDictionary)
-        XCTAssertNotNil(decoded["permission_suggestions"],
-                        "originalToolInputJSON must round-trip tool_input's own permission_suggestions key")
     }
 
     func test_decode_permissionOffers_topLevelKey_readEvenWhenToolInputAbsent() throws {
@@ -1134,8 +1096,6 @@ final class AgentHookToolCallTests: XCTestCase {
         XCTAssertEqual(call.permissionOffers.count, 1)
         XCTAssertEqual(call.permissionOffers.first?.label, "Yes, and always allow access to /tmp")
         XCTAssertEqual(call.payload, "")
-        XCTAssertNil(call.originalToolInputJSON)
-        XCTAssertNil(call.amendableField)
     }
 
     func test_decode_permissionOffers_addRulesNonStringBehavior_dropped() throws {
@@ -1149,68 +1109,4 @@ final class AgentHookToolCallTests: XCTestCase {
                        "a present but non-String behavior must drop the entry")
     }
 
-    // MARK: - amendableField
-
-    func test_decode_amendableField_commandStringPresent_claudeCode_isCommand() throws {
-        let data = json(["tool_name": "Bash", "tool_input": ["command": "ls -la"]])
-        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.claudeCodeKind))
-        XCTAssertEqual(call.amendableField, "command")
-    }
-
-    func test_decode_amendableField_commandAbsent_isNil() throws {
-        let data = json(["tool_name": "Write", "tool_input": ["file_path": "/tmp/x"]])
-        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.claudeCodeKind))
-        XCTAssertNil(call.amendableField)
-    }
-
-    func test_decode_amendableField_commandNonString_isNil() throws {
-        let data = json(["tool_name": "Bash", "tool_input": ["command": 42]])
-        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.claudeCodeKind))
-        XCTAssertNil(call.amendableField)
-    }
-
-    func test_decode_amendableField_codexKind_isNilEvenWithCommandPresent() throws {
-        let data = json(["tool_name": "Bash", "tool_input": ["command": "ls -la"]])
-        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.codexKind))
-        XCTAssertNil(call.amendableField,
-                     "codex's capabilities.acceptsUpdatedInput is false, so amendableField must stay nil " +
-                     "even though tool_input.command is a String")
-    }
-
-    // MARK: - originalToolInputJSON
-
-    func test_decode_originalToolInputJSON_present_roundTripsWholeToolInput() throws {
-        let toolInput: [String: Any] = ["command": "ls -la", "metadata": ["source": "cli"]]
-        let data = json(["tool_name": "Bash", "tool_input": toolInput])
-
-        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.claudeCodeKind))
-        let originalToolInputJSON = try XCTUnwrap(call.originalToolInputJSON)
-        let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: originalToolInputJSON) as? NSDictionary)
-        XCTAssertEqual(decoded, toolInput as NSDictionary)
-    }
-
-    func test_decode_originalToolInputJSON_toolInputAbsent_isNil() throws {
-        let data = json(["tool_name": "Bash"])
-        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.claudeCodeKind))
-        XCTAssertNil(call.originalToolInputJSON)
-    }
-
-    func test_decode_originalToolInputJSON_survivesPayloadTruncation_independentOfCap() throws {
-        let bigValue = String(repeating: "a", count: 20_000)
-        let toolInput: [String: Any] = ["command": bigValue]
-        let data = json(["tool_name": "Bash", "tool_input": toolInput])
-
-        let toolInputJSON = try compactJSON(toolInput)
-        XCTAssertGreaterThan(toolInputJSON.utf8.count, AgentHookToolCall.maxPayloadBytes,
-                            "Precondition: the fixture's tool_input must actually exceed maxPayloadBytes")
-
-        let call = try XCTUnwrap(AgentHookToolCall.decode(from: data, kind: AgentEntry.claudeCodeKind))
-        XCTAssertLessThanOrEqual(call.payload.utf8.count, AgentHookToolCall.maxPayloadBytes,
-                                "payload must still be truncated to the byte cap")
-
-        let originalToolInputJSON = try XCTUnwrap(call.originalToolInputJSON)
-        let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: originalToolInputJSON) as? NSDictionary)
-        XCTAssertEqual(decoded, toolInput as NSDictionary,
-                       "originalToolInputJSON must survive the 16 KB payload truncation whole")
-    }
 }

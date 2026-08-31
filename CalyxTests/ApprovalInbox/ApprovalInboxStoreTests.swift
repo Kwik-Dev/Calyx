@@ -438,24 +438,6 @@ final class ApprovalInboxStoreTests: XCTestCase {
         XCTAssertEqual(result, .expired)
     }
 
-    func test_awaitDecisionHonoringCancellation_allowedWithInputRacingCancellation_demotedToExpired() async throws {
-        let store = ApprovalInboxStore()
-        let request = makeRequest()
-        store.submit(request)
-        let amendedInputData = try! JSONSerialization.data(withJSONObject: ["command": "ls"])
-
-        let waiter = Task { @MainActor in
-            await store.awaitDecisionHonoringCancellation(id: request.id, timeoutMs: 5_000)
-        }
-        await yieldToScheduler()
-
-        store.decide(id: request.id, .allowedWithInput(amendedInputData))
-        waiter.cancel()
-
-        let result = await waiter.value
-        XCTAssertEqual(result, .expired)
-    }
-
     func test_expireForSurface_unknownSurface_isNoOp() {
         let store = ApprovalInboxStore()
         let request = makeRequest(targetSurfaceID: UUID())

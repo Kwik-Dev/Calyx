@@ -571,11 +571,11 @@ final class MCPCockpitBridge {
             return .respond(["status": "approval_timeout"])
         case .allowed:
             return .proceed
-        case .allowedWithPermissions, .allowedWithInput, .interrupted, .answered:
-            // Every one of these four is only ever produced for an
+        case .allowedWithPermissions, .interrupted, .answered:
+            // Every one of these three is only ever produced for an
             // `.agentHook`/`.agentQuestion`-sourced request (the approval
-            // banner's own AskUserQuestion/permission-suggestion/amend/
-            // cancel flows), which this gate never submits -- every
+            // banner's own AskUserQuestion/permission-suggestion/chat-
+            // about-this flows), which this gate never submits -- every
             // request it submits is `.mcpTool`. Unreachable in practice,
             // but the switch must stay exhaustive, and a stray one here
             // must never execute the underlying command.

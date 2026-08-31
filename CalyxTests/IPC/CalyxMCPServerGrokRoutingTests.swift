@@ -341,14 +341,12 @@ final class CalyxMCPServerGrokRoutingTests: XCTestCase {
             _ = await task.value
             return
         }
-        guard case .agentHook(_, _, _, let offers) = pendingRequest.source else {
+        guard case .agentHook = pendingRequest.source else {
             XCTFail("expected .agentHook source")
             task.cancel()
             _ = await task.value
             return
         }
-        XCTAssertFalse(offers.canAnswerInPane,
-                       "grok has no prompt to hand over to: silence under bypassPermissions would run the call")
         approvalInbox.decide(id: pendingRequest.id, .denied(.userRejected))
 
         let response = await task.value

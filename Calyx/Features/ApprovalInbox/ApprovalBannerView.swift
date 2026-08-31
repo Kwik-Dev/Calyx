@@ -21,12 +21,15 @@
 // - `.mcpTool` (Calyx's own pane_run approval): the original flat Deny/
 //   Always Allow/Allow row, rendered directly by this file -- unchanged.
 // - `.agentHook` (a CLI agent's own PermissionRequest-gated tool call):
-//   `AgentToolApprovalView`, the ENTIRE tool-approval form (payload, the
-//   CLI's own vertical choice list, the Amend flow, and the right
-//   cluster's Cancel/Answer in Pane/cross-actions menu -- that view's
-//   own file header comment covers the layout in full).
-// - `.agentQuestion` (Claude Code's AskUserQuestion): `AgentQuestionBannerView`,
-//   the ENTIRE question form -- that view's own file header comment
+//   a single column -- a header row (the tool name/target label, and the
+//   queue navigator when more than one request is queued) followed by
+//   `AgentToolApprovalView`, the whole tool-approval form (payload plus
+//   the CLI's own vertical choice list -- that view's own file header
+//   comment covers the layout in full; the choice rows are the ONLY
+//   clickable content in it).
+// - `.agentQuestion` (Claude Code's AskUserQuestion): the same single-
+//   column shape, with `AgentQuestionBannerView` -- the ENTIRE question
+//   form -- as its second row; that view's own file header comment
 //   covers the layout and its `AgentQuestionFormState` state machine in
 //   full.
 //
@@ -38,16 +41,16 @@
 //
 // Queue navigation: while `model.positionInfo.count > 1`, a Previous/
 // Next chevron pair + "N / M" position label (see
-// `queueNavigator(positionInfo:)`) renders immediately before whichever
-// content follows it -- the browse-then-decide loop keeps the mouse in
-// one place; the sequential loop never needs the arrows at all thanks to
-// advance-on-decide (see ApprovalBannerModel.advanceCursor(pastDisplayed:
-// excluding:)'s own doc comment). Drives `ApprovalBannerModel`'s own
-// `selectedRequestID` cursor -- a single queued request renders no
-// navigator at all, since there is nothing to step to. Owned entirely by
-// this shell (it reads `model` directly): neither child view takes
-// `model`, so this can't be hoisted into either of them, and is
-// rendered once per branch instead.
+// `queueNavigator(positionInfo:)`) renders on the header row, trailing
+// the tool name/target label -- the browse-then-decide loop keeps the
+// mouse in one place; the sequential loop never needs the arrows at all
+// thanks to advance-on-decide (see ApprovalBannerModel.advanceCursor(
+// pastDisplayed:excluding:)'s own doc comment). Drives
+// `ApprovalBannerModel`'s own `selectedRequestID` cursor -- a single
+// queued request renders no navigator at all, since there is nothing to
+// step to. Owned entirely by this shell (it reads `model` directly):
+// neither child view takes `model`, so this can't be hoisted into either
+// of them.
 
 import SwiftUI
 import AppKit
@@ -81,101 +84,89 @@ struct ApprovalBannerView: View {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 16) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(headerText)
-                    .font(.callout)
-                    .fontWeight(.semibold)
-
-                if case .mcpTool = request.source {
-                    payloadView
-                }
-            }
-
-            // Queue navigation: immediately adjacent to the decision
-            // controls that follow it -- Deny/Always Allow/Allow for an
-            // `.mcpTool` request, or whichever child view renders the
-            // rest for `.agentHook`/`.agentQuestion` -- the browse-then-
-            // decide loop (glance at each queued command, then click
-            // Previous/Next to compare before deciding) keeps the mouse
-            // in one place instead of ping-ponging across the banner's
-            // full width to a header-area control. The purely sequential
-            // loop (just clicking Allow/Deny down the queue) never needs
-            // the arrows at all, since advance-on-decide already moves
-            // the cursor forward on every decision (see
-            // ApprovalBannerModel.advanceCursor(pastDisplayed:
-            // excluding:)'s own doc comment). Only shown while more than
-            // one request is queued for this window (a single request
-            // has nothing to navigate to) -- see ApprovalBannerModel.
-            // positionInfo's own doc comment. Neither child view takes
-            // `model`, so this is rendered once per branch rather than
-            // hoisted above the split.
+        Group {
             switch request.source {
             case .mcpTool:
-                Spacer(minLength: 16)
-                HStack {
-                    if let positionInfo = model.positionInfo, positionInfo.count > 1 {
-                        queueNavigator(positionInfo: positionInfo)
-                            .padding(.trailing, 8)
+                HStack(alignment: .top, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(headerText)
+                            .font(.callout)
+                            .fontWeight(.semibold)
+                        payloadView
                     }
 
-                    Button("Deny") {
-                        model.deny(id: request.id)
-                    }
-                    .controlSize(.small)
-                    .accessibilityIdentifier(AccessibilityID.ApprovalBanner.denyButton)
+                    // Queue navigation: immediately adjacent to the
+                    // decision controls that follow it -- the browse-
+                    // then-decide loop (glance at each queued command,
+                    // then click Previous/Next to compare before
+                    // deciding) keeps the mouse in one place instead of
+                    // ping-ponging across the banner's full width to a
+                    // header-area control. The purely sequential loop
+                    // (just clicking Allow/Deny down the queue) never
+                    // needs the arrows at all, since advance-on-decide
+                    // already moves the cursor forward on every decision
+                    // (see ApprovalBannerModel.advanceCursor(
+                    // pastDisplayed:excluding:)'s own doc comment). Only
+                    // shown while more than one request is queued for
+                    // this window (a single request has nothing to
+                    // navigate to) -- see ApprovalBannerModel.
+                    // positionInfo's own doc comment.
+                    Spacer(minLength: 16)
+                    HStack {
+                        if let positionInfo = model.positionInfo, positionInfo.count > 1 {
+                            queueNavigator(positionInfo: positionInfo)
+                                .padding(.trailing, 8)
+                        }
 
-                    Button("Always Allow") {
-                        model.alwaysAllow(id: request.id)
-                    }
-                    .controlSize(.small)
-                    .accessibilityIdentifier(AccessibilityID.ApprovalBanner.alwaysAllowButton)
+                        Button("Deny") {
+                            model.deny(id: request.id)
+                        }
+                        .controlSize(.small)
+                        .accessibilityIdentifier(AccessibilityID.ApprovalBanner.denyButton)
 
-                    Button("Allow") {
-                        model.allow(id: request.id)
+                        Button("Always Allow") {
+                            model.alwaysAllow(id: request.id)
+                        }
+                        .controlSize(.small)
+                        .accessibilityIdentifier(AccessibilityID.ApprovalBanner.alwaysAllowButton)
+
+                        Button("Allow") {
+                            model.allow(id: request.id)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .accessibilityIdentifier(AccessibilityID.ApprovalBanner.allowButton)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .accessibilityIdentifier(AccessibilityID.ApprovalBanner.allowButton)
                 }
 
             case .agentHook(let toolName, _, let summary, let offers):
-                if let positionInfo = model.positionInfo, positionInfo.count > 1 {
-                    queueNavigator(positionInfo: positionInfo)
-                        .padding(.trailing, 8)
+                VStack(alignment: .leading, spacing: 6) {
+                    headerRow
+                    AgentToolApprovalView(
+                        toolName: toolName,
+                        payload: summary,
+                        offers: offers,
+                        onAllow: { model.allow(id: request.id) },
+                        onAllowWithPermissions: { offer in model.allowWithPermissions(id: request.id, offer: offer) },
+                        onAlwaysAllow: { model.alwaysAllow(id: request.id) },
+                        onDeny: { model.deny(id: request.id) }
+                    )
+                    .id(request.id)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                AgentToolApprovalView(
-                    toolName: toolName,
-                    payload: summary,
-                    offers: offers,
-                    totalPendingCount: model.totalPendingCount,
-                    onAllow: { model.allow(id: request.id) },
-                    onAllowWithPermissions: { offer in model.allowWithPermissions(id: request.id, offer: offer) },
-                    onAlwaysAllow: { model.alwaysAllow(id: request.id) },
-                    onDeny: { model.deny(id: request.id) },
-                    onAllowWithInput: { toolInput in model.allowWithInput(id: request.id, toolInput: toolInput) },
-                    onCancel: { model.cancel(id: request.id) },
-                    onAnswerInPane: { model.answerInPane(id: request.id) },
-                    onAllowAllPending: { model.allowAllPending() },
-                    onAlwaysAllowAcrossPanes: { model.alwaysAllowAcrossPanes(id: request.id) },
-                    onTextFieldRemoved: { model.restoreTerminalFocusAfterInput() }
-                )
-                .id(request.id)
 
             case .agentQuestion(_, let prompt):
-                if let positionInfo = model.positionInfo, positionInfo.count > 1 {
-                    queueNavigator(positionInfo: positionInfo)
-                        .padding(.trailing, 8)
+                VStack(alignment: .leading, spacing: 6) {
+                    headerRow
+                    AgentQuestionBannerView(
+                        prompt: prompt,
+                        onAnswer: { answers in model.answer(id: request.id, answers: answers) },
+                        onChatAboutQuestion: { model.chatAboutQuestion(id: request.id) },
+                        onTextFieldRemoved: { model.restoreTerminalFocusAfterInput() }
+                    )
+                    .id(request.id)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                AgentQuestionBannerView(
-                    prompt: prompt,
-                    onAnswer: { answers in model.answer(id: request.id, answers: answers) },
-                    onCancel: { model.cancelQuestion(id: request.id) },
-                    onChatAboutQuestion: { model.chatAboutQuestion(id: request.id) },
-                    onAnswerInPane: { model.answerInPane(id: request.id) },
-                    onTextFieldRemoved: { model.restoreTerminalFocusAfterInput() }
-                )
-                .id(request.id)
             }
         }
         .padding(.horizontal, 16)
@@ -185,12 +176,28 @@ struct ApprovalBannerView: View {
         .accessibilityIdentifier(AccessibilityID.ApprovalBanner.container)
     }
 
-    /// Previous/Next chevron pair + "N / M" position label, rendered at
-    /// the leading edge of the trailing action `HStack` (see this file's
-    /// own header comment for why it sits there, adjacent to Deny/
-    /// Always Allow/Allow, rather than up in the header area), shown
-    /// only while more than one request is queued for this window (see
-    /// the call site's own `positionInfo.count > 1` gate) -- mirrors
+    /// `.agentHook`/`.agentQuestion`'s shared first row: `headerText`
+    /// (the tool name/target label), then the queue navigator when more
+    /// than one request is queued for this window.
+    private var headerRow: some View {
+        HStack {
+            Text(headerText)
+                .font(.callout)
+                .fontWeight(.semibold)
+            Spacer()
+            if let positionInfo = model.positionInfo, positionInfo.count > 1 {
+                queueNavigator(positionInfo: positionInfo)
+            }
+        }
+    }
+
+    /// Previous/Next chevron pair + "N / M" position label -- for
+    /// `.mcpTool`, rendered at the leading edge of the trailing action
+    /// `HStack` (see this file's own header comment for why it sits
+    /// there, adjacent to Deny/Always Allow/Allow); for `.agentHook`/
+    /// `.agentQuestion`, rendered by `headerRow` trailing `headerText`.
+    /// Shown only while more than one request is queued for this window
+    /// (see the call site's own `positionInfo.count > 1` gate) -- mirrors
     /// `BrowserToolbarView`'s own chevron.left/chevron.right precedent
     /// (Calyx/Views/Browser/BrowserContainerView.swift). The label
     /// itself is a `Menu` wrapping the same "N / M" `Text`, listing this
@@ -209,10 +216,8 @@ struct ApprovalBannerView: View {
     /// The inner `Text` keeps that identifier, which the collapse leaves
     /// inert. `.buttonStyle(.borderless)` on the chevrons +
     /// `.menuStyle(.borderlessButton)` on the `Menu` + `.controlSize(
-    /// .small)` + `.fixedSize()` throughout keep this content-hugging,
-    /// same rationale as `AgentToolApprovalView.crossActionsMenu`'s own
-    /// doc comment, so it never stretches the banner's action row.
-    /// Disabled states are
+    /// .small)` + `.fixedSize()` throughout keep this content-hugging, so
+    /// it never stretches the banner's action row. Disabled states are
     /// derived directly from the passed `positionInfo` (`index <= 1` /
     /// `index >= count`) rather than a separate `model.
     /// canSelectPrevious`/`canSelectNext` read -- one source (the same

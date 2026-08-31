@@ -124,13 +124,9 @@ enum AccessibilityID {
     /// Calyx/Features/ApprovalInbox/). Same `calyx.approvalBanner.*`
     /// shape as RecoveryBar (a container + its action buttons), plus a
     /// `payload` identifier so an XCUITest suite can assert the rendered
-    /// (control-character-escaped) command text. Stage E adds a compact
-    /// cross-actions menu (`crossActionsMenu`), shown only for an
-    /// `.agentHook`-sourced request, with two items
-    /// (`allowAllPendingItem`/`alwaysAllowAllPanesItem`) -- see
-    /// ApprovalBannerView. Queue navigation adds `previousButton`/
-    /// `nextButton`/`positionLabel`, shown only while more than one
-    /// request is queued for this window (see
+    /// (control-character-escaped) command text. Queue navigation adds
+    /// `previousButton`/`nextButton`/`positionLabel`, shown only while
+    /// more than one request is queued for this window (see
     /// ApprovalBannerModel.positionInfo). The queue preview menu wraps
     /// that same position label in a `Menu` (`queueMenu`) listing every
     /// request in ApprovalBannerModel.queueEntries, so a click can jump
@@ -141,27 +137,23 @@ enum AccessibilityID {
     /// label instead (see ApprovalBannerView.queueNavigator(positionInfo:)).
     /// An `.agentQuestion`-sourced request renders choice rows instead of
     /// the Deny/Always Allow/Allow row -- `questionText`/`optionButton(_:)`/
-    /// `otherButton`/`otherTextField`/`answerButton`/`cancelButton`/
-    /// `chatButton`/`backButton`/`notesButton`/`notesTextField`/
-    /// `answerInPaneButton`/`questionPosition` cover that alternate
-    /// layout (`AgentQuestionBannerView`). `previewText` is the side-by-
-    /// side markdown preview box shown only when an option carries a
-    /// `preview`. An `.agentHook`-sourced request renders its own choice
-    /// rows through `AgentToolApprovalView` -- `choiceRow(_:)`/
-    /// `amendButton`/`amendTextField`/`amendConfirmButton`/`cancelButton`
-    /// cover that layout, alongside the ones this enum already shared
-    /// with `.agentQuestion` (`answerInPaneButton`/`crossActionsMenu`
-    /// etc, and `allowButton`/`denyButton`/`alwaysAllowButton`, reused
-    /// for its own "Yes"/"No"/"Always allow ... in this pane" rows).
+    /// `otherButton`/`otherTextField`/`answerButton`/`chatButton`/
+    /// `backButton`/`notesButton`/`notesTextField`/`questionPosition`
+    /// cover that alternate layout (`AgentQuestionBannerView`).
+    /// `previewText` is the side-by-side markdown preview box shown only
+    /// when an option carries a `preview`. An `.agentHook`-sourced
+    /// request renders its own choice rows through `AgentToolApprovalView`
+    /// -- `choiceRow(_:)` covers that layout, alongside the ones this enum
+    /// already shares with `.agentQuestion` (`allowButton`/`denyButton`/
+    /// `alwaysAllowButton`, reused for its own "Yes"/"No"/"Always allow
+    /// ... in this pane" rows). Every choice row in an `.agentHook`
+    /// banner is the sole clickable content of that banner mode.
     enum ApprovalBanner {
         static let container = "calyx.approvalBanner.container"
         static let allowButton = "calyx.approvalBanner.allowButton"
         static let denyButton = "calyx.approvalBanner.denyButton"
         static let alwaysAllowButton = "calyx.approvalBanner.alwaysAllowButton"
         static let payload = "calyx.approvalBanner.payload"
-        static let crossActionsMenu = "calyx.approvalBanner.crossActionsMenu"
-        static let allowAllPendingItem = "calyx.approvalBanner.allowAllPendingItem"
-        static let alwaysAllowAllPanesItem = "calyx.approvalBanner.alwaysAllowAllPanesItem"
         static let previousButton = "calyx.approvalBanner.previousButton"
         static let nextButton = "calyx.approvalBanner.nextButton"
         static let positionLabel = "calyx.approvalBanner.positionLabel"
@@ -171,22 +163,12 @@ enum AccessibilityID {
         static let otherButton = "calyx.approvalBanner.otherButton"
         static let otherTextField = "calyx.approvalBanner.otherTextField"
         static let answerButton = "calyx.approvalBanner.answerButton"
-        static let answerInPaneButton = "calyx.approvalBanner.answerInPaneButton"
         static let questionPosition = "calyx.approvalBanner.questionPosition"
         static let previewText = "calyx.approvalBanner.previewText"
         /// One `AgentToolApprovalView` row per `AgentHookOffers.
         /// permissionUpdates` element, indexed the same way `optionButton
         /// (_:)` indexes a question's options.
         static func choiceRow(_ index: Int) -> String { "calyx.approvalBanner.choiceRow.\(index)" }
-        static let amendButton = "calyx.approvalBanner.amendButton"
-        static let amendTextField = "calyx.approvalBanner.amendTextField"
-        static let amendConfirmButton = "calyx.approvalBanner.amendConfirmButton"
-        /// Shared by `AgentToolApprovalView`'s [Cancel] (`.interrupted(
-        /// .cancelled)`) and `AgentQuestionBannerView`'s [Cancel]
-        /// (`.denied(.questionNotAnswered)`, replacing the earlier Skip)
-        /// -- the two are never rendered in the same banner instance, so
-        /// one identifier unambiguously names whichever is on screen.
-        static let cancelButton = "calyx.approvalBanner.cancelButton"
         static let chatButton = "calyx.approvalBanner.chatButton"
         static let backButton = "calyx.approvalBanner.backButton"
         static let notesButton = "calyx.approvalBanner.notesButton"

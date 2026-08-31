@@ -72,8 +72,8 @@
 //                "start recording" marker, hold 15s.
 //   BEAT 1    -- send one prompt to each of panes 1-3.
 //   BEAT 2    -- first approval banner: wait, hold, click Allow.
-//   BEAT 3    -- second approval banner: wait, hold, click the
-//                cross-actions menu's "Allow All Pending" item.
+//   BEAT 3    -- second approval banner: wait, hold, allow every
+//                currently-pending request one row at a time.
 //   BEAT 4    -- open Agent Mode in the sidebar, click the first agent
 //                row.
 //   BEAT 5    -- run the test script in pane 4, ask pane 1 to summarize
@@ -299,11 +299,11 @@ final class DemoRecordingScenario: CalyxUITestCase {
             allowButton.click()
         }
 
-        // MARK: - BEAT 3: second approval banner -> cross-actions menu -> Allow All Pending
+        // MARK: - BEAT 3: second approval banner -> allow every currently-pending request
 
         awaitOrContinue(banner, timeout: 60)
         Thread.sleep(forTimeInterval: 1.5)
-        clickAllowAllPending()
+        allowEveryCurrentlyPendingRequest()
 
         // MARK: - BEAT 4: Agent Mode sidebar
 
@@ -499,38 +499,22 @@ final class DemoRecordingScenario: CalyxUITestCase {
         }
     }
 
-    /// BEAT 3: clicks the approval banner's cross-actions menu, then its
-    /// "Allow All Pending" item -- looked up PRIMARILY by a
-    /// "Allow All Pending" title-prefix match (the item's visible label
-    /// includes a live pending count, e.g. "Allow All Pending (3)", so
-    /// an exact-title match would never be stable), falling back to the
-    /// accessibility-identifier lookup only if that fails. This order is
-    /// deliberate: whether this particular SwiftUI Menu's item
-    /// identifiers even propagate to the underlying NSMenuItem is
-    /// unproven anywhere in this suite, so trying the ID FIRST would
-    /// risk burning a full on-camera stall on an unproven lookup before
-    /// ever trying the title match that's known to work. The ID fallback
-    /// keeps a short 2s timeout for the same reason: if the title lookup
-    /// already found nothing, this menu is genuinely unusual, and a long
-    /// wait on the fallback wouldn't help.
-    private func clickAllowAllPending() {
-        let crossActionsMenu = app.descendants(matching: .any)
-            .matching(identifier: "calyx.approvalBanner.crossActionsMenu")
+    /// BEAT 3: clicks the approval banner's Allow button repeatedly,
+    /// once per currently-queued request, until the banner clears or
+    /// `maxClicks` is reached -- there is no bulk "allow everything"
+    /// action; each pending request is decided individually through its
+    /// own row, exactly like a human working through the queue one at a
+    /// time.
+    private func allowEveryCurrentlyPendingRequest(maxClicks: Int = 10) {
+        let banner = app.descendants(matching: .any)
+            .matching(identifier: "calyx.approvalBanner.container")
             .firstMatch
-        guard awaitOrContinue(crossActionsMenu, timeout: 10) else { return }
-        crossActionsMenu.click()
+        let allowButton = app.buttons["calyx.approvalBanner.allowButton"]
 
-        let itemByTitle = app.menuItems
-            .matching(NSPredicate(format: "label BEGINSWITH %@", "Allow All Pending"))
-            .firstMatch
-        if awaitOrContinue(itemByTitle, timeout: 10) {
-            itemByTitle.click()
-            return
-        }
-
-        let itemByID = app.menuItems["calyx.approvalBanner.allowAllPendingItem"]
-        if awaitOrContinue(itemByID, timeout: 2) {
-            itemByID.click()
+        for _ in 0..<maxClicks {
+            guard banner.exists, awaitOrContinue(allowButton, timeout: 5) else { return }
+            allowButton.click()
+            Thread.sleep(forTimeInterval: 0.3)
         }
     }
 
@@ -544,10 +528,10 @@ final class DemoRecordingScenario: CalyxUITestCase {
     ///
     /// Needed field-confirmed: once agentHookApprovalEnabled is on,
     /// EVERY agent tool call banners (CalyxMCPServer's
-    /// routeApprovalRequest has no per-tool filter), and BEAT 3's "Allow
-    /// All Pending" deliberately leaves no standing memory -- it only
-    /// drains whatever was ALREADY pending at that moment. So after BEAT
-    /// 3, every NEW tool call still banners. Left unattended, an agent
+    /// routeApprovalRequest has no per-tool filter), and BEAT 3's
+    /// allow-every-currently-pending sweep leaves no standing memory --
+    /// it only decides whatever was ALREADY pending at that moment. So
+    /// after BEAT 3, every NEW tool call still banners. Left unattended, an agent
     /// stalls waiting on an unanswered request (BEAT 5's own pane-1
     /// "wait and summarize" prompt depends on this), and the closing
     /// shot can show a dangling banner. On camera, these quick clicks
