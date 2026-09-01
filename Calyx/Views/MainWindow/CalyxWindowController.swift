@@ -1354,6 +1354,9 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
             },
             onToggleGitRepoSection: { [weak self] repoID in self?.toggleGitRepoSection(repoID: repoID) },
             onRetryGitRepoSection: { [weak self] repoID in self?.retryGitRepoSection(repoID: repoID) },
+            onSelectRefFilter: { [weak self] repoID, selection in
+                self?.setGitRefSelection(repoID: repoID, selection: selection)
+            },
             onSidebarWidthChanged: { [weak self] width in self?.windowSession.sidebarWidth = width },
             onCollapseToggled: { [weak self] in self?.requestSave() },
             onCloseAllTabsInGroup: { [weak self] groupID in self?.closeAllTabsInGroup(id: groupID) },
@@ -5110,6 +5113,12 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         let checkedRepoIDs = Set(result.sections.map(\.id))
 
         windowSession.applyGitSections(sections)
+        // A section appearing for the first time in this window starts
+        // from whatever ref filter was last saved for it; one already in
+        // `gitRefSelections` keeps what the user has open right now.
+        for section in sections where !knownRepoIDs.contains(section.id) {
+            windowSession.gitRefSelections[section.id] = GitRefFilterSettings.selection(forRepo: section.id)
+        }
         windowSession.gitChangesState = .loaded
         windowSession.gitStaleRefreshMessage = nil
         let containers = GitRepoDiscovery.containingSections(of: sections)
@@ -5201,22 +5210,20 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
             var commits: [GitCommit]?
             if scope.includesStatus, scope.includesLog {
                 async let statusResult = GitService.gitStatus(workDir: descriptor.rootPath)
-                async let logResult = GitService.commitLog(
-                    location: descriptor.location,
-                    maxCount: commitCount,
-                    skip: 0
-                )
-                let (statusEntries, logCommits) = try await (statusResult, logResult)
-                entries = statusEntries
-                commits = logCommits
+                commits = try await fetchLog(descriptor: descriptor, maxCount: commitCount)
+                entries = try await statusResult
             } else if scope.includesStatus {
-                entries = try await GitService.gitStatus(workDir: descriptor.rootPath)
+                // The ref picker's menu appears on every section's header,
+                // not only an expanded one fetching its log, so its
+                // `availableRefs` still needs a `refList` here -- run
+                // alongside `gitStatus` rather than after it.
+                async let statusResult = GitService.gitStatus(workDir: descriptor.rootPath)
+                async let refListResult = GitService.refList(location: descriptor.location)
+                entries = try await statusResult
+                let liveRefs = try await refListResult
+                _ = reconcileAvailableRefs(repoID: descriptor.id, liveRefs: liveRefs)
             } else if scope.includesLog {
-                commits = try await GitService.commitLog(
-                    location: descriptor.location,
-                    maxCount: commitCount,
-                    skip: 0
-                )
+                commits = try await fetchLog(descriptor: descriptor, maxCount: commitCount)
             }
             guard !Task.isCancelled else { return }
             applyRepoRefresh(
@@ -5233,18 +5240,66 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// Appends the next page of history. It runs on the section's own queue
-    /// with no other fetch in flight for it, so the number of commits it
-    /// pages from is the number the list is showing.
+    /// Records `liveRefs` as one section's `availableRefs` (feeding the
+    /// ref picker's menu) and reconciles a `.refs` selection against them,
+    /// writing the reconciled selection back to the session and
+    /// `GitRefFilterSettings` if that changes it. Shared by every fetch
+    /// that has a `refList` result to record, whether or not that same
+    /// fetch also feeds a log. Returns the reconciled selection.
+    private func reconcileAvailableRefs(repoID: String, liveRefs: [GitRefInfo]) -> GitRefSelection {
+        windowSession.gitRepoChanges[repoID]?.availableRefs = liveRefs
+
+        let liveNames = Set(liveRefs.map(\.fullName))
+        let stored = windowSession.gitRefSelections[repoID] ?? .auto
+        let selection = stored.reconciled(withLiveRefs: liveNames)
+        if selection != stored {
+            windowSession.gitRefSelections[repoID] = selection
+            GitRefFilterSettings.set(selection, forRepo: repoID)
+        }
+        return selection
+    }
+
+    /// This section's commit log, resolved against its live refs first
+    /// rather than against a possibly-stale saved selection: `refList` is
+    /// awaited before any log fetch starts, so a `.refs` selection naming
+    /// a ref that has since vanished is reconciled before the log fetch
+    /// that follows ever sees the stale ref. Invariant on return: the
+    /// commits handed back, and `resolvedRefScope` stored alongside them,
+    /// both came from the same reconciled ref scope. A `refList` failure
+    /// propagates to the caller unchanged, through this method's own throw.
+    private func fetchLog(descriptor: GitRepoDescriptor, maxCount: Int) async throws -> [GitCommit] {
+        let repoID = descriptor.id
+        let liveRefs = try await GitService.refList(location: descriptor.location)
+        guard windowSession.gitRepoChanges[repoID] != nil else { return [] }
+        let selection = reconcileAvailableRefs(repoID: repoID, liveRefs: liveRefs)
+
+        let resolvedScope = try await GitService.resolvedRefScope(
+            location: descriptor.location, selection: selection, liveRefs: liveRefs
+        )
+        windowSession.gitRepoChanges[repoID]?.resolvedRefScope = resolvedScope
+        return try await GitService.commitLog(
+            location: descriptor.location,
+            resolvedScope: resolvedScope,
+            maxCount: maxCount,
+            skip: 0
+        )
+    }
+
+    /// Appends the next page of history, querying the exact ref scope
+    /// `fetchLog` last resolved and stored -- not a fresh resolution of
+    /// `.auto`/`.all`, which could answer differently page to page. No
+    /// scope stored (this section's log has not been fetched yet) means
+    /// nothing to page from.
     private func appendMoreCommits(descriptor: GitRepoDescriptor) async {
         let repoID = descriptor.id
         let changes = windowSession.gitChanges(for: repoID)
         guard changes.hasMoreCommits else { return }
+        guard let resolvedScope = changes.resolvedRefScope else { return }
         let loadedCount = changes.commits.count
 
         do {
             let moreCommits = try await GitService.commitLog(
-                location: descriptor.location, maxCount: 50, skip: loadedCount
+                location: descriptor.location, resolvedScope: resolvedScope, maxCount: 50, skip: loadedCount
             )
             guard !Task.isCancelled else { return }
             guard windowSession.gitRepoChanges[repoID] != nil else { return }
@@ -5397,6 +5452,26 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         refreshHostingView()
     }
 
+    /// The ref picker's choice for one section. History fetched under the
+    /// old selection is not a valid answer to the new one, so it is
+    /// dropped rather than filtered client-side, and a fresh `git log`
+    /// under the new selection is scheduled immediately.
+    private func setGitRefSelection(repoID: String, selection: GitRefSelection) {
+        GitRefFilterSettings.set(selection, forRepo: repoID)
+        windowSession.gitRefSelections[repoID] = selection
+
+        guard var changes = windowSession.gitRepoChanges[repoID] else { return }
+        changes.commits = []
+        changes.isLogLoaded = false
+        changes.hasMoreCommits = true
+        changes.expandedCommitIDs = []
+        changes.resolvedRefScope = nil
+        windowSession.gitRepoChanges[repoID] = changes
+
+        refreshHostingView()
+        scheduleRepoRefresh(repoID: repoID, scope: .log)
+    }
+
     /// Drives the monitor pool to exactly the displayed sections, or to
     /// nothing while the Changes sidebar is hidden. The returned task is
     /// what a caller waits on to know the streams are running.
@@ -5438,7 +5513,8 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
                 descriptor: descriptor,
                 changes: windowSession.gitChanges(for: descriptor.id),
                 isActive: descriptor.id == windowSession.gitActiveRepoID,
-                isExpanded: windowSession.gitExpandedRepoIDs.contains(descriptor.id)
+                isExpanded: windowSession.gitExpandedRepoIDs.contains(descriptor.id),
+                refSelection: windowSession.gitRefSelections[descriptor.id] ?? .auto
             )
         }
         return GitSidebarViewState(

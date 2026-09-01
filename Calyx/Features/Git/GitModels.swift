@@ -123,6 +123,30 @@ struct GitCommit: Identifiable, Equatable, Sendable {
     let relativeDate: String
     let parentIDs: [String]
     let graphPrefix: String     // git log --graph prefix string
+    /// Branches, remote branches, and tags pointing at this commit, from
+    /// `%D`. Empty when the log that produced this commit did not ask for
+    /// decoration, or the commit has none.
+    let refNames: [String]
+
+    init(
+        id: String,
+        shortHash: String,
+        message: String,
+        author: String,
+        relativeDate: String,
+        parentIDs: [String],
+        graphPrefix: String,
+        refNames: [String] = []
+    ) {
+        self.id = id
+        self.shortHash = shortHash
+        self.message = message
+        self.author = author
+        self.relativeDate = relativeDate
+        self.parentIDs = parentIDs
+        self.graphPrefix = graphPrefix
+        self.refNames = refNames
+    }
 }
 
 struct CommitFileEntry: Identifiable, Equatable, Sendable {
@@ -131,6 +155,45 @@ struct CommitFileEntry: Identifiable, Equatable, Sendable {
     let path: String
     let origPath: String?
     let status: GitFileStatus
+}
+
+// MARK: - Ref Selection
+
+/// What commit history a section's `git log` covers. `.auto` follows
+/// `GitService.autoRefs` (HEAD, its upstream, the upstream's remote's
+/// default branch), `.all` is every ref the repository has, and `.refs`
+/// pins the exact set the user picked, by full ref name.
+enum GitRefSelection: Equatable, Sendable, Codable {
+    case auto
+    case all
+    case refs([String])
+
+    /// Drops any saved ref this repository no longer has, keeping the
+    /// order the user picked. `.auto` and `.all` are unaffected: neither
+    /// names a specific ref that can vanish. A `.refs` selection with no
+    /// survivor falls back to `.auto` rather than filtering on nothing.
+    func reconciled(withLiveRefs live: Set<String>) -> GitRefSelection {
+        switch self {
+        case .auto, .all:
+            return self
+        case .refs(let names):
+            let survivors = names.filter(live.contains)
+            return survivors.isEmpty ? .auto : .refs(survivors)
+        }
+    }
+}
+
+/// One ref a repository has, as `GitService.refList` classifies it.
+struct GitRefInfo: Equatable, Sendable {
+    enum Kind: Equatable, Sendable {
+        case localBranch
+        case remoteBranch
+        case tag
+    }
+
+    let fullName: String
+    let shortName: String
+    let kind: Kind
 }
 
 // MARK: - Repository Sections
@@ -176,6 +239,16 @@ struct GitRepoChanges: Equatable, Sendable {
     var isLogLoaded = false
     var hasMoreCommits = true
     var staleRefreshMessage: String?
+    /// Every branch, remote branch, and tag this repository has, as of the
+    /// last successful log fetch. Feeds the ref picker's menu contents and
+    /// `GitRefSelection.reconciled(withLiveRefs:)`.
+    var availableRefs: [GitRefInfo] = []
+    /// The ref scope the selection last resolved to, so a load-more page
+    /// queries the exact same refs the commits already on screen came
+    /// from instead of re-resolving `.auto`/`.all` (and risking a
+    /// different answer, e.g. a ref that vanished between pages) on every
+    /// page. Same lifetime as `commits`: cleared wherever `commits` is.
+    var resolvedRefScope: GitService.GitResolvedRefScope?
 
     /// The number of changed files. `git status` reports a partially staged
     /// file twice, once staged and once not, so counting entries would count
@@ -328,6 +401,7 @@ struct GitRepoSectionViewData: Identifiable, Equatable, Sendable {
     /// The section owning the active pane's working directory.
     let isActive: Bool
     let isExpanded: Bool
+    let refSelection: GitRefSelection
 
     var id: String { descriptor.id }
 }

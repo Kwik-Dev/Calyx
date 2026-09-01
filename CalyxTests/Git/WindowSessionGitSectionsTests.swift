@@ -117,6 +117,18 @@ struct WindowSessionGitSectionsTests {
         #expect(session.gitActiveRepoID == nil)
     }
 
+    @Test func test_applyGitSections_dropsRefSelectionOfSectionsThatDisappearedButKeepsSurvivors() {
+        let session = WindowSession()
+        session.applyGitSections([repoA, repoB])
+        session.gitRefSelections[repoA.id] = .all
+        session.gitRefSelections[repoB.id] = .refs(["refs/heads/beta"])
+
+        session.applyGitSections([repoA])
+
+        #expect(session.gitRefSelections[repoA.id] == .all)
+        #expect(session.gitRefSelections[repoB.id] == nil)
+    }
+
     @Test func test_applyGitSections_changesNothingWhenReappliedUnchanged() {
         let session = WindowSession()
         session.applyGitSections([repoA, repoB])

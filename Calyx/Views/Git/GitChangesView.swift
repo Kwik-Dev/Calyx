@@ -15,6 +15,7 @@ struct GitChangesView: View {
     var onExpandCommit: ((String, String) -> Void)?
     var onToggleRepoSection: ((String) -> Void)?
     var onRetryRepoSection: ((String) -> Void)?
+    var onSelectRefFilter: ((String, GitRefSelection) -> Void)?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -111,7 +112,8 @@ struct GitChangesView: View {
                         onWorkingFileSelected: { entry in onWorkingFileSelected?(section.id, entry) },
                         onCommitFileSelected: { file in onCommitFileSelected?(section.id, file) },
                         onLoadMore: { onLoadMore?(section.id) },
-                        onExpandCommit: { hash in onExpandCommit?(section.id, hash) }
+                        onExpandCommit: { hash in onExpandCommit?(section.id, hash) },
+                        onSelectRefFilter: { selection in onSelectRefFilter?(section.id, selection) }
                     )
                     .accessibilityIdentifier(AccessibilityID.Git.repoSection(section.id))
                 }
@@ -131,6 +133,7 @@ private struct GitRepoSectionView: View {
     var onCommitFileSelected: ((CommitFileEntry) -> Void)?
     var onLoadMore: (() -> Void)?
     var onExpandCommit: ((String) -> Void)?
+    var onSelectRefFilter: ((GitRefSelection) -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -142,54 +145,58 @@ private struct GitRepoSectionView: View {
     }
 
     private var header: some View {
-        Button(action: { onToggle?() }) {
-            HStack(spacing: 5) {
-                Image(systemName: data.isExpanded ? "chevron.down" : "chevron.right")
+        HStack(spacing: 5) {
+            Button(action: { onToggle?() }) {
+                HStack(spacing: 5) {
+                    Image(systemName: data.isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 10)
+
+                    Image(systemName: kindIcon)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Text(data.descriptor.displayName)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+
+                    if let reference {
+                        Text(reference)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+
+                    Spacer(minLength: 4)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if let staleRefreshMessage = data.changes.staleRefreshMessage {
+                Image(systemName: "exclamationmark.triangle")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                    .frame(width: 10)
-
-                Image(systemName: kindIcon)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Text(data.descriptor.displayName)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
-
-                if let reference {
-                    Text(reference)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-
-                Spacer(minLength: 4)
-
-                if let staleRefreshMessage = data.changes.staleRefreshMessage {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .help(staleRefreshMessage)
-                }
-
-                if data.changes.changedFileCount > 0 {
-                    Text("\(data.changes.changedFileCount)")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background {
-                            Capsule().fill(Color.secondary.opacity(0.18))
-                        }
-                }
+                    .help(staleRefreshMessage)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .contentShape(Rectangle())
+
+            if data.changes.changedFileCount > 0 {
+                Text("\(data.changes.changedFileCount)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background {
+                        Capsule().fill(Color.secondary.opacity(0.18))
+                    }
+            }
+
+            refPickerMenu
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
         .background {
             if data.isActive {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -197,6 +204,113 @@ private struct GitRepoSectionView: View {
                     .padding(.horizontal, 4)
             }
         }
+    }
+
+    /// Which refs this section's `git log` covers. Auto/All replace the
+    /// selection outright; picking one ref while on Auto/All narrows to
+    /// just that ref, and picking one while already narrowed toggles it
+    /// in the existing set, falling back to Auto once none are left.
+    private var refPickerMenu: some View {
+        Menu {
+            Button {
+                onSelectRefFilter?(.auto)
+            } label: {
+                if case .auto = data.refSelection {
+                    Label("Auto", systemImage: "checkmark")
+                } else {
+                    Text("Auto")
+                }
+            }
+            Button {
+                onSelectRefFilter?(.all)
+            } label: {
+                if case .all = data.refSelection {
+                    Label("All references", systemImage: "checkmark")
+                } else {
+                    Text("All references")
+                }
+            }
+
+            if !data.changes.availableRefs.isEmpty {
+                Divider()
+                refSection(title: "Branches", kind: .localBranch)
+                refSection(title: "Remotes", kind: .remoteBranch)
+                refSection(title: "Tags", kind: .tag)
+            }
+        } label: {
+            Group {
+                if data.refSelection == .auto {
+                    Image(systemName: "line.3.horizontal.decrease")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Image(systemName: "line.3.horizontal.decrease.circle.fill")
+                        .foregroundStyle(Color.accentColor)
+                }
+            }
+            .font(.caption2)
+        }
+        .menuStyle(.borderlessButton)
+        .controlSize(.small)
+        .fixedSize()
+        .accessibilityIdentifier(AccessibilityID.Git.refPicker(data.descriptor.id))
+        .accessibilityLabel(refPickerAccessibilityLabel)
+    }
+
+    /// Names the active filter, not just the control, so a user filtering
+    /// on Accessibility hears that a filter is applied without having to
+    /// open the menu first.
+    private var refPickerAccessibilityLabel: String {
+        switch data.refSelection {
+        case .auto:
+            return "Commit references"
+        case .all:
+            return "Commit references: All"
+        case .refs(let names):
+            return "Commit references: \(names.count) selected"
+        }
+    }
+
+    @ViewBuilder
+    private func refSection(title: String, kind: GitRefInfo.Kind) -> some View {
+        let refs = data.changes.availableRefs.filter { $0.kind == kind }
+        if !refs.isEmpty {
+            Section(title) {
+                ForEach(refs, id: \.fullName) { ref in
+                    Button {
+                        onSelectRefFilter?(togglingSelection(for: ref))
+                    } label: {
+                        if isSelected(ref) {
+                            Label(ref.shortName, systemImage: "checkmark")
+                        } else {
+                            Text(ref.shortName)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func isSelected(_ ref: GitRefInfo) -> Bool {
+        if case .refs(let names) = data.refSelection {
+            return names.contains(ref.fullName)
+        }
+        return false
+    }
+
+    /// The selection picking `ref` should produce, given the current one.
+    /// From `.auto`/`.all`, picking a ref narrows to just that ref; from
+    /// `.refs`, picking an already-selected ref removes it (falling back
+    /// to `.auto` if that empties the set), and picking any other ref
+    /// adds it.
+    private func togglingSelection(for ref: GitRefInfo) -> GitRefSelection {
+        guard case .refs(let names) = data.refSelection else {
+            return .refs([ref.fullName])
+        }
+        if names.contains(ref.fullName) {
+            let remaining = names.filter { $0 != ref.fullName }
+            return remaining.isEmpty ? .auto : .refs(remaining)
+        }
+        return .refs(names + [ref.fullName])
     }
 
     @ViewBuilder
@@ -471,6 +585,21 @@ private struct CommitRowView: View {
                             Text(commit.message)
                                 .font(.caption)
                                 .lineLimit(1)
+                                // The message is the useful part of this row;
+                                // ref badges are supplementary, so a narrow
+                                // sidebar squeezes them first rather than
+                                // squeezing the message down to nothing.
+                                .layoutPriority(1)
+                            ForEach(Array(commit.refNames.enumerated()), id: \.offset) { _, refName in
+                                Text(refName)
+                                    .font(.caption2)
+                                    .lineLimit(1)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1)
+                                    .background {
+                                        Capsule().fill(Color.secondary.opacity(0.18))
+                                    }
+                            }
                         }
                         HStack(spacing: 4) {
                             Text(commit.author)

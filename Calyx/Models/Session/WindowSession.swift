@@ -40,6 +40,10 @@ class WindowSession: Identifiable {
     var gitRepoChanges: [String: GitRepoChanges] = [:]
     var gitActiveRepoID: String?
     var gitExpandedRepoIDs: Set<String> = []
+    /// Per-section ref-picker choice, keyed by repo ID. Missing a key means
+    /// `.auto`, mirroring `GitRefFilterSettings.selection(forRepo:)`'s own
+    /// default.
+    var gitRefSelections: [String: GitRefSelection] = [:]
     var sidebarWidth: CGFloat = SidebarLayout.defaultWidth
 
     static let minSidebarWidth: CGFloat = SidebarLayout.minWidth
@@ -188,6 +192,7 @@ class WindowSession: Identifiable {
         gitRepoSections = sections
         gitRepoChanges = changes
         gitExpandedRepoIDs.formIntersection(liveIDs)
+        gitRefSelections = gitRefSelections.filter { liveIDs.contains($0.key) }
         if let activeID = gitActiveRepoID, !liveIDs.contains(activeID) {
             gitActiveRepoID = nil
         }

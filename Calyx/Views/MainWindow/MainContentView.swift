@@ -47,6 +47,7 @@ struct MainContentView: View {
     var onExpandCommit: ((String, String) -> Void)?
     var onToggleGitRepoSection: ((String) -> Void)?
     var onRetryGitRepoSection: ((String) -> Void)?
+    var onSelectRefFilter: ((String, GitRefSelection) -> Void)?
     var onSidebarWidthChanged: ((CGFloat) -> Void)?
     var onCollapseToggled: (() -> Void)?
     var onCloseAllTabsInGroup: ((UUID) -> Void)?
@@ -150,6 +151,7 @@ struct MainContentView: View {
                         onExpandCommit: onExpandCommit,
                         onToggleGitRepoSection: onToggleGitRepoSection,
                         onRetryGitRepoSection: onRetryGitRepoSection,
+                        onSelectRefFilter: onSelectRefFilter,
                         onMoveTab: onMoveTab,
                         paneTitle: paneTitle,
                         paneCwd: paneCwd
