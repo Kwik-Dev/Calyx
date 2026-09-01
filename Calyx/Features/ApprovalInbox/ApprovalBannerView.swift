@@ -14,23 +14,43 @@
 // optional -- MainContentView already unwraps `model.current` once to
 // decide whether to show this view at all.
 //
-// Stage E: an `.agentHook`-sourced request (a CLI agent's PreToolUse
-// hook call, see `ApprovalRequest.Source`) renders the same Deny/Always
-// Allow/Allow row as an `.mcpTool`-sourced one, PLUS a compact
-// cross-actions menu (see `crossActionsMenu(toolName:)`) with two
-// broader actions. An `.mcpTool`-sourced request renders exactly as
-// before -- no menu.
+// This shell is left with exactly three responsibilities, one per
+// `request.source` case: the banner-level header, the queue navigator,
+// and picking which child view renders the rest.
+//
+// - `.mcpTool` (Calyx's own pane_run approval): the original flat Deny/
+//   Always Allow/Allow row, rendered directly by this file -- unchanged.
+// - `.agentHook` (a CLI agent's own PermissionRequest-gated tool call):
+//   a single column -- a header row (the tool name/target label, and the
+//   queue navigator when more than one request is queued) followed by
+//   `AgentToolApprovalView`, the whole tool-approval form (payload plus
+//   the CLI's own vertical choice list -- that view's own file header
+//   comment covers the layout in full; the choice rows are the ONLY
+//   clickable content in it).
+// - `.agentQuestion` (Claude Code's AskUserQuestion): the same single-
+//   column shape, with `AgentQuestionBannerView` -- the ENTIRE question
+//   form -- as its second row; that view's own file header comment
+//   covers the layout and its `AgentQuestionFormState` state machine in
+//   full.
+//
+// Both `AgentToolApprovalView` and `AgentQuestionBannerView` are given
+// `.id(request.id)`, so a different request tears the whole child view
+// down and creates a fresh one -- this shell keeps no request-specific
+// `@State` of its own for either, and every action routes through plain
+// closures into `model`.
 //
 // Queue navigation: while `model.positionInfo.count > 1`, a Previous/
 // Next chevron pair + "N / M" position label (see
-// `queueNavigator(positionInfo:)`) renders at the action cluster's
-// leading edge, adjacent to the decision buttons -- the browse-then-
-// decide loop keeps the mouse in one place; the sequential loop never
-// needs the arrows at all thanks to advance-on-decide (see
-// ApprovalBannerModel.advanceCursor(pastDisplayed:excluding:)'s own doc
-// comment). Drives `ApprovalBannerModel`'s own `selectedRequestID`
-// cursor -- a single queued request renders no navigator at all, since
-// there is nothing to step to.
+// `queueNavigator(positionInfo:)`) renders on the header row, trailing
+// the tool name/target label -- the browse-then-decide loop keeps the
+// mouse in one place; the sequential loop never needs the arrows at all
+// thanks to advance-on-decide (see ApprovalBannerModel.advanceCursor(
+// pastDisplayed:excluding:)'s own doc comment). Drives
+// `ApprovalBannerModel`'s own `selectedRequestID` cursor -- a single
+// queued request renders no navigator at all, since there is nothing to
+// step to. Owned entirely by this shell (it reads `model` directly):
+// neither child view takes `model`, so this can't be hoisted into either
+// of them.
 
 import SwiftUI
 import AppKit
@@ -59,100 +79,93 @@ struct ApprovalBannerView: View {
         return String(targetSurfaceID.uuidString.prefix(8))
     }
 
-    /// Stage E: the CLI's own tool name alone (e.g. "Bash"), NOT
-    /// `displayToolName`'s "Kind · toolName" combination -- used to title
-    /// BOTH the main action row's pane-scoped "Always Allow <toolName> in
-    /// This Pane" button (see `alwaysAllowButtonTitle` below) and the
-    /// cross-actions menu's "Always Allow <toolName> in All Panes" label,
-    /// so the two actions read as a parallel This-Pane/All-Panes contrast
-    /// naming the same tool. `nil` for an `.mcpTool`-sourced request,
-    /// which never shows the menu and keeps the main button's plain
-    /// "Always Allow" label (see `alwaysAllowButtonTitle`). Routed through
-    /// `ControlCharacterDisplay.render` same as `toolName` above -- it
-    /// comes from the same untrusted tool-call provenance.
-    private var agentHookToolName: String? {
-        guard case .agentHook(let toolName, _, _) = request.source else { return nil }
-        return ControlCharacterDisplay.render(toolName)
-    }
-
-    /// Stage E: the main action row's middle button's label. For an
-    /// `.agentHook`-sourced request, `model.alwaysAllow(id:)` records
-    /// PANE-scoped memory (this tool, THIS pane) -- so the label names
-    /// the tool and says "This Pane" to contrast with the cross-actions
-    /// menu's "Always Allow <toolName> in All Panes" item, which records
-    /// CROSS memory instead. For an `.mcpTool`-sourced request the same
-    /// button flips the global cockpit auto-approve toggle, so it keeps
-    /// the unqualified "Always Allow" label.
-    private var alwaysAllowButtonTitle: String {
-        guard let agentHookToolName else { return "Always Allow" }
-        return "Always Allow \(agentHookToolName) in This Pane"
-    }
-
     private var headerText: String {
         "\(toolName) → \(targetLabel)"
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 16) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(headerText)
-                    .font(.callout)
-                    .fontWeight(.semibold)
+        Group {
+            switch request.source {
+            case .mcpTool:
+                HStack(alignment: .top, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(headerText)
+                            .font(.callout)
+                            .fontWeight(.semibold)
+                        payloadView
+                    }
 
-                payloadView
-            }
+                    // Queue navigation: immediately adjacent to the
+                    // decision controls that follow it -- the browse-
+                    // then-decide loop (glance at each queued command,
+                    // then click Previous/Next to compare before
+                    // deciding) keeps the mouse in one place instead of
+                    // ping-ponging across the banner's full width to a
+                    // header-area control. The purely sequential loop
+                    // (just clicking Allow/Deny down the queue) never
+                    // needs the arrows at all, since advance-on-decide
+                    // already moves the cursor forward on every decision
+                    // (see ApprovalBannerModel.advanceCursor(
+                    // pastDisplayed:excluding:)'s own doc comment). Only
+                    // shown while more than one request is queued for
+                    // this window (a single request has nothing to
+                    // navigate to) -- see ApprovalBannerModel.
+                    // positionInfo's own doc comment.
+                    Spacer(minLength: 16)
+                    HStack {
+                        if let positionInfo = model.positionInfo, positionInfo.count > 1 {
+                            queueNavigator(positionInfo: positionInfo)
+                                .padding(.trailing, 8)
+                        }
 
-            Spacer(minLength: 16)
+                        Button("Deny") {
+                            model.deny(id: request.id)
+                        }
+                        .controlSize(.small)
+                        .accessibilityIdentifier(AccessibilityID.ApprovalBanner.denyButton)
 
-            HStack {
-                // Queue navigation: leading edge of this action cluster,
-                // immediately adjacent to Deny/Always Allow/Allow -- the
-                // browse-then-decide loop (glance at each queued
-                // command, then click Previous/Next to compare before
-                // deciding) keeps the mouse in one place instead of
-                // ping-ponging across the banner's full width to a
-                // header-area control. The purely sequential loop (just
-                // clicking Allow/Deny down the queue) never needs the
-                // arrows at all, since advance-on-decide already moves
-                // the cursor forward on every decision (see
-                // ApprovalBannerModel.advanceCursor(pastDisplayed:
-                // excluding:)'s own doc comment). Only shown while more
-                // than one request is queued for this window (a single
-                // request has nothing to navigate to) -- see
-                // ApprovalBannerModel.positionInfo's own doc comment.
-                // Single source for the gate: `positionInfo.count`
-                // (derived from the same `visibleRequests` model.
-                // pendingCountForWindow itself counts), rather than also
-                // reading `model.pendingCountForWindow` here.
-                if let positionInfo = model.positionInfo, positionInfo.count > 1 {
-                    queueNavigator(positionInfo: positionInfo)
-                        .padding(.trailing, 8)
+                        Button("Always Allow") {
+                            model.alwaysAllow(id: request.id)
+                        }
+                        .controlSize(.small)
+                        .accessibilityIdentifier(AccessibilityID.ApprovalBanner.alwaysAllowButton)
+
+                        Button("Allow") {
+                            model.allow(id: request.id)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .accessibilityIdentifier(AccessibilityID.ApprovalBanner.allowButton)
+                    }
                 }
 
-                Button("Deny") {
-                    model.deny(id: request.id)
+            case .agentHook(let toolName, _, let summary, let offers):
+                VStack(alignment: .leading, spacing: 6) {
+                    headerRow
+                    AgentToolApprovalView(
+                        toolName: toolName,
+                        payload: summary,
+                        offers: offers,
+                        onAllow: { model.allow(id: request.id) },
+                        onAllowWithPermissions: { offer in model.allowWithPermissions(id: request.id, offer: offer) },
+                        onAlwaysAllow: { model.alwaysAllow(id: request.id) },
+                        onDeny: { model.deny(id: request.id) }
+                    )
+                    .id(request.id)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .controlSize(.small)
-                .accessibilityIdentifier(AccessibilityID.ApprovalBanner.denyButton)
 
-                Button(alwaysAllowButtonTitle) {
-                    model.alwaysAllow(id: request.id)
-                }
-                .controlSize(.small)
-                .accessibilityIdentifier(AccessibilityID.ApprovalBanner.alwaysAllowButton)
-
-                Button("Allow") {
-                    model.allow(id: request.id)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .accessibilityIdentifier(AccessibilityID.ApprovalBanner.allowButton)
-
-                // Stage E: only an `.agentHook`-sourced request has a
-                // cross-actions menu -- `.mcpTool` renders exactly as
-                // before it (no menu at all).
-                if let menuToolName = agentHookToolName {
-                    crossActionsMenu(toolName: menuToolName)
+            case .agentQuestion(_, let prompt):
+                VStack(alignment: .leading, spacing: 6) {
+                    headerRow
+                    AgentQuestionBannerView(
+                        prompt: prompt,
+                        onAnswer: { answers in model.answer(id: request.id, answers: answers) },
+                        onChatAboutQuestion: { model.chatAboutQuestion(id: request.id) },
+                        onTextFieldRemoved: { model.restoreTerminalFocusAfterInput() }
+                    )
+                    .id(request.id)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }
@@ -163,12 +176,28 @@ struct ApprovalBannerView: View {
         .accessibilityIdentifier(AccessibilityID.ApprovalBanner.container)
     }
 
-    /// Previous/Next chevron pair + "N / M" position label, rendered at
-    /// the leading edge of the trailing action `HStack` (see this file's
-    /// own header comment for why it sits there, adjacent to Deny/
-    /// Always Allow/Allow, rather than up in the header area), shown
-    /// only while more than one request is queued for this window (see
-    /// the call site's own `positionInfo.count > 1` gate) -- mirrors
+    /// `.agentHook`/`.agentQuestion`'s shared first row: `headerText`
+    /// (the tool name/target label), then the queue navigator when more
+    /// than one request is queued for this window.
+    private var headerRow: some View {
+        HStack {
+            Text(headerText)
+                .font(.callout)
+                .fontWeight(.semibold)
+            Spacer()
+            if let positionInfo = model.positionInfo, positionInfo.count > 1 {
+                queueNavigator(positionInfo: positionInfo)
+            }
+        }
+    }
+
+    /// Previous/Next chevron pair + "N / M" position label -- for
+    /// `.mcpTool`, rendered at the leading edge of the trailing action
+    /// `HStack` (see this file's own header comment for why it sits
+    /// there, adjacent to Deny/Always Allow/Allow); for `.agentHook`/
+    /// `.agentQuestion`, rendered by `headerRow` trailing `headerText`.
+    /// Shown only while more than one request is queued for this window
+    /// (see the call site's own `positionInfo.count > 1` gate) -- mirrors
     /// `BrowserToolbarView`'s own chevron.left/chevron.right precedent
     /// (Calyx/Views/Browser/BrowserContainerView.swift). The label
     /// itself is a `Menu` wrapping the same "N / M" `Text`, listing this
@@ -187,9 +216,8 @@ struct ApprovalBannerView: View {
     /// The inner `Text` keeps that identifier, which the collapse leaves
     /// inert. `.buttonStyle(.borderless)` on the chevrons +
     /// `.menuStyle(.borderlessButton)` on the `Menu` + `.controlSize(
-    /// .small)` + `.fixedSize()` throughout keep this content-hugging,
-    /// same rationale as `crossActionsMenu`'s own header comment, so it
-    /// never stretches the banner's action row. Disabled states are
+    /// .small)` + `.fixedSize()` throughout keep this content-hugging, so
+    /// it never stretches the banner's action row. Disabled states are
     /// derived directly from the passed `positionInfo` (`index <= 1` /
     /// `index >= count`) rather than a separate `model.
     /// canSelectPrevious`/`canSelectNext` read -- one source (the same
@@ -311,35 +339,11 @@ struct ApprovalBannerView: View {
         return elided(keeping: low)
     }
 
-    /// Compact cross-actions menu, shown only for an `.agentHook`-sourced
-    /// request (see `agentHookToolName`): two actions that go
-    /// beyond this single request's own Deny/Always Allow/Allow --
-    /// "Allow All Pending" drains every pending request store-wide, and
-    /// "Always Allow ... in All Panes" records CROSS Always-Allow memory
-    /// for this tool. Kept content-hugging (`.fixedSize()`), same
-    /// rationale as `payloadView`'s own header comment, so the menu's
-    /// compact ellipsis label never stretches the banner's action row.
-    private func crossActionsMenu(toolName: String) -> some View {
-        Menu {
-            Button("Allow All Pending (\(model.totalPendingCount))") {
-                model.allowAllPending()
-            }
-            .accessibilityIdentifier(AccessibilityID.ApprovalBanner.allowAllPendingItem)
-
-            Button("Always Allow \(toolName) in All Panes") {
-                model.alwaysAllowAcrossPanes(id: request.id)
-            }
-            .accessibilityIdentifier(AccessibilityID.ApprovalBanner.alwaysAllowAllPanesItem)
-        } label: {
-            Image(systemName: "ellipsis.circle")
-        }
-        .menuStyle(.borderlessButton)
-        .controlSize(.small)
-        .fixedSize()
-        .accessibilityIdentifier(AccessibilityID.ApprovalBanner.crossActionsMenu)
-    }
-
-    /// Content-hugging payload: a one-line command must never reserve
+    /// Content-hugging payload, `.mcpTool` only -- an `.agentHook`
+    /// request's own payload is rendered by `AgentToolApprovalView`
+    /// itself (its own full-width content column), and `.agentQuestion`
+    /// never shows a raw payload at all. A one-line command must never
+    /// reserve
     /// blank space (a ScrollView is normally GREEDY -- it claims its
     /// full proposed height even when its content is a single short
     /// line, which is what made the banner a mostly-blank band before

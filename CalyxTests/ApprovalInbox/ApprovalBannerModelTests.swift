@@ -23,40 +23,30 @@
 //  - alwaysAllow(id:) turns on CockpitSettings.autoApproveEnabled,
 //    decides the clicked id .allowed, AND drains every other request
 //    already visible to this window in the same action -- for an
-//    `.mcpTool`-sourced request (unchanged, Stage E), but NEVER a queued
-//    `.agentHook`-sourced request on that same drain, even targeting the
-//    same surface (source-scoped, see
+//    `.mcpTool`-sourced request, but NEVER a queued `.agentHook`-sourced
+//    request on that same drain, even targeting the same surface
+//    (source-scoped, see
 //    test_alwaysAllow_mcpToolSource_doesNotDrainQueuedAgentHookRequest_onSameSurface).
-//    For an `.agentHook`-sourced request (Stage E, NEW), alwaysAllow(id:)
-//    instead records PANE Always-Allow memory (surfaceID, kind,
-//    toolName) via the injected `memory`, batch-allows only pending
-//    requests sharing that EXACT tuple, and never touches
-//    CockpitSettings.autoApproveEnabled at all
-//  - allowAllPending() (Stage E, NEW) decides EVERY pending request in
-//    the store .allowed, store-wide, with no window/ownership filter at
-//    all -- leaves no Always-Allow memory behind and never touches any
-//    setting
-//  - alwaysAllowAcrossPanes(id:) (Stage E, NEW; only meaningful for an
-//    `.agentHook`-sourced request) records CROSS Always-Allow memory
-//    (kind, toolName only -- no surfaceID) via the injected `memory`,
-//    then batch-allows every pending request store-wide sharing that
-//    (kind, toolName), regardless of window/pane, leaving a
-//    different-tool request pending and never touching any setting
+//    For an `.agentHook`-sourced request, alwaysAllow(id:) instead
+//    records PANE Always-Allow memory (surfaceID, kind, toolName) via
+//    the injected `memory`, batch-allows only pending requests sharing
+//    that EXACT tuple, and never touches CockpitSettings.autoApproveEnabled
+//    at all
 //  - pendingCountForWindow counts only requests this window owns
 //    (mirrors current's ownership filter; the view's queue navigator
 //    now gates on positionInfo.count instead, see that property's own
 //    doc comment, but pendingCountForWindow remains its own
 //    model-level contract, asserted directly below)
 //
-//  Stage E init change: ApprovalBannerModel's initializer gains a new
-//  `memory: AgentHookApprovalMemory` parameter, defaulted to `.shared`
-//  (mirrors this codebase's `= .shared`-defaulted seam convention, e.g.
-//  `CalyxMCPServer.approvalInbox`/`agentRegistry`) -- every PRE-EXISTING
-//  test below that never mentions `.agentHook` or the new actions
-//  continues to construct `ApprovalBannerModel(store:ownsSurface:isKeyWindow:)`
-//  unchanged and is unaffected; only the new tests below inject an
-//  isolated `AgentHookApprovalMemory()` instance explicitly, so no test
-//  leaks Always-Allow memory into another via the shared singleton.
+//  ApprovalBannerModel's initializer takes a `memory: AgentHookApprovalMemory`
+//  parameter, defaulted to `.shared` (mirrors this codebase's
+//  `= .shared`-defaulted seam convention, e.g.
+//  `CalyxMCPServer.approvalInbox`/`agentRegistry`) -- every test below
+//  that never mentions `.agentHook` continues to construct
+//  `ApprovalBannerModel(store:ownsSurface:isKeyWindow:)` unchanged and is
+//  unaffected; only the tests exercising `.agentHook` inject an isolated
+//  `AgentHookApprovalMemory()` instance explicitly, so no test leaks
+//  Always-Allow memory into another via the shared singleton.
 //
 
 import XCTest
@@ -71,18 +61,18 @@ final class ApprovalBannerModelTests: XCTestCase {
         ApprovalRequest(id: UUID(), source: .mcpTool(name: "pane_run"), targetSurfaceID: targetSurfaceID, payload: payload, createdAt: createdAt)
     }
 
-    /// Stage E helper: an `.agentHook`-sourced request, the source
-    /// variant `alwaysAllow(id:)`/`alwaysAllowAcrossPanes(id:)` key their
-    /// new memory-recording behavior off of.
+    /// An `.agentHook`-sourced request, the source variant
+    /// `alwaysAllow(id:)` keys its memory-recording behavior off of.
     private func makeAgentHookRequest(
         targetSurfaceID: UUID?,
         kind: String = AgentEntry.claudeCodeKind,
         toolName: String = "Bash",
-        createdAt: Date = Date()
+        createdAt: Date = Date(),
+        offers: AgentHookOffers = .none
     ) -> ApprovalRequest {
         ApprovalRequest(
             id: UUID(),
-            source: .agentHook(toolName: toolName, kind: kind, summary: "ls -la /tmp"),
+            source: .agentHook(toolName: toolName, kind: kind, summary: "ls -la /tmp", offers: offers),
             targetSurfaceID: targetSurfaceID,
             payload: "{\"command\":\"ls -la /tmp\"}",
             createdAt: createdAt
@@ -103,9 +93,11 @@ final class ApprovalBannerModelTests: XCTestCase {
     /// decoded `AgentHookToolCall` (`source: .agentHook(toolName:
     /// call.toolName, kind: kind, summary: call.summary)`).
     private func agentHookRequest(_ toolInput: [String: Any], toolName: String) throws -> ApprovalRequest {
-        let call = try XCTUnwrap(AgentHookToolCall.decode(from: json(["tool_name": toolName, "tool_input": toolInput])))
+        let call = try XCTUnwrap(AgentHookToolCall.decode(
+            from: json(["tool_name": toolName, "tool_input": toolInput]), kind: AgentEntry.claudeCodeKind
+        ))
         return ApprovalRequest(
-            id: UUID(), source: .agentHook(toolName: call.toolName, kind: AgentEntry.claudeCodeKind, summary: call.summary),
+            id: UUID(), source: .agentHook(toolName: call.toolName, kind: AgentEntry.claudeCodeKind, summary: call.summary, offers: .none),
             targetSurfaceID: nil, payload: call.payload, createdAt: Date()
         )
     }
@@ -119,6 +111,42 @@ final class ApprovalBannerModelTests: XCTestCase {
         for _ in 0..<50 {
             await Task.yield()
         }
+    }
+
+    /// An `.agentQuestion`-sourced request: the source variant
+    /// `answer(id:answers:)`/`chatAboutQuestion(id:)` operate on, and the
+    /// one every allow-family action (`allow`/`deny`/`alwaysAllow`) must
+    /// leave untouched.
+    private func makeAgentQuestionRequest(
+        targetSurfaceID: UUID?,
+        kind: String = AgentEntry.claudeCodeKind,
+        createdAt: Date = Date()
+    ) -> ApprovalRequest {
+        let toolInput: [String: Any] = ["questions": [["question": "Which shell?", "options": [["label": "zsh"], ["label": "bash"]]]]]
+        let prompt = AgentQuestionPrompt(
+            questions: [AgentQuestionPrompt.Question(
+                text: "Which shell?", header: nil,
+                options: [
+                    AgentQuestionPrompt.Option(label: "zsh", description: nil, preview: nil),
+                    AgentQuestionPrompt.Option(label: "bash", description: nil, preview: nil),
+                ],
+                multiSelect: false
+            )],
+            originalToolInputJSON: try! JSONSerialization.data(withJSONObject: toolInput)
+        )
+        return ApprovalRequest(
+            id: UUID(), source: .agentQuestion(kind: kind, prompt: prompt),
+            targetSurfaceID: targetSurfaceID, payload: "", createdAt: createdAt
+        )
+    }
+
+    /// Counts invocations of the injected `restoreTerminalFocus` closure
+    /// -- a plain reference-type box rather than a captured `var`, so it
+    /// can be read after being handed to `ApprovalBannerModel`'s
+    /// `@escaping` init parameter.
+    private final class RestoreFocusSpy {
+        private(set) var callCount = 0
+        func call() { callCount += 1 }
     }
 
     // MARK: - current: ownership filter, oldest-first
@@ -205,7 +233,7 @@ final class ApprovalBannerModelTests: XCTestCase {
         XCTAssertNil(model.current, "the banner must clear once its current request has been decided")
 
         let result = await waiter.value
-        XCTAssertEqual(result, .denied, "deny(id:) must resolve the in-flight awaitDecision with .denied")
+        XCTAssertEqual(result, .denied(.userRejected), "deny(id:) must resolve the in-flight awaitDecision with .denied(.userRejected)")
     }
 
     /// F5: the id threaded through must be the one the caller actually
@@ -240,9 +268,9 @@ final class ApprovalBannerModelTests: XCTestCase {
         XCTAssertEqual(store.pending.map(\.id), [requestB.id],
                        "a stale deny(id: A) must not touch B, which is still pending")
 
-        store.decide(id: requestB.id, .denied)
+        store.decide(id: requestB.id, .denied(.userRejected))
         let result = await waiterB.value
-        XCTAssertEqual(result, .denied,
+        XCTAssertEqual(result, .denied(.userRejected),
                        "B must remain independently decidable after the stale deny(id: A) no-op")
     }
 
@@ -495,110 +523,6 @@ final class ApprovalBannerModelTests: XCTestCase {
         XCTAssertEqual(resultSamePane, .allowed, "the same-pane-same-tool backlog match must also be drained allowed")
     }
 
-    // MARK: - allowAllPending() (Stage E, NEW)
-
-    func test_allowAllPending_drainsEveryPendingRequestStoreWide_leavesNoMemory_neverTouchesSettings() async throws {
-        let suiteName = "com.calyx.tests.ApprovalBannerModelTests.allowAllPending"
-        CockpitSettings._testUseSuite(named: suiteName)
-        defer { CockpitSettings._testTeardownSuite(named: suiteName) }
-        XCTAssertFalse(CockpitSettings.autoApproveEnabled, "precondition: the isolated suite starts with auto-approve off")
-
-        let store = ApprovalInboxStore()
-        let memory = AgentHookApprovalMemory()
-        let ownedSurfaceID = UUID()
-        let foreignSurfaceID = UUID()
-
-        let ownedMcp = makeRequest(targetSurfaceID: ownedSurfaceID, payload: "owned-mcp")
-        let foreignMcp = makeRequest(targetSurfaceID: foreignSurfaceID, payload: "foreign-mcp")
-        let foreignAgentHook = makeAgentHookRequest(targetSurfaceID: foreignSurfaceID, toolName: "Bash")
-        let windowAgnostic = makeRequest(targetSurfaceID: nil, payload: "agnostic")
-        store.submit(ownedMcp)
-        store.submit(foreignMcp)
-        store.submit(foreignAgentHook)
-        store.submit(windowAgnostic)
-
-        // isKeyWindow is false, so the window-agnostic request would
-        // normally be invisible to this window too -- proving
-        // allowAllPending() applies NO visibility filter at all.
-        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == ownedSurfaceID }, isKeyWindow: { false }, memory: memory)
-
-        let requests = [ownedMcp, foreignMcp, foreignAgentHook, windowAgnostic]
-        let waiters = requests.map { request in
-            Task { @MainActor in await store.awaitDecision(id: request.id, timeoutMs: 5_000) }
-        }
-        await yieldToScheduler()
-
-        model.allowAllPending()
-
-        XCTAssertTrue(store.pending.isEmpty,
-                      "allowAllPending() must drain EVERY pending request store-wide, including ones this " +
-                      "window neither owns nor could otherwise see")
-
-        for waiter in waiters {
-            let result = await waiter.value
-            XCTAssertEqual(result, .allowed)
-        }
-
-        XCTAssertFalse(memory.isAutoAllowed(surfaceID: foreignSurfaceID, kind: AgentEntry.claudeCodeKind, toolName: "Bash"),
-                       "allowAllPending() must leave no Always-Allow memory behind")
-        XCTAssertFalse(CockpitSettings.autoApproveEnabled,
-                       "allowAllPending() must never touch the global auto-approve setting")
-    }
-
-    // MARK: - alwaysAllowAcrossPanes(id:) (Stage E, NEW)
-
-    func test_alwaysAllowAcrossPanes_recordsCrossMemory_drainsSameToolStoreWide_leavesDifferentToolPending() async throws {
-        let suiteName = "com.calyx.tests.ApprovalBannerModelTests.alwaysAllowAcrossPanes"
-        CockpitSettings._testUseSuite(named: suiteName)
-        defer { CockpitSettings._testTeardownSuite(named: suiteName) }
-        XCTAssertFalse(CockpitSettings.autoApproveEnabled, "precondition: the isolated suite starts with auto-approve off")
-
-        let store = ApprovalInboxStore()
-        let memory = AgentHookApprovalMemory()
-        let surfaceA = UUID()
-        let surfaceB = UUID()
-
-        let clicked = makeAgentHookRequest(
-            targetSurfaceID: surfaceA, toolName: "Bash", createdAt: Date(timeIntervalSince1970: 1_700_000_000)
-        )
-        let sameToolOtherPane = makeAgentHookRequest(
-            targetSurfaceID: surfaceB, toolName: "Bash", createdAt: Date(timeIntervalSince1970: 1_700_000_100)
-        )
-        let differentTool = makeAgentHookRequest(
-            targetSurfaceID: surfaceA, toolName: "Write", createdAt: Date(timeIntervalSince1970: 1_700_000_200)
-        )
-        store.submit(clicked)
-        store.submit(sameToolOtherPane)
-        store.submit(differentTool)
-
-        // This window owns only surfaceA -- surfaceB is a pane it does
-        // NOT own, proving alwaysAllowAcrossPanes(id:) applies no window
-        // filter at all.
-        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceA }, isKeyWindow: { true }, memory: memory)
-
-        let waiterClicked = Task { @MainActor in await store.awaitDecision(id: clicked.id, timeoutMs: 5_000) }
-        let waiterOtherPane = Task { @MainActor in await store.awaitDecision(id: sameToolOtherPane.id, timeoutMs: 5_000) }
-        await yieldToScheduler()
-
-        model.alwaysAllowAcrossPanes(id: clicked.id)
-
-        XCTAssertTrue(memory.isAutoAllowed(surfaceID: UUID(), kind: AgentEntry.claudeCodeKind, toolName: "Bash"),
-                     "alwaysAllowAcrossPanes(id:) must record CROSS memory for (kind, toolName), auto-allowing " +
-                     "an arbitrary surface it has never seen before")
-        XCTAssertEqual(store.pending.map(\.id), [differentTool.id],
-                       "alwaysAllowAcrossPanes(id:) must drain every pending request sharing the clicked " +
-                       "request's (kind, toolName) store-wide, regardless of window ownership, leaving a " +
-                       "different tool pending")
-        XCTAssertFalse(CockpitSettings.autoApproveEnabled,
-                       "alwaysAllowAcrossPanes(id:) must never touch the global auto-approve setting")
-
-        let resultClicked = await waiterClicked.value
-        let resultOtherPane = await waiterOtherPane.value
-        XCTAssertEqual(resultClicked, .allowed)
-        XCTAssertEqual(resultOtherPane, .allowed,
-                       "a same-tool request on a pane this window doesn't own must still be drained")
-    }
-
     // MARK: - Queue navigation (prev/next cursor)
     //
     // A stored, private `selectedRequestID: UUID?` cursor lets a window
@@ -612,13 +536,11 @@ final class ApprovalBannerModelTests: XCTestCase {
     // 1-based (index, count) of `current` within that same visible
     // queue, nil exactly when `current` is nil. Deciding the DISPLAYED
     // request (the id `current` actually returned at the time of the
-    // call) via allow(id:)/deny(id:)/alwaysAllow(id:)/
-    // alwaysAllowAcrossPanes(id:) advances the cursor to its successor
-    // in that pre-removal visible queue (predecessor if it was last,
-    // nil if it was the only one visible) -- so the banner keeps
-    // stepping forward through the backlog instead of always snapping
-    // back to the oldest. allowAllPending() clears the cursor outright
-    // (nothing is left pending to point at). A stale id -- one that is
+    // call) via allow(id:)/deny(id:)/alwaysAllow(id:) advances the
+    // cursor to its successor in that pre-removal visible queue
+    // (predecessor if it was last, nil if it was the only one visible)
+    // -- so the banner keeps stepping forward through the backlog
+    // instead of always snapping back to the oldest. A stale id -- one that is
     // NOT the currently-displayed request, e.g. already resolved by some
     // other path -- must never move the cursor; and a brand-new arrival
     // submitted after a selection has been made must never move that
@@ -990,33 +912,6 @@ final class ApprovalBannerModelTests: XCTestCase {
         XCTAssertEqual(model.positionInfo?.count, 4)
     }
 
-    func test_allowAllPending_clearsSelectionAndBanner() async throws {
-        let store = ApprovalInboxStore()
-        let surfaceID = UUID()
-        let first = makeRequest(targetSurfaceID: surfaceID, payload: "first", createdAt: Date(timeIntervalSince1970: 1_700_000_000))
-        let second = makeRequest(targetSurfaceID: surfaceID, payload: "second", createdAt: Date(timeIntervalSince1970: 1_700_000_100))
-        store.submit(first)
-        store.submit(second)
-
-        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true })
-        model.selectNext()
-        XCTAssertEqual(model.current?.id, second.id, "precondition: current is the newest (second) request")
-
-        let waiterFirst = Task { @MainActor in await store.awaitDecision(id: first.id, timeoutMs: 5_000) }
-        let waiterSecond = Task { @MainActor in await store.awaitDecision(id: second.id, timeoutMs: 5_000) }
-        await yieldToScheduler()
-
-        model.allowAllPending()
-
-        XCTAssertNil(model.current, "allowAllPending() must clear the cursor along with every pending request, leaving the banner empty")
-        XCTAssertNil(model.positionInfo, "positionInfo must be nil once nothing is left visible")
-
-        let resultFirst = await waiterFirst.value
-        let resultSecond = await waiterSecond.value
-        XCTAssertEqual(resultFirst, .allowed)
-        XCTAssertEqual(resultSecond, .allowed)
-    }
-
     // MARK: - previewLine (Queue preview menu)
     //
     // ApprovalRequest.previewLine is "\(displayToolName): \(compactTarget)",
@@ -1305,22 +1200,19 @@ final class ApprovalBannerModelTests: XCTestCase {
         XCTAssertEqual(model.positionInfo?.count, 4)
     }
 
-    // MARK: - AccessibilityID coverage for the new cross-actions menu (Stage E, spec-level only)
+    // MARK: - AccessibilityID coverage for queue navigation (spec-level only)
     //
     // SwiftUI Menu rendering itself is not unit-testable (no production
-    // view code exercised here) -- this only pins that the new
-    // identifiers exist, are distinct from each other and from the
-    // pre-existing ApprovalBanner identifiers, and follow the same
+    // view code exercised here) -- this only pins that these identifiers
+    // exist, are distinct from each other and from the pre-existing
+    // ApprovalBanner identifiers, and follow the same
     // "calyx.approvalBanner.*" prefix convention as
     // container/allowButton/denyButton/alwaysAllowButton/payload above.
 
-    func test_accessibilityID_approvalBanner_crossActionsMenuIdentifiers_existAndAreDistinct() {
+    func test_accessibilityID_approvalBanner_queueNavigationIdentifiers_existAndAreDistinct() {
+        // Queue navigation (prev/next cursor): the banner's Previous/Next
+        // buttons and their "N / M" position label.
         let newIdentifiers = [
-            AccessibilityID.ApprovalBanner.crossActionsMenu,
-            AccessibilityID.ApprovalBanner.allowAllPendingItem,
-            AccessibilityID.ApprovalBanner.alwaysAllowAllPanesItem,
-            // Queue navigation (prev/next cursor): the banner's new
-            // Previous/Next buttons and their "N / M" position label.
             AccessibilityID.ApprovalBanner.previousButton,
             AccessibilityID.ApprovalBanner.nextButton,
             AccessibilityID.ApprovalBanner.positionLabel,
@@ -1339,12 +1231,12 @@ final class ApprovalBannerModelTests: XCTestCase {
             AccessibilityID.ApprovalBanner.payload,
         ]
         XCTAssertEqual(Set(newIdentifiers).intersection(preExistingIdentifiers), [],
-                       "the 6 new identifiers must be distinct from every pre-existing ApprovalBanner identifier")
+                       "the 3 identifiers must be distinct from every pre-existing ApprovalBanner identifier")
         XCTAssertEqual(Set(newIdentifiers).count, newIdentifiers.count,
-                       "the 6 new identifiers must also be distinct from each other")
+                       "the 3 identifiers must also be distinct from each other")
     }
 
-    // MARK: - AccessibilityID coverage for the new queue preview menu (spec-level only, same shape as the cross-actions menu coverage above)
+    // MARK: - AccessibilityID coverage for the new queue preview menu (spec-level only, same shape as the queue navigation coverage above)
 
     func test_accessibilityID_approvalBanner_queueMenuIdentifier_existsAndIsDistinct() {
         let newIdentifier = AccessibilityID.ApprovalBanner.queueMenu
@@ -1358,9 +1250,6 @@ final class ApprovalBannerModelTests: XCTestCase {
             AccessibilityID.ApprovalBanner.denyButton,
             AccessibilityID.ApprovalBanner.alwaysAllowButton,
             AccessibilityID.ApprovalBanner.payload,
-            AccessibilityID.ApprovalBanner.crossActionsMenu,
-            AccessibilityID.ApprovalBanner.allowAllPendingItem,
-            AccessibilityID.ApprovalBanner.alwaysAllowAllPanesItem,
             AccessibilityID.ApprovalBanner.previousButton,
             AccessibilityID.ApprovalBanner.nextButton,
             AccessibilityID.ApprovalBanner.positionLabel,
@@ -1368,4 +1257,335 @@ final class ApprovalBannerModelTests: XCTestCase {
         XCTAssertFalse(preExistingIdentifiers.contains(newIdentifier),
                        "queueMenu must be distinct from every pre-existing ApprovalBanner identifier")
     }
+
+    // MARK: - AccessibilityID coverage for the AskUserQuestion prompt UI (spec-level only, same shape as the other coverage above)
+
+    func test_accessibilityID_approvalBanner_questionIdentifiers_existAndAreDistinct() {
+        let newIdentifiers = [
+            AccessibilityID.ApprovalBanner.questionText,
+            AccessibilityID.ApprovalBanner.optionButton(0),
+            AccessibilityID.ApprovalBanner.optionButton(1),
+            AccessibilityID.ApprovalBanner.otherButton,
+            AccessibilityID.ApprovalBanner.otherTextField,
+            AccessibilityID.ApprovalBanner.answerButton,
+            AccessibilityID.ApprovalBanner.questionPosition,
+            AccessibilityID.ApprovalBanner.previewText,
+            AccessibilityID.ApprovalBanner.chatButton,
+            AccessibilityID.ApprovalBanner.backButton,
+            AccessibilityID.ApprovalBanner.notesButton,
+            AccessibilityID.ApprovalBanner.notesTextField,
+        ]
+
+        for identifier in newIdentifiers {
+            XCTAssertTrue(identifier.hasPrefix("calyx.approvalBanner."),
+                         "\(identifier) must follow the existing calyx.approvalBanner.* naming convention")
+        }
+
+        XCTAssertEqual(AccessibilityID.ApprovalBanner.optionButton(0), "calyx.approvalBanner.optionButton.0")
+        XCTAssertEqual(AccessibilityID.ApprovalBanner.optionButton(1), "calyx.approvalBanner.optionButton.1")
+
+        let preExistingIdentifiers = [
+            AccessibilityID.ApprovalBanner.container,
+            AccessibilityID.ApprovalBanner.allowButton,
+            AccessibilityID.ApprovalBanner.denyButton,
+            AccessibilityID.ApprovalBanner.alwaysAllowButton,
+            AccessibilityID.ApprovalBanner.payload,
+            AccessibilityID.ApprovalBanner.previousButton,
+            AccessibilityID.ApprovalBanner.nextButton,
+            AccessibilityID.ApprovalBanner.positionLabel,
+            AccessibilityID.ApprovalBanner.queueMenu,
+        ]
+        XCTAssertEqual(Set(newIdentifiers).intersection(preExistingIdentifiers), [],
+                       "the new question identifiers must be distinct from every pre-existing ApprovalBanner identifier")
+        XCTAssertEqual(Set(newIdentifiers).count, newIdentifiers.count,
+                       "the new question identifiers must also be distinct from each other")
+    }
+
+    // MARK: - answer(id:answers:) / chatAboutQuestion(id:) (AskUserQuestion prompt)
+
+    private func makeAnswers(for prompt: AgentQuestionPrompt) -> AgentQuestionAnswers {
+        AgentQuestionAnswers(prompt: prompt, entries: prompt.questions.map { _ in .init(answer: .selectedOne("zsh"), notes: nil) })
+    }
+
+    func test_answer_resolvesAnswered_advancesCursor_invokesRestoreFocusOnce() async throws {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let request = makeAgentQuestionRequest(targetSurfaceID: surfaceID)
+        store.submit(request)
+        let spy = RestoreFocusSpy()
+
+        let model = ApprovalBannerModel(
+            store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true }, restoreTerminalFocus: { spy.call() }
+        )
+
+        guard case .agentQuestion(_, let prompt) = request.source else {
+            XCTFail("precondition: request must be .agentQuestion")
+            return
+        }
+        let answers = makeAnswers(for: prompt)
+
+        let waiter = Task { @MainActor in
+            await store.awaitDecision(id: request.id, timeoutMs: 5_000)
+        }
+        await yieldToScheduler()
+
+        model.answer(id: request.id, answers: answers)
+
+        XCTAssertTrue(store.pending.isEmpty, "answer(id:answers:) must decide that request, removing it from pending")
+        XCTAssertNil(model.current, "the banner must clear once its current request has been decided")
+        XCTAssertEqual(spy.callCount, 1, "answer(id:answers:) must invoke restoreTerminalFocus exactly once")
+
+        let result = await waiter.value
+        XCTAssertEqual(result, .answered(answers), "answer(id:answers:) must resolve the awaiter with .answered(answers)")
+    }
+
+    // MARK: - chatAboutQuestion(id:)
+
+    func test_chatAboutQuestion_resolvesInterruptedChatAboutQuestion_advancesCursor_invokesRestoreFocusOnce() async throws {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let request = makeAgentQuestionRequest(targetSurfaceID: surfaceID)
+        store.submit(request)
+        let spy = RestoreFocusSpy()
+
+        let model = ApprovalBannerModel(
+            store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true }, restoreTerminalFocus: { spy.call() }
+        )
+
+        let waiter = Task { @MainActor in
+            await store.awaitDecision(id: request.id, timeoutMs: 5_000)
+        }
+        await yieldToScheduler()
+
+        model.chatAboutQuestion(id: request.id)
+
+        XCTAssertTrue(store.pending.isEmpty, "chatAboutQuestion(id:) must decide that request, removing it from pending")
+        XCTAssertEqual(spy.callCount, 1, "chatAboutQuestion(id:) must invoke restoreTerminalFocus exactly once")
+
+        let result = await waiter.value
+        XCTAssertEqual(result, .interrupted(.chatAboutQuestion))
+    }
+
+    /// Mirrors test_allow_onDisplayedRequest_advancesToSuccessor:
+    /// chatAboutQuestion(id:) must advance the banner's cursor to the next
+    /// queued request, not just clear the queue down to one element.
+    func test_chatAboutQuestion_onDisplayedRequest_advancesToSuccessor() async throws {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let first = makeAgentQuestionRequest(targetSurfaceID: surfaceID, createdAt: Date(timeIntervalSince1970: 1_700_000_000))
+        let second = makeAgentQuestionRequest(targetSurfaceID: surfaceID, createdAt: Date(timeIntervalSince1970: 1_700_000_100))
+        let third = makeAgentQuestionRequest(targetSurfaceID: surfaceID, createdAt: Date(timeIntervalSince1970: 1_700_000_200))
+        store.submit(first)
+        store.submit(second)
+        store.submit(third)
+
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true })
+        model.selectNext()
+        XCTAssertEqual(model.current?.id, second.id, "precondition: current is the displayed (middle) request")
+
+        let waiter = Task { @MainActor in await store.awaitDecision(id: second.id, timeoutMs: 5_000) }
+        await yieldToScheduler()
+
+        model.chatAboutQuestion(id: second.id)
+
+        XCTAssertEqual(model.current?.id, third.id,
+                       "chatAboutQuestion(id:) on the currently-displayed request must advance the cursor to its successor in the visible queue")
+
+        let result = await waiter.value
+        XCTAssertEqual(result, .interrupted(.chatAboutQuestion))
+    }
+
+    func test_chatAboutQuestion_onNonQuestionID_isNoOp() {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let request = makeRequest(targetSurfaceID: surfaceID)
+        store.submit(request)
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true })
+
+        model.chatAboutQuestion(id: request.id)
+
+        XCTAssertEqual(store.pending.map(\.id), [request.id], "chatAboutQuestion(id:) must never decide a non-.agentQuestion request")
+    }
+
+    // MARK: - allowWithPermissions(id:offer:)
+
+    private func makeOffer() -> AgentPermissionOffer {
+        AgentPermissionOffer(
+            label: "Yes, and always allow access to /tmp",
+            entryJSON: try! JSONSerialization.data(withJSONObject: ["type": "addDirectories", "directories": ["/tmp"]])
+        )
+    }
+
+    func test_allowWithPermissions_decidesAllowedWithPermissions_forAgentHookRequest() async throws {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let request = makeAgentHookRequest(targetSurfaceID: surfaceID)
+        store.submit(request)
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true })
+        let offer = makeOffer()
+
+        let waiter = Task { @MainActor in await store.awaitDecision(id: request.id, timeoutMs: 5_000) }
+        await yieldToScheduler()
+
+        model.allowWithPermissions(id: request.id, offer: offer)
+
+        XCTAssertTrue(store.pending.isEmpty)
+        let result = await waiter.value
+        XCTAssertEqual(result, .allowedWithPermissions(offer))
+    }
+
+    func test_allowWithPermissions_onAgentQuestionID_isNoOp() {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let request = makeAgentQuestionRequest(targetSurfaceID: surfaceID)
+        store.submit(request)
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true })
+
+        model.allowWithPermissions(id: request.id, offer: makeOffer())
+
+        XCTAssertEqual(store.pending.map(\.id), [request.id])
+    }
+
+    func test_allowWithPermissions_onMcpToolID_isNoOp() {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let request = makeRequest(targetSurfaceID: surfaceID)
+        store.submit(request)
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true })
+
+        model.allowWithPermissions(id: request.id, offer: makeOffer())
+
+        XCTAssertEqual(store.pending.map(\.id), [request.id])
+    }
+
+    // MARK: - alwaysAllow no-op when offers.cliOwnsPersistence
+
+    func test_alwaysAllow_agentHookRequest_cliOwnsPersistence_isNoOp() {
+        let store = ApprovalInboxStore()
+        let memory = AgentHookApprovalMemory()
+        let surfaceID = UUID()
+        let request = makeAgentHookRequest(
+            targetSurfaceID: surfaceID,
+            offers: AgentHookOffers(permissionUpdates: [makeOffer()], cliOwnsPersistence: true)
+        )
+        store.submit(request)
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true }, memory: memory)
+
+        model.alwaysAllow(id: request.id)
+
+        XCTAssertEqual(store.pending.map(\.id), [request.id],
+                       "alwaysAllow(id:) must be a no-op when the CLI itself owns persistence of the permission decision")
+        XCTAssertFalse(memory.isAutoAllowed(surfaceID: surfaceID, kind: AgentEntry.claudeCodeKind, toolName: "Bash"),
+                       "no pane memory may be recorded either")
+    }
+
+    func test_answer_onDisplayedRequest_advancesToSuccessor() async throws {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let first = makeAgentQuestionRequest(targetSurfaceID: surfaceID, createdAt: Date(timeIntervalSince1970: 1_700_000_000))
+        let second = makeAgentQuestionRequest(targetSurfaceID: surfaceID, createdAt: Date(timeIntervalSince1970: 1_700_000_100))
+        store.submit(first)
+        store.submit(second)
+
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true })
+        XCTAssertEqual(model.current?.id, first.id, "precondition: first is the oldest, currently-displayed request")
+
+        guard case .agentQuestion(_, let prompt) = first.source else {
+            XCTFail("precondition: request must be .agentQuestion")
+            return
+        }
+
+        model.answer(id: first.id, answers: makeAnswers(for: prompt))
+
+        XCTAssertEqual(model.current?.id, second.id,
+                       "answer(id:answers:) on the currently-displayed request must advance the cursor to its successor")
+    }
+
+    func test_restoreTerminalFocusAfterInput_invokesClosureOnce() {
+        let store = ApprovalInboxStore()
+        let spy = RestoreFocusSpy()
+        let model = ApprovalBannerModel(
+            store: store, ownsSurface: { _ in false }, isKeyWindow: { true }, restoreTerminalFocus: { spy.call() }
+        )
+
+        model.restoreTerminalFocusAfterInput()
+
+        XCTAssertEqual(spy.callCount, 1, "restoreTerminalFocusAfterInput() must invoke restoreTerminalFocus exactly once")
+    }
+
+    func test_restoreTerminalFocus_defaultsToNoOp_neverCrashesWhenOmitted() {
+        let store = ApprovalInboxStore()
+        // No restoreTerminalFocus argument at all -- every pre-existing
+        // call site in this file constructs ApprovalBannerModel this way
+        // and must remain unaffected by the new parameter.
+        let model = ApprovalBannerModel(store: store, ownsSurface: { _ in false }, isKeyWindow: { true })
+
+        model.restoreTerminalFocusAfterInput()
+    }
+
+    // MARK: - .agentQuestion requests are excluded from the allow-family actions
+
+    func test_alwaysAllow_agentHook_neverDrainsAgentQuestionRequest_withSameKindAndToolName() async throws {
+        let suiteName = "com.calyx.tests.ApprovalBannerModelTests.alwaysAllowNeverDrainsQuestion"
+        CockpitSettings._testUseSuite(named: suiteName)
+        defer { CockpitSettings._testTeardownSuite(named: suiteName) }
+
+        let store = ApprovalInboxStore()
+        let memory = AgentHookApprovalMemory()
+        let surfaceID = UUID()
+        let clicked = makeAgentHookRequest(targetSurfaceID: surfaceID, toolName: "AskUserQuestion")
+        let questionRequest = makeAgentQuestionRequest(targetSurfaceID: surfaceID)
+        store.submit(clicked)
+        store.submit(questionRequest)
+
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true }, memory: memory)
+
+        model.alwaysAllow(id: clicked.id)
+
+        XCTAssertEqual(store.pending.map(\.id), [questionRequest.id],
+                       "alwaysAllow(id:) must never sweep a queued .agentQuestion request into its drain, " +
+                       "even sharing the exact same (surface, kind, toolName)")
+    }
+
+    // MARK: - allow(id:)/deny(id:)/alwaysAllow(id:) on an .agentQuestion id are no-ops
+
+    func test_allow_onAgentQuestionID_isNoOp() {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let request = makeAgentQuestionRequest(targetSurfaceID: surfaceID)
+        store.submit(request)
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true })
+
+        model.allow(id: request.id)
+
+        XCTAssertEqual(store.pending.map(\.id), [request.id], "allow(id:) must never decide an .agentQuestion request")
+    }
+
+    func test_deny_onAgentQuestionID_isNoOp() {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let request = makeAgentQuestionRequest(targetSurfaceID: surfaceID)
+        store.submit(request)
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true })
+
+        model.deny(id: request.id)
+
+        XCTAssertEqual(store.pending.map(\.id), [request.id], "deny(id:) must never decide an .agentQuestion request")
+    }
+
+    func test_alwaysAllow_onAgentQuestionID_isNoOp_recordsNoMemory() {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let request = makeAgentQuestionRequest(targetSurfaceID: surfaceID)
+        store.submit(request)
+        let memory = AgentHookApprovalMemory()
+        let model = ApprovalBannerModel(store: store, ownsSurface: { $0 == surfaceID }, isKeyWindow: { true }, memory: memory)
+
+        model.alwaysAllow(id: request.id)
+
+        XCTAssertEqual(store.pending.map(\.id), [request.id], "alwaysAllow(id:) must never decide an .agentQuestion request")
+        XCTAssertFalse(memory.isAutoAllowed(surfaceID: surfaceID, kind: AgentEntry.claudeCodeKind, toolName: "AskUserQuestion"),
+                       "alwaysAllow(id:) on an .agentQuestion request must never record Always-Allow memory")
+    }
+
 }

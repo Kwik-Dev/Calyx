@@ -31,10 +31,10 @@
 //    notification)
 //  - Global auto-approve short-circuits to 200 with an allow body,
 //    without submitting
-//  - Stage E: an AgentHookApprovalMemory hit (pane OR cross scope)
-//    short-circuits to 200 with an allow body, without submitting --
-//    checked after the global auto-approve short-circuit and before
-//    submit; a miss still submits and long-polls as before. server.stop()
+//  - an AgentHookApprovalMemory pane-scope hit short-circuits to 200 with
+//    an allow body, without submitting -- checked after the global
+//    auto-approve short-circuit and before submit; a miss still submits
+//    and long-polls as before. server.stop()
 //    also clears the injected agentHookApprovalMemory, same as it
 //    already drains approvalInbox
 //  - Otherwise: submits an ApprovalRequest(source: .agentHook(...)) and
@@ -416,7 +416,7 @@ final class CalyxMCPServerApprovalRequestTests: XCTestCase {
                       "global cockpit auto-approve being on must never submit a request to the inbox")
     }
 
-    // MARK: - Stage E: AgentHookApprovalMemory consultation
+    // MARK: - AgentHookApprovalMemory consultation
 
     /// A pane-scoped Always-Allow memory hit (same surfaceID, kind,
     /// toolName as a prior "Always Allow" click) must short-circuit
@@ -445,48 +445,23 @@ final class CalyxMCPServerApprovalRequestTests: XCTestCase {
                       "a memory hit must never submit a request to the inbox")
     }
 
-    /// A cross-scoped Always-Allow memory hit (same kind+toolName,
-    /// regardless of surface) must short-circuit the same way, even for
-    /// a surfaceID that memory has never seen before.
-    func test_route_crossMemoryHit_returnsAllowBody_withoutSubmitting() async throws {
-        CockpitSettings.agentHookApprovalEnabled = true
-        let approvalInbox = ApprovalInboxStore()
-        server.approvalInbox = approvalInbox
-        let memory = AgentHookApprovalMemory()
-        server.agentHookApprovalMemory = memory
-        memory.rememberCross(kind: AgentEntry.claudeCodeKind, toolName: "Bash")
-
-        let request = approvalRequestRequest(
-            token: testToken, surfaceIDHeader: UUID().uuidString, body: validToolCallBody()
-        )
-
-        let response = await server.route(request: request)
-
-        XCTAssertEqual(response.statusCode, 200)
-        let decision = try permissionBehavior(fromResponseBody: response.body)
-        XCTAssertEqual(decision, "allow",
-                       "a cross-scoped Always-Allow memory hit must return an ALLOW body immediately, " +
-                       "regardless of which surface the request targets")
-        XCTAssertTrue(approvalInbox.pending.isEmpty,
-                      "a memory hit must never submit a request to the inbox")
-    }
-
-    /// A memory MISS (recorded only for an unrelated tool) must never
-    /// accidentally short-circuit -- the request must still submit and
-    /// long-poll exactly like the existing pending flow.
+    /// A memory MISS (recorded for the same surface, but an unrelated
+    /// tool) must never accidentally short-circuit -- the request must
+    /// still submit and long-poll exactly like the existing pending flow.
     func test_route_memoryMiss_stillSubmitsAndLongPolls() async throws {
         CockpitSettings.agentHookApprovalEnabled = true
         let approvalInbox = ApprovalInboxStore()
         server.approvalInbox = approvalInbox
         let memory = AgentHookApprovalMemory()
         server.agentHookApprovalMemory = memory
-        memory.rememberCross(kind: AgentEntry.claudeCodeKind, toolName: "Write")
+        let surfaceID = UUID()
+        memory.rememberPane(surfaceID: surfaceID, kind: AgentEntry.claudeCodeKind, toolName: "Write")
         // R4 seam: this test expects a genuine submission, so the
         // stale/unknown-surface guard must not short-circuit it.
         server.approvalSurfaceExists = { _ in true }
 
         let request = approvalRequestRequest(
-            token: testToken, surfaceIDHeader: UUID().uuidString, body: validToolCallBody()
+            token: testToken, surfaceIDHeader: surfaceID.uuidString, body: validToolCallBody()
         )
         let task = Task { @MainActor in
             await self.server.route(request: request)
@@ -548,13 +523,18 @@ final class CalyxMCPServerApprovalRequestTests: XCTestCase {
                        "payload must be AgentHookToolCall's decoded compact-JSON tool_input")
 
         switch pendingRequest.source {
-        case .agentHook(let toolName, let kind, let summary):
+        case .agentHook(let toolName, let kind, let summary, let offers):
             XCTAssertEqual(toolName, "Bash")
             XCTAssertEqual(kind, AgentEntry.claudeCodeKind,
                            "a missing X-Calyx-Agent-Kind header must default to claude-code, same as /agent-event")
             XCTAssertEqual(summary, command, "Bash's summary must be its tool_input.command")
+            XCTAssertFalse(offers.cliOwnsPersistence,
+                           "no CLI always-allow row was offered, so Calyx's own pane memory is the only " +
+                           "persistence available")
         case .mcpTool:
             XCTFail("expected source .agentHook(...), got .mcpTool")
+        case .agentQuestion:
+            XCTFail("expected source .agentHook(...), got .agentQuestion")
         }
 
         approvalInbox.decide(id: pendingRequest.id, .allowed)
@@ -581,7 +561,7 @@ final class CalyxMCPServerApprovalRequestTests: XCTestCase {
         await yieldToScheduler()
 
         let requestID = try XCTUnwrap(approvalInbox.pending.first?.id)
-        approvalInbox.decide(id: requestID, .denied)
+        approvalInbox.decide(id: requestID, .denied(.userRejected))
         let response = await task.value
 
         XCTAssertEqual(response.statusCode, 200)
@@ -859,5 +839,500 @@ final class CalyxMCPServerApprovalRequestTests: XCTestCase {
         }
         approvalInbox.decide(id: requestID, .allowed)
         _ = await task.value
+    }
+
+    // MARK: - AskUserQuestion (.agentQuestion source)
+    //
+    // Claude Code's AskUserQuestion tool is recognized only for the
+    // claude-code kind and answered through .agentQuestion, a source
+    // distinct from the generic .agentHook banner every other tool call
+    // uses. Every earlier short-circuit guard (kind allow-list,
+    // hook-event-name gate, agentHookApprovalEnabled toggle,
+    // approvalSurfaceExists) still applies unchanged; global
+    // auto-approve and pane-scoped Always-Allow memory must NOT
+    // short-circuit a question -- a human must always be asked.
+
+    private func askUserQuestionBody(
+        questionText: String = "Which shell?", hookEventName: String? = "PermissionRequest"
+    ) -> Data {
+        let hookEventNameField = hookEventName.map { ",\"hook_event_name\":\"\($0)\"" } ?? ""
+        return Data("""
+        {"tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"\(questionText)","options":[{"label":"zsh"},{"label":"bash"}]}]}\(hookEventNameField)}
+        """.utf8)
+    }
+
+    func test_route_askUserQuestion_submitsAgentQuestionSource() async throws {
+        CockpitSettings.agentHookApprovalEnabled = true
+        let approvalInbox = ApprovalInboxStore()
+        server.approvalInbox = approvalInbox
+        server.approvalSurfaceExists = { _ in true }
+        let surfaceID = UUID()
+
+        let request = approvalRequestRequest(
+            token: testToken, surfaceIDHeader: surfaceID.uuidString, body: askUserQuestionBody()
+        )
+        let task = Task { @MainActor in
+            await self.server.route(request: request)
+        }
+        await yieldToScheduler()
+
+        XCTAssertEqual(approvalInbox.pending.count, 1)
+        let pendingRequest = try XCTUnwrap(approvalInbox.pending.first)
+        XCTAssertEqual(pendingRequest.targetSurfaceID, surfaceID)
+
+        switch pendingRequest.source {
+        case .agentQuestion(let kind, let prompt):
+            XCTAssertEqual(kind, AgentEntry.claudeCodeKind)
+            XCTAssertEqual(prompt.questions.first?.text, "Which shell?")
+        case .agentHook, .mcpTool:
+            XCTFail("expected source .agentQuestion(...)")
+        }
+
+        approvalInbox.decide(id: pendingRequest.id, .expired)
+        _ = await task.value
+    }
+
+    func test_route_askUserQuestion_ignoresGlobalAutoApprove_stillSubmits() async throws {
+        CockpitSettings.agentHookApprovalEnabled = true
+        CockpitSettings.autoApproveEnabled = true
+        let approvalInbox = ApprovalInboxStore()
+        server.approvalInbox = approvalInbox
+        server.approvalSurfaceExists = { _ in true }
+
+        let request = approvalRequestRequest(
+            token: testToken, surfaceIDHeader: UUID().uuidString, body: askUserQuestionBody()
+        )
+        let task = Task { @MainActor in
+            await self.server.route(request: request)
+        }
+        await yieldToScheduler()
+
+        XCTAssertEqual(approvalInbox.pending.count, 1,
+                       "an AskUserQuestion call must always ask a human, even with global auto-approve on")
+
+        approvalInbox.decide(id: try XCTUnwrap(approvalInbox.pending.first?.id), .expired)
+        _ = await task.value
+    }
+
+    func test_route_askUserQuestion_ignoresPaneMemory_stillSubmits() async throws {
+        CockpitSettings.agentHookApprovalEnabled = true
+        let approvalInbox = ApprovalInboxStore()
+        server.approvalInbox = approvalInbox
+        server.approvalSurfaceExists = { _ in true }
+        let memory = AgentHookApprovalMemory()
+        server.agentHookApprovalMemory = memory
+        let surfaceID = UUID()
+        memory.rememberPane(surfaceID: surfaceID, kind: AgentEntry.claudeCodeKind, toolName: "AskUserQuestion")
+
+        let request = approvalRequestRequest(
+            token: testToken, surfaceIDHeader: surfaceID.uuidString, body: askUserQuestionBody()
+        )
+        let task = Task { @MainActor in
+            await self.server.route(request: request)
+        }
+        await yieldToScheduler()
+
+        XCTAssertEqual(approvalInbox.pending.count, 1,
+                       "a pane-scoped Always-Allow memory hit for AskUserQuestion must never short-circuit a question")
+
+        approvalInbox.decide(id: try XCTUnwrap(approvalInbox.pending.first?.id), .expired)
+        _ = await task.value
+    }
+
+    func test_route_askUserQuestion_unknownSurface_returns200EmptyBody_submitsNothing() async throws {
+        CockpitSettings.agentHookApprovalEnabled = true
+        let approvalInbox = ApprovalInboxStore()
+        server.approvalInbox = approvalInbox
+        server.approvalSurfaceExists = { _ in false }
+
+        let request = approvalRequestRequest(
+            token: testToken, surfaceIDHeader: UUID().uuidString, body: askUserQuestionBody()
+        )
+
+        let response = await server.route(request: request)
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertNil(response.body)
+        XCTAssertTrue(approvalInbox.pending.isEmpty,
+                      "an AskUserQuestion call targeting a surface unknown to the registry must never submit, " +
+                      "same guard as every other agent-hook call")
+    }
+
+    /// The toggle short-circuit applies to a question body exactly as it
+    /// does to any other agent-hook body: 200, an EMPTY body, nothing
+    /// submitted.
+    func test_route_askUserQuestion_toggleOff_returns200EmptyBody_submitsNothing() async throws {
+        CockpitSettings.agentHookApprovalEnabled = false
+        let approvalInbox = ApprovalInboxStore()
+        server.approvalInbox = approvalInbox
+
+        let request = approvalRequestRequest(
+            token: testToken, surfaceIDHeader: UUID().uuidString, body: askUserQuestionBody()
+        )
+
+        let response = await server.route(request: request)
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertNil(response.body)
+        XCTAssertTrue(approvalInbox.pending.isEmpty,
+                      "agentHookApprovalEnabled being off must short-circuit a question body too, submitting nothing")
+    }
+
+    /// An AskUserQuestion body whose `questions` decodes zero usable
+    /// questions (no `question` text at all) still submits -- as the
+    /// generic `.agentHook` source, gated on `isQuestionTool`, never
+    /// auto-allowed by global auto-approve even though it's on.
+    func test_route_askUserQuestion_undecodableQuestionText_globalAutoApproveOn_submitsAsAgentHook() async throws {
+        CockpitSettings.agentHookApprovalEnabled = true
+        CockpitSettings.autoApproveEnabled = true
+        let approvalInbox = ApprovalInboxStore()
+        server.approvalInbox = approvalInbox
+        server.approvalSurfaceExists = { _ in true }
+
+        let undecodableBody = Data("""
+        {"tool_name":"AskUserQuestion","tool_input":{"questions":[{"options":[{"label":"zsh"}]}]},"hook_event_name":"PermissionRequest"}
+        """.utf8)
+        let request = approvalRequestRequest(
+            token: testToken, surfaceIDHeader: UUID().uuidString, body: undecodableBody
+        )
+        let task = Task { @MainActor in
+            await self.server.route(request: request)
+        }
+        await yieldToScheduler()
+
+        XCTAssertEqual(approvalInbox.pending.count, 1,
+                       "an AskUserQuestion body with no decodable question text must still submit, never be " +
+                       "auto-allowed even with global auto-approve on")
+        let pendingRequest = try XCTUnwrap(approvalInbox.pending.first)
+        switch pendingRequest.source {
+        case .agentHook(let toolName, let kind, _, _):
+            XCTAssertEqual(toolName, "AskUserQuestion")
+            XCTAssertEqual(kind, AgentEntry.claudeCodeKind)
+        case .agentQuestion, .mcpTool:
+            XCTFail("a decode failure must fall back to the generic .agentHook source, never .agentQuestion")
+        }
+
+        approvalInbox.decide(id: pendingRequest.id, .denied(.userRejected))
+        _ = await task.value
+    }
+
+    func test_route_askUserQuestion_answeredDecision_returnsExpectedBody() async throws {
+        CockpitSettings.agentHookApprovalEnabled = true
+        let approvalInbox = ApprovalInboxStore()
+        server.approvalInbox = approvalInbox
+        server.approvalSurfaceExists = { _ in true }
+
+        let request = approvalRequestRequest(
+            token: testToken, surfaceIDHeader: UUID().uuidString, body: askUserQuestionBody()
+        )
+        let task = Task { @MainActor in
+            await self.server.route(request: request)
+        }
+        await yieldToScheduler()
+
+        let pendingRequest = try XCTUnwrap(approvalInbox.pending.first)
+        guard case .agentQuestion(_, let prompt) = pendingRequest.source else {
+            XCTFail("expected .agentQuestion source")
+            task.cancel()
+            _ = await task.value
+            return
+        }
+        let answers = AgentQuestionAnswers(prompt: prompt, entries: [.init(answer: .selectedOne("zsh"), notes: nil)])
+        approvalInbox.decide(id: pendingRequest.id, .answered(answers))
+        let response = await task.value
+
+        XCTAssertEqual(response.statusCode, 200)
+        let expectedBody = AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .answered(answers))
+        XCTAssertEqual(
+            try responseJSON(response.body) as NSDictionary, try responseJSON(expectedBody) as NSDictionary,
+            "route's .answered response body must equal AgentHookPermissionResponse.body(kind:decision:) exactly"
+        )
+    }
+
+    func test_route_askUserQuestion_expiredDecision_returnsEmptyBody() async throws {
+        CockpitSettings.agentHookApprovalEnabled = true
+        let approvalInbox = ApprovalInboxStore()
+        server.approvalInbox = approvalInbox
+        server.approvalSurfaceExists = { _ in true }
+
+        let request = approvalRequestRequest(
+            token: testToken, surfaceIDHeader: UUID().uuidString, body: askUserQuestionBody()
+        )
+        let task = Task { @MainActor in
+            await self.server.route(request: request)
+        }
+        await yieldToScheduler()
+
+        approvalInbox.decide(id: try XCTUnwrap(approvalInbox.pending.first?.id), .expired)
+        let response = await task.value
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertNil(response.body, "an expired AskUserQuestion decision must return an EMPTY body, same as any other claude-code expiry")
+    }
+
+    func test_route_askUserQuestion_timeout_returnsEmptyBody() async throws {
+        CockpitSettings.agentHookApprovalEnabled = true
+        server.approvalRequestTimeoutMs = 50
+        let approvalInbox = ApprovalInboxStore()
+        server.approvalInbox = approvalInbox
+        server.approvalSurfaceExists = { _ in true }
+
+        let request = approvalRequestRequest(
+            token: testToken, surfaceIDHeader: UUID().uuidString, body: askUserQuestionBody()
+        )
+
+        let response = await server.route(request: request)
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertNil(response.body, "a timed-out AskUserQuestion request must return an EMPTY body")
+        XCTAssertTrue(approvalInbox.pending.isEmpty)
+    }
+
+    func test_route_askUserQuestion_notification_titleAndRedactedBody() async throws {
+        CockpitSettings.agentHookApprovalEnabled = true
+        let approvalInbox = ApprovalInboxStore()
+        server.approvalInbox = approvalInbox
+        server.approvalSurfaceExists = { _ in true }
+
+        let spy = ApprovalHookNotificationSpy()
+        let originalManager = NotificationManager.shared
+        NotificationManager.shared = spy
+        defer { NotificationManager.shared = originalManager }
+
+        // Composed at runtime from non-secret-shaped halves, mirroring
+        // test_route_submission_notificationBody_redactsSecretToken --
+        // no contiguous secret-format literal appears in this tracked file.
+        let secretToken = "AIza" + String(repeating: "A", count: 35)
+        let questionText = "Should I use the \(secretToken) API key?"
+        let request = approvalRequestRequest(
+            token: testToken, surfaceIDHeader: UUID().uuidString,
+            body: askUserQuestionBody(questionText: questionText)
+        )
+        let task = Task { @MainActor in
+            await self.server.route(request: request)
+        }
+        await yieldToScheduler()
+
+        XCTAssertEqual(spy.calls.count, 1)
+        XCTAssertEqual(spy.calls.first?.title, "\(AgentEntry.displayName(forKind: AgentEntry.claudeCodeKind)) asks a question")
+        let body = try XCTUnwrap(spy.calls.first?.body)
+        XCTAssertFalse(body.contains(secretToken), "the notification body must never contain the raw secret token")
+        XCTAssertTrue(body.contains(SecretRedactor.marker),
+                      "the notification body must contain SecretRedactor's own redaction marker in the token's place")
+
+        guard let requestID = approvalInbox.pending.first?.id else {
+            task.cancel()
+            _ = await task.value
+            return
+        }
+        approvalInbox.decide(id: requestID, .expired)
+        _ = await task.value
+    }
+
+    /// A codex-kind body shaped exactly like an AskUserQuestion call
+    /// (same `tool_name`/`tool_input.questions` shape) must still go the
+    /// generic `.agentHook` route -- the question is recognized ONLY for
+    /// the claude-code kind.
+    func test_route_askUserQuestionShapedBody_codexKind_staysAgentHookSource() async throws {
+        CockpitSettings.agentHookApprovalEnabled = true
+        let approvalInbox = ApprovalInboxStore()
+        server.approvalInbox = approvalInbox
+        server.approvalSurfaceExists = { _ in true }
+
+        let request = approvalRequestRequest(
+            token: testToken, surfaceIDHeader: UUID().uuidString, body: askUserQuestionBody(),
+            kindHeader: "codex"
+        )
+        let task = Task { @MainActor in
+            await self.server.route(request: request)
+        }
+        await yieldToScheduler()
+
+        let pendingRequest = try XCTUnwrap(approvalInbox.pending.first)
+        switch pendingRequest.source {
+        case .agentHook(let toolName, let kind, _, let offers):
+            XCTAssertEqual(toolName, "AskUserQuestion")
+            XCTAssertEqual(kind, AgentEntry.codexKind)
+            XCTAssertEqual(offers.permissionUpdates, [], "codex must never carry permission updates")
+            XCTAssertFalse(offers.cliOwnsPersistence)
+        case .agentQuestion, .mcpTool:
+            XCTFail("a codex-kind AskUserQuestion-shaped body must never be recognized as a question -- " +
+                    "only claude-code decodes it")
+        }
+
+        approvalInbox.decide(id: pendingRequest.id, .denied(.userRejected))
+        _ = await task.value
+    }
+
+    // MARK: - permission_suggestions -> offers.permissionUpdates
+
+    /// A claude-code Bash body carrying `permission_suggestions` and a
+    /// `command` string must submit as `.agentHook` whose `offers` carry
+    /// one permission update with the expected label, and
+    /// `cliOwnsPersistence` true.
+    func test_route_claudeCodeBashWithPermissionSuggestions_offersCarryOneUpdate_cliOwnsPersistence() async throws {
+        CockpitSettings.agentHookApprovalEnabled = true
+        let approvalInbox = ApprovalInboxStore()
+        server.approvalInbox = approvalInbox
+        server.approvalSurfaceExists = { _ in true }
+
+        let body = Data("""
+        {"tool_name":"Bash","tool_input":{"command":"rm -rf node_modules"},"permission_suggestions":[\
+        {"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"rm -rf node_modules"}],"behavior":"allow","destination":"localSettings"}\
+        ],"hook_event_name":"PermissionRequest"}
+        """.utf8)
+        let request = approvalRequestRequest(token: testToken, surfaceIDHeader: UUID().uuidString, body: body)
+        let task = Task { @MainActor in
+            await self.server.route(request: request)
+        }
+        await yieldToScheduler()
+
+        let pendingRequest = try XCTUnwrap(approvalInbox.pending.first)
+        guard case .agentHook(_, _, _, let offers) = pendingRequest.source else {
+            XCTFail("expected .agentHook source")
+            approvalInbox.decide(id: pendingRequest.id, .denied(.userRejected))
+            _ = await task.value
+            return
+        }
+        XCTAssertEqual(offers.permissionUpdates.count, 1)
+        XCTAssertEqual(offers.permissionUpdates.first?.label,
+                       "Yes, and don't ask again for Bash: rm -rf node_modules from this project")
+        XCTAssertTrue(offers.cliOwnsPersistence)
+
+        approvalInbox.decide(id: pendingRequest.id, .denied(.userRejected))
+        _ = await task.value
+    }
+
+    /// `permission_suggestions` present at the top level but carrying only
+    /// an entry with nothing to offer (an `addRules` with an empty `rules`
+    /// array) must decode zero permission updates, so claude-code falls
+    /// back to Calyx's own pane-scoped Always-Allow row.
+    func test_route_claudeCodeBashWithOnlyUnusableSuggestions_cliOwnsPersistenceFalse() async throws {
+        CockpitSettings.agentHookApprovalEnabled = true
+        let approvalInbox = ApprovalInboxStore()
+        server.approvalInbox = approvalInbox
+        server.approvalSurfaceExists = { _ in true }
+
+        let body = Data("""
+        {"tool_name":"Bash","tool_input":{"command":"rm -rf node_modules"},"permission_suggestions":[\
+        {"type":"addRules","rules":[],"behavior":"allow"}\
+        ],"hook_event_name":"PermissionRequest"}
+        """.utf8)
+        let request = approvalRequestRequest(token: testToken, surfaceIDHeader: UUID().uuidString, body: body)
+        let task = Task { @MainActor in
+            await self.server.route(request: request)
+        }
+        await yieldToScheduler()
+
+        let pendingRequest = try XCTUnwrap(approvalInbox.pending.first)
+        guard case .agentHook(_, _, _, let offers) = pendingRequest.source else {
+            XCTFail("expected .agentHook source")
+            approvalInbox.decide(id: pendingRequest.id, .denied(.userRejected))
+            _ = await task.value
+            return
+        }
+        XCTAssertEqual(offers.permissionUpdates, [])
+        XCTAssertFalse(offers.cliOwnsPersistence,
+                       "the only suggestion decoded to nothing, so no CLI always-allow row was offered")
+
+        approvalInbox.decide(id: pendingRequest.id, .denied(.userRejected))
+        _ = await task.value
+    }
+
+    func test_route_codexBashWithPermissionSuggestions_offersAreNoneLikeEmpty() async throws {
+        CockpitSettings.agentHookApprovalEnabled = true
+        let approvalInbox = ApprovalInboxStore()
+        server.approvalInbox = approvalInbox
+        server.approvalSurfaceExists = { _ in true }
+
+        let body = Data("""
+        {"tool_name":"Bash","tool_input":{"command":"rm -rf node_modules"},"permission_suggestions":[\
+        {"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"rm -rf node_modules"}],"behavior":"allow","destination":"localSettings"}\
+        ],"hook_event_name":"PermissionRequest"}
+        """.utf8)
+        let request = approvalRequestRequest(
+            token: testToken, surfaceIDHeader: UUID().uuidString, body: body, kindHeader: "codex"
+        )
+        let task = Task { @MainActor in
+            await self.server.route(request: request)
+        }
+        await yieldToScheduler()
+
+        let pendingRequest = try XCTUnwrap(approvalInbox.pending.first)
+        guard case .agentHook(_, _, _, let offers) = pendingRequest.source else {
+            XCTFail("expected .agentHook source")
+            approvalInbox.decide(id: pendingRequest.id, .denied(.userRejected))
+            _ = await task.value
+            return
+        }
+        XCTAssertEqual(offers.permissionUpdates, [], "codex never accepts permission updates")
+        XCTAssertFalse(offers.cliOwnsPersistence)
+
+        approvalInbox.decide(id: pendingRequest.id, .denied(.userRejected))
+        _ = await task.value
+    }
+
+    // MARK: - deciding .allowedWithPermissions / .interrupted
+
+    func test_route_allowedWithPermissionsDecision_returnsEncoderBody() async throws {
+        CockpitSettings.agentHookApprovalEnabled = true
+        let approvalInbox = ApprovalInboxStore()
+        server.approvalInbox = approvalInbox
+        server.approvalSurfaceExists = { _ in true }
+
+        let request = approvalRequestRequest(
+            token: testToken, surfaceIDHeader: UUID().uuidString, body: validToolCallBody()
+        )
+        let task = Task { @MainActor in
+            await self.server.route(request: request)
+        }
+        await yieldToScheduler()
+
+        let pendingRequest = try XCTUnwrap(approvalInbox.pending.first)
+        let offer = AgentPermissionOffer(
+            label: "Yes, and always allow access to /tmp",
+            entryJSON: try JSONSerialization.data(withJSONObject: ["type": "addDirectories", "directories": ["/tmp"]])
+        )
+        let expectedBody = try XCTUnwrap(
+            AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .allowedWithPermissions(offer))
+        )
+
+        approvalInbox.decide(id: pendingRequest.id, .allowedWithPermissions(offer))
+        let response = await task.value
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(
+            try responseJSON(response.body) as NSDictionary, try responseJSON(expectedBody) as NSDictionary,
+            "route's .allowedWithPermissions response body must equal AgentHookPermissionResponse.body(kind:decision:) exactly"
+        )
+    }
+
+    func test_route_interruptedChatAboutQuestionDecision_returnsEncoderBody() async throws {
+        CockpitSettings.agentHookApprovalEnabled = true
+        let approvalInbox = ApprovalInboxStore()
+        server.approvalInbox = approvalInbox
+        server.approvalSurfaceExists = { _ in true }
+
+        let request = approvalRequestRequest(
+            token: testToken, surfaceIDHeader: UUID().uuidString, body: validToolCallBody()
+        )
+        let task = Task { @MainActor in
+            await self.server.route(request: request)
+        }
+        await yieldToScheduler()
+
+        let pendingRequest = try XCTUnwrap(approvalInbox.pending.first)
+        let expectedBody = try XCTUnwrap(
+            AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .interrupted(.chatAboutQuestion))
+        )
+
+        approvalInbox.decide(id: pendingRequest.id, .interrupted(.chatAboutQuestion))
+        let response = await task.value
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(
+            try responseJSON(response.body) as NSDictionary, try responseJSON(expectedBody) as NSDictionary,
+            "route's .interrupted response body must equal AgentHookPermissionResponse.body(kind:decision:) exactly"
+        )
     }
 }

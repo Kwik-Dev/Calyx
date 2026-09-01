@@ -117,7 +117,23 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     lazy var approvalBannerModel: ApprovalBannerModel = ApprovalBannerModel(
         store: .shared,
         ownsSurface: { [weak self] id in self?.windowSessionOwnsSurface(id) ?? false },
-        isKeyWindow: { [weak self] in self?.window?.isKeyWindow ?? false }
+        isKeyWindow: { [weak self] in self?.window?.isKeyWindow ?? false },
+        restoreTerminalFocus: { [weak self] in
+            // This closure only returns first responder to the terminal
+            // and never refreshes the hosting view. A path that reached
+            // a real decision (answer / chat-about-this) already went
+            // through ApprovalInboxStore.decide, which posts
+            // .calyxApprovalInboxChanged synchronously and so reaches
+            // handleApprovalInboxChanged -> refreshHostingView() on its
+            // own; a path that decided nothing (the question view
+            // tearing down while its free-text field held focus, see
+            // ApprovalBannerModel.restoreTerminalFocusAfterInput's own
+            // doc comment) has no store mutation to refresh for.
+            guard let self else { return }
+            if case .terminal = self.activeTab?.content {
+                self.restoreFocus()
+            }
+        }
     )
     private var closingTabIDs: Set<UUID> = []
     #if DEBUG

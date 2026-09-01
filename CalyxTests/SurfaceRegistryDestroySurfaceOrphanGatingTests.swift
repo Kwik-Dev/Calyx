@@ -103,7 +103,7 @@ final class SurfaceRegistryDestroySurfaceOrphanGatingTests: XCTestCase {
                       "destroySurface must remove the expired request from pending")
     }
 
-    func test_destroySurface_clearsAgentHookApprovalMemoryPaneEntries_butNotCrossMemory() {
+    func test_destroySurface_clearsAgentHookApprovalMemoryPaneEntries_butNotOtherSurfaces() {
         let registry = SurfaceRegistry()
         let memory = AgentHookApprovalMemory()
         registry.agentHookApprovalMemory = memory
@@ -111,7 +111,7 @@ final class SurfaceRegistryDestroySurfaceOrphanGatingTests: XCTestCase {
         let surfaceID = UUID()
         let otherSurfaceID = UUID()
         memory.rememberPane(surfaceID: surfaceID, kind: AgentEntry.claudeCodeKind, toolName: "Bash")
-        memory.rememberCross(kind: AgentEntry.claudeCodeKind, toolName: "Write")
+        memory.rememberPane(surfaceID: otherSurfaceID, kind: AgentEntry.claudeCodeKind, toolName: "Write")
         XCTAssertTrue(memory.isAutoAllowed(surfaceID: surfaceID, kind: AgentEntry.claudeCodeKind, toolName: "Bash"),
                      "precondition: the pane memory was recorded before destroySurface")
 
@@ -121,7 +121,7 @@ final class SurfaceRegistryDestroySurfaceOrphanGatingTests: XCTestCase {
                        "destroySurface must call agentHookApprovalMemory.clearPaneEntries(surfaceID:), " +
                        "removing the destroyed surface's own pane entry")
         XCTAssertTrue(memory.isAutoAllowed(surfaceID: otherSurfaceID, kind: AgentEntry.claudeCodeKind, toolName: "Write"),
-                     "destroySurface must leave CROSS-scoped memory untouched -- it must call " +
-                     "clearPaneEntries(surfaceID:), not clearAll()")
+                     "destroySurface must leave a DIFFERENT surface's own pane entry untouched -- it must " +
+                     "call clearPaneEntries(surfaceID:), not clearAll()")
     }
 }

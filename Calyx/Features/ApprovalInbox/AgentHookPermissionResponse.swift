@@ -10,33 +10,30 @@
 // `permissionDecisionReason` shape entirely -- neither CLI recognizes
 // those two field names under PermissionRequest.
 //
-// This body only ever emits `behavior` and, for a deny, `message`: a
-// deliberate intersection of both CLIs' contracts, not every field
-// either one individually allows. `updatedInput`, `updatedPermissions`,
-// and `interrupt` are all Codex fail-closed under PermissionRequest --
-// Codex rejects the whole response if any of them is present -- so none
-// of them may ever appear in a body this type could send to Codex.
-// Claude Code is less restrictive (its own reference documents
-// `updatedPermissions` as a valid field for `"allow"`, and `message` /
-// `interrupt` as valid for `"deny"` only), but this type does not use
-// that extra room: emitting only the shared subset keeps one code path
-// safe for both CLIs, without a per-kind branch for fields that would
-// make Codex reject the response. Neither CLI has an "ask" analog under
-// PermissionRequest -- an expired decision produces no body at all for
-// either kind, so the CLI's own confirmation prompt takes over.
+// `ApprovalDecision` is a CLI-agnostic value: the model/view pick a
+// `DenyReason`/`InterruptReason`, never a wire string. This type -- and
+// ONLY this type -- maps each `(kind, decision)` pair to the exact bytes
+// that kind's hook reads: which fields exist, and which literal message/
+// reason text a reason selects, both live here, nowhere upstream.
 //
-// Grok and pi are the exception to every sentence above: neither reads
-// the nested envelope, and both answer in a flat, top-level
+// Claude Code accepts the widest vocabulary: `updatedPermissions`
+// (`.allowedWithPermissions`, echoing an `AgentPermissionOffer`'s own
+// `entryJSON`), `updatedInput` (`.answered`'s own AskUserQuestion
+// `updatedInput`), and `interrupt: true` (`.interrupted`) are all valid
+// for it. Codex fails closed on all three -- Codex rejects the whole
+// response if any of them is present -- so `.allowedWithPermissions`/
+// `.interrupted`/`.answered` all produce nil for codex, exactly like
+// `.expired` (no fallback body under PermissionRequest for either CLI --
+// absent output lets that CLI's own confirmation prompt take over).
+//
+// Grok and pi read neither the nested envelope nor any of those three
+// extra fields at all: both answer in a flat, top-level
 // `{"decision":"allow"}` / `{"decision":"deny","reason":"..."}`
 // vocabulary. Grok's gate is PreToolUse (it has no PermissionRequest
 // event at all); pi's is a `tool_call` extension handler that reads this
-// body itself and returns `{ block: true, reason }` on a deny. The allow
-// body carries the decision alone -- Grok reads `hookSpecificOutput`
-// only for `updatedInput`, and an `updatedInput` that fails the tool's
-// schema BLOCKS the call, so nothing extra may ride along.
-//
-// Neither has an "ask" analog, and for both an expired decision maps to
-// an explicit deny -- a banner nobody answered within the hold window is
+// body itself and returns `{ block: true, reason }` on a deny. Neither
+// has an "ask" analog, and for both an expired decision maps to an
+// explicit deny -- a banner nobody answered within the hold window is
 // not an approval -- but the two get there for different reasons.
 //
 // Silence at Grok's gate hands the call back to Grok's own permission
@@ -57,6 +54,32 @@
 // ever passes through, and an expiry has nothing to defer to. Silence
 // would run the call unreviewed.
 //
+// Since grok/pi have no vocabulary for `.allowedWithPermissions`/
+// `.interrupted`/`.answered` at all (there is no question tool, no
+// permission-suggestion offer, and no chat-about-this reachable for
+// either kind today), those three produce a body BYTE-IDENTICAL to
+// `.expired`'s own -- the same "nothing behind the gate would ask
+// anyone, so an unrepresentable decision must still deny explicitly"
+// reasoning `.expired` itself follows, reached through the very same
+// code path rather than a second, separately-written deny body that
+// could drift from it.
+//
+// `.answered` is claude-code's own AskUserQuestion decision (see
+// `ApprovalDecision.answered(_:)`): `behavior: "allow"` plus
+// `updatedInput`, which is the ENTIRE original `tool_input` echoed back
+// verbatim (`AgentQuestionPrompt.originalToolInputJSON`, re-parsed as a
+// JSON object) plus an `answers` key mapping each question's own text to
+// its chosen value, and (only for a question whose entry carries notes
+// or a previewed `.selectedOne` selection) an `annotations` key -- see
+// `encodeAnswered(_:)`'s own doc comment for the exact per-question
+// rule. Claude Code's own hook contract documents `updatedInput` as
+// replacing the whole input object, so every unchanged field (e.g.
+// `questions` itself, or an unknown key such as `metadata`) must
+// round-trip through here too, not just `questions`. A stale
+// `annotations` key already present on the original `tool_input` is
+// OVERWRITTEN by the freshly built one, never merged with it -- same
+// rule `answers` already follows.
+//
 // FAIL-SAFE CONTRACT: `body(kind:decision:)` returns `nil` for any
 // `kind` other than `AgentEntry.claudeCodeKind` / `AgentEntry.codexKind`
 // / `AgentEntry.grokKind` / `AgentEntry.piKind`. Calyx must never inject
@@ -69,48 +92,76 @@ import Foundation
 
 enum AgentHookPermissionResponse {
 
+    /// codex's/grok's/pi's own deny message -- the only `DenyReason` any
+    /// of the three kinds' gates ever reaches is `.userRejected`, so one
+    /// message covers it.
+    static let deniedMessage = "Denied from the Calyx approval inbox."
+
+    /// claude-code's own `.denied(.userRejected)` message -- VERBATIM
+    /// from the binary (2.1.251), the same text Claude Code's own TUI
+    /// "No" choice hands back to the model, so declining from Calyx's
+    /// banner reads identically to declining in Claude Code's own
+    /// dialog.
+    static let claudeCodeRejectedMessage = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed."
+
+    /// claude-code's own `.interrupted(.chatAboutQuestion)` message --
+    /// the question banner's [Chat about this] action, paired with
+    /// `interrupt: true`.
+    static let chatAboutQuestionMessage = "The user chose to chat about this question instead of answering it; wait for their message."
+
+    /// Claude Code's own multi-select answer encoding (2.1.251, verbatim
+    /// from the binary): `labels.map(t => t.includes(", ") || t.includes('"')
+    /// ? JSON.stringify(t) : t).join(", ")`. On receipt Claude Code parses
+    /// the string back apart (a quoted token via `JSON.parse`, a bare token
+    /// by splitting on `", "`) and only recognizes the result as a listed
+    /// selection if re-encoding those parsed tokens reproduces the string
+    /// exactly and every token names a listed option -- so a label that
+    /// itself contains `", "` or `"` MUST be JSON-string-quoted here, or
+    /// Claude Code's own round-trip check silently fails to recognize the
+    /// answer. This round-trip check runs ONLY for a multi-select answer
+    /// (the binary's own recognition logic: `W.has(B)` -- is the raw
+    /// string a member of the listed label set -- checked FIRST, and only
+    /// falls through to the quoted round-trip when the question is
+    /// multi-select): a single-select answer is matched against its
+    /// listed labels verbatim, so this function must never be applied to
+    /// one -- `encodedValue(for:)` is the only caller, and only for
+    /// `.selectedMany`. Kept internal (not `private`), not because
+    /// production code outside this encoder may call it -- it may not --
+    /// but so a test can exercise the encoding rule directly, independent
+    /// of `encodeAnswered`'s own JSON envelope. A one-element multi-select
+    /// answer still goes through this function, matching Claude Code's
+    /// own dialog.
+    static func selectedLabelsAnswerValue(_ labels: [String]) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .withoutEscapingSlashes
+        return labels.map { label in
+            guard label.contains(", ") || label.contains("\"") else { return label }
+            let quoted = try? encoder.encode(label)
+            guard let quoted, let json = String(data: quoted, encoding: .utf8) else { return label }
+            return json
+        }.joined(separator: ", ")
+    }
+
     /// Builds the JSON body for a CLI agent's approval-gate hook stdout,
-    /// encoding `decision` in the shared `hookSpecificOutput
-    /// .decision.behavior` shape both Claude Code and Codex document, or
-    /// in the flat top-level `decision` shape Grok and pi read. `nil` for
-    /// any `kind` other than `claude-code`/`codex`/`grok`/`pi` (see this
-    /// file's header), and also for `.expired` on claude-code/codex (no
-    /// fallback body under PermissionRequest -- absent output lets that
-    /// CLI's own confirmation prompt take over; a grok request is only
-    /// ever held for a decision under `bypassPermissions`, where nothing
-    /// behind the gate would ask anyone, and pi has no prompt of its own
-    /// in any mode, so both of those expiries deny instead).
+    /// dispatching on `kind` alone to the one function that knows that
+    /// kind's own vocabulary. `nil` for any `kind` other than
+    /// `claude-code`/`codex`/`grok`/`pi` -- see this file's own header.
     static func body(kind: String, decision: ApprovalDecision) -> Data? {
         switch kind {
-        case AgentEntry.claudeCodeKind, AgentEntry.codexKind:
-            guard let behavior = behavior(for: decision) else { return nil }
-            return encode(behavior: behavior)
+        case AgentEntry.claudeCodeKind:
+            return claudeCodeBody(for: decision)
+        case AgentEntry.codexKind:
+            return codexBody(for: decision)
         case AgentEntry.grokKind, AgentEntry.piKind:
-            return encodeFlatDecision(decision)
+            return flatBody(for: decision, kind: kind)
         default:
             return nil
         }
     }
 
-    /// `nil` for `.expired`: PermissionRequest has no "ask" analog, so an
-    /// expired decision produces no body at all rather than a fabricated
-    /// one.
-    private static func behavior(for decision: ApprovalDecision) -> String? {
-        switch decision {
-        case .allowed: return "allow"
-        case .denied: return "deny"
-        case .expired: return nil
-        }
-    }
-
-    /// A denied decision additionally carries a non-empty, human-readable
-    /// `message`; an allowed decision carries only `behavior` -- neither
-    /// PermissionRequest CLI contract defines a message field for allow.
-    private static func encode(behavior: String) -> Data? {
-        var decision: [String: Any] = ["behavior": behavior]
-        if behavior == "deny" {
-            decision["message"] = "Denied from the Calyx approval inbox."
-        }
+    /// Wraps `decision` in the `hookSpecificOutput{hookEventName,
+    /// decision}` envelope both Claude Code and Codex document.
+    private static func envelope(decision: [String: Any]) -> Data? {
         let object: [String: Any] = [
             "hookSpecificOutput": [
                 "hookEventName": ApprovalHookEvent.name,
@@ -120,26 +171,153 @@ enum AgentHookPermissionResponse {
         return try? JSONSerialization.data(withJSONObject: object)
     }
 
-    /// Grok's and pi's flat body: `decision` alone for an allow,
-    /// `decision` plus a non-empty `reason` (their spelling of the field
-    /// Claude Code and Codex call `message`) for a deny. The reason is
-    /// what the model is shown as the refusal explanation -- pi hands it
-    /// straight to the model as the blocked call's tool result content --
-    /// so an expiry states its own rather than reusing the human-denial
-    /// wording.
-    private static func encodeFlatDecision(_ decision: ApprovalDecision) -> Data? {
-        let object: [String: Any]
+    /// claude-code's own full vocabulary -- see this file's own header.
+    private static func claudeCodeBody(for decision: ApprovalDecision) -> Data? {
         switch decision {
         case .allowed:
-            object = ["decision": "allow"]
-        case .denied:
-            object = ["decision": "deny", "reason": "Denied from the Calyx approval inbox."]
+            return envelope(decision: ["behavior": "allow"])
+        case .allowedWithPermissions(let offer):
+            guard let entry = try? JSONSerialization.jsonObject(with: offer.entryJSON) else { return nil }
+            return envelope(decision: ["behavior": "allow", "updatedPermissions": [entry]])
+        case .denied(let reason):
+            return envelope(decision: ["behavior": "deny", "message": claudeCodeDenyMessage(for: reason)])
+        case .interrupted(let reason):
+            return envelope(decision: [
+                "behavior": "deny", "message": claudeCodeInterruptMessage(for: reason), "interrupt": true,
+            ])
         case .expired:
-            object = [
+            return nil
+        case .answered(let answers):
+            return encodeAnswered(answers)
+        }
+    }
+
+    private static func claudeCodeDenyMessage(for reason: DenyReason) -> String {
+        switch reason {
+        case .userRejected: return claudeCodeRejectedMessage
+        }
+    }
+
+    private static func claudeCodeInterruptMessage(for reason: InterruptReason) -> String {
+        switch reason {
+        case .chatAboutQuestion: return chatAboutQuestionMessage
+        }
+    }
+
+    /// codex's own vocabulary: `allow`/`deny` only, `message` always
+    /// `deniedMessage`. Every decision codex fails closed on
+    /// (`.allowedWithPermissions`/`.interrupted`/`.answered`) produces
+    /// `nil`, exactly like `.expired`.
+    private static func codexBody(for decision: ApprovalDecision) -> Data? {
+        switch decision {
+        case .allowed:
+            return envelope(decision: ["behavior": "allow"])
+        case .denied:
+            return envelope(decision: ["behavior": "deny", "message": deniedMessage])
+        case .allowedWithPermissions, .interrupted, .expired, .answered:
+            return nil
+        }
+    }
+
+    /// Grok's and pi's flat body: `decision` alone for an allow,
+    /// `decision` plus `reason: deniedMessage` for a deny (their spelling
+    /// of the field Claude Code and Codex call `message`), and an
+    /// explicit deny with its own reason for an expiry. Every decision
+    /// neither kind has a vocabulary for (`.allowedWithPermissions`/`.
+    /// interrupted`/`.answered`) routes back through
+    /// `body(kind:decision:)` with `.expired`, so the produced bytes are
+    /// byte-identical to an actual expiry's own body rather than a
+    /// second, separately-written deny that could drift from it -- see
+    /// this file's own header comment.
+    private static func flatBody(for decision: ApprovalDecision, kind: String) -> Data? {
+        switch decision {
+        case .allowed:
+            return try? JSONSerialization.data(withJSONObject: ["decision": "allow"])
+        case .denied:
+            return try? JSONSerialization.data(withJSONObject: ["decision": "deny", "reason": deniedMessage])
+        case .expired:
+            return try? JSONSerialization.data(withJSONObject: [
                 "decision": "deny",
                 "reason": "No approval was given in the Calyx approval inbox before the request expired.",
-            ]
+            ])
+        case .allowedWithPermissions, .interrupted, .answered:
+            return body(kind: kind, decision: .expired)
         }
-        return try? JSONSerialization.data(withJSONObject: object)
+    }
+
+    /// claude-code's `.answered` body: `behavior: "allow"` plus
+    /// `updatedInput` -- the original `tool_input` object (`answers.prompt.
+    /// originalToolInputJSON`, re-parsed) with `"answers"` set on it, so
+    /// the key set is the original keys plus `answers` (for a plain
+    /// payload, exactly `questions` + `answers`) -- see this file's own
+    /// header comment for why the whole object round-trips, not just
+    /// `questions`. `encodedValue(for:)` is the ONE place that turns an
+    /// `AgentQuestionAnswer` (free of wire encoding, see that type's own
+    /// doc comment) into the string Claude Code's own hook reads.
+    ///
+    /// `annotations[question.text]` is built per question, added ONLY
+    /// when that question's own entry contributes something: `notes`
+    /// (the entry's own, already trimmed to non-nil-or-nil by
+    /// `AgentQuestionFormState`) and/or `preview` (the SELECTED option's
+    /// own `preview`, and ONLY for a `.selectedOne` answer -- a
+    /// `.selectedMany`/`.freeText` answer never carries a preview, even
+    /// when one of its options has one, since no single option was
+    /// exclusively chosen). A question contributing neither is omitted
+    /// from `annotations` entirely; if NO question contributes anything,
+    /// the whole `annotations` key is omitted from `updatedInput`, never
+    /// present-but-empty. A stale `annotations` key already on the
+    /// original `tool_input` is overwritten, never merged with the fresh
+    /// one -- same rule `answers` already follows.
+    private static func encodeAnswered(_ answers: AgentQuestionAnswers) -> Data? {
+        guard var updatedInput = try? JSONSerialization.jsonObject(with: answers.prompt.originalToolInputJSON) as? [String: Any] else {
+            return nil
+        }
+        var answersObject: [String: String] = [:]
+        var annotationsObject: [String: Any] = [:]
+        for (question, entry) in zip(answers.prompt.questions, answers.entries) {
+            answersObject[question.text] = encodedValue(for: entry.answer)
+
+            var annotation: [String: Any] = [:]
+            if let notes = entry.notes {
+                annotation["notes"] = notes
+            }
+            if case .selectedOne(let label) = entry.answer,
+               let preview = question.options.first(where: { $0.label == label })?.preview {
+                annotation["preview"] = preview
+            }
+            if !annotation.isEmpty {
+                annotationsObject[question.text] = annotation
+            }
+        }
+        updatedInput["answers"] = answersObject
+        if annotationsObject.isEmpty {
+            updatedInput.removeValue(forKey: "annotations")
+        } else {
+            updatedInput["annotations"] = annotationsObject
+        }
+
+        let decision: [String: Any] = [
+            "behavior": "allow",
+            "updatedInput": updatedInput,
+        ]
+        return envelope(decision: decision)
+    }
+
+    /// The wire string for one question's answer -- the sole place this
+    /// type maps `AgentQuestionAnswer` to what Claude Code's own
+    /// AskUserQuestion recognition logic expects (2.1.251 binary):
+    /// `.selectedOne` sends the label RAW, since a single-select answer is
+    /// matched against `W` (the listed label set) verbatim; `.selectedMany`
+    /// runs the labels through `selectedLabelsAnswerValue` (the quoted
+    /// round-trip, which that recognition logic only falls through to for
+    /// a multi-select question); `.freeText` sends the typed text RAW --
+    /// free text is meant to reach the CLI unencoded, never matched
+    /// against `W` at all.
+    private static func encodedValue(for answer: AgentQuestionAnswer) -> String {
+        switch answer {
+        case .selectedOne(let label): return label
+        case .selectedMany(let labels): return selectedLabelsAnswerValue(labels)
+        case .freeText(let text): return text
+        }
     }
 }

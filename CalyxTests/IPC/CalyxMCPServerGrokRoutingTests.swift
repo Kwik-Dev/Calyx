@@ -335,13 +335,19 @@ final class CalyxMCPServerGrokRoutingTests: XCTestCase {
         XCTAssertEqual(approvalInbox.pending.count, 1,
                        "Always-approve is the one mode with no prompt behind the gate, so this is where " +
                        "Calyx's banner is the only thing that can review the call")
-        guard let requestID = approvalInbox.pending.first?.id else {
+        guard let pendingRequest = approvalInbox.pending.first else {
             // Drain the held route so this test doesn't leak a suspended Task.
             task.cancel()
             _ = await task.value
             return
         }
-        approvalInbox.decide(id: requestID, .denied)
+        guard case .agentHook = pendingRequest.source else {
+            XCTFail("expected .agentHook source")
+            task.cancel()
+            _ = await task.value
+            return
+        }
+        approvalInbox.decide(id: pendingRequest.id, .denied(.userRejected))
 
         let response = await task.value
         let data = try XCTUnwrap(response.body, "A decided grok request answers in Grok's own vocabulary")

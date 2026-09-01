@@ -18,7 +18,20 @@ struct ApprovalRequest: Identifiable, Sendable {
         /// `AgentEntry.codexKind` / `AgentEntry.grokKind` /
         /// `AgentEntry.piKind`); `toolName` and `summary` come from the
         /// decoded `AgentHookToolCall`.
-        case agentHook(toolName: String, kind: String, summary: String)
+        case agentHook(toolName: String, kind: String, summary: String, offers: AgentHookOffers)
+        /// Claude Code's `AskUserQuestion` tool call, decoded into an
+        /// `AgentQuestionPrompt` rather than the generic `.agentHook`
+        /// summary -- the approval banner renders this as option buttons
+        /// instead of a Deny/Always Allow/Allow row. `kind` is always
+        /// `AgentEntry.claudeCodeKind` (see `AgentHookToolCall.question`'s
+        /// own doc comment for why no other kind ever produces one), kept
+        /// here rather than hardcoded so `displayToolName` stays a plain
+        /// switch over `Source` with no special-cased kind literal. No
+        /// separate `toolName`: it is always "AskUserQuestion" (the gate
+        /// that produces a `.agentQuestion` at all), so there is nothing
+        /// for a second field to carry that `displayToolName`'s own
+        /// "Question" literal doesn't already say.
+        case agentQuestion(kind: String, prompt: AgentQuestionPrompt)
     }
 
     let id: UUID
@@ -28,10 +41,62 @@ struct ApprovalRequest: Identifiable, Sendable {
     let createdAt: Date
 }
 
+/// What an `.agentHook`-sourced request may offer beyond the plain
+/// "Yes"/"No" -- everything `AgentToolApprovalView` reads to decide which
+/// choice rows to render, derived once at decode time (`AgentHookToolCall`)
+/// so the view never branches on `kind` itself.
+struct AgentHookOffers: Sendable, Equatable {
+    /// One choice row per element -- see `AgentPermissionOffer`.
+    let permissionUpdates: [AgentPermissionOffer]
+    /// True iff `permissionUpdates` is non-empty -- i.e. this request
+    /// actually carries at least one CLI always-allow row. When true, the
+    /// CLI itself persists the human's always-allow choice through one of
+    /// those rows, so `ApprovalBannerModel.alwaysAllow(id:)` (Calyx's OWN
+    /// pane memory) is a no-op for this request: recording a second,
+    /// Calyx-side memory alongside the CLI's own would be redundant and
+    /// could silently diverge from it. When `permissionUpdates` is empty,
+    /// `cliOwnsPersistence` is false: Calyx's own pane-scoped memory is
+    /// the only persistence available, and its row renders instead.
+    let cliOwnsPersistence: Bool
+
+    /// The no-offers constant: no permission updates, so Calyx's own
+    /// pane-scoped Always-Allow memory is the only persistence available.
+    /// Used as a default where no offers apply -- test fixtures and any
+    /// caller with no decoded call at hand -- not something
+    /// `routeApprovalRequest` itself produces.
+    static let none = AgentHookOffers(permissionUpdates: [], cliOwnsPersistence: false)
+}
+
+/// Why a `.denied` decision was made -- the model/view pick a reason,
+/// never a wire string; `AgentHookPermissionResponse` alone maps a reason
+/// to the message/reason text a given `kind`'s hook actually reads.
+enum DenyReason: Sendable, Equatable {
+    /// The human clicked "No" on an ordinary tool-call banner.
+    case userRejected
+}
+
+/// Why an `.interrupted` decision was made.
+enum InterruptReason: Sendable, Equatable {
+    /// The question banner's [Chat about this] action -- the human wants
+    /// to reply free-form in the pane instead of answering the structured
+    /// prompt.
+    case chatAboutQuestion
+}
+
 enum ApprovalDecision: Sendable, Equatable {
     case allowed
-    case denied
+    /// Accepting one of `AgentHookOffers.permissionUpdates` -- the CLI's
+    /// own "always allow" choice, echoed back verbatim.
+    case allowedWithPermissions(AgentPermissionOffer)
+    case denied(DenyReason)
+    /// The banner's own [Chat about this] action -- distinct from
+    /// `.denied`: the CLI is told to STOP and wait for the human, not
+    /// that the call was refused.
+    case interrupted(InterruptReason)
     case expired
+    /// A human's answer to an `.agentQuestion`-sourced request's
+    /// `AskUserQuestion` prompt -- see `AgentQuestionAnswers`.
+    case answered(AgentQuestionAnswers)
 }
 
 extension ApprovalRequest {
@@ -46,8 +111,10 @@ extension ApprovalRequest {
         switch source {
         case .mcpTool(let name):
             return name
-        case .agentHook(let toolName, let kind, _):
+        case .agentHook(let toolName, let kind, _, _):
             return "\(AgentEntry.displayName(forKind: kind)) · \(toolName)"
+        case .agentQuestion(let kind, _):
+            return "\(AgentEntry.displayName(forKind: kind)) · Question"
         }
     }
 
@@ -61,8 +128,10 @@ extension ApprovalRequest {
         switch source {
         case .mcpTool:
             return payload
-        case .agentHook(_, _, let summary):
+        case .agentHook(_, _, let summary, _):
             return summary
+        case .agentQuestion(_, let prompt):
+            return prompt.questions.map(\.text).joined(separator: "\n")
         }
     }
 

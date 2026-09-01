@@ -523,7 +523,9 @@ final class CalyxMCPServer {
     /// PermissionRequest hook while a human decides whether to allow its
     /// next tool call. Contract, in order: bearer auth (401) -> body
     /// present (400) -> body.count <= maxEventBodyBytes, checked BEFORE
-    /// decode (413, mirrors `routeCommandEvent`) -> `AgentHookToolCall.decode`
+    /// decode (413, mirrors `routeCommandEvent`) -> `X-Calyx-Agent-Kind`
+    /// read (no failure path, so reading it before decode does not
+    /// reorder anything below) -> `AgentHookToolCall.decode(from:kind:)`
     /// (400) -> `resolveSurfaceID` (400) -> an unrecognized
     /// `X-Calyx-Agent-Kind` (anything other than
     /// claude-code/codex/grok/pi)
@@ -562,18 +564,34 @@ final class CalyxMCPServer {
     /// banner here would duplicate the prompt Grok is about to show in
     /// its own pane, and an allow here would not answer that prompt
     /// -> `CockpitSettings.agentHookApprovalEnabled` being off does the
-    /// same -> global auto-approve (`!ApprovalPolicy.requiresApproval()`)
+    /// same -> for a non-question-tool call (`!call.isQuestionTool`):
+    /// global auto-approve (`!ApprovalPolicy.requiresApproval()`)
     /// short-circuits to 200 with an ALLOW body, also without ever
-    /// submitting -> a Stage E `agentHookApprovalMemory.isAutoAllowed`
-    /// hit (pane OR cross scope) short-circuits the same way, also
-    /// without submitting -> R4: an `approvalSurfaceExists` miss (a
-    /// stale/forged/torn-down surface) short-circuits the same inert way
+    /// submitting -> an `agentHookApprovalMemory.isAutoAllowed` (pane
+    /// scope) hit short-circuits the same way, also without submitting.
+    /// Neither of those two short-circuits ever applies to a
+    /// claude-code `AskUserQuestion` call (`call.isQuestionTool`) --
+    /// gated on the TOOL, not on whether `tool_input.questions` happened
+    /// to decode: a question must always reach a human, even one whose
+    /// malformed shape falls back to the generic `.agentHook` banner
+    /// below, so both are skipped for it. -> an
+    /// `approvalSurfaceExists` miss (a stale/forged/torn-down surface)
+    /// short-circuits the same inert way
     /// as the unrecognized-kind case above, also without submitting ->
-    /// otherwise submits an `ApprovalRequest(source: .agentHook(...))`,
-    /// posts one user notification (its `body` run through
-    /// `SecretRedactor.redact` first -- see that call site's own comment
-    /// for why only the notification, never the banner, is redacted),
-    /// and long-polls `approvalInbox.awaitDecisionHonoringCancellation`.
+    /// otherwise submits an `ApprovalRequest`, sourced `.agentQuestion`
+    /// for a claude-code `AskUserQuestion` call (`call.question != nil`)
+    /// or `.agentHook` otherwise, posts one user notification (its `body`
+    /// run through `SecretRedactor.redact` first -- see that call site's
+    /// own comment for why only the notification, never the banner, is
+    /// redacted; a question's notification title is "... asks a
+    /// question" and its body is the first question's own text), and
+    /// long-polls `approvalInbox.awaitDecisionHonoringCancellation`. The
+    /// resolved `ApprovalDecision` already carries its own `DenyReason`/
+    /// `InterruptReason` (the model/view picked it when the human
+    /// decided) -- `AgentHookPermissionResponse.body(kind:decision:)`
+    /// alone maps that reason to the message/reason text a given `kind`'s
+    /// hook actually reads; this route never passes a message string of
+    /// its own.
     ///
     /// Three invariants a future change here must preserve:
     ///
@@ -633,7 +651,11 @@ final class CalyxMCPServer {
             return HTTPParser.response(statusCode: 413, body: nil)
         }
 
-        guard let call = AgentHookToolCall.decode(from: body) else {
+        // Read before decode: `agentKind(from:)` has no failure path, so
+        // reading it here first does not change this method's response
+        // ordering for any existing guard below.
+        let kind = agentKind(from: request.headers)
+        guard let call = AgentHookToolCall.decode(from: body, kind: kind) else {
             return HTTPParser.response(statusCode: 400, body: nil)
         }
 
@@ -641,7 +663,6 @@ final class CalyxMCPServer {
             return HTTPParser.response(statusCode: 400, body: nil)
         }
 
-        let kind = agentKind(from: request.headers)
         guard kind == AgentEntry.claudeCodeKind || kind == AgentEntry.codexKind
             || kind == AgentEntry.grokKind || kind == AgentEntry.piKind else {
             // An agent CLI Calyx doesn't have a hook-response contract
@@ -673,16 +694,32 @@ final class CalyxMCPServer {
             return HTTPParser.response(statusCode: 200, body: nil)
         }
 
-        guard ApprovalPolicy.requiresApproval() else {
-            return HTTPParser.response(
-                statusCode: 200, body: AgentHookPermissionResponse.body(kind: kind, decision: .allowed)
-            )
-        }
+        // An AskUserQuestion call must always ask a human: neither global
+        // auto-approve nor pane-scoped Always-Allow memory may ever
+        // short-circuit a question the way they do a plain tool call --
+        // a "yes always allow this tool" memory says nothing about which
+        // OPTION a human would have picked. Gated on `call.isQuestionTool`,
+        // not `call.question == nil`: a malformed `tool_input.questions`
+        // (decoded to `nil` by `decodeQuestions`) still reaches the
+        // generic `.agentHook` banner below, but must still never be
+        // auto-allowed just because decoding failed to produce option
+        // buttons to answer with -- the only path that ever hands an
+        // AskUserQuestion call to Claude Code's own in-pane prompt is the
+        // hold window expiring with no decision made (`.expired`, no
+        // body -- see `AgentHookPermissionResponse`'s own fail-safe
+        // contract).
+        if !call.isQuestionTool {
+            guard ApprovalPolicy.requiresApproval() else {
+                return HTTPParser.response(
+                    statusCode: 200, body: AgentHookPermissionResponse.body(kind: kind, decision: .allowed)
+                )
+            }
 
-        if agentHookApprovalMemory.isAutoAllowed(surfaceID: surfaceID, kind: kind, toolName: call.toolName) {
-            return HTTPParser.response(
-                statusCode: 200, body: AgentHookPermissionResponse.body(kind: kind, decision: .allowed)
-            )
+            if agentHookApprovalMemory.isAutoAllowed(surfaceID: surfaceID, kind: kind, toolName: call.toolName) {
+                return HTTPParser.response(
+                    statusCode: 200, body: AgentHookPermissionResponse.body(kind: kind, decision: .allowed)
+                )
+            }
         }
 
         // R4: a valid-FORMAT surface UUID no live surface registry
@@ -695,9 +732,25 @@ final class CalyxMCPServer {
         }
 
         let requestID = UUID()
+        let source: ApprovalRequest.Source
+        let notificationTitle: String
+        let notificationBody: String
+        if let question = call.question {
+            source = .agentQuestion(kind: kind, prompt: question)
+            notificationTitle = "\(AgentEntry.displayName(forKind: kind)) asks a question"
+            notificationBody = SecretRedactor.redact(question.questions[0].text)
+        } else {
+            let offers = AgentHookOffers(
+                permissionUpdates: call.permissionOffers,
+                cliOwnsPersistence: !call.permissionOffers.isEmpty
+            )
+            source = .agentHook(toolName: call.toolName, kind: kind, summary: call.summary, offers: offers)
+            notificationTitle = "\(AgentEntry.displayName(forKind: kind)) wants to run \(call.toolName)"
+            notificationBody = SecretRedactor.redact("\(call.toolName): \(call.summary)")
+        }
         approvalInbox.submit(ApprovalRequest(
             id: requestID,
-            source: .agentHook(toolName: call.toolName, kind: kind, summary: call.summary),
+            source: source,
             targetSurfaceID: surfaceID,
             payload: call.payload,
             createdAt: Date()
@@ -708,23 +761,25 @@ final class CalyxMCPServer {
         // header comment) -- because a notification can leak into places
         // (Notification Center history, a screen someone else can see)
         // the human never explicitly chose to expose a raw secret to.
-        // The BANNER, in contrast, deliberately keeps `call.summary`
-        // verbatim (via `ApprovalRequest.displayPayload` /
-        // `.agentHook`'s own `summary`) -- the human approving this
-        // exact tool call must see exactly what they're being asked to
-        // approve, unredacted; `ControlCharacterDisplay` there guards a
-        // different concern (terminal-control-character spoofing), not
-        // secret leakage. NotificationSanitizer still runs inside
-        // sendNotification itself -- no need to sanitize title/body for
-        // that separate concern here.
+        // The BANNER, in contrast, deliberately keeps `call.summary`/the
+        // question text verbatim (via `ApprovalRequest.displayPayload` --
+        // `.agentHook`'s own `summary`, `.agentQuestion`'s own question
+        // texts) -- the human approving this exact tool call must see
+        // exactly what they're being asked to approve, unredacted;
+        // `ControlCharacterDisplay` there guards a different concern
+        // (terminal-control-character spoofing), not secret leakage.
+        // NotificationSanitizer still runs inside sendNotification itself
+        // -- no need to sanitize title/body for that separate concern
+        // here.
         NotificationManager.shared.sendNotification(
-            title: "\(AgentEntry.displayName(forKind: kind)) wants to run \(call.toolName)",
-            body: SecretRedactor.redact("\(call.toolName): \(call.summary)"),
-            tabID: surfaceID
+            title: notificationTitle, body: notificationBody, tabID: surfaceID
         )
 
         let decision = await approvalInbox.awaitDecisionHonoringCancellation(id: requestID, timeoutMs: approvalRequestTimeoutMs)
-        return HTTPParser.response(statusCode: 200, body: AgentHookPermissionResponse.body(kind: kind, decision: decision))
+        return HTTPParser.response(
+            statusCode: 200,
+            body: AgentHookPermissionResponse.body(kind: kind, decision: decision)
+        )
     }
 
     /// Case-insensitive `Authorization: Bearer <token>` extraction, shared

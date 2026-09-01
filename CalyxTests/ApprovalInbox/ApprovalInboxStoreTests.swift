@@ -96,10 +96,10 @@ final class ApprovalInboxStoreTests: XCTestCase {
         }
         await yieldToScheduler()
 
-        store.decide(id: request.id, .denied)
+        store.decide(id: request.id, .denied(.userRejected))
 
         let result = await task.value
-        XCTAssertEqual(result, .denied, "decide(.denied) must resume the awaiter with .denied")
+        XCTAssertEqual(result, .denied(.userRejected), "decide(.denied) must resume the awaiter with .denied")
         XCTAssertTrue(store.pending.isEmpty, "a decided request must be removed from pending")
     }
 
@@ -148,7 +148,7 @@ final class ApprovalInboxStoreTests: XCTestCase {
 
         let notifyCountBeforeBatch = store._testNotifyCount
 
-        store.decide(ids: [request.id], .denied)
+        store.decide(ids: [request.id], .denied(.userRejected))
 
         XCTAssertEqual(store._testNotifyCount, notifyCountBeforeBatch,
                        "a batch where every id is already stale must post no notification at all")
@@ -372,6 +372,70 @@ final class ApprovalInboxStoreTests: XCTestCase {
         let otherResult = await otherWaiter.value
         XCTAssertEqual(otherResult, .allowed,
                        "a request targeting a different surface must remain independently decidable")
+    }
+
+    // MARK: - awaitDecisionHonoringCancellation: .answered racing cancellation
+
+    /// Mirrors MCPCockpitBridgeTests.test_paneRun_cancelledAfterAllowed_...'s
+    /// own deterministic pattern (see that test's own doc comment): both
+    /// `decide()` and `waiter.cancel()` are @MainActor-isolated synchronous
+    /// calls, so resuming the awaiting Task via `decide()` only makes it
+    /// ELIGIBLE to run again -- it cannot preempt this still-running
+    /// synchronous test method. Cancelling right here, immediately after
+    /// `decide()`, therefore reliably sets `Task.isCancelled` to true
+    /// before `awaitDecisionHonoringCancellation`'s post-decision recheck
+    /// ever runs, without depending on real scheduler timing.
+    func test_awaitDecisionHonoringCancellation_answeredRacingCancellation_demotedToExpired() async throws {
+        let store = ApprovalInboxStore()
+        let request = makeRequest()
+        store.submit(request)
+
+        let prompt = AgentQuestionPrompt(
+            questions: [AgentQuestionPrompt.Question(
+                text: "Which shell?", header: nil,
+                options: [AgentQuestionPrompt.Option(label: "zsh", description: nil, preview: nil)], multiSelect: false
+            )],
+            originalToolInputJSON: try! JSONSerialization.data(withJSONObject: ["questions": [["question": "Which shell?", "options": [["label": "zsh"]]]]])
+        )
+        let answers = AgentQuestionAnswers(prompt: prompt, entries: [.init(answer: .selectedOne("zsh"), notes: nil)])
+
+        let waiter = Task { @MainActor in
+            await store.awaitDecisionHonoringCancellation(id: request.id, timeoutMs: 5_000)
+        }
+        await yieldToScheduler()
+
+        store.decide(id: request.id, .answered(answers))
+        waiter.cancel()
+
+        let result = await waiter.value
+        XCTAssertEqual(result, .expired,
+                       "an .answered decision racing a concurrent cancellation of the awaiting Task must be " +
+                       "demoted to .expired, exactly like the existing .allowed demotion")
+    }
+
+    /// `.allowedWithPermissions` carries the same "the caller may already
+    /// be gone" hazard `.allowed`/`.answered` do -- a human really did
+    /// decide, so it must be demoted to `.expired` on the same
+    /// cancellation race, never silently delivered to a Task that is
+    /// already gone.
+    func test_awaitDecisionHonoringCancellation_allowedWithPermissionsRacingCancellation_demotedToExpired() async throws {
+        let store = ApprovalInboxStore()
+        let request = makeRequest()
+        store.submit(request)
+        let offer = AgentPermissionOffer(
+            label: "x", entryJSON: try! JSONSerialization.data(withJSONObject: ["type": "addDirectories", "directories": ["/tmp"]])
+        )
+
+        let waiter = Task { @MainActor in
+            await store.awaitDecisionHonoringCancellation(id: request.id, timeoutMs: 5_000)
+        }
+        await yieldToScheduler()
+
+        store.decide(id: request.id, .allowedWithPermissions(offer))
+        waiter.cancel()
+
+        let result = await waiter.value
+        XCTAssertEqual(result, .expired)
     }
 
     func test_expireForSurface_unknownSurface_isNoOp() {

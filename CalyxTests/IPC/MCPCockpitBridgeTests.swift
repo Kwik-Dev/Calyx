@@ -668,12 +668,98 @@ final class MCPCockpitBridgeTests: XCTestCase {
             callTask.cancel()
             return
         }
-        approvals.decide(id: requestID, .denied)
+        approvals.decide(id: requestID, .denied(.userRejected))
 
         let result = try await callTask.value
         let json = try jsonDict(result)
         XCTAssertEqual(json["status"] as? String, "denied")
         XCTAssertEqual(access.sendCommandCallCount, 0, "a denied command must never reach access.sendCommand")
+    }
+
+    /// `.answered` is only ever produced for an `.agentQuestion`-sourced
+    /// request (the approval banner's own AskUserQuestion flow), never
+    /// for an `.mcpTool`-sourced one like `pane_run` -- but `gate`'s
+    /// switch over `ApprovalDecision` must still handle it exhaustively:
+    /// an `.answered` decision yields `.respond(["status": "denied"])`,
+    /// never `.proceed`, mirroring the existing `.denied` mapping (a
+    /// stray answer racing an already-decided-elsewhere gate must never
+    /// execute the underlying command).
+    func test_paneRun_answeredDecision_returnsStatusDenied_neverExecutes() async throws {
+        let suiteName = "com.calyx.tests.MCPCockpitBridgeTests.paneRunAnswered"
+        CockpitSettings._testUseSuite(named: suiteName)
+        defer { CockpitSettings._testTeardownSuite(named: suiteName) }
+
+        let access = FakeCockpitAccess()
+        access.paneExistsResult = true
+        let approvals = ApprovalInboxStore()
+        let bridge = MCPCockpitBridge(
+            access: access, sessionSurfaceMap: SessionSurfaceMap(),
+            approvals: approvals, agentRegistry: AgentRegistry(), commandLogStore: CommandLogStore()
+        )
+        let surfaceID = UUID()
+
+        let callTask = await startGatedCall(bridge, name: "pane_run", arguments: ["surface_id": surfaceID.uuidString, "command": "rm -rf /tmp/x"])
+
+        XCTAssertEqual(approvals.pending.count, 1)
+        guard let requestID = approvals.pending.first?.id else {
+            callTask.cancel()
+            return
+        }
+        let prompt = AgentQuestionPrompt(
+            questions: [AgentQuestionPrompt.Question(
+                text: "Which shell?", header: nil,
+                options: [AgentQuestionPrompt.Option(label: "zsh", description: nil, preview: nil)], multiSelect: false
+            )],
+            originalToolInputJSON: try! JSONSerialization.data(withJSONObject: ["questions": [["question": "Which shell?", "options": [["label": "zsh"]]]]])
+        )
+        approvals.decide(id: requestID, .answered(AgentQuestionAnswers(prompt: prompt, entries: [.init(answer: .selectedOne("zsh"), notes: nil)])))
+
+        let result = try await callTask.value
+        let json = try jsonDict(result)
+        XCTAssertEqual(json["status"] as? String, "denied")
+        XCTAssertEqual(access.sendCommandCallCount, 0, "an answered decision must never reach access.sendCommand")
+    }
+
+    /// `.allowedWithPermissions`/`.interrupted` are only ever produced
+    /// for an `.agentHook`-sourced request, never for an
+    /// `.mcpTool`-sourced one like `pane_run` -- but `gate`'s switch over
+    /// `ApprovalDecision` must still handle each exhaustively, and map
+    /// every one of them to `{"status": "denied"}`, never `.proceed`.
+    func test_paneRun_everyNonAllowedNonExpiredDecision_returnsStatusDenied_neverExecutes() async throws {
+        let suiteName = "com.calyx.tests.MCPCockpitBridgeTests.paneRunNonAllowedDecisions"
+        CockpitSettings._testUseSuite(named: suiteName)
+        defer { CockpitSettings._testTeardownSuite(named: suiteName) }
+
+        let offer = AgentPermissionOffer(
+            label: "x", entryJSON: try! JSONSerialization.data(withJSONObject: ["type": "addDirectories", "directories": ["/tmp"]])
+        )
+        let decisions: [ApprovalDecision] = [
+            .allowedWithPermissions(offer), .interrupted(.chatAboutQuestion),
+        ]
+
+        for decision in decisions {
+            let access = FakeCockpitAccess()
+            access.paneExistsResult = true
+            let approvals = ApprovalInboxStore()
+            let bridge = MCPCockpitBridge(
+                access: access, sessionSurfaceMap: SessionSurfaceMap(),
+                approvals: approvals, agentRegistry: AgentRegistry(), commandLogStore: CommandLogStore()
+            )
+            let surfaceID = UUID()
+
+            let callTask = await startGatedCall(bridge, name: "pane_run", arguments: ["surface_id": surfaceID.uuidString, "command": "rm -rf /tmp/x"])
+
+            guard let requestID = approvals.pending.first?.id else {
+                callTask.cancel()
+                continue
+            }
+            approvals.decide(id: requestID, decision)
+
+            let result = try await callTask.value
+            let json = try jsonDict(result)
+            XCTAssertEqual(json["status"] as? String, "denied", "decision=\(decision)")
+            XCTAssertEqual(access.sendCommandCallCount, 0, "decision=\(decision) must never reach access.sendCommand")
+        }
     }
 
     func test_paneRun_approvalTimeout_returnsApprovalTimeout_neverExecutes() async throws {
