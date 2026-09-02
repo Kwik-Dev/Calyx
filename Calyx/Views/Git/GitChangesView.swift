@@ -579,21 +579,39 @@ private struct CommitRowView: View {
 
                     VStack(alignment: .leading, spacing: 1) {
                         HStack(spacing: 4) {
+                            // No sibling here may wrap: `message`'s
+                            // `layoutPriority` below can squeeze this to
+                            // near-zero width, and a `Text` with no
+                            // `lineLimit`/`fixedSize` responds to that by
+                            // wrapping one character per line instead of
+                            // truncating -- `.fixedSize()` holds the hash
+                            // at its natural (short, monospaced) width
+                            // regardless of how little room is left.
                             Text(commit.shortHash)
                                 .font(.system(.caption2, design: .monospaced))
                                 .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .fixedSize()
+                            // The message is the useful part of this row;
+                            // ref badges and the hash are supplementary, so
+                            // a narrow sidebar squeezes message's own
+                            // trailing whitespace/truncation first rather
+                            // than starving its neighbors down to nothing.
                             Text(commit.message)
                                 .font(.caption)
                                 .lineLimit(1)
-                                // The message is the useful part of this row;
-                                // ref badges are supplementary, so a narrow
-                                // sidebar squeezes them first rather than
-                                // squeezing the message down to nothing.
                                 .layoutPriority(1)
                             ForEach(Array(commit.refNames.enumerated()), id: \.offset) { _, refName in
+                                // `.fixedSize()` for the same reason as the
+                                // hash above: losing the fight for space
+                                // against `message`'s priority must leave
+                                // this readable-but-clipped-by-the-row
+                                // (see `.clipped()` below), never a
+                                // zero-width capsule with invisible text.
                                 Text(refName)
                                     .font(.caption2)
                                     .lineLimit(1)
+                                    .fixedSize()
                                     .padding(.horizontal, 5)
                                     .padding(.vertical, 1)
                                     .background {
@@ -605,9 +623,11 @@ private struct CommitRowView: View {
                             Text(commit.author)
                                 .font(.caption2)
                                 .foregroundStyle(.tertiary)
+                                .lineLimit(1)
                             Text(commit.relativeDate)
                                 .font(.caption2)
                                 .foregroundStyle(.tertiary)
+                                .lineLimit(1)
                         }
                     }
 
@@ -622,6 +642,13 @@ private struct CommitRowView: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
                 .contentShape(Rectangle())
+                // Every child above is now truncate-or-fixed rather than
+                // wrap-capable, so this only clips the rare remaining
+                // overflow (fixed-width hash + badges wider than what
+                // `message`'s priority leaves the row) at the row's own
+                // trailing edge, instead of letting it expand the row's
+                // height or bleed into the row below.
+                .clipped()
             }
             .buttonStyle(.plain)
 
