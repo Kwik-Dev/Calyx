@@ -1,7 +1,10 @@
 // GitServiceTests.swift
 // CalyxTests
 //
-// Tests for GitService parsers: parseStatus, parseCommitLog, parseCommitFiles.
+// Tests for GitService parsers (parseStatus, parseCommitLog,
+// parseCommitFiles) and the isSafeRefArgument allowlist that keeps a
+// user-picked ref from ever being interpreted as a git command-line
+// option.
 
 import Testing
 @testable import Calyx
@@ -141,6 +144,98 @@ struct GitServiceTests {
         let result = GitService.parseCommitLog(output)
         #expect(result.count == 1)
         #expect(result[0].parentIDs == ["def456"])
+    }
+
+    // MARK: - Commit Log Parsing: %D decoration (refNames)
+
+    @Test func legacySevenFieldFormatWithNoDecorationField_yieldsEmptyRefNames() {
+        // A record with no decoration field at all. Must not crash, and
+        // must not invent a name.
+        let output = "* \u{1f}abc123\u{1f}abc1234\u{1f}Some change\u{1f}Dev\u{1f}3 hours ago\u{1f}def456\u{1e}\n"
+        let result = GitService.parseCommitLog(output)
+        #expect(result.count == 1)
+        #expect(result[0].refNames == [])
+    }
+
+    @Test func decorationFieldPresentButEmpty_yieldsEmptyRefNames() {
+        let output = "* \u{1f}abc123\u{1f}abc1234\u{1f}Some change\u{1f}Dev\u{1f}3 hours ago\u{1f}def456\u{1f}\u{1e}\n"
+        let result = GitService.parseCommitLog(output)
+        #expect(result.count == 1)
+        #expect(result[0].refNames == [])
+    }
+
+    @Test func decorationWithCurrentBranchArrow_yieldsBranchNameWithoutArrow() {
+        let output = "* \u{1f}abc123\u{1f}abc1234\u{1f}Some change\u{1f}Dev\u{1f}3 hours ago\u{1f}\u{1f}HEAD -> main\u{1e}\n"
+        let result = GitService.parseCommitLog(output)
+        #expect(result.count == 1)
+        #expect(result[0].refNames == ["main"])
+    }
+
+    @Test func decorationWithBareHead_yieldsHeadLiteral() {
+        let output = "* \u{1f}abc123\u{1f}abc1234\u{1f}Some change\u{1f}Dev\u{1f}3 hours ago\u{1f}\u{1f}HEAD\u{1e}\n"
+        let result = GitService.parseCommitLog(output)
+        #expect(result.count == 1)
+        #expect(result[0].refNames == ["HEAD"])
+    }
+
+    @Test func decorationWithMultipleEntries_splitsBranchRemoteAndTag() {
+        let output = "* \u{1f}abc123\u{1f}abc1234\u{1f}Some change\u{1f}Dev\u{1f}3 hours ago\u{1f}\u{1f}HEAD -> main, origin/main, tag: v1.0\u{1e}\n"
+        let result = GitService.parseCommitLog(output)
+        #expect(result.count == 1)
+        #expect(result[0].refNames == ["main", "origin/main", "v1.0"])
+    }
+
+    @Test func decorationWithCurrentBranchAndSameNamedTag_deduplicatesToOneName() {
+        // "HEAD -> main" and "tag: main" both display as "main" -- a branch
+        // and a tag can share a name -- so the badge must show it once, not
+        // twice, and the branch's own arrow-stripped occurrence must win
+        // the position (first-seen order).
+        let output = "* \u{1f}abc123\u{1f}abc1234\u{1f}Some change\u{1f}Dev\u{1f}3 hours ago\u{1f}\u{1f}HEAD -> main, tag: main\u{1e}\n"
+        let result = GitService.parseCommitLog(output)
+        #expect(result.count == 1)
+        #expect(result[0].refNames == ["main"])
+    }
+
+    @Test func decorationWithRemoteHeadSymref_excludesOriginHeadEntry() {
+        // "origin/HEAD" names the remote's default-branch pointer, not a
+        // ref a user picks -- refList already excludes the symref itself
+        // (GitServiceRefListTests), and the %D decoration must exclude the
+        // same thing here, distinct from a bare "HEAD" (which stays, see
+        // decorationWithBareHead_yieldsHeadLiteral above).
+        let output = "* \u{1f}abc123\u{1f}abc1234\u{1f}Some change\u{1f}Dev\u{1f}3 hours ago\u{1f}\u{1f}HEAD -> main, origin/main, origin/HEAD\u{1e}\n"
+        let result = GitService.parseCommitLog(output)
+        #expect(result.count == 1)
+        #expect(result[0].refNames == ["main", "origin/main"])
+    }
+
+    // MARK: - isSafeRefArgument
+
+    @Test func isSafeRefArgument_allowsHead() {
+        #expect(GitService.isSafeRefArgument("HEAD"))
+    }
+
+    @Test func isSafeRefArgument_allowsFullyQualifiedRef() {
+        #expect(GitService.isSafeRefArgument("refs/heads/main"))
+    }
+
+    @Test func isSafeRefArgument_rejectsUnqualifiedBranchName() {
+        #expect(!GitService.isSafeRefArgument("main"))
+    }
+
+    @Test func isSafeRefArgument_rejectsDashPrefixedOption() {
+        #expect(!GitService.isSafeRefArgument("-x"))
+    }
+
+    @Test func isSafeRefArgument_rejectsLongOptionInjection() {
+        #expect(!GitService.isSafeRefArgument("--exec=/bin/false"))
+    }
+
+    @Test func isSafeRefArgument_rejectsEmbeddedWhitespace() {
+        #expect(!GitService.isSafeRefArgument("refs/he ads/main"))
+    }
+
+    @Test func isSafeRefArgument_rejectsEmbeddedNewline() {
+        #expect(!GitService.isSafeRefArgument("refs/heads/ma\nin"))
     }
 
     // MARK: - Commit Files Parsing

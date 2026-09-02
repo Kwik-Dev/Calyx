@@ -27,6 +27,7 @@ struct SidebarContentView: View {
     var onExpandCommit: ((String, String) -> Void)?
     var onToggleGitRepoSection: ((String) -> Void)?
     var onRetryGitRepoSection: ((String) -> Void)?
+    var onSelectRefFilter: ((String, GitRefSelection) -> Void)?
     var onMoveTab: ((UUID, Int, Int) -> Void)?
     var paneTitle: (UUID) -> String?
     var paneCwd: (UUID) -> String?
@@ -198,7 +199,8 @@ struct SidebarContentView: View {
                     onLoadMore: onLoadMoreCommits,
                     onExpandCommit: onExpandCommit,
                     onToggleRepoSection: onToggleGitRepoSection,
-                    onRetryRepoSection: onRetryGitRepoSection
+                    onRetryRepoSection: onRetryGitRepoSection,
+                    onSelectRefFilter: onSelectRefFilter
                 )
                 .padding(.top, 10)
 

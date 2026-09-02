@@ -1,14 +1,17 @@
 // GitServiceWorktreeTests.swift
 // CalyxTests
 //
-// Integration tests for commit history scoping across Git worktrees.
+// Integration tests for `.auto` commit history scoping across Git
+// worktrees: it follows only HEAD in these fixtures (no upstream or
+// base), so a branch nobody has checked out never contributes commits,
+// whether the worktree is linked or the main one.
 
 import Foundation
 import Testing
 @testable import Calyx
 
 struct GitServiceWorktreeTests {
-    @Test func test_linkedWorktree_commitLogExcludesSiblingBranchCommits() async throws {
+    @Test func test_linkedWorktree_commitLogAutoExcludesSiblingBranchCommits() async throws {
         let scratchDirectory = try GitScratch.makeDirectory("GitServiceWorktreeTests")
         defer { try? FileManager.default.removeItem(at: scratchDirectory) }
 
@@ -49,6 +52,7 @@ struct GitServiceWorktreeTests {
 
         let commits = try await GitService.commitLog(
             workDir: currentWorktree.path,
+            selection: .auto,
             maxCount: 100,
             skip: 0
         )
@@ -58,7 +62,7 @@ struct GitServiceWorktreeTests {
         #expect(!commitIDs.contains(siblingCommit))
     }
 
-    @Test func test_standardRepository_commitLogIncludesAllBranches() async throws {
+    @Test func test_standardRepository_commitLogAutoExcludesUncheckedOutBranch() async throws {
         let scratchDirectory = try GitScratch.makeDirectory("GitServiceWorktreeTests")
         defer { try? FileManager.default.removeItem(at: scratchDirectory) }
 
@@ -87,12 +91,13 @@ struct GitServiceWorktreeTests {
 
         let commits = try await GitService.commitLog(
             workDir: repository.path,
+            selection: .auto,
             maxCount: 100,
             skip: 0
         )
         let commitIDs = Set(commits.map(\.id))
 
         #expect(commitIDs.contains(baseCommit))
-        #expect(commitIDs.contains(siblingCommit))
+        #expect(!commitIDs.contains(siblingCommit))
     }
 }

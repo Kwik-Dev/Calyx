@@ -212,32 +212,276 @@ enum GitService {
         }
     }
 
-    /// Commit history for an already-resolved repository, skipping the
-    /// `rev-parse` that `commitLog(workDir:maxCount:skip:)` needs to
-    /// classify the work tree.
+    /// A ref scope already resolved to concrete git-log arguments -- no
+    /// further `autoRefs`/`refList` resolution needed. `.all` is kept
+    /// distinct from an explicit ref list rather than being expanded to
+    /// one, so it still becomes the `--all` flag.
+    enum GitResolvedRefScope: Equatable, Sendable {
+        case all
+        case refs([String])
+    }
+
+    /// Resolves `selection` against `liveRefs`, a `refList` result the
+    /// caller already has in hand -- so a caller that fetched it for some
+    /// other reason (populating the ref picker, say) never pays for a
+    /// second `for-each-ref` just to resolve `.auto` or `.all`. `liveRefs`
+    /// is also what an `.auto` selection's synthesized upstream and base
+    /// refs are validated against: `%(upstream)` and a remote's
+    /// `<remote>/HEAD` symref both answer from config alone, so either can
+    /// still name a ref `git fetch --prune` (or a remote's renamed default
+    /// branch) has since deleted.
+    static func resolvedRefScope(
+        location: GitRepositoryLocation,
+        selection: GitRefSelection,
+        liveRefs: [GitRefInfo]
+    ) async throws -> GitResolvedRefScope {
+        switch selection {
+        case .auto:
+            return .refs(try await autoRefs(location: location, liveRefs: liveRefs))
+        case .all:
+            // Zero refs is not always "unborn": a detached HEAD with its
+            // branch deleted still has real history at HEAD, just no ref
+            // naming it, and `--all` on a repository with no refs at all
+            // exits nonzero rather than answering that history. `autoRefs`
+            // already answers the right thing for both zero-ref shapes
+            // (`["HEAD"]` for detached, `[]` for actually unborn).
+            guard !liveRefs.isEmpty else {
+                return .refs(try await autoRefs(location: location, liveRefs: liveRefs))
+            }
+            return .all
+        case .refs(let names):
+            return .refs(names.filter(isSafeRefArgument))
+        }
+    }
+
+    /// Commit history for an already-resolved repository and ref scope --
+    /// no `autoRefs`/`refList` resolution happens here at all, so a caller
+    /// that already resolved `selection` (via `resolvedRefScope`) never
+    /// triggers it a second time.
     static func commitLog(
         location: GitRepositoryLocation,
+        resolvedScope: GitResolvedRefScope,
         maxCount: Int,
         skip: Int
     ) async throws -> [GitCommit] {
-        let format = "%x1f%H%x1f%h%x1f%s%x1f%an%x1f%ar%x1f%P%x1e"
-        var args = ["log"]
-        // Linked worktrees share refs, so --all would include sibling branch
-        // history. They are the ones whose Git directory sits below the
-        // common one.
-        if location.gitDirectory == location.gitCommonDirectory {
-            args.append("--all")
+        var refArgs: [String]
+        switch resolvedScope {
+        case .all:
+            refArgs = ["--all"]
+        case .refs(let names):
+            refArgs = names
+            // A ref name that also names a path in the work tree (a branch
+            // called "docs", say, next to a "docs" directory) is ambiguous
+            // to `git log` unless something marks where revisions end and
+            // paths begin; `--all` needs no such marker, since it can never
+            // be mistaken for a path.
+            if !refArgs.isEmpty {
+                refArgs.append("--")
+            }
         }
-        args += ["--graph", "--format=\(format)",
-                 "--max-count=\(maxCount)", "--skip=\(skip)"]
+        guard !refArgs.isEmpty else { return [] }
+
+        let format = "%x1f%H%x1f%h%x1f%s%x1f%an%x1f%ar%x1f%P%x1f%D%x1e"
+        let args = ["log", "--graph", "--format=\(format)",
+                    "--max-count=\(maxCount)", "--skip=\(skip)"] + refArgs
 
         let output = try await run(args: args, workDir: location.workTree)
         return parseCommitLog(output)
     }
 
-    static func commitLog(workDir: String, maxCount: Int, skip: Int) async throws -> [GitCommit] {
+    /// Commit history for an already-resolved repository, scoped by
+    /// `selection`, skipping the `rev-parse` that
+    /// `commitLog(workDir:selection:maxCount:skip:)` needs to resolve it.
+    /// `.auto` and `.all` each need `liveRefs` to resolve (see
+    /// `resolvedRefScope`), fetched here with exactly one `refList` call;
+    /// `.refs` needs no such fetch and gets none. A caller that already
+    /// has `liveRefs` for some other reason should call
+    /// `resolvedRefScope`/`commitLog(resolvedScope:)` directly instead of
+    /// this method, to avoid fetching them twice.
+    static func commitLog(
+        location: GitRepositoryLocation,
+        selection: GitRefSelection,
+        maxCount: Int,
+        skip: Int
+    ) async throws -> [GitCommit] {
+        let resolvedScope: GitResolvedRefScope
+        switch selection {
+        case .auto, .all:
+            let liveRefs = try await refList(location: location)
+            resolvedScope = try await resolvedRefScope(location: location, selection: selection, liveRefs: liveRefs)
+        case .refs(let names):
+            resolvedScope = .refs(names.filter(isSafeRefArgument))
+        }
+        return try await commitLog(location: location, resolvedScope: resolvedScope, maxCount: maxCount, skip: skip)
+    }
+
+    static func commitLog(
+        workDir: String,
+        selection: GitRefSelection,
+        maxCount: Int,
+        skip: Int
+    ) async throws -> [GitCommit] {
         let location = try await repositoryLocation(workDir: workDir)
-        return try await commitLog(location: location, maxCount: maxCount, skip: skip)
+        return try await commitLog(location: location, selection: selection, maxCount: maxCount, skip: skip)
+    }
+
+    /// The VSCode-equivalent "Auto" starting point for a repository's
+    /// history: HEAD, its upstream, and the upstream's remote's default
+    /// branch, each added only once and only when it names a ref the
+    /// earlier ones did not already name. An unborn HEAD names nothing to
+    /// log from, so it yields no refs at all rather than falling back to
+    /// something else. Fetches its own `refList` to validate the upstream
+    /// and base against (see the `liveRefs` overload for a caller that
+    /// already has one).
+    static func autoRefs(location: GitRepositoryLocation) async throws -> [String] {
+        // Started together rather than one after the other: `refList` is
+        // needed only in the `.normal` case below, but it costs nothing to
+        // have its answer ready in parallel with `headSummary`'s rather
+        // than waiting on it afterward.
+        async let headResult = autoRefsHead(location: location)
+        async let liveRefsResult = refList(location: location)
+        switch try await headResult {
+        case .unborn:
+            return []
+        case .detached:
+            return ["HEAD"]
+        case .normal(let branch):
+            return try await autoRefs(branch: branch, location: location, liveRefs: liveRefsResult)
+        }
+    }
+
+    /// `autoRefs`, validated against `liveRefs` -- a `refList` result the
+    /// caller already has -- instead of fetching its own. HEAD's own
+    /// branch ref needs no such validation: it comes from `headSummary`,
+    /// which resolves it via `symbolic-ref`/`rev-parse --verify`, so by
+    /// the time this is reached (past the unborn/detached cases) it is
+    /// already known to exist.
+    static func autoRefs(location: GitRepositoryLocation, liveRefs: [GitRefInfo]) async throws -> [String] {
+        switch try await autoRefsHead(location: location) {
+        case .unborn:
+            return []
+        case .detached:
+            return ["HEAD"]
+        case .normal(let branch):
+            return try await autoRefs(branch: branch, location: location, liveRefs: liveRefs)
+        }
+    }
+
+    /// What HEAD is, for the two `autoRefs` overloads above to share the
+    /// unborn/detached handling that precedes needing `liveRefs` at all.
+    private enum AutoRefsHead {
+        case unborn
+        case detached
+        case normal(branch: String)
+    }
+
+    private static func autoRefsHead(location: GitRepositoryLocation) async throws -> AutoRefsHead {
+        let head = try await headSummary(workDir: location.workTree)
+        guard let branch = head.branch else {
+            // No branch name: detached HEAD, with exactly one thing to log
+            // from and no upstream or base to add to it.
+            return .detached
+        }
+        guard head.shortHash != nil else {
+            // A branch name but no commit yet: unborn, with nothing to
+            // log from at all.
+            return .unborn
+        }
+        return .normal(branch: branch)
+    }
+
+    /// The upstream/base resolution shared by both `autoRefs` overloads,
+    /// once HEAD is known to be a normal branch with a commit.
+    private static func autoRefs(
+        branch: String,
+        location: GitRepositoryLocation,
+        liveRefs: [GitRefInfo]
+    ) async throws -> [String] {
+        var refs: [String] = ["refs/heads/\(branch)"]
+        let liveNames = Set(liveRefs.map(\.fullName))
+
+        // `%(upstream)` and `%(upstream:remotename)` in one call rather than
+        // two: the remote name is what the base ref below is keyed on, and
+        // deriving it by parsing `refs/remotes/<remote>/...` back out of the
+        // upstream ref (as a second `for-each-ref` would otherwise require)
+        // is exactly what this atom already answers directly.
+        let upstreamInfo = try await runReportingNoAnswerAsNil(
+            args: [
+                "for-each-ref", "--format=%(upstream)\u{01}%(upstream:remotename)",
+                "refs/heads/\(branch)",
+            ],
+            workDir: location.workTree
+        )
+        let upstreamFields = (upstreamInfo ?? "").components(separatedBy: "\u{01}")
+        let upstreamRef = upstreamFields.first.flatMap { $0.isEmpty ? nil : $0 }
+        let upstreamRemote = upstreamFields.count > 1 ? upstreamFields[1] : ""
+        if let upstreamRef, liveNames.contains(upstreamRef), !refs.contains(upstreamRef) {
+            refs.append(upstreamRef)
+        }
+
+        let remote = upstreamRemote.isEmpty ? "origin" : upstreamRemote
+        let base = try await runReportingNoAnswerAsNil(
+            args: ["symbolic-ref", "-q", "refs/remotes/\(remote)/HEAD"],
+            workDir: location.workTree
+        )
+        if let base, !base.isEmpty, liveNames.contains(base), !refs.contains(base) {
+            refs.append(base)
+        }
+
+        return refs
+    }
+
+    /// Every local branch, remote branch, and tag the repository has, for
+    /// the ref picker's menu. `%(symref)` is non-empty only for a symbolic
+    /// ref such as `refs/remotes/origin/HEAD`, which names a branch rather
+    /// than being one, so those are excluded.
+    static func refList(location: GitRepositoryLocation) async throws -> [GitRefInfo] {
+        // `for-each-ref`'s format engine has no `%x01`-style hex-escape
+        // atom the way `log --format` does; a literal control character
+        // in the argument itself is what actually reaches it, since
+        // `Process.arguments` bypasses the shell entirely. `for-each-ref`
+        // appends a newline after every record on its own.
+        let format = "%(refname)\u{01}%(refname:short)\u{01}%(symref)"
+        let output = try await run(
+            args: ["for-each-ref", "--format=\(format)", "refs/heads", "refs/remotes", "refs/tags"],
+            workDir: location.workTree
+        )
+        guard !output.isEmpty else { return [] }
+
+        var refs: [GitRefInfo] = []
+        for record in output.components(separatedBy: "\n") {
+            let trimmed = record.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let fields = trimmed.components(separatedBy: "\u{01}")
+            guard fields.count >= 3 else { continue }
+            let fullName = fields[0]
+            let shortName = fields[1]
+            guard fields[2].isEmpty else { continue }
+
+            let kind: GitRefInfo.Kind
+            if fullName.hasPrefix("refs/heads/") {
+                kind = .localBranch
+            } else if fullName.hasPrefix("refs/remotes/") {
+                kind = .remoteBranch
+            } else if fullName.hasPrefix("refs/tags/") {
+                kind = .tag
+            } else {
+                continue
+            }
+            refs.append(GitRefInfo(fullName: fullName, shortName: shortName, kind: kind))
+        }
+        return refs
+    }
+
+    /// Whether `ref` is safe to hand to `git log` as a positional revision
+    /// argument. Only `HEAD` and a fully-qualified ref name are allowed --
+    /// nothing that could be mistaken for an option (a leading `-`) and
+    /// nothing carrying whitespace or control characters a shell-adjacent
+    /// consumer might mis-split.
+    static func isSafeRefArgument(_ ref: String) -> Bool {
+        guard ref == "HEAD" || ref.hasPrefix("refs/") else { return false }
+        guard !ref.hasPrefix("-") else { return false }
+        return !ref.unicodeScalars.contains { $0 == " " || CharacterSet.controlCharacters.contains($0) }
     }
 
     static func commitFiles(hash: String, workDir: String) async throws -> [CommitFileEntry] {
@@ -674,7 +918,7 @@ enum GitService {
                     guard !trimmed.isEmpty else { continue }
 
                     let fields = trimmed.components(separatedBy: "\u{1F}")
-                    // Fields: ["", hash, shortHash, message, author, relativeDate, parents]
+                    // Fields: ["", hash, shortHash, message, author, relativeDate, parents, decoration]
                     // First field is empty because record starts with \x1f
                     guard fields.count >= 6 else { continue }
                     let hash = fields[1]
@@ -684,6 +928,8 @@ enum GitService {
                     let relativeDate = fields[5]
                     let parentIDsStr = fields.count > 6 ? fields[6] : ""
                     let parentIDs = parentIDsStr.isEmpty ? [] : parentIDsStr.split(separator: " ").map(String.init)
+                    let decoration = fields.count > 7 ? fields[7] : ""
+                    let refNames = parseRefNames(decoration)
 
                     commits.append(GitCommit(
                         id: hash,
@@ -692,7 +938,8 @@ enum GitService {
                         author: author,
                         relativeDate: relativeDate,
                         parentIDs: parentIDs,
-                        graphPrefix: accumulatedGraphPrefix
+                        graphPrefix: accumulatedGraphPrefix,
+                        refNames: refNames
                     ))
                 }
                 accumulatedData = ""
@@ -701,6 +948,37 @@ enum GitService {
         }
 
         return commits
+    }
+
+    /// `%D`'s decoration string into the names it lists: a comma-and-space
+    /// separated list where the current branch is spelled `HEAD -> name`
+    /// (arrow stripped down to the branch name), a tag is spelled `tag:
+    /// name` (prefix stripped), and a bare `HEAD` (detached) is kept as-is.
+    static func parseRefNames(_ decoration: String) -> [String] {
+        guard !decoration.isEmpty else { return [] }
+
+        var seenNames: Set<String> = []
+        var names: [String] = []
+        for entry in decoration.components(separatedBy: ", ") {
+            let name: String
+            if entry.hasPrefix("HEAD -> ") {
+                name = String(entry.dropFirst("HEAD -> ".count))
+            } else if entry.hasPrefix("tag: ") {
+                name = String(entry.dropFirst("tag: ".count))
+            } else {
+                name = entry
+            }
+            // A remote's `<remote>/HEAD` names its default-branch pointer,
+            // not a ref a user picks -- `refList` excludes that same symref
+            // from the ref picker's menu for the same reason. A bare "HEAD"
+            // (detached) is a real answer and is not excluded by this.
+            guard name == "HEAD" || !name.hasSuffix("/HEAD") else { continue }
+            // `HEAD -> main` and a `tag: main` both display as "main"; showing
+            // it twice would tell the user nothing a single badge doesn't.
+            guard seenNames.insert(name).inserted else { continue }
+            names.append(name)
+        }
+        return names
     }
 
     static func parseCommitFiles(_ output: String, commitHash: String) -> [CommitFileEntry] {
