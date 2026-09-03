@@ -59,6 +59,7 @@ Calyx exposes panes, commands, captured output, browser tabs, language servers, 
 ### Code review and agent coordination
 
 - **Git Source Control** -- working changes, staging state, commit graph, branch visualization, and inline diffs in the sidebar, as one collapsible section per repository the window can reach, including linked worktrees and checked-out submodules
+- **Commit Log Ref Picker** -- the commit graph uses an Auto scope modelled on VSCode's (the checked-out branch, its upstream, and the remote's default branch), with a per-repository picker for all references or any set of branches, remotes, and tags, and branch and tag badges on commit rows
 - **Diff Review Comments** -- comment on individual lines and submit a complete review directly to an agent pane ([demo video](https://www.youtube.com/watch?v=_O2Lr4oFf4c))
 - **AI Agent IPC** -- built-in MCP messaging lets agents discover and communicate with peers across tabs and panes ([demo video](https://www.youtube.com/watch?v=Xty0ad9gGcM))
 - **LSP Proxy MCP** -- hover, definition, references, rename, diagnostics, and other language-server features for agents; missing servers can be installed from Settings
@@ -75,6 +76,7 @@ Calyx exposes panes, commands, captured output, browser tabs, language servers, 
 
 - **libghostty Engine** -- Metal GPU-accelerated rendering powered by Ghostty v1.3.1
 - **Tab Groups and Split Panes** -- color-coded collapsible groups, tab renaming and reordering, horizontal and vertical splits, directional focus, and split zoom
+- **Tab Context Menu** -- right-click or Ctrl+click a tab in the tab bar or sidebar to close it, close the other tabs or the tabs to its right in its group, or rename it, without switching to it
 - **Command Palette** -- search and run operations with `Cmd+Shift+P`
 - **Ghostty Compatibility** -- read `~/.config/ghostty/config`, hot-reload most settings, and bind Calyx operations through Ghostty keybind actions
 - **Search and Navigation** -- highlighted scrollback search, native overlay scrollbar, smooth trackpad and mouse-wheel scrolling, and prompt-line cursor click-to-move
