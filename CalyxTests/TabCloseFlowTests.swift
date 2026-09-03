@@ -12,6 +12,8 @@
 //  - Double-removal of same tab ID is safe (idempotent)
 //  - Removing only tab from a group switches to next group
 //  - Removing last tab from last group returns .windowShouldClose
+//  - Emptying a NON-active middle group leaves activeGroupID unchanged
+//  - Emptying a NON-active last group leaves activeGroupID unchanged
 //
 
 import XCTest
@@ -180,6 +182,66 @@ final class TabCloseFlowTests: XCTestCase {
         XCTAssertEqual(session.activeGroupID, group2.id, "Should switch to remaining group")
         if case .switchedGroup(let gid, _) = result {
             XCTAssertEqual(gid, group2.id, "Should switch to group2")
+        } else {
+            XCTFail("Expected .switchedGroup, got \(result)")
+        }
+    }
+
+    // ==================== 6. Emptying A Non-Active Group Leaves activeGroupID Unchanged ====================
+
+    /// Groups [G1 (tab A, active group), G2 (tab B), G3 (tab C)],
+    /// `activeGroupID = G1`. Removing B (G2's only tab) empties and
+    /// removes G2, a middle, NON-active group. By hand, mirroring
+    /// `WindowSession.removeGroup(id:)`'s own rule: `activeGroupID` only
+    /// moves to the index neighbour when the REMOVED group was the
+    /// active one; G2 was not, so `activeGroupID` stays G1, and the
+    /// result reports G1's own current state (`.switchedGroup(G1, A)`),
+    /// exactly as `removeGroup` does for a non-active group.
+    func test_removeTab_empties_nonActive_middleGroup_leaves_activeGroupID_unchanged() {
+        let tabA = makeTab(title: "A")
+        let tabB = makeTab(title: "B")
+        let tabC = makeTab(title: "C")
+        let group1 = makeGroup(name: "G1", tabs: [tabA], activeTabID: tabA.id)
+        let group2 = makeGroup(name: "G2", tabs: [tabB], activeTabID: tabB.id)
+        let group3 = makeGroup(name: "G3", tabs: [tabC], activeTabID: tabC.id)
+        let session = WindowSession(groups: [group1, group2, group3], activeGroupID: group1.id)
+
+        let result = session.removeTab(id: tabB.id, fromGroup: group2.id)
+
+        XCTAssertEqual(session.groups.map(\.id), [group1.id, group3.id],
+                       "G2 must be removed, leaving G1 and G3 in order")
+        XCTAssertEqual(session.activeGroupID, group1.id,
+                       "Emptying a non-active group must leave activeGroupID unchanged")
+        if case .switchedGroup(let gid, let tid) = result {
+            XCTAssertEqual(gid, group1.id, "Result must report the still-active group, G1")
+            XCTAssertEqual(tid, tabA.id, "Result must report G1's own active tab, A")
+        } else {
+            XCTFail("Expected .switchedGroup, got \(result)")
+        }
+    }
+
+    /// Same layout as above, [G1 (active), G2, G3], but this time removes
+    /// C (G3's only tab): G3 is the LAST group, not merely a middle one.
+    /// By hand: G3 was not the active group, so `activeGroupID` stays G1
+    /// regardless of G3's index, leaving groups [G1, G2].
+    func test_removeTab_empties_nonActive_lastGroup_leaves_activeGroupID_unchanged() {
+        let tabA = makeTab(title: "A")
+        let tabB = makeTab(title: "B")
+        let tabC = makeTab(title: "C")
+        let group1 = makeGroup(name: "G1", tabs: [tabA], activeTabID: tabA.id)
+        let group2 = makeGroup(name: "G2", tabs: [tabB], activeTabID: tabB.id)
+        let group3 = makeGroup(name: "G3", tabs: [tabC], activeTabID: tabC.id)
+        let session = WindowSession(groups: [group1, group2, group3], activeGroupID: group1.id)
+
+        let result = session.removeTab(id: tabC.id, fromGroup: group3.id)
+
+        XCTAssertEqual(session.groups.map(\.id), [group1.id, group2.id],
+                       "G3 must be removed, leaving G1 and G2 in order")
+        XCTAssertEqual(session.activeGroupID, group1.id,
+                       "Emptying a non-active group must leave activeGroupID unchanged")
+        if case .switchedGroup(let gid, let tid) = result {
+            XCTAssertEqual(gid, group1.id, "Result must report the still-active group, G1")
+            XCTAssertEqual(tid, tabA.id, "Result must report G1's own active tab, A")
         } else {
             XCTFail("Expected .switchedGroup, got \(result)")
         }

@@ -144,20 +144,6 @@ final class AuxiliaryWindowCloseE2ETests: CalyxUITestCase {
 
     // MARK: - Helpers
 
-    /// Mirrors `MenuShortcutsUITests.waitForGroupCount`'s exact
-    /// poll-don't-sleep shape, applied to `countTabBarTabs()` instead of
-    /// the sidebar group count.
-    @discardableResult
-    private func waitForTabCount(_ expected: Int, timeout: TimeInterval = 5) -> Int {
-        let deadline = Date().addingTimeInterval(timeout)
-        var observed = countTabBarTabs()
-        while observed != expected, Date() < deadline {
-            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
-            observed = countTabBarTabs()
-        }
-        return observed
-    }
-
     /// Mirrors `SettingsWindowE2ETests
     /// .test_settingsWindow_toolbarTabsHaveImagesAndSwitchContent`'s own
     /// field-verified boilerplate exactly: back-to-back app launches
@@ -180,7 +166,7 @@ final class AuxiliaryWindowCloseE2ETests: CalyxUITestCase {
     private func fixTabCountAtTwo() {
         createNewTabViaMenu()
         XCTAssertEqual(
-            waitForTabCount(2), 2,
+            waitForCount(countTabBarTabs, toEqual: 2), 2,
             "Precondition: expected exactly two tabs before opening the auxiliary window under test."
         )
     }
@@ -253,7 +239,7 @@ final class AuxiliaryWindowCloseE2ETests: CalyxUITestCase {
         // THE NEGATIVE CONDITION, part 2: the terminal's own tabs, fixed
         // at 2 by fixTabCountAtTwo() above, must be completely untouched.
         XCTAssertEqual(
-            waitForTabCount(2), 2,
+            waitForCount(countTabBarTabs, toEqual: 2), 2,
             "Terminal tab count changed after Cmd+W closed About -- Cmd+W must have misrouted to the " +
             "terminal window's active tab (the exact pre-fix symptom this test exists to catch)."
         )
@@ -311,7 +297,7 @@ final class AuxiliaryWindowCloseE2ETests: CalyxUITestCase {
 
         // THE NEGATIVE CONDITION, part 2.
         XCTAssertEqual(
-            waitForTabCount(2), 2,
+            waitForCount(countTabBarTabs, toEqual: 2), 2,
             "Terminal tab count changed after Cmd+W closed Settings -- the terminal's tabs must be untouched."
         )
     }
@@ -357,7 +343,7 @@ final class AuxiliaryWindowCloseE2ETests: CalyxUITestCase {
 
         // THE NEGATIVE CONDITION, part 2.
         XCTAssertEqual(
-            waitForTabCount(2), 2,
+            waitForCount(countTabBarTabs, toEqual: 2), 2,
             "Terminal tab count changed after Cmd+W closed the Session Browser -- the terminal's tabs must be untouched."
         )
     }

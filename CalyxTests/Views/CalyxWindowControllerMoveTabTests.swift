@@ -38,32 +38,11 @@ import AppKit
 @MainActor
 final class CalyxWindowControllerMoveTabTests: XCTestCase {
 
-    private struct GroupFixture {
-        let controller: CalyxWindowController
-        let group: TabGroup
-        let tabs: [Tab]
-    }
-
-    /// Mirrors `CalyxWindowControllerCloseTabTests.makeGroupFixture(tabCount:)`.
-    private func makeGroupFixture(tabCount: Int) -> GroupFixture {
-        let tabs = (0..<tabCount).map { Tab(title: "Tab \($0)") }
-        let group = TabGroup(name: "Default", tabs: tabs, activeTabID: tabs.first?.id)
-        let session = WindowSession(groups: [group], activeGroupID: group.id)
-        let window = CalyxWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
-        )
-        let controller = CalyxWindowController(window: window, windowSession: session, restoring: true)
-        return GroupFixture(controller: controller, group: group, tabs: tabs)
-    }
-
     /// By hand: [Tab 0, Tab 1, Tab 2], move Tab 2 (index 2, the last) by
     /// +1. newIndex = ((2 + 1) % 3 + 3) % 3 = 0, so Tab 2 wraps to the
     /// front: [Tab 2, Tab 0, Tab 1].
     func test_processMoveTab_reordersGroupTabs() {
-        let fixture = makeGroupFixture(tabCount: 3)
+        let fixture = GroupFixture.make(tabCount: 3)
         let target = fixture.tabs[2]
 
         fixture.controller.processMoveTab(tab: target, group: fixture.group, amount: 1)
@@ -81,7 +60,7 @@ final class CalyxWindowControllerMoveTabTests: XCTestCase {
     /// remain active by id after processMoveTab, not just after the raw
     /// TabGroup call.
     func test_processMoveTab_preservesActiveTabID_whenActiveTabIsTheOneMoved() {
-        let fixture = makeGroupFixture(tabCount: 3)
+        let fixture = GroupFixture.make(tabCount: 3)
         let target = fixture.tabs[2]
         fixture.group.activeTabID = target.id
 
@@ -101,12 +80,12 @@ final class CalyxWindowControllerMoveTabTests: XCTestCase {
 
     // MARK: - Notification post ("Tactic A")
 
-    /// Unlike `GroupFixture` above, `findTab(for:)` needs a real
+    /// Unlike `GroupFixture`, `findTab(for:)` needs a real
     /// `SurfaceRegistry` entry on the tab under test -- mirrors
     /// `CalyxWindowControllerCloseWindowTests.SurfaceOwningFixture`. Only
     /// `targetIndex`'s `Tab` gets a real registry/surface (the one
     /// `.ghosttyMoveTab` will be posted for); its siblings are plain
-    /// `Tab(title:)`, matching `makeGroupFixture(tabCount:)`'s shape --
+    /// `Tab(title:)`, matching `GroupFixture.make(tabCount:)`'s shape --
     /// `findTab(for:)` only needs ONE tab in `group` to resolve the
     /// posted surface back to `(tab, group)`.
     private struct SurfaceOwningGroupFixture {

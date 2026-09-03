@@ -129,13 +129,16 @@ class CalyxUITestCase: XCTestCase {
             .count
     }
 
-    func countTabBarTabs() -> Int {
-        // Match exactly "calyx.tabBar.tab.<UUID>" and nothing else (no .closeButton suffix)
+    /// Matches exactly "calyx.tabBar.tab.<UUID>" and nothing else (no
+    /// `.closeButton` suffix).
+    func tabBarTabsQuery() -> XCUIElementQuery {
         let uuidPattern = "[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}"
         let predicate = NSPredicate(format: "identifier MATCHES %@", "calyx\\.tabBar\\.tab\\.\(uuidPattern)")
-        return app.descendants(matching: .any)
-            .matching(predicate)
-            .count
+        return app.descendants(matching: .any).matching(predicate)
+    }
+
+    func countTabBarTabs() -> Int {
+        tabBarTabsQuery().count
     }
 
     /// The identifiers of every tab currently shown in the horizontal tab
@@ -148,14 +151,28 @@ class CalyxUITestCase: XCTestCase {
     /// leaving the group COUNT unchanged (which a no-op switch would also
     /// satisfy).
     func currentTabBarTabIdentifiers() -> Set<String> {
-        let uuidPattern = "[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}"
-        let predicate = NSPredicate(format: "identifier MATCHES %@", "calyx\\.tabBar\\.tab\\.\(uuidPattern)")
-        return Set(
-            app.descendants(matching: .any)
-                .matching(predicate)
-                .allElementsBoundByIndex
-                .map { $0.identifier }
-        )
+        Set(tabBarTabsQuery().allElementsBoundByIndex.map { $0.identifier })
+    }
+
+    /// Polls `read()` until it returns `expected` or `timeout` elapses,
+    /// pumping the run loop 50 ms at a time between checks so the app's own
+    /// run loop keeps processing. Returns the last observed value.
+    @discardableResult
+    func waitForCount(_ read: () -> Int, toEqual expected: Int, timeout: TimeInterval = 5) -> Int {
+        let deadline = Date().addingTimeInterval(timeout)
+        var observed = read()
+        while observed != expected, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            observed = read()
+        }
+        return observed
+    }
+
+    /// Polls `countTabBarTabs()` until it equals `count` or `timeout`
+    /// elapses. Returns whether the count was reached.
+    @discardableResult
+    func waitForTabCount(_ count: Int, timeout: TimeInterval = 5) -> Bool {
+        waitForCount(countTabBarTabs, toEqual: count, timeout: timeout) == count
     }
 
     /// Fixed scratch directory the team lead reads screenshots from by

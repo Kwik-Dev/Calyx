@@ -2,9 +2,27 @@
 // Calyx
 //
 // A reusable inline text field for renaming items in place.
-// Wraps NSTextField with click-outside-to-commit, Enter/Escape handling.
+// Wraps NSTextField with click-outside-to-commit (any mouse button
+// pressed outside the field commits), Enter/Escape handling, and
+// focus requested on attachment to a window (see InlineEditorTextField).
 
 import SwiftUI
+
+/// The inline editor's text field. Requests keyboard focus the first
+/// time it is attached to a window, in `viewDidMoveToWindow()`, because
+/// SwiftUI attaches the field some time after `makeNSView` returns and
+/// a focus request made before that point is silently ignored by
+/// `selectText(_:)`. Later re-attachments do not take focus again.
+final class InlineEditorTextField: NSTextField {
+    private var hasRequestedInitialFocus = false
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil, !hasRequestedInitialFocus else { return }
+        hasRequestedInitialFocus = true
+        selectText(nil)
+    }
+}
 
 struct InlineTextField: NSViewRepresentable {
     let initialText: String
@@ -19,7 +37,7 @@ struct InlineTextField: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSTextField {
-        let textField = NSTextField()
+        let textField = InlineEditorTextField()
         textField.isBordered = false
         textField.drawsBackground = false
         textField.focusRingType = .none
@@ -38,9 +56,6 @@ struct InlineTextField: NSViewRepresentable {
 
         context.coordinator.textField = textField
 
-        DispatchQueue.main.async {
-            textField.selectText(nil)
-        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             context.coordinator.installClickMonitor()
         }
@@ -66,7 +81,9 @@ struct InlineTextField: NSViewRepresentable {
         }
 
         func installClickMonitor() {
-            clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] event in
+            clickMonitor = NSEvent.addLocalMonitorForEvents(
+                matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+            ) { [weak self] event in
                 guard let self, !self.didEnd else { return event }
                 if let textField = self.textField,
                    let eventWindow = event.window,

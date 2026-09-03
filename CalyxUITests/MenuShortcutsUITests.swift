@@ -69,14 +69,7 @@ final class MenuShortcutsUITests: CalyxUITestCase {
     /// `Thread.sleep` waits for state changes triggered by Group menu actions.
     @discardableResult
     private func waitForGroupCount(_ expected: Int, timeout: TimeInterval = 5) -> Int {
-        let deadline = Date().addingTimeInterval(timeout)
-        var observed = currentGroupCount()
-        while observed != expected, Date() < deadline {
-            // Pump the runloop briefly so the sidebar can update.
-            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
-            observed = currentGroupCount()
-        }
-        return observed
+        waitForCount(currentGroupCount, toEqual: expected, timeout: timeout)
     }
 
     /// Polls `descendants(matching:.splitter).count` on the first window until

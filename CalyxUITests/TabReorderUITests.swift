@@ -25,9 +25,7 @@ final class TabReorderUITests: CalyxUITestCase {
     /// Tab-bar tab elements (identifier `calyx.tabBar.tab.<UUID>`, no
     /// `.closeButton` suffix) sorted left-to-right by frame.
     private func tabBarTabsByPosition() -> [XCUIElement] {
-        let predicate = NSPredicate(format: "identifier MATCHES %@",
-                                    "calyx\\.tabBar\\.tab\\.\(Self.uuidPattern)")
-        let query = app.descendants(matching: .any).matching(predicate)
+        let query = tabBarTabsQuery()
         return (0..<query.count)
             .map { query.element(boundBy: $0) }
             .sorted { $0.frame.minX < $1.frame.minX }
