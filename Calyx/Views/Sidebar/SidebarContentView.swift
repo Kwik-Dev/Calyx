@@ -16,6 +16,8 @@ struct SidebarContentView: View {
     var onTabSelected: ((UUID) -> Void)?
     var onNewGroup: (() -> Void)?
     var onCloseTab: ((UUID) -> Void)?
+    var onCloseOtherTabs: ((UUID) -> Void)?
+    var onCloseTabsToTheRight: ((UUID) -> Void)?
     var onGroupRenamed: (() -> Void)?
     var onTabRenamed: (() -> Void)?
     var onCollapseToggled: (() -> Void)?
@@ -160,6 +162,8 @@ struct SidebarContentView: View {
                                 onGroupSelected: onGroupSelected,
                                 onTabSelected: onTabSelected,
                                 onCloseTab: onCloseTab,
+                                onCloseOtherTabs: onCloseOtherTabs,
+                                onCloseTabsToTheRight: onCloseTabsToTheRight,
                                 onGroupRenamed: onGroupRenamed,
                                 onTabRenamed: onTabRenamed,
                                 onCollapseToggled: onCollapseToggled,
@@ -275,6 +279,8 @@ private struct GroupSectionView: View {
     var onGroupSelected: ((UUID) -> Void)?
     var onTabSelected: ((UUID) -> Void)?
     var onCloseTab: ((UUID) -> Void)?
+    var onCloseOtherTabs: ((UUID) -> Void)?
+    var onCloseTabsToTheRight: ((UUID) -> Void)?
     var onGroupRenamed: (() -> Void)?
     var onTabRenamed: (() -> Void)?
     var onCollapseToggled: (() -> Void)?
@@ -404,8 +410,12 @@ private struct GroupSectionView: View {
                         TabRowItemView(
                             tab: tab,
                             isActive: tab.id == activeTabID && isActiveGroup,
+                            tabIndex: index,
+                            tabCount: group.tabs.count,
                             onSelected: { onTabSelected?(tab.id) },
                             onClose: { onCloseTab?(tab.id) },
+                            onCloseOtherTabs: { onCloseOtherTabs?(tab.id) },
+                            onCloseTabsToTheRight: { onCloseTabsToTheRight?(tab.id) },
                             onTabRenamed: onTabRenamed,
                             onDragChanged: { translation in
                                 // Tab reorder: equivalent to the former
@@ -538,8 +548,12 @@ private struct GroupHeaderBackgroundModifier: ViewModifier {
 private struct TabRowItemView: View {
     let tab: Tab
     let isActive: Bool
+    let tabIndex: Int
+    let tabCount: Int
     var onSelected: (() -> Void)?
     var onClose: (() -> Void)?
+    var onCloseOtherTabs: (() -> Void)?
+    var onCloseTabsToTheRight: (() -> Void)?
     var onTabRenamed: (() -> Void)?
     var onDragChanged: ((CGSize) -> Void)?
     var onDragEnded: (() -> Void)?
@@ -591,6 +605,18 @@ private struct TabRowItemView: View {
             },
             onDragEnded: {
                 onDragEnded?()
+            },
+            contextMenu: {
+                TabContextMenu.make(
+                    tabIndex: tabIndex,
+                    tabCount: tabCount,
+                    actions: .init(
+                        close: { onClose?() },
+                        closeOthers: { onCloseOtherTabs?() },
+                        closeToTheRight: { onCloseTabsToTheRight?() },
+                        rename: { isEditing = true }
+                    )
+                )
             }
         ) {
             HStack(spacing: 4) {

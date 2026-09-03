@@ -116,24 +116,10 @@ class WindowSession: Identifiable {
             return .switchedTab(groupID: groupID, tabID: newActiveTab.id)
         }
 
-        // Group is now empty — remove it
-        groups.remove(at: groupIndex)
-
-        if groups.isEmpty {
-            activeGroupID = nil
-            return .windowShouldClose
-        }
-
-        // Select next or previous group
-        let newGroupIndex = groupIndex < groups.count ? groupIndex : groups.count - 1
-        let newGroup = groups[newGroupIndex]
-        activeGroupID = newGroup.id
-
-        if let tab = newGroup.activeTab {
-            return .switchedGroup(groupID: newGroup.id, tabID: tab.id)
-        }
-
-        return .windowShouldClose
+        // Group is now empty — remove it under removeGroup's rule: the
+        // active group moves to the neighbour only if the emptied group
+        // was active.
+        return removeGroup(id: groupID)
     }
 
     @discardableResult

@@ -36,6 +36,8 @@ struct MainContentView: View {
     var onNewTab: (() -> Void)?
     var onNewGroup: (() -> Void)?
     var onCloseTab: ((UUID) -> Void)?
+    var onCloseOtherTabs: ((UUID) -> Void)?
+    var onCloseTabsToTheRight: ((UUID) -> Void)?
     var onGroupRenamed: (() -> Void)?
     var onTabRenamed: (() -> Void)?
     var onToggleSidebar: (() -> Void)?
@@ -140,6 +142,8 @@ struct MainContentView: View {
                         onTabSelected: onTabSelected,
                         onNewGroup: onNewGroup,
                         onCloseTab: onCloseTab,
+                        onCloseOtherTabs: onCloseOtherTabs,
+                        onCloseTabsToTheRight: onCloseTabsToTheRight,
                         onGroupRenamed: onGroupRenamed,
                         onTabRenamed: onTabRenamed,
                         onCollapseToggled: onCollapseToggled,
@@ -177,6 +181,8 @@ struct MainContentView: View {
                                 onTabSelected: onTabSelected,
                                 onNewTab: onNewTab,
                                 onCloseTab: onCloseTab,
+                                onCloseOtherTabs: onCloseOtherTabs,
+                                onCloseTabsToTheRight: onCloseTabsToTheRight,
                                 onMoveTab: activeGroup != nil
                                     ? { from, to in onMoveTab?(activeGroup!.id, from, to) }
                                     : nil,

@@ -143,6 +143,9 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// `SurfaceRegistry._testInsert`'s naming/gating convention. DO NOT
     /// use from production code.
     var _closingTabIDsForTesting: Set<UUID> { closingTabIDs }
+    /// Test seam: number of `activateCurrentTab()` runs since this
+    /// controller was created. DO NOT use from production code.
+    var _activateCurrentTabCountForTesting = 0
     #endif
     private var focusRequestID: UInt64 = 0
     private var isRestoring = false
@@ -533,7 +536,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
 
     private func browserController(for tabID: UUID) -> BrowserTabController? {
         if let existing = browserControllers[tabID] { return existing }
-        guard let tab = windowSession.groups.flatMap(\.tabs).first(where: { $0.id == tabID }),
+        guard let tab = windowSession.groups.tabAndGroup(tabID: tabID)?.tab,
               case .browser(let url) = tab.content else { return nil }
         let controller = BrowserTabController(url: url)
         wireBrowserCallbacks(controller: controller, tab: tab)
@@ -1236,10 +1239,10 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// Shared close body for the four close paths that can empty the
+    /// Shared close body for the five close paths that can empty the
     /// last managed window (`closeTab`, `closeActiveGroup`,
-    /// `closeAllTabsInGroup`, `closeSurfaceAndCleanUp`): sets
-    /// `isClosingForShutdown` eagerly, then closes the window.
+    /// `closeAllTabsInGroup`, `closeSurfaceAndCleanUp`, `closeTabs(_:in:)`):
+    /// sets `isClosingForShutdown` eagerly, then closes the window.
     /// `isClosingForShutdown` must be set BEFORE `window?.close()`:
     /// without this, `windowDidExitFullScreen`'s stale-snapshot guard
     /// (which checks `isClosingForShutdown`) is dead code during this
@@ -1337,6 +1340,12 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
             onNewTab: { [weak self] in self?.createNewTab() },
             onNewGroup: { [weak self] in self?.createNewGroup() },
             onCloseTab: { [weak self] tabID in self?.closeTab(id: tabID) },
+            onCloseOtherTabs: { [weak self] tabID in
+                self?.closeTabs(relativeTo: tabID, mode: GHOSTTY_ACTION_CLOSE_TAB_MODE_OTHER)
+            },
+            onCloseTabsToTheRight: { [weak self] tabID in
+                self?.closeTabs(relativeTo: tabID, mode: GHOSTTY_ACTION_CLOSE_TAB_MODE_RIGHT)
+            },
             onGroupRenamed: { [weak self] in self?.requestSave() },
             onTabRenamed: { [weak self] in self?.requestSave() },
             onToggleSidebar: { [weak self] in self?.toggleSidebar() },
@@ -1495,8 +1504,11 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - Tab Activation Helpers
 
     private func activateCurrentTab() {
-        guard let tab = activeTab else { return }
+        #if DEBUG
+        _activateCurrentTabCountForTesting += 1
+        #endif
         refreshHostingView()
+        guard let tab = activeTab else { return }
         switch tab.content {
         case .terminal:
             tab.registry.resumeAll()
@@ -1926,46 +1938,56 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         createBrowserTab(url: url)
     }
 
+    /// Releases everything this controller holds for `tab` (its browser
+    /// controller, diff task and state, review store) and destroys its
+    /// surfaces, killing any persistent session they were attached to.
+    /// Shared by every tab-closing path.
+    private func releaseTabResources(_ tab: Tab) {
+        browserControllers.removeValue(forKey: tab.id)
+        diffTasks[tab.id]?.cancel()
+        diffTasks.removeValue(forKey: tab.id)
+        diffStates.removeValue(forKey: tab.id)
+        reviewStores.removeValue(forKey: tab.id)
+        tearDownSurfaces(in: tab, isTerminating: false)
+    }
+
+    /// The prompt shown before closing `tab` when it still has
+    /// unsubmitted review comments. Returns `true` when the tab may close:
+    /// no such comments, or the user chose to discard them. Names `tab` in
+    /// the prompt text via `tab.displayTitle`, falling back to "Untitled"
+    /// for the empty title a diff tab gets when its source path's last
+    /// path component is itself empty.
+    private func confirmClosingDespiteUnsubmittedReviewComments(_ tab: Tab) -> Bool {
+        guard let store = reviewStores[tab.id], store.hasUnsubmittedComments else { return true }
+        let name = tab.displayTitle.isEmpty ? "Untitled" : tab.displayTitle
+        let alert = NSAlert()
+        alert.messageText = "Unsent Review Comments"
+        alert.informativeText = "The diff tab \"\(name)\" has \(store.comments.count) unsent review comment(s). Closing will discard them."
+        alert.addButton(withTitle: "Discard & Close")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
     private func closeTab(id tabID: UUID) {
         // Prevent double execution
         guard !closingTabIDs.contains(tabID) else { return }
 
-        guard let group = windowSession.groups.first(where: { g in
-            g.tabs.contains(where: { $0.id == tabID })
-        }) else { return }
-        guard let tab = group.tabs.first(where: { $0.id == tabID }) else { return }
+        guard let (tab, group) = windowSession.groups.tabAndGroup(tabID: tabID) else { return }
 
         closingTabIDs.insert(tabID)
 
         // Check for unsent review comments
-        if let store = reviewStores[tabID], store.hasUnsubmittedComments {
-            let alert = NSAlert()
-            alert.messageText = "Unsent Review Comments"
-            alert.informativeText = "This diff tab has \(store.comments.count) unsent review comment(s). Closing will discard them."
-            alert.addButton(withTitle: "Discard & Close")
-            alert.addButton(withTitle: "Cancel")
-            let response = alert.runModal()
-            if response != .alertFirstButtonReturn {
-                closingTabIDs.remove(tabID)
-                return
-            }
+        guard confirmClosingDespiteUnsubmittedReviewComments(tab) else {
+            closingTabIDs.remove(tabID)
+            return
         }
 
-        // Clean up browser controller if present
-        browserControllers.removeValue(forKey: tabID)
-
-        // Clean up diff state
-        diffTasks[tabID]?.cancel()
-        diffTasks.removeValue(forKey: tabID)
-        diffStates.removeValue(forKey: tabID)
-        reviewStores.removeValue(forKey: tabID)
-
-        // Destroy all surfaces in the tab, killing any persistent
-        // session each was attached to (tearDownSurfaces): an
-        // explicit tab close, unlike quitting the app, ends the session
-        // rather than detaching it. (`session.detach`/`session.kill` no
-        // longer route through this method, see `closeFocusedSessionSurface`.)
-        tearDownSurfaces(in: tab, isTerminating: false)
+        // Release the browser controller, diff state, review store and
+        // surfaces for this tab: an explicit tab close, unlike quitting
+        // the app, ends the session rather than detaching it.
+        // (`session.detach`/`session.kill` no longer route through this
+        // method, see `closeFocusedSessionSurface`.)
+        releaseTabResources(tab)
 
         let result = windowSession.removeTab(id: tabID, fromGroup: group.id)
 
@@ -1982,9 +2004,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func switchToTab(id tabID: UUID) {
-        guard let targetGroup = windowSession.groups.first(where: { group in
-            group.tabs.contains(where: { $0.id == tabID })
-        }) else {
+        guard let targetGroup = windowSession.groups.tabAndGroup(tabID: tabID)?.group else {
             logger.warning("Attempted to switch to non-existent tab: \(tabID)")
             return
         }
@@ -2096,25 +2116,11 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
             closingTabIDs.insert(tabID)
         }
 
-        // Clean up browser controllers for all tabs in this group
-        for tabID in tabIDs {
-            browserControllers.removeValue(forKey: tabID)
-        }
-        // Clean up diff states for all tabs in this group
-        for tabID in tabIDs {
-            diffTasks[tabID]?.cancel()
-            diffTasks.removeValue(forKey: tabID)
-            diffStates.removeValue(forKey: tabID)
-        }
-        for tabID in tabIDs {
-            reviewStores.removeValue(forKey: tabID)
-        }
-
-        // Destroy all surfaces in all tabs of this group (killing any
-        // persistent sessions, see closeTab(id:)'s equivalent comment,
-        // tearDownSurfaces)
+        // Release the browser controller, diff state, review store and
+        // surfaces for every tab in this group (killing any persistent
+        // sessions, see closeTab(id:)'s equivalent comment).
         for tab in group.tabs {
-            tearDownSurfaces(in: tab, isTerminating: false)
+            releaseTabResources(tab)
         }
 
         let result = windowSession.removeGroup(id: group.id)
@@ -2152,16 +2158,8 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
             deactivateCurrentTab()
         }
 
-        for tabID in tabIDs {
-            browserControllers.removeValue(forKey: tabID)
-            diffTasks[tabID]?.cancel()
-            diffTasks.removeValue(forKey: tabID)
-            diffStates.removeValue(forKey: tabID)
-            reviewStores.removeValue(forKey: tabID)
-        }
-
         for tab in group.tabs {
-            tearDownSurfaces(in: tab, isTerminating: false)
+            releaseTabResources(tab)
         }
 
         let result = windowSession.removeGroup(id: groupID)
@@ -2906,11 +2904,14 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     // real window's view hierarchy. `findTab(for:)` walks `windowSession`
     // instead, which DOES see a `_testInsert`-only surface.
 
-    /// `.ghosttyCloseTab` (`GHOSTTY_ACTION_CLOSE_TAB`, close_tab keybind)
-    /// receiver. `tab`/`group` are the pane's OWNING tab/group, already
-    /// resolved by `handleCloseTabNotification` below via `findTab(for:)`
-    /// — this method itself has no routing/ownership logic of its own,
-    /// only the close-mode fan-out.
+    /// Has two callers: `handleCloseTabNotification` below (the
+    /// `.ghosttyCloseTab` / `GHOSTTY_ACTION_CLOSE_TAB` close_tab keybind
+    /// receiver, where `tab`/`group` are always the focused pane's tab and
+    /// its owning group, resolved via `findTab(for:)`) and
+    /// `closeTabs(relativeTo:mode:)` below (the tab context menu, which may
+    /// pass a tab belonging to ANY group, including a non-active group
+    /// shown in the sidebar). This method itself has no routing/ownership
+    /// logic of its own, only the close-mode fan-out.
     ///
     /// `mode` semantics (`ghostty_action_close_tab_mode_e`,
     /// `GhosttyKit.xcframework/macos-arm64/Headers/ghostty.h`):
@@ -2920,44 +2921,109 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     ///   - `GHOSTTY_ACTION_CLOSE_TAB_MODE_RIGHT`: close every tab in
     ///     `group` positioned AFTER `tab` (tab-bar order).
     ///
-    /// `OTHER`/`RIGHT` are scoped to `group.tabs` (the active GROUP's own
-    /// tab bar), not the whole window: ghostty has no concept of "group"
-    /// (a Calyx-only feature layered on top), so this matches what the
-    /// user actually sees as "the tab bar" for the pane that received the
-    /// keybind.
+    /// `OTHER`/`RIGHT` are scoped to the passed `group`'s own `tabs`, never
+    /// `windowSession.activeGroup`: ghostty has no concept of "group" (a
+    /// Calyx-only feature layered on top), so this matches what the user
+    /// actually sees as "the tab bar" for whichever group `tab` belongs to,
+    /// keybind or context menu alike.
     ///
     /// IMPLEMENTATION NOTE (verified by
-    /// `CalyxWindowControllerCloseTabTests`): each victim tab closes via
-    /// the existing `closeTab(id:)`, which itself mutates `group.tabs`
-    /// (`WindowSession.removeTab` -> `TabGroup.removeTab(id:)` ->
-    /// `tabs.remove(at:)`). `OTHER`/`RIGHT` therefore snapshot the victim
-    /// tabs' `id`s into a plain `[UUID]` BEFORE calling `closeTab(id:)`
-    /// for any of them, and iterate that snapshot — iterating `group.tabs`
-    /// itself by a fixed `0..<group.tabs.count` index range while calling
-    /// `closeTab(id:)` inside the loop would index a shrinking array
-    /// against stale bounds and crash with an out-of-range index once 3+
-    /// tabs are involved.
+    /// `CalyxWindowControllerProcessCloseTabBatchTests`): `OTHER`/`RIGHT`
+    /// close their victims through the batch `closeTabs(_:in:)` below,
+    /// rather than one `closeTab(id:)` call per victim, so the current tab
+    /// is activated at most once for the whole action instead of once per
+    /// victim, and is deactivated once before teardown when it is among
+    /// the victims (`closeTab(id:)` never deactivates; see
+    /// `closeTabs(_:in:)`'s own doc comment).
     func processCloseTab(tab: Tab, group: TabGroup, mode: ghostty_action_close_tab_mode_e) {
         switch mode {
         case GHOSTTY_ACTION_CLOSE_TAB_MODE_THIS:
             closeTab(id: tab.id)
 
         case GHOSTTY_ACTION_CLOSE_TAB_MODE_OTHER:
-            let victimIDs = group.tabs.map(\.id).filter { $0 != tab.id }
-            for victimID in victimIDs {
-                closeTab(id: victimID)
-            }
+            closeTabs(group.tabs.filter { $0.id != tab.id }, in: group)
 
         case GHOSTTY_ACTION_CLOSE_TAB_MODE_RIGHT:
             guard let targetIndex = group.tabs.firstIndex(where: { $0.id == tab.id }) else { return }
-            let victimIDs = group.tabs[(targetIndex + 1)...].map(\.id)
-            for victimID in victimIDs {
-                closeTab(id: victimID)
-            }
+            closeTabs(Array(group.tabs[(targetIndex + 1)...]), in: group)
 
         default:
             logger.warning("Unknown close_tab mode: \(mode.rawValue)")
         }
+    }
+
+    /// Closes `victims`, which must all belong to `group`, in one pass.
+    /// Tabs already mid-close are skipped, and each diff tab among
+    /// `victims` with unsubmitted review comments gets the same prompt as
+    /// `closeTab(id:)`; a declined tab stays open and is not closed.
+    ///
+    /// The current tab is deactivated once, before any teardown, if it is
+    /// among the victims -- mirroring `closeAllTabsInGroup`'s single
+    /// upfront deactivation, unlike `closeTab(id:)`, which never
+    /// deactivates. It is then activated at most once afterwards, instead
+    /// of once per victim as `closeTab(id:)` would do if called once per
+    /// victim.
+    ///
+    /// If `victims` is every tab of `group`, `group` empties:
+    /// `WindowSession.removeTab` removes it and, only if `group` was the
+    /// active group, moves the active group to a neighbour. If no group
+    /// remains, the window closes through `closeLastWindow()`. Otherwise,
+    /// `activateCurrentTab()` rebuilds the hosting view before checking for
+    /// an active tab, so the closed tabs leave the tab bar even on a run
+    /// where no active tab remains. When the active tab survives unchanged,
+    /// the hosting view is refreshed here instead, and the Changes sidebar
+    /// is refreshed alongside it when visible (the same `.tabActivated`
+    /// refresh `activateCurrentTab()` runs).
+    ///
+    /// Not `private`: `CalyxWindowControllerProcessCloseTabBatchTests`
+    /// calls this directly.
+    func closeTabs(_ victims: [Tab], in group: TabGroup) {
+        let candidates = victims.filter { !closingTabIDs.contains($0.id) }
+        for tab in candidates { closingTabIDs.insert(tab.id) }
+        let tabsToClose = candidates.filter { tab in
+            if confirmClosingDespiteUnsubmittedReviewComments(tab) { return true }
+            closingTabIDs.remove(tab.id)
+            return false
+        }
+        guard !tabsToClose.isEmpty else { return }
+
+        // Read after the prompts: the prompts pump the main queue, so the
+        // active tab and group can change while they are up.
+        let activeGroupIDBefore = windowSession.activeGroupID
+        let activeIsVictim = group.id == activeGroupIDBefore
+            && tabsToClose.contains { $0.id == group.activeTabID }
+        if activeIsVictim {
+            deactivateCurrentTab()
+        }
+
+        for tab in tabsToClose {
+            releaseTabResources(tab)
+            windowSession.removeTab(id: tab.id, fromGroup: group.id)
+        }
+        for tab in tabsToClose { closingTabIDs.remove(tab.id) }
+
+        if windowSession.groups.isEmpty {
+            closeLastWindow()
+            requestSave()
+            return
+        }
+        if activeIsVictim || windowSession.activeGroupID != activeGroupIDBefore {
+            activateCurrentTab()
+        } else {
+            refreshHostingView()
+            if isGitChangesSidebarVisible {
+                refreshGitSidebar(trigger: .tabActivated)
+            }
+        }
+        requestSave()
+    }
+
+    /// The tab context menu's entry into `processCloseTab(tab:group:mode:)`.
+    /// Resolves the right-clicked tab's owning group by `tabID` and
+    /// delegates; an unknown `tabID` (no group contains it) is a no-op.
+    func closeTabs(relativeTo tabID: UUID, mode: ghostty_action_close_tab_mode_e) {
+        guard let (tab, group) = windowSession.groups.tabAndGroup(tabID: tabID) else { return }
+        processCloseTab(tab: tab, group: group, mode: mode)
     }
 
     @objc private func handleCloseTabNotification(_ notification: Notification) {
@@ -5657,7 +5723,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
                 guard !Task.isCancelled else { return }
 
                 // Verify tab still exists
-                guard self.windowSession.groups.flatMap(\.tabs).contains(where: { $0.id == tabID }) else { return }
+                guard self.windowSession.groups.tabAndGroup(tabID: tabID) != nil else { return }
 
                 self.diffStates[tabID] = .success(parsed)
                 self.refreshHostingView()
@@ -5768,7 +5834,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
 
             let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
             for (i, tab) in agentTabs.enumerated() {
-                let groupName = windowSession.groups.first { $0.tabs.contains { $0.id == tab.id } }?.name ?? ""
+                let groupName = windowSession.groups.tabAndGroup(tabID: tab.id)?.group.name ?? ""
                 let label = "\(tab.displayTitle) — \(groupName) (#\(i + 1))"
                 popup.addItem(withTitle: label)
             }
@@ -5803,7 +5869,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         guard let store = reviewStores[tabID], store.hasUnsubmittedComments else { return }
 
         // Get file path from tab
-        guard let tab = windowSession.groups.flatMap(\.tabs).first(where: { $0.id == tabID }),
+        guard let tab = windowSession.groups.tabAndGroup(tabID: tabID)?.tab,
               case .diff(let source) = tab.content else { return }
         let filePath: String
         switch source {
@@ -5824,7 +5890,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         // Collect all review stores with comments, paired with their DiffSource
         let entries: [(source: DiffSource, store: DiffReviewStore)] = reviewStores.compactMap { tabID, store in
             guard store.hasUnsubmittedComments else { return nil }
-            guard let tab = windowSession.groups.flatMap(\.tabs).first(where: { $0.id == tabID }),
+            guard let tab = windowSession.groups.tabAndGroup(tabID: tabID)?.tab,
                   case .diff(let source) = tab.content else { return nil }
             return (source: source, store: store)
         }

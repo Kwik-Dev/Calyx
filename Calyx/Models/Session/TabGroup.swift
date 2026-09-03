@@ -121,4 +121,16 @@ extension Array where Element == TabGroup {
         }
         return nil
     }
+
+    /// The tab with `tabID` (and its owning group) among these groups, or
+    /// `nil` if none of them contains it.
+    @MainActor
+    func tabAndGroup(tabID: UUID) -> (tab: Tab, group: TabGroup)? {
+        for group in self {
+            if let tab = group.tabs.first(where: { $0.id == tabID }) {
+                return (tab, group)
+            }
+        }
+        return nil
+    }
 }

@@ -57,33 +57,6 @@ import GhosttyKit
 @MainActor
 final class CalyxWindowControllerCloseTabTests: XCTestCase {
 
-    // MARK: - Fixture
-
-    private struct GroupFixture {
-        let controller: CalyxWindowController
-        let group: TabGroup
-        let tabs: [Tab]
-    }
-
-    /// A single group holding `tabCount` plain tabs (titled "Tab 0", "Tab
-    /// 1", ... in order), inside a single-group `WindowSession`.
-    /// `restoring: true` skips `setupTerminalSurface` (no live ghostty
-    /// app in the unit-test host — see `SurfaceLocator.swift`'s header
-    /// comment on why that would hang the process).
-    private func makeGroupFixture(tabCount: Int) -> GroupFixture {
-        let tabs = (0..<tabCount).map { Tab(title: "Tab \($0)") }
-        let group = TabGroup(name: "Default", tabs: tabs, activeTabID: tabs.first?.id)
-        let session = WindowSession(groups: [group], activeGroupID: group.id)
-        let window = CalyxWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
-        )
-        let controller = CalyxWindowController(window: window, windowSession: session, restoring: true)
-        return GroupFixture(controller: controller, group: group, tabs: tabs)
-    }
-
     // MARK: - THIS
 
     /// `GHOSTTY_ACTION_CLOSE_TAB_MODE_THIS` must close only the target
@@ -91,7 +64,7 @@ final class CalyxWindowControllerCloseTabTests: XCTestCase {
     /// THIS must leave exactly [tab1]. Against the current no-op stub,
     /// `group.tabs` never changes, so this fails.
     func test_processCloseTab_thisMode_closesOnlyTheTargetTab() {
-        let fixture = makeGroupFixture(tabCount: 2)
+        let fixture = GroupFixture.make(tabCount: 2)
         let target = fixture.tabs[0]
         let survivor = fixture.tabs[1]
 
@@ -109,14 +82,14 @@ final class CalyxWindowControllerCloseTabTests: XCTestCase {
     /// `GHOSTTY_ACTION_CLOSE_TAB_MODE_OTHER` with 3 tabs must close the
     /// 2 non-target tabs, leaving only the target. By hand: starting
     /// tabs are [tab0, tab1, tab2], target = tab1 (the middle one);
-    /// OTHER must leave exactly [tab1]. This is also the MINIMAL
-    /// reproduction of the index-out-of-range crash risk documented on
-    /// `processCloseTab` (2 sequential removals against a fixed-size-3
-    /// index range) — see `test_processCloseTab_otherMode_withFiveTabs
-    /// _doesNotCrash_andClosesAllExceptTarget` below for a second,
-    /// larger-N instance of the same risk.
+    /// OTHER must leave exactly [tab1]. OTHER's victim set is every
+    /// other tab of the group; this checks it with the target in the
+    /// middle of 3. See
+    /// `test_processCloseTab_otherMode_withFiveTabs_doesNotCrash
+    /// _andClosesAllExceptTarget` below for the target at the front of a
+    /// larger group.
     func test_processCloseTab_otherMode_closesTheTwoNonTargetTabs() {
-        let fixture = makeGroupFixture(tabCount: 3)
+        let fixture = GroupFixture.make(tabCount: 3)
         let target = fixture.tabs[1]
 
         fixture.controller.processCloseTab(tab: target, group: fixture.group, mode: GHOSTTY_ACTION_CLOSE_TAB_MODE_OTHER)
@@ -128,17 +101,14 @@ final class CalyxWindowControllerCloseTabTests: XCTestCase {
         )
     }
 
-    /// Regression/crash guard: OTHER with MORE than 3 tabs, target
-    /// at index 0 (a different position than the "3 tabs, middle target"
-    /// test above, so this is not a duplicate of it). By hand: starting
-    /// tabs are [tab0..tab4] (5 tabs), target = tab0; OTHER must leave
-    /// exactly [tab0]. An implementation that iterates a FIXED `0..<group
-    /// .tabs.count` index range while calling `closeTab(id:)` (which
-    /// mutates `group.tabs`) inside the loop crashes with an
-    /// out-of-range index partway through; this test's assertion is what
-    /// a correct implementation must satisfy once that bug is avoided.
+    /// OTHER with MORE than 3 tabs, target at index 0 (a different
+    /// position than the "3 tabs, middle target" test above, so this is
+    /// not a duplicate of it). By hand: starting tabs are [tab0..tab4]
+    /// (5 tabs), target = tab0; OTHER must leave exactly [tab0]. OTHER's
+    /// victim set is every other tab of the group; this checks it with
+    /// the target first of 5.
     func test_processCloseTab_otherMode_withFiveTabs_doesNotCrash_andClosesAllExceptTarget() {
-        let fixture = makeGroupFixture(tabCount: 5)
+        let fixture = GroupFixture.make(tabCount: 5)
         let target = fixture.tabs[0]
 
         fixture.controller.processCloseTab(tab: target, group: fixture.group, mode: GHOSTTY_ACTION_CLOSE_TAB_MODE_OTHER)
@@ -159,7 +129,7 @@ final class CalyxWindowControllerCloseTabTests: XCTestCase {
     /// tab2], target = tab1; RIGHT must leave exactly [tab0, tab1] (tab2
     /// closes, tab0 survives).
     func test_processCloseTab_rightMode_closesOnlyTabsToTheRightOfTarget() {
-        let fixture = makeGroupFixture(tabCount: 3)
+        let fixture = GroupFixture.make(tabCount: 3)
         let left = fixture.tabs[0]
         let target = fixture.tabs[1]
 
@@ -184,7 +154,7 @@ final class CalyxWindowControllerCloseTabTests: XCTestCase {
 
     /// Two tabs in a single group: `targetTab` owns a `_testInsert`-only
     /// `SurfaceView` (so `findTab(for:)` can resolve it — the plain
-    /// `Tab(title:)` fixture above never satisfies that), `otherTab` is an
+    /// `Tab(title:)` `GroupFixture` never satisfies that), `otherTab` is an
     /// ordinary leaf-less tab, present only so THIS mode's close never
     /// hits the last-tab-in-last-group `closeLastWindow()` path.
     private func makeSurfaceOwningGroupFixture() -> SurfaceOwningGroupFixture {

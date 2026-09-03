@@ -11,6 +11,8 @@ struct TabBarContentView: View {
     var onTabSelected: ((UUID) -> Void)?
     var onNewTab: (() -> Void)?
     var onCloseTab: ((UUID) -> Void)?
+    var onCloseOtherTabs: ((UUID) -> Void)?
+    var onCloseTabsToTheRight: ((UUID) -> Void)?
     var onMoveTab: ((Int, Int) -> Void)?
     var onTabRenamed: (() -> Void)?
     var activeGroupID: UUID? = nil
@@ -27,8 +29,12 @@ struct TabBarContentView: View {
                             TabItemButton(
                                 tab: tab,
                                 isActive: tab.id == activeTabID,
+                                tabIndex: index,
+                                tabCount: tabs.count,
                                 onSelected: { onTabSelected?(tab.id) },
                                 onClose: { onCloseTab?(tab.id) },
+                                onCloseOtherTabs: { onCloseOtherTabs?(tab.id) },
+                                onCloseTabsToTheRight: { onCloseTabsToTheRight?(tab.id) },
                                 onTabRenamed: onTabRenamed,
                                 onDragChanged: { translation in
                                     // Tab reorder: equivalent to the
@@ -344,8 +350,12 @@ private struct TabBarBackgroundModifier: ViewModifier {
 private struct TabItemButton: View {
     let tab: Tab
     let isActive: Bool
+    let tabIndex: Int
+    let tabCount: Int
     var onSelected: (() -> Void)?
     var onClose: (() -> Void)?
+    var onCloseOtherTabs: (() -> Void)?
+    var onCloseTabsToTheRight: (() -> Void)?
     var onTabRenamed: (() -> Void)?
     var onDragChanged: ((CGSize) -> Void)?
     var onDragEnded: (() -> Void)?
@@ -393,6 +403,20 @@ private struct TabItemButton: View {
             },
             onDragEnded: {
                 onDragEnded?()
+            },
+            contextMenu: {
+                TabContextMenu.make(
+                    tabIndex: tabIndex,
+                    tabCount: tabCount,
+                    actions: .init(
+                        close: { onClose?() },
+                        closeOthers: { onCloseOtherTabs?() },
+                        closeToTheRight: { onCloseTabsToTheRight?() },
+                        rename: {
+                            isEditing = true
+                        }
+                    )
+                )
             }
         ) {
             HStack(spacing: 6) {

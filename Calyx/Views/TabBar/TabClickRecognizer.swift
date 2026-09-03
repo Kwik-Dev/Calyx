@@ -21,7 +21,31 @@
 // - clickCount == 1 on tab body -> onSingleClick()
 // - clickCount == 2 on tab body -> onDoubleClick()
 // - clickCount on the close-button rect -> onClose()
+//   (Ctrl+click on this rect opens the context menu instead; see below)
 // - clickCount >= 3 -> ignored
+// - right-click / Ctrl+click -> context menu from contextMenuProvider,
+//   not gated on isEnabled: this check runs before the close-button
+//   geometry test, so Ctrl+click anywhere on the tab, including the
+//   close-button rect, opens the context menu rather than closing the
+//   tab, matching a plain right-click on the same spot. A rename in
+//   progress is committed by the
+//   inline editor's own click monitor (`InlineTextField`, installed
+//   0.3s after the editor opens) when any mouse button is pressed
+//   outside its field, so the menu normally opens on an already
+//   committed tab. In the brief window before that monitor exists (0.3s
+//   after an editor opens), the menu opens over the live editor: Close
+//   Tab closes the tab exactly as the keyboard shortcut would, and
+//   Rename on the same host is a no-op, but choosing Rename on the
+//   other host commits the first editor's typed title and then
+//   overwrites it with the second editor's stale snapshot.
+//   `InlineTextField` snapshots `initialText` in `makeNSView`, and the
+//   first editor only commits when the second one takes focus
+//   (`InlineEditorTextField.viewDidMoveToWindow` -> `selectText`), so
+//   the second editor opens already holding the first editor's
+//   pre-commit title and overwrites it on commit. The same sequence
+//   already exists for a double-click on the other host inside that
+//   window; the monitor's install delay is `InlineTextField`'s.
+// - right-click while the left mouse button is held -> no menu
 //
 // Close button dispatch (geometry-based, AppKit-only):
 // - The close button is rendered as a *visual-only* `Image(systemName:)`
@@ -68,6 +92,7 @@ struct TabClickContainer<Content: View>: NSViewRepresentable {
     let closeButtonSize: CGFloat
     let onDragChanged: ((CGSize) -> Void)?
     let onDragEnded: (() -> Void)?
+    let contextMenu: (() -> NSMenu?)?
     let content: Content
 
     init(
@@ -80,6 +105,7 @@ struct TabClickContainer<Content: View>: NSViewRepresentable {
         closeButtonSize: CGFloat = 16,
         onDragChanged: ((CGSize) -> Void)? = nil,
         onDragEnded: (() -> Void)? = nil,
+        contextMenu: (() -> NSMenu?)? = nil,
         @ViewBuilder content: () -> Content
     ) {
         self.isEnabled = isEnabled
@@ -91,6 +117,7 @@ struct TabClickContainer<Content: View>: NSViewRepresentable {
         self.closeButtonSize = closeButtonSize
         self.onDragChanged = onDragChanged
         self.onDragEnded = onDragEnded
+        self.contextMenu = contextMenu
         self.content = content()
     }
 
@@ -114,6 +141,7 @@ struct TabClickContainer<Content: View>: NSViewRepresentable {
         view.closeButtonSize = closeButtonSize
         view.onDragChanged = onDragChanged
         view.onDragEnded = onDragEnded
+        view.contextMenuProvider = contextMenu
         view.isEnabled = isEnabled
         return view
     }
@@ -128,6 +156,7 @@ struct TabClickContainer<Content: View>: NSViewRepresentable {
         nsView.closeButtonSize = closeButtonSize
         nsView.onDragChanged = onDragChanged
         nsView.onDragEnded = onDragEnded
+        nsView.contextMenuProvider = contextMenu
         nsView.isEnabled = isEnabled
     }
 
@@ -148,6 +177,7 @@ final class ClickContainerNSView: NSView {
     var onClose: (() -> Void)?
     var onDragChanged: ((CGSize) -> Void)?
     var onDragEnded: (() -> Void)?
+    var contextMenuProvider: (() -> NSMenu?)?
     var isEnabled: Bool = true
 
     /// `true` when the close-button rect should consume clicks. Caller
@@ -206,6 +236,19 @@ final class ClickContainerNSView: NSView {
     override var isOpaque: Bool { false }
     override var isFlipped: Bool { true }
 
+    override func menu(for event: NSEvent) -> NSMenu? {
+        contextMenuProvider?()
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        // No context menu while the left button is held: the menu's tracking
+        // loop would consume the left mouseUp that ends a press or reorder
+        // drag, leaving this view's press state and the SwiftUI reorder state
+        // stuck on the dragged tab.
+        guard NSEvent.pressedMouseButtons & 0x1 == 0 else { return }
+        super.rightMouseDown(with: event)
+    }
+
     /// Computes the close-button rect in this view's local (flipped)
     /// coordinate space. The rect is right-aligned with
     /// `closeButtonInsetFromTrailing` between its trailing edge and
@@ -231,6 +274,15 @@ final class ClickContainerNSView: NSView {
         mouseDownLocationInWindow = event.locationInWindow
         isDragging = false
         pressTargetsTabBody = false
+
+        if event.modifierFlags.contains(.control), let menu = menu(for: event) {
+            // Clear the press location before popping the menu: its tracking
+            // loop usually consumes the matching mouseUp, so no mouseUp may
+            // arrive to clear it.
+            mouseDownLocationInWindow = nil
+            NSMenu.popUpContextMenu(menu, with: event, for: self)
+            return
+        }
 
         guard isEnabled else {
             super.mouseDown(with: event)

@@ -773,7 +773,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver
     /// controller, then act" shape one level up (tab id, not surface id).
     private func focusHerdrNativeTab(_ tabID: UUID) {
         guard let wc = windowControllers.first(where: { wc in
-            wc.windowSession.groups.contains { $0.tabs.contains { $0.id == tabID } }
+            wc.windowSession.groups.tabAndGroup(tabID: tabID) != nil
         }) else {
             return
         }
