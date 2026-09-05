@@ -23,6 +23,24 @@ enum TabGroupColor: String, CaseIterable, Codable, Sendable {
         }
     }
 
+    /// UI label for this color, shown in the group color-picker menu.
+    /// Deliberately independent of `rawValue`, which is the persistence
+    /// key (`TabGroupSnapshot.color`): never derive one from the other.
+    var displayName: String {
+        switch self {
+        case .red: return "Red"
+        case .orange: return "Orange"
+        case .yellow: return "Yellow"
+        case .green: return "Green"
+        case .mint: return "Mint"
+        case .teal: return "Teal"
+        case .cyan: return "Cyan"
+        case .blue: return "Blue"
+        case .indigo: return "Indigo"
+        case .purple: return "Purple"
+        }
+    }
+
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         let raw = try container.decode(String.self)

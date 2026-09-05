@@ -75,4 +75,30 @@ final class TabGroupColorTests: XCTestCase {
         }
         XCTAssertEqual(sequence, [.red, .blue, .yellow, .purple, .green, .orange, .indigo, .mint, .cyan, .teal])
     }
+
+    // MARK: - displayName
+
+    /// Exact display string per case, from the spec's own table --
+    /// never `rawValue.capitalized`, since the persistence key and the
+    /// UI label are deliberately kept independent.
+    func test_displayName_exactTableForAllTenCases() {
+        XCTAssertEqual(TabGroupColor.red.displayName, "Red")
+        XCTAssertEqual(TabGroupColor.orange.displayName, "Orange")
+        XCTAssertEqual(TabGroupColor.yellow.displayName, "Yellow")
+        XCTAssertEqual(TabGroupColor.green.displayName, "Green")
+        XCTAssertEqual(TabGroupColor.mint.displayName, "Mint")
+        XCTAssertEqual(TabGroupColor.teal.displayName, "Teal")
+        XCTAssertEqual(TabGroupColor.cyan.displayName, "Cyan")
+        XCTAssertEqual(TabGroupColor.blue.displayName, "Blue")
+        XCTAssertEqual(TabGroupColor.indigo.displayName, "Indigo")
+        XCTAssertEqual(TabGroupColor.purple.displayName, "Purple")
+    }
+
+    /// No two cases may share a display name -- the color submenu
+    /// titles each entry with `displayName` alone, so a collision would
+    /// make two colors indistinguishable in the menu.
+    func test_displayName_uniqueAcrossCases() {
+        let names = TabGroupColor.allCases.map(\.displayName)
+        XCTAssertEqual(Set(names).count, names.count, "Every color must have a distinct display name")
+    }
 }

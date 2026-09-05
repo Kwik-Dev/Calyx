@@ -73,8 +73,7 @@ final class GroupManagementUITests: CalyxUITestCase {
         Thread.sleep(forTimeInterval: 0.5)
 
         // Click the first group in the sidebar to switch
-        let groups = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier BEGINSWITH %@ AND NOT identifier ENDSWITH %@", "calyx.sidebar.group.", "Button"))
+        let groups = groupHeadersQuery()
         XCTAssertEqual(groups.count, 2, "Should have two groups")
 
         // The newly created second group becomes active on creation
@@ -106,48 +105,12 @@ final class GroupManagementUITests: CalyxUITestCase {
 
     /// Helper: creates a second group via command palette and waits for it to appear.
     private func createSecondGroup() {
-        openCommandPaletteViaMenu()
-
-        let searchField = app.descendants(matching: .any)
-            .matching(identifier: "calyx.commandPalette.searchField")
-            .firstMatch
-        XCTAssertTrue(waitFor(searchField), "Command palette search field should appear")
-
-        searchField.typeText("New Group")
-        searchField.typeKey(.enter, modifierFlags: [])
-
-        let palette = app.descendants(matching: .any)
-            .matching(identifier: "calyx.commandPalette")
-            .firstMatch
-        waitForNonExistence(palette)
-
-        Thread.sleep(forTimeInterval: 0.5)
-
-        let groupCount = countElements(matching: "calyx.sidebar.group.", excludingSuffix: "Button")
-        XCTAssertEqual(groupCount, 2, "Should have two groups after creating a new one")
+        createGroupViaCommandPalette(expectingGroupCount: 2)
     }
 
     /// Helper: creates a third group via command palette.
     private func createThirdGroup() {
-        openCommandPaletteViaMenu()
-
-        let searchField = app.descendants(matching: .any)
-            .matching(identifier: "calyx.commandPalette.searchField")
-            .firstMatch
-        XCTAssertTrue(waitFor(searchField), "Command palette search field should appear")
-
-        searchField.typeText("New Group")
-        searchField.typeKey(.enter, modifierFlags: [])
-
-        let palette = app.descendants(matching: .any)
-            .matching(identifier: "calyx.commandPalette")
-            .firstMatch
-        waitForNonExistence(palette)
-
-        Thread.sleep(forTimeInterval: 0.5)
-
-        let groupCount = countElements(matching: "calyx.sidebar.group.", excludingSuffix: "Button")
-        XCTAssertEqual(groupCount, 3, "Should have three groups after creating another one")
+        createGroupViaCommandPalette(expectingGroupCount: 3)
     }
 
     func test_renameGroupByDoubleClick() {
@@ -155,9 +118,7 @@ final class GroupManagementUITests: CalyxUITestCase {
         createSecondGroup()
 
         // Find the second group element
-        let groups = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "calyx.sidebar.group."))
-        let secondGroup = groups.element(boundBy: 1)
+        let secondGroup = groupHeadersQuery().element(boundBy: 1)
         XCTAssertTrue(secondGroup.exists, "Second group should exist")
 
         // Act: double-click to enter rename mode
@@ -196,9 +157,7 @@ final class GroupManagementUITests: CalyxUITestCase {
         createSecondGroup()
 
         // Find the second group element
-        let groups = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "calyx.sidebar.group."))
-        let secondGroup = groups.element(boundBy: 1)
+        let secondGroup = groupHeadersQuery().element(boundBy: 1)
         XCTAssertTrue(secondGroup.exists, "Second group should exist")
 
         // Act: double-click to enter rename mode
@@ -237,9 +196,7 @@ final class GroupManagementUITests: CalyxUITestCase {
         createSecondGroup()
 
         // Find the second group element
-        let groups = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "calyx.sidebar.group."))
-        let secondGroup = groups.element(boundBy: 1)
+        let secondGroup = groupHeadersQuery().element(boundBy: 1)
         XCTAssertTrue(secondGroup.exists, "Second group should exist")
 
         // Act: double-click to enter rename mode
@@ -360,9 +317,7 @@ final class GroupManagementUITests: CalyxUITestCase {
         XCTAssertTrue(waitFor(group2Label, timeout: 3), "'Group 2' should be visible before any group is closed")
 
         // Hover over the first group header to reveal close-all button
-        let firstGroup = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier BEGINSWITH 'calyx.sidebar.group.' AND NOT identifier CONTAINS '.closeAllButton' AND NOT identifier CONTAINS '.collapseButton'"))
-            .element(boundBy: 0)
+        let firstGroup = groupHeadersQuery().element(boundBy: 0)
         firstGroup.hover()
         Thread.sleep(forTimeInterval: 0.3)
 

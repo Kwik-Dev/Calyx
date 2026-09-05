@@ -20,7 +20,9 @@
 // Behavior:
 // - clickCount == 1 on tab body -> onSingleClick()
 // - clickCount == 2 on tab body -> onDoubleClick()
-// - clickCount on the close-button rect -> onClose()
+// - clickCount on a trailing-edge rect (close button first, then
+//   trailingActions in order; disabled rects are transparent) -> that
+//   rect's action
 //   (Ctrl+click on this rect opens the context menu instead; see below)
 // - clickCount >= 3 -> ignored
 // - right-click / Ctrl+click -> context menu from contextMenuProvider,
@@ -47,7 +49,7 @@
 //   window; the monitor's install delay is `InlineTextField`'s.
 // - right-click while the left mouse button is held -> no menu
 //
-// Close button dispatch (geometry-based, AppKit-only):
+// Trailing-edge dispatch (geometry-based, AppKit-only):
 // - The close button is rendered as a *visual-only* `Image(systemName:)`
 //   inside the SwiftUI HStack. There is NO SwiftUI `Button` for the
 //   close hit. Instead, `mouseDown(with:)` computes a frame for the
@@ -60,6 +62,10 @@
 //   SwiftUI compositing layer (`PlatformGroupContainer`) ate roughly
 //   half of the close-button mouseDown events on the very same screen
 //   coordinate. Owning the hit math in AppKit removes that variance.
+// - The same mechanism generalizes past the close button via
+//   `TrailingAction`: the sidebar group header's close-all and collapse
+//   glyphs are the second user, each a visual-only image hit-tested as
+//   its own trailing-edge rect.
 //
 // Drag tracking:
 // - Drag tracking is performed in `mouseDragged(with:)` and
@@ -82,6 +88,18 @@
 import AppKit
 import SwiftUI
 
+/// A click target at the trailing edge of the container, hit-tested in
+/// AppKit instead of by a SwiftUI Button (a hosted Button receives the
+/// press before the container and swallows Ctrl+click, so the context
+/// menu could never open over it). The rect is `size` square, vertically
+/// centered, `insetFromTrailing` points from the trailing edge.
+struct TrailingAction {
+    var insetFromTrailing: CGFloat
+    var size: CGFloat
+    var isEnabled: Bool
+    var action: () -> Void
+}
+
 struct TabClickContainer<Content: View>: NSViewRepresentable {
     let isEnabled: Bool
     let onSingleClick: () -> Void
@@ -90,6 +108,7 @@ struct TabClickContainer<Content: View>: NSViewRepresentable {
     let closeButtonEnabled: Bool
     let closeButtonInsetFromTrailing: CGFloat
     let closeButtonSize: CGFloat
+    let trailingActions: [TrailingAction]
     let onDragChanged: ((CGSize) -> Void)?
     let onDragEnded: (() -> Void)?
     let contextMenu: (() -> NSMenu?)?
@@ -103,6 +122,7 @@ struct TabClickContainer<Content: View>: NSViewRepresentable {
         closeButtonEnabled: Bool = false,
         closeButtonInsetFromTrailing: CGFloat = 14,
         closeButtonSize: CGFloat = 16,
+        trailingActions: [TrailingAction] = [],
         onDragChanged: ((CGSize) -> Void)? = nil,
         onDragEnded: (() -> Void)? = nil,
         contextMenu: (() -> NSMenu?)? = nil,
@@ -115,6 +135,7 @@ struct TabClickContainer<Content: View>: NSViewRepresentable {
         self.closeButtonEnabled = closeButtonEnabled
         self.closeButtonInsetFromTrailing = closeButtonInsetFromTrailing
         self.closeButtonSize = closeButtonSize
+        self.trailingActions = trailingActions
         self.onDragChanged = onDragChanged
         self.onDragEnded = onDragEnded
         self.contextMenu = contextMenu
@@ -139,6 +160,7 @@ struct TabClickContainer<Content: View>: NSViewRepresentable {
         view.closeButtonEnabled = closeButtonEnabled
         view.closeButtonInsetFromTrailing = closeButtonInsetFromTrailing
         view.closeButtonSize = closeButtonSize
+        view.trailingActions = trailingActions
         view.onDragChanged = onDragChanged
         view.onDragEnded = onDragEnded
         view.contextMenuProvider = contextMenu
@@ -154,6 +176,11 @@ struct TabClickContainer<Content: View>: NSViewRepresentable {
         nsView.closeButtonEnabled = closeButtonEnabled
         nsView.closeButtonInsetFromTrailing = closeButtonInsetFromTrailing
         nsView.closeButtonSize = closeButtonSize
+        // Load-bearing: these closures capture call-site SwiftUI state
+        // (e.g. a hover flag, a collapsed flag) that changes across view
+        // updates, so the array must be re-pushed here, not only in
+        // `makeNSView`.
+        nsView.trailingActions = trailingActions
         nsView.onDragChanged = onDragChanged
         nsView.onDragEnded = onDragEnded
         nsView.contextMenuProvider = contextMenu
@@ -193,6 +220,10 @@ final class ClickContainerNSView: NSView {
     /// Side length of the close-button rect, matching the
     /// `.frame(width: 16, height: 16)` on the SwiftUI xmark icon.
     var closeButtonSize: CGFloat = 16
+
+    /// Additional AppKit-hit-tested rects at the trailing edge, checked
+    /// after the close-button rect. See `TrailingAction`.
+    var trailingActions: [TrailingAction] = []
 
     /// Threshold (in points) above which a press becomes a drag.
     /// Mirrors SwiftUI's default `DragGesture(minimumDistance: 5)`.
@@ -249,19 +280,47 @@ final class ClickContainerNSView: NSView {
         super.rightMouseDown(with: event)
     }
 
-    /// Computes the close-button rect in this view's local (flipped)
-    /// coordinate space. The rect is right-aligned with
-    /// `closeButtonInsetFromTrailing` between its trailing edge and
-    /// `bounds.maxX`, and vertically centred. This mirrors how the
-    /// SwiftUI `Image(systemName: "xmark")` is laid out as the trailing
-    /// child of a horizontally-padded HStack.
-    private var closeButtonRect: CGRect {
+    /// Computes a trailing-edge rect in this view's local (flipped)
+    /// coordinate space: right-aligned with `inset` between its trailing
+    /// edge and `bounds.maxX`, `size` square, vertically centred. This
+    /// mirrors how a SwiftUI `Image(systemName:)` is laid out as a
+    /// trailing child of a horizontally-padded HStack.
+    private func trailingRect(insetFromTrailing inset: CGFloat, size: CGFloat) -> CGRect {
         CGRect(
-            x: bounds.maxX - closeButtonInsetFromTrailing - closeButtonSize,
-            y: (bounds.height - closeButtonSize) / 2,
-            width: closeButtonSize,
-            height: closeButtonSize
+            x: bounds.maxX - inset - size,
+            y: (bounds.height - size) / 2,
+            width: size,
+            height: size
         )
+    }
+
+    /// Resolves the trailing-edge click target at `point` (this view's
+    /// local, flipped coordinates), if any. The close button is checked
+    /// first (when `onClose` is set and `closeButtonEnabled` is true),
+    /// then `trailingActions` in order. Disabled rects are transparent:
+    /// a point inside one resolves to `nil`, not to the disabled action.
+    func trailingAction(at point: CGPoint) -> TrailingAction? {
+        if onClose != nil, closeButtonEnabled {
+            let rect = trailingRect(insetFromTrailing: closeButtonInsetFromTrailing, size: closeButtonSize)
+            if rect.contains(point) {
+                return TrailingAction(
+                    insetFromTrailing: closeButtonInsetFromTrailing,
+                    size: closeButtonSize,
+                    isEnabled: true,
+                    action: { [weak self] in self?.onClose?() }
+                )
+            }
+        }
+
+        for candidate in trailingActions {
+            guard candidate.isEnabled else { continue }
+            let rect = trailingRect(insetFromTrailing: candidate.insetFromTrailing, size: candidate.size)
+            if rect.contains(point) {
+                return candidate
+            }
+        }
+
+        return nil
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -289,24 +348,23 @@ final class ClickContainerNSView: NSView {
             return
         }
 
-        // 1. Close-button geometry test.
+        // 1. Trailing-edge geometry test.
         //
-        // The close button is rendered as a visual-only SwiftUI Image
-        // (no Button, no onTapGesture). When `closeButtonEnabled` is
-        // true and the click lands inside the right-aligned 16x16 rect
-        // we own that hit ourselves. This bypasses the unstable SwiftUI
-        // `PlatformGroupContainer` dispatch path that previously ate
-        // ~50% of close clicks.
-        if closeButtonEnabled, onClose != nil {
-            let rect = closeButtonRect
-            if rect.contains(pointInSelf) {
-                onClose?()
-                // Fully consume the event: do NOT forward to super and
-                // do NOT engage drag tracking. The next press will
-                // start a fresh `mouseDownLocationInWindow`.
-                mouseDownLocationInWindow = nil
-                return
-            }
+        // The close button and any other trailing glyphs (e.g. a group
+        // header's collapse chevron) are rendered as visual-only SwiftUI
+        // Images (no Button, no onTapGesture). We own their hit math
+        // ourselves via `trailingAction(at:)`. This bypasses the
+        // unstable SwiftUI `PlatformGroupContainer` dispatch path that
+        // previously ate ~50% of close clicks, and also the fact that a
+        // hosted Button, had one been used instead, receives the press
+        // before this view and would swallow it.
+        if let target = trailingAction(at: pointInSelf) {
+            target.action()
+            // Fully consume the event: do NOT forward to super and
+            // do NOT engage drag tracking. The next press will
+            // start a fresh `mouseDownLocationInWindow`.
+            mouseDownLocationInWindow = nil
+            return
         }
 
         // 2. Subview hit-test fallback.

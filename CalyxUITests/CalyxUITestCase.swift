@@ -141,6 +141,54 @@ class CalyxUITestCase: XCTestCase {
         tabBarTabsQuery().count
     }
 
+    /// Matches exactly the sidebar group header container elements:
+    /// identifiers beginning with `calyx.sidebar.group.` but excluding
+    /// the header's own `.closeAllButton` child. The collapse chevron
+    /// (`calyx.sidebar.groupCollapseButton.<id>`) never matches this
+    /// prefix in the first place, so no clause is needed for it.
+    func groupHeadersQuery() -> XCUIElementQuery {
+        app.descendants(matching: .any)
+            .matching(NSPredicate(
+                format: "identifier BEGINSWITH 'calyx.sidebar.group.' AND NOT identifier CONTAINS '.closeAllButton'"
+            ))
+    }
+
+    func groupHeaderCount() -> Int {
+        groupHeadersQuery().count
+    }
+
+    /// Creates a new group via the command palette's "New Group" command
+    /// and waits until `groupHeaderCount()` reaches `count`.
+    func createGroupViaCommandPalette(expectingGroupCount count: Int) {
+        openCommandPaletteViaMenu()
+
+        let searchField = app.descendants(matching: .any)
+            .matching(identifier: "calyx.commandPalette.searchField")
+            .firstMatch
+        XCTAssertTrue(waitFor(searchField), "Command palette search field should appear")
+
+        searchField.typeText("New Group")
+        searchField.typeKey(.enter, modifierFlags: [])
+
+        let palette = app.descendants(matching: .any)
+            .matching(identifier: "calyx.commandPalette")
+            .firstMatch
+        waitForNonExistence(palette)
+
+        XCTAssertEqual(
+            waitForCount(groupHeaderCount, toEqual: count), count,
+            "Should have \(count) groups after creating a new one"
+        )
+
+        // The sidebar's hosting view is rebuilt once more shortly after the
+        // new group appears (the controller refreshes it again when the palette
+        // closes and focus is restored). A header element resolved before that
+        // rebuild is stale by the time a click is synthesized on it
+        // ("No matches found for Descendant with identity binding"), so let the
+        // rebuild land before returning.
+        Thread.sleep(forTimeInterval: 0.5)
+    }
+
     /// The identifiers of every tab currently shown in the horizontal tab
     /// bar (`calyx.tabBar.tab.<UUID>`, excluding `.closeButton` children),
     /// i.e. the tabs belonging to whichever group is CURRENTLY ACTIVE
