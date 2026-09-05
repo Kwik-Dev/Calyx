@@ -22,6 +22,9 @@ struct SidebarContentView: View {
     var onTabRenamed: (() -> Void)?
     var onCollapseToggled: (() -> Void)?
     var onCloseAllTabsInGroup: ((UUID) -> Void)?
+    var onCloseOtherGroups: ((UUID) -> Void)?
+    var onCloseGroupsBelow: ((UUID) -> Void)?
+    var onGroupColorChanged: (() -> Void)?
     var onWorkingFileSelected: ((String, GitFileEntry) -> Void)?
     var onCommitFileSelected: ((String, CommitFileEntry) -> Void)?
     var onRefreshGitStatus: (() -> Void)?
@@ -153,12 +156,14 @@ struct SidebarContentView: View {
             case .tabs:
                 ScrollView {
                     VStack(alignment: .leading, spacing: 8) {
-                        ForEach(groups) { group in
+                        ForEach(Array(groups.enumerated()), id: \.element.id) { groupIndex, group in
                             GroupSectionView(
                                 group: group,
                                 isActiveGroup: group.id == activeGroupID,
                                 activeTabID: activeTabID,
                                 reduceTransparency: reduceTransparency,
+                                groupIndex: groupIndex,
+                                groupCount: groups.count,
                                 onGroupSelected: onGroupSelected,
                                 onTabSelected: onTabSelected,
                                 onCloseTab: onCloseTab,
@@ -168,6 +173,9 @@ struct SidebarContentView: View {
                                 onTabRenamed: onTabRenamed,
                                 onCollapseToggled: onCollapseToggled,
                                 onCloseAllTabsInGroup: onCloseAllTabsInGroup,
+                                onCloseOtherGroups: onCloseOtherGroups,
+                                onCloseGroupsBelow: onCloseGroupsBelow,
+                                onGroupColorChanged: onGroupColorChanged,
                                 onMoveTab: onMoveTab
                             )
                         }
@@ -276,6 +284,8 @@ private struct GroupSectionView: View {
     let isActiveGroup: Bool
     let activeTabID: UUID?
     let reduceTransparency: Bool
+    let groupIndex: Int
+    let groupCount: Int
     var onGroupSelected: ((UUID) -> Void)?
     var onTabSelected: ((UUID) -> Void)?
     var onCloseTab: ((UUID) -> Void)?
@@ -285,62 +295,105 @@ private struct GroupSectionView: View {
     var onTabRenamed: (() -> Void)?
     var onCollapseToggled: (() -> Void)?
     var onCloseAllTabsInGroup: ((UUID) -> Void)?
+    var onCloseOtherGroups: ((UUID) -> Void)?
+    var onCloseGroupsBelow: ((UUID) -> Void)?
+    var onGroupColorChanged: (() -> Void)?
     var onMoveTab: ((UUID, Int, Int) -> Void)?
 
     @State private var isEditing = false
     @State private var isHoveringHeader = false
     @State private var reorderState = TabReorderState()
 
+    private func toggleCollapse() {
+        withAnimation(.easeInOut(duration: 0.15)) {
+            group.isCollapsed.toggle()
+        }
+        onCollapseToggled?()
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            // Group header
-            if isEditing {
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(subduedDotColor(group.color.nsColor))
-                        .frame(width: 6, height: 6)
-                        .opacity(isActiveGroup ? 1.0 : 0.5)
-                    InlineTextField(
-                        initialText: group.name,
-                        accessibilityID: AccessibilityID.Sidebar.groupNameTextField(group.id),
-                        fontSize: 12,
-                        fontWeight: .semibold,
-                        onCommit: { text in
-                            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                            if !trimmed.isEmpty {
-                                group.name = trimmed
+            // Group header. One `TabClickContainer` hosts both the editing
+            // and non-editing content (mirroring `TabRowItemView` below),
+            // so the header's context menu, accessibility identity and
+            // hover tracking stay live while renaming, not just while
+            // idle. A right-click outside the live editor is committed
+            // first through `InlineTextField`'s own click monitor
+            // (installed 0.3s after the editor opens), and the group menu
+            // then opens on the already-committed header. In the brief
+            // window before that monitor exists, the menu opens over the
+            // live editor instead: Rename is then a no-op (`isEditing` is
+            // already true), matching the tab-row precedent in
+            // `TabClickRecognizer.swift`'s header comment.
+            //
+            // Both trailing glyphs (close-all, collapse chevron) are
+            // visual-only images, hit-tested by this `TabClickContainer`
+            // in AppKit via `trailingActions`, not by SwiftUI Buttons: a
+            // plain click on the chevron toggles collapse, a plain click
+            // on the close-all glyph (while hovering) closes the group,
+            // and a Ctrl+click or right-click on either opens the group
+            // menu instead of running the glyph's action. Each glyph also
+            // carries an accessibility action that mirrors its trailing
+            // rect's action, so VoiceOver can activate it directly.
+            TabClickContainer(
+                isEnabled: !isEditing,
+                onSingleClick: { onGroupSelected?(group.id) },
+                onDoubleClick: { isEditing = true },
+                trailingActions: isEditing ? [] : [
+                    TrailingAction(insetFromTrailing: 34, size: 20, isEnabled: isHoveringHeader) {
+                        onCloseAllTabsInGroup?(group.id)
+                    },
+                    TrailingAction(insetFromTrailing: 14, size: 20, isEnabled: true) {
+                        toggleCollapse()
+                    },
+                ],
+                contextMenu: {
+                    GroupContextMenu.make(
+                        groupIndex: groupIndex,
+                        groupCount: groupCount,
+                        currentColor: group.color,
+                        actions: .init(
+                            close: { onCloseAllTabsInGroup?(group.id) },
+                            closeOthers: { onCloseOtherGroups?(group.id) },
+                            closeBelow: { onCloseGroupsBelow?(group.id) },
+                            rename: { isEditing = true },
+                            setColor: { color in
+                                guard group.color != color else { return }
+                                group.color = color
+                                onGroupColorChanged?()
                             }
-                            isEditing = false
-                            onGroupRenamed?()
-                        },
-                        onCancel: {
-                            isEditing = false
-                        }
+                        )
                     )
-                    Spacer()
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                .contentShape(Rectangle())
-                .modifier(GroupHeaderBackgroundModifier(
-                    isActiveGroup: isActiveGroup,
-                    reduceTransparency: reduceTransparency
-                ))
-            } else {
-                TabClickContainer(
-                    isEnabled: !isEditing,
-                    onSingleClick: { onGroupSelected?(group.id) },
-                    onDoubleClick: { isEditing = true }
-                ) {
-                    HStack(spacing: 0) {
-                        // Left: group name area (visual content only; click
-                        // handled by surrounding TabClickContainer)
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(subduedDotColor(group.color.nsColor))
-                                .frame(width: 6, height: 6)
-                                .opacity(isActiveGroup ? 1.0 : 0.5)
+            ) {
+                HStack(spacing: 0) {
+                    // Left: group name area (visual content only; click
+                    // handled by surrounding TabClickContainer)
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(subduedDotColor(group.color.nsColor))
+                            .frame(width: 6, height: 6)
+                            .opacity(isActiveGroup ? 1.0 : 0.5)
+                        if isEditing {
+                            InlineTextField(
+                                initialText: group.name,
+                                accessibilityID: AccessibilityID.Sidebar.groupNameTextField(group.id),
+                                fontSize: 12,
+                                fontWeight: .semibold,
+                                onCommit: { text in
+                                    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                                    if !trimmed.isEmpty {
+                                        group.name = trimmed
+                                    }
+                                    isEditing = false
+                                    onGroupRenamed?()
+                                },
+                                onCancel: {
+                                    isEditing = false
+                                }
+                            )
+                            Spacer()
+                        } else {
                             Text(group.name)
                                 .font(.system(size: 12, weight: .semibold, design: .rounded))
                                 .tracking(0.4)
@@ -350,58 +403,61 @@ private struct GroupSectionView: View {
                                 .font(.system(size: 10, weight: .bold, design: .rounded))
                                 .foregroundStyle(.secondary)
                         }
-                        .padding(.vertical, 8)
-                        .contentShape(Rectangle())
-
-                        // Close all tabs button (shown on hover)
-                        Button(action: { onCloseAllTabsInGroup?(group.id) }) {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 12))
-                                .foregroundStyle(.secondary)
-                                .opacity(isHoveringHeader ? 1 : 0)
-                                .frame(width: 20, height: 20)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .allowsHitTesting(isHoveringHeader)
-                        .closeButtonHoverHighlight(size: 20, isVisible: isHoveringHeader, hoverOpacity: 0.08)
-                        .accessibilityIdentifier(AccessibilityID.Sidebar.groupCloseAllButton(group.id))
-
-                        // Right: collapse toggle button
-                        Button(action: {
-                            withAnimation(.easeInOut(duration: 0.15)) {
-                                group.isCollapsed.toggle()
-                            }
-                            onCollapseToggled?()
-                        }) {
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(.secondary)
-                                .rotationEffect(group.isCollapsed ? .zero : .degrees(90))
-                                .frame(width: 20, height: 20)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier(AccessibilityID.Sidebar.groupCollapseButton(group.id))
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 14)
-                    .modifier(GroupHeaderBackgroundModifier(
-                        isActiveGroup: isActiveGroup,
-                        reduceTransparency: reduceTransparency
-                    ))
+                    .padding(.vertical, 8)
+                    .contentShape(Rectangle())
+
+                    if !isEditing {
+                        // Visual-only close-all icon (shown on hover). No
+                        // `Button`, no `.onTapGesture`. Hit detection is
+                        // done in `ClickContainerNSView.mouseDown` against
+                        // the same 20x20 rect inset 34pt from the trailing
+                        // edge.
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .opacity(isHoveringHeader ? 1 : 0)
+                            .frame(width: 20, height: 20)
+                            .closeButtonHoverHighlight(size: 20, isVisible: isHoveringHeader, hoverOpacity: 0.08)
+                            .allowsHitTesting(false)
+                            .accessibilityIdentifier(AccessibilityID.Sidebar.groupCloseAllButton(group.id))
+                            .accessibilityLabel("Close Group")
+                            .accessibilityAddTraits(.isButton)
+                            .accessibilityAction { onCloseAllTabsInGroup?(group.id) }
+
+                        // Visual-only collapse chevron. Hit detection is
+                        // done in `ClickContainerNSView.mouseDown` against
+                        // the same 20x20 rect inset 14pt from the trailing
+                        // edge.
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .rotationEffect(group.isCollapsed ? .zero : .degrees(90))
+                            .frame(width: 20, height: 20)
+                            .allowsHitTesting(false)
+                            .accessibilityIdentifier(AccessibilityID.Sidebar.groupCollapseButton(group.id))
+                            .accessibilityLabel(group.isCollapsed ? "Expand Group" : "Collapse Group")
+                            .accessibilityAddTraits(.isButton)
+                            .accessibilityAction { toggleCollapse() }
+                    }
                 }
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier(AccessibilityID.Sidebar.group(group.id))
-                // The group-name `Text` lives inside the header's
-                // `TabClickContainer` `NSHostingView` and is otherwise
-                // invisible to XCUITest / assistive tech (the `.contain`
-                // container does not surface hosted children). Carry the
-                // name explicitly so the group announces itself and
-                // name-based lookups (e.g. after a rename) resolve it.
-                .accessibilityLabel(group.name)
-                .onAssumeInsideHover($isHoveringHeader)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14)
+                .modifier(GroupHeaderBackgroundModifier(
+                    isActiveGroup: isActiveGroup,
+                    reduceTransparency: reduceTransparency
+                ))
             }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier(AccessibilityID.Sidebar.group(group.id))
+            // The group-name `Text` lives inside the header's
+            // `TabClickContainer` `NSHostingView` and is otherwise
+            // invisible to XCUITest / assistive tech (the `.contain`
+            // container does not surface hosted children). Carry the
+            // name explicitly so the group announces itself and
+            // name-based lookups (e.g. after a rename) resolve it.
+            .accessibilityLabel(group.name)
+            .onAssumeInsideHover($isHoveringHeader)
 
             // Tabs in this group (only show if not collapsed)
             if !group.isCollapsed {

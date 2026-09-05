@@ -26,6 +26,14 @@ enum AccessibilityID {
         static let agentHooksIssuesBanner = "calyx.sidebar.agentHooksIssuesBanner"
         static let agentMonitoringDisabledBanner = "calyx.sidebar.agentMonitoringDisabledBanner"
     }
+    enum GroupContextMenu {
+        static let close = "calyx.groupMenu.close"
+        static let closeOthers = "calyx.groupMenu.closeOthers"
+        static let closeBelow = "calyx.groupMenu.closeBelow"
+        static let rename = "calyx.groupMenu.rename"
+        static let color = "calyx.groupMenu.color"
+        static func color(_ color: TabGroupColor) -> String { "calyx.groupMenu.color.\(color.rawValue)" }
+    }
     enum TabBar {
         static let container = "calyx.tabBar"
         static let newTabButton = "calyx.tabBar.newTabButton"

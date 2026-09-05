@@ -73,6 +73,14 @@ enum CloseFocusedTarget: Equatable {
     case window
 }
 
+/// Which groups the group context menu closes, relative to the
+/// right-clicked group, in `windowSession.groups` order.
+enum GroupCloseMode {
+    case this
+    case others
+    case below
+}
+
 @MainActor
 class CalyxWindowController: NSWindowController, NSWindowDelegate {
     private(set) var windowSession: WindowSession
@@ -1239,10 +1247,12 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// Shared close body for the five close paths that can empty the
-    /// last managed window (`closeTab`, `closeActiveGroup`,
-    /// `closeAllTabsInGroup`, `closeSurfaceAndCleanUp`, `closeTabs(_:in:)`):
-    /// sets `isClosingForShutdown` eagerly, then closes the window.
+    /// Shared close body that can empty the last managed window. There
+    /// are three call sites: `closeTab`, `closeSurfaceAndCleanUp`, and
+    /// `closeTabs(_:removingEmptyGroups:)`. The group/batch entry points
+    /// (`closeActiveGroup`, `closeAllTabsInGroup`, `closeTabs(_:in:)`,
+    /// both `closeGroups` overloads) all reach it through that core.
+    /// Sets `isClosingForShutdown` eagerly, then closes the window.
     /// `isClosingForShutdown` must be set BEFORE `window?.close()`:
     /// without this, `windowDidExitFullScreen`'s stale-snapshot guard
     /// (which checks `isClosingForShutdown`) is dead code during this
@@ -1369,6 +1379,9 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
             onSidebarWidthChanged: { [weak self] width in self?.windowSession.sidebarWidth = width },
             onCollapseToggled: { [weak self] in self?.requestSave() },
             onCloseAllTabsInGroup: { [weak self] groupID in self?.closeAllTabsInGroup(id: groupID) },
+            onCloseOtherGroups: { [weak self] groupID in self?.closeGroups(relativeTo: groupID, mode: .others) },
+            onCloseGroupsBelow: { [weak self] groupID in self?.closeGroups(relativeTo: groupID, mode: .below) },
+            onGroupColorChanged: { [weak self] in self?.requestSave() },
             onMoveTab: { [weak self] groupID, fromIndex, toIndex in
                 guard let self,
                       let group = self.windowSession.groups.first(where: { $0.id == groupID })
@@ -2109,35 +2122,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
 
     private func closeActiveGroup() {
         guard let group = windowSession.activeGroup else { return }
-
-        // Mark all tabs as closing to prevent notification handler from double-deleting
-        let tabIDs = group.tabs.map { $0.id }
-        for tabID in tabIDs {
-            closingTabIDs.insert(tabID)
-        }
-
-        // Release the browser controller, diff state, review store and
-        // surfaces for every tab in this group (killing any persistent
-        // sessions, see closeTab(id:)'s equivalent comment).
-        for tab in group.tabs {
-            releaseTabResources(tab)
-        }
-
-        let result = windowSession.removeGroup(id: group.id)
-
-        for tabID in tabIDs {
-            closingTabIDs.remove(tabID)
-        }
-
-        switch result {
-        case .switchedTab(_, _), .switchedGroup(_, _):
-            activateCurrentTab()
-            refreshHostingView()
-            requestSave()
-        case .windowShouldClose:
-            closeLastWindow()
-            requestSave()
-        }
+        closeGroups(relativeTo: group.id, mode: .this)
     }
 
     /// Not `private`: `CalyxWindowControllerCloseArmsTests`
@@ -2146,39 +2131,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// SwiftUI wiring to reach it, matching this file's existing
     /// `handleSessionReconnectDecision` precedent for the same reason.
     func closeAllTabsInGroup(id groupID: UUID) {
-        guard let group = windowSession.groups.first(where: { $0.id == groupID }) else { return }
-
-        let wasActiveGroup = (groupID == windowSession.activeGroupID)
-        let tabIDs = group.tabs.map { $0.id }
-        for tabID in tabIDs {
-            closingTabIDs.insert(tabID)
-        }
-
-        if wasActiveGroup {
-            deactivateCurrentTab()
-        }
-
-        for tab in group.tabs {
-            releaseTabResources(tab)
-        }
-
-        let result = windowSession.removeGroup(id: groupID)
-
-        for tabID in tabIDs {
-            closingTabIDs.remove(tabID)
-        }
-
-        switch result {
-        case .switchedTab(_, _), .switchedGroup(_, _):
-            if wasActiveGroup {
-                activateCurrentTab()
-            }
-            refreshHostingView()
-            requestSave()
-        case .windowShouldClose:
-            closeLastWindow()
-            requestSave()
-        }
+        closeGroups(relativeTo: groupID, mode: .this)
     }
 
     private func switchToNextGroup() {
@@ -2952,57 +2905,71 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// Closes `victims`, which must all belong to `group`, in one pass.
-    /// Tabs already mid-close are skipped, and each diff tab among
+    /// Closes every `(tab, group)` pair in `victims`, across one or more
+    /// groups, in one pass, in the given order, and then removes every
+    /// group in `emptyGroups` that is still present and still has no
+    /// tabs. Tabs already mid-close are skipped, and each diff tab among
     /// `victims` with unsubmitted review comments gets the same prompt as
-    /// `closeTab(id:)`; a declined tab stays open and is not closed.
+    /// `closeTab(id:)`, in order; a declined diff tab stays open, so its
+    /// group survives with at least that tab, while the other victims in
+    /// that group still close. All prompts happen before any teardown.
     ///
-    /// The current tab is deactivated once, before any teardown, if it is
-    /// among the victims -- mirroring `closeAllTabsInGroup`'s single
-    /// upfront deactivation, unlike `closeTab(id:)`, which never
-    /// deactivates. It is then activated at most once afterwards, instead
-    /// of once per victim as `closeTab(id:)` would do if called once per
-    /// victim.
+    /// The window's active tab is deactivated at most once, before any
+    /// teardown, if it is among the victims (read via
+    /// `windowSession.activeGroup?.activeTabID`, AFTER the prompts: they
+    /// pump the main queue, so the active tab/group can change while they
+    /// are up). It is then activated at most once afterwards, never once
+    /// per victim or per emptied group. When several emptied groups chain
+    /// through `WindowSession.removeGroup`'s active-group migration (each
+    /// emptied active group hands activity to its neighbour in turn), no
+    /// intermediate group is ever activated by this loop -- only the
+    /// surviving group at the end, via the single closing
+    /// `activateCurrentTab()` call.
     ///
-    /// If `victims` is every tab of `group`, `group` empties:
-    /// `WindowSession.removeTab` removes it and, only if `group` was the
-    /// active group, moves the active group to a neighbour. If no group
-    /// remains, the window closes through `closeLastWindow()`. Otherwise,
-    /// `activateCurrentTab()` rebuilds the hosting view before checking for
-    /// an active tab, so the closed tabs leave the tab bar even on a run
-    /// where no active tab remains. When the active tab survives unchanged,
-    /// the hosting view is refreshed here instead, and the Changes sidebar
-    /// is refreshed alongside it when visible (the same `.tabActivated`
-    /// refresh `activateCurrentTab()` runs).
-    ///
-    /// Not `private`: `CalyxWindowControllerProcessCloseTabBatchTests`
-    /// calls this directly.
-    func closeTabs(_ victims: [Tab], in group: TabGroup) {
-        let candidates = victims.filter { !closingTabIDs.contains($0.id) }
-        for tab in candidates { closingTabIDs.insert(tab.id) }
-        let tabsToClose = candidates.filter { tab in
-            if confirmClosingDespiteUnsubmittedReviewComments(tab) { return true }
-            closingTabIDs.remove(tab.id)
+    /// Closing every tab of a group empties it: `WindowSession.removeTab`
+    /// removes the group and, only if it was the active group, moves
+    /// activity to a neighbour, per `removeGroup`'s own rule. Removing an
+    /// already-empty group in `emptyGroups` follows the same rule. The
+    /// window closes when no group remains, or when the surviving active
+    /// group itself has no active tab (an empty group being the only
+    /// survivor is included in that second case). Otherwise, the
+    /// surviving active group always has an active tab by the time
+    /// `activateCurrentTab()` runs, and that call rebuilds the hosting
+    /// view so the closed tabs leave the tab bar. When the active tab
+    /// survives unchanged, the hosting view is refreshed here instead,
+    /// and the Changes sidebar is refreshed alongside it when visible
+    /// (the same `.tabActivated` refresh `activateCurrentTab()` runs).
+    func closeTabs(_ victims: [(tab: Tab, group: TabGroup)], removingEmptyGroups emptyGroups: [TabGroup] = []) {
+        let candidates = victims.filter { !closingTabIDs.contains($0.tab.id) }
+        for victim in candidates { closingTabIDs.insert(victim.tab.id) }
+        let tabsToClose = candidates.filter { victim in
+            if confirmClosingDespiteUnsubmittedReviewComments(victim.tab) { return true }
+            closingTabIDs.remove(victim.tab.id)
             return false
         }
-        guard !tabsToClose.isEmpty else { return }
+        guard !tabsToClose.isEmpty || !emptyGroups.isEmpty else { return }
 
         // Read after the prompts: the prompts pump the main queue, so the
         // active tab and group can change while they are up.
         let activeGroupIDBefore = windowSession.activeGroupID
-        let activeIsVictim = group.id == activeGroupIDBefore
-            && tabsToClose.contains { $0.id == group.activeTabID }
+        let activeTabIDBefore = windowSession.activeGroup?.activeTabID
+        let activeIsVictim = tabsToClose.contains { $0.tab.id == activeTabIDBefore }
         if activeIsVictim {
             deactivateCurrentTab()
         }
 
-        for tab in tabsToClose {
-            releaseTabResources(tab)
-            windowSession.removeTab(id: tab.id, fromGroup: group.id)
+        for victim in tabsToClose {
+            releaseTabResources(victim.tab)
+            windowSession.removeTab(id: victim.tab.id, fromGroup: victim.group.id)
         }
-        for tab in tabsToClose { closingTabIDs.remove(tab.id) }
+        for victim in tabsToClose { closingTabIDs.remove(victim.tab.id) }
 
-        if windowSession.groups.isEmpty {
+        for group in emptyGroups {
+            guard let current = windowSession.groups.first(where: { $0.id == group.id }), current.tabs.isEmpty else { continue }
+            windowSession.removeGroup(id: group.id)
+        }
+
+        if windowSession.groups.isEmpty || windowSession.activeGroup?.activeTab == nil {
             closeLastWindow()
             requestSave()
             return
@@ -3016,6 +2983,47 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
             }
         }
         requestSave()
+    }
+
+    /// Closes `victims`, which must all belong to `group`, in one batch.
+    /// A thin wrapper over the multi-group core above.
+    ///
+    /// Not `private`: `CalyxWindowControllerProcessCloseTabBatchTests`
+    /// calls this directly.
+    func closeTabs(_ victims: [Tab], in group: TabGroup) {
+        closeTabs(victims.map { (tab: $0, group: group) })
+    }
+
+    /// Closes every tab of every group in `groups`, in one batch, in the
+    /// given group order (tabs within a group close in their existing
+    /// order). `closeGroups(relativeTo:mode:)` below resolves its victim
+    /// groups and calls this.
+    func closeGroups(_ groups: [TabGroup]) {
+        closeTabs(
+            groups.flatMap { group in group.tabs.map { (tab: $0, group: group) } },
+            removingEmptyGroups: groups.filter { $0.tabs.isEmpty }
+        )
+    }
+
+    /// The shared entry for closing one or more groups: resolves `mode`
+    /// against `windowSession.groups`' current order, relative to
+    /// `groupID`, and closes the resulting groups in one batch. Backs the
+    /// group context menu's "Close Other Groups" (`.others`) and "Close
+    /// Groups Below" (`.below`), and the single-group paths
+    /// `closeAllTabsInGroup(id:)` and `closeActiveGroup()` (`.this`). An
+    /// unknown `groupID` (not present in `windowSession.groups`) is a
+    /// no-op.
+    func closeGroups(relativeTo groupID: UUID, mode: GroupCloseMode) {
+        let groups = windowSession.groups
+        guard let index = groups.firstIndex(where: { $0.id == groupID }) else { return }
+        switch mode {
+        case .this:
+            closeGroups([groups[index]])
+        case .others:
+            closeGroups(groups.filter { $0.id != groupID })
+        case .below:
+            closeGroups(Array(groups[(index + 1)...]))
+        }
     }
 
     /// The tab context menu's entry into `processCloseTab(tab:group:mode:)`.

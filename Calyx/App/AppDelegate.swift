@@ -1917,8 +1917,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver
     /// silently, without confirming anything first:
     /// `CalyxWindowController.closeLastWindow()`, `processCloseWindow()`,
     /// `closeTab`/`closeActiveGroup`/`closeAllTabsInGroup`/
-    /// `closeFocusedSessionSurface` (see
-    /// each's own doc comment in `CalyxWindowController.swift`).
+    /// `closeFocusedSessionSurface` (see each's own doc comment in
+    /// `CalyxWindowController.swift`). `closeTab` and, since they route
+    /// through `closeGroups`, `closeActiveGroup`/`closeAllTabsInGroup`
+    /// each run the unsent-review-comments prompt per diff tab; none of
+    /// them consults the quit gate.
     /// `confirmQuitIfNeeded()` below documents itself as having exactly
     /// one legitimate caller, `applicationShouldTerminate` (Cmd+Q) --
     /// adding a second call site here would contradict that.

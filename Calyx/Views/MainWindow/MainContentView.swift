@@ -53,6 +53,9 @@ struct MainContentView: View {
     var onSidebarWidthChanged: ((CGFloat) -> Void)?
     var onCollapseToggled: (() -> Void)?
     var onCloseAllTabsInGroup: ((UUID) -> Void)?
+    var onCloseOtherGroups: ((UUID) -> Void)?
+    var onCloseGroupsBelow: ((UUID) -> Void)?
+    var onGroupColorChanged: (() -> Void)?
     var onMoveTab: ((UUID, Int, Int) -> Void)?  // (groupID, fromIndex, toIndex)
     var paneTitle: (UUID) -> String?
     var paneCwd: (UUID) -> String?
@@ -148,6 +151,9 @@ struct MainContentView: View {
                         onTabRenamed: onTabRenamed,
                         onCollapseToggled: onCollapseToggled,
                         onCloseAllTabsInGroup: onCloseAllTabsInGroup,
+                        onCloseOtherGroups: onCloseOtherGroups,
+                        onCloseGroupsBelow: onCloseGroupsBelow,
+                        onGroupColorChanged: onGroupColorChanged,
                         onWorkingFileSelected: onWorkingFileSelected,
                         onCommitFileSelected: onCommitFileSelected,
                         onRefreshGitStatus: onRefreshGitStatus,
