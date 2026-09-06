@@ -23,15 +23,17 @@
 // `@State` (owned deeper inside `ApprovalBannerView`) is created exactly
 // once per request.
 //
-// Glass: same `GlassEffectContainer` + `.glassEffect(.clear.tint(...))`
-// + atmosphere-gradient background as `QuickTerminalContentView` (this
-// panel's own rounded corners come from the titled window itself, so no
-// extra corner radius is applied here). No `GlassInactiveTintModifier`:
-// unlike a real window, this panel is never expected to visibly darken
-// just because it isn't key. `ApprovalBannerView`'s own
-// `RecoveryBarBackgroundModifier` stays -- on this glass path it only
-// picks text/button colors, since the actual translucent surface is
-// this container's.
+// Glass: the same sheet construction as `MainContentView`'s own root
+// glass sheet -- a `Color.clear` `.background` behind the content,
+// `.glassEffect(.clear.tint(...))` on that clear color, `.ignoresSafeArea()`
+// and `.allowsHitTesting(false)`, then `GlassAtmosphereBackground` behind
+// that -- so the two read as one material (this panel's own rounded
+// corners come from the titled window itself, so no extra corner radius
+// is applied here). No `GlassInactiveTintModifier`: unlike the main
+// window, this panel is never expected to visibly darken just because
+// it isn't key. `ApprovalBannerView`'s own `RecoveryBarBackgroundModifier`
+// stays -- on this glass path it only picks text/button colors, since the
+// actual translucent surface is this sheet's.
 
 import SwiftUI
 import AppKit
@@ -92,7 +94,18 @@ struct ApprovalPanelContentView: View {
         GlassEffectContainer {
             ApprovalBannerView(model: model, request: request, hostWindowTitle: ControlCharacterDisplay.render(hostWindowTitle()))
                 .id(request.id)
-                .glassEffect(.clear.tint(Color(nsColor: GlassTheme.chromeTint(for: themeColor, glassOpacity: glassOpacity))), in: .rect)
+        }
+        .background {
+            Group {
+                if reduceTransparency {
+                    Color(nsColor: .windowBackgroundColor)
+                } else {
+                    Color.clear
+                        .glassEffect(.clear.tint(Color(nsColor: GlassTheme.chromeTint(for: themeColor, glassOpacity: glassOpacity))), in: .rect)
+                }
+            }
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
         }
         .modifier(GlassAtmosphereBackground(themeColor: themeColor, glassOpacity: glassOpacity, reduceTransparency: reduceTransparency, specularStroke: false))
     }
