@@ -29,26 +29,6 @@ struct QuickTerminalContentView: View {
             .padding(.leading, 8)
             .glassEffect(.clear.tint(Color(nsColor: GlassTheme.chromeTint(for: themeColor, glassOpacity: glassOpacity))), in: .rect)
         }
-        .background {
-            if !reduceTransparency {
-                Rectangle()
-                    .fill(
-                        LinearGradient(
-                            colors: [Color(nsColor: GlassTheme.atmosphereTop(for: themeColor, glassOpacity: glassOpacity)), Color(nsColor: GlassTheme.atmosphereBottom(for: themeColor, glassOpacity: glassOpacity))],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .overlay(
-                        RadialGradient(
-                            colors: [Color(nsColor: GlassTheme.accentGradient(for: themeColor)), Color.clear],
-                            center: .bottomTrailing,
-                            startRadius: 20,
-                            endRadius: 420
-                        )
-                    )
-                    .ignoresSafeArea()
-            }
-        }
+        .modifier(GlassAtmosphereBackground(themeColor: themeColor, glassOpacity: glassOpacity, reduceTransparency: reduceTransparency, specularStroke: false))
     }
 }

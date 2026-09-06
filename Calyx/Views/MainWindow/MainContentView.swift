@@ -21,12 +21,6 @@ struct MainContentView: View {
     /// CalyxWindowController) simply shows no bar, same as
     /// `hasPreservedSessionSnapshot == false`.
     var recoveryBarModel: RecoveryBarModel?
-    /// Cockpit approval banner (ApprovalBannerModel.swift), shown below
-    /// the recovery bar (if both are visible at once) as the second
-    /// child of the same `safeAreaInset` VStack. `nil` (no existing
-    /// caller besides CalyxWindowController) simply shows no banner,
-    /// same as `current == nil`.
-    var approvalBannerModel: ApprovalBannerModel?
 
     @Binding var sidebarMode: SidebarMode
     var gitSidebarState = GitSidebarViewState()
@@ -94,8 +88,8 @@ struct MainContentView: View {
     //    chain must stay the SwiftUI root, because the single root glass
     //    sheet (`mainContent`'s own `.background` with
     //    `.ignoresSafeArea()`, further down in this file) only covers the
-    //    titlebar and safe-area-inset strips (RecoveryBar/ApprovalBanner)
-    //    when nothing ordinary sits above it in the tree. An `if`/`else`
+    //    titlebar and the RecoveryBar's own safe-area-inset strip when
+    //    nothing ordinary sits above it in the tree. An `if`/`else`
     //    `VStack(spacing: 0) { conditional bar; mainContent }` shape puts
     //    an unstyled, non-safe-area-ignoring `VStack` at the root instead,
     //    which would clip that coverage and break the transparent/glass
@@ -116,13 +110,8 @@ struct MainContentView: View {
     var body: some View {
         mainContent
             .safeAreaInset(edge: .top, spacing: 0) {
-                VStack(spacing: 0) {
-                    if let recoveryBarModel, recoveryBarModel.showRecoveryBar {
-                        RecoveryBarView(model: recoveryBarModel)
-                    }
-                    if let approvalBannerModel, let request = approvalBannerModel.current {
-                        ApprovalBannerView(model: approvalBannerModel, request: request)
-                    }
+                if let recoveryBarModel, recoveryBarModel.showRecoveryBar {
+                    RecoveryBarView(model: recoveryBarModel)
                 }
             }
     }
@@ -314,31 +303,7 @@ struct MainContentView: View {
             .ignoresSafeArea()
             .allowsHitTesting(false)
         }
-        .background {
-            if !reduceTransparency {
-                Rectangle()
-                    .fill(
-                        LinearGradient(
-                            colors: [Color(nsColor: GlassTheme.atmosphereTop(for: themeColor, glassOpacity: glassOpacity)), Color(nsColor: GlassTheme.atmosphereBottom(for: themeColor, glassOpacity: glassOpacity))],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .overlay(
-                        RadialGradient(
-                            colors: [Color(nsColor: GlassTheme.accentGradient(for: themeColor)), Color.clear],
-                            center: .bottomTrailing,
-                            startRadius: 20,
-                            endRadius: 420
-                        )
-                    )
-                    .overlay(
-                        Rectangle()
-                            .stroke(GlassTheme.specularStroke.opacity(0.30), lineWidth: 1)
-                    )
-                    .ignoresSafeArea()
-            }
-        }
+        .modifier(GlassAtmosphereBackground(themeColor: themeColor, glassOpacity: glassOpacity, reduceTransparency: reduceTransparency, specularStroke: true))
     }
 }
 

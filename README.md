@@ -35,7 +35,7 @@ The Agents Sidebar shows every connected agent as working, blocked, idle, or don
 
 ### Approve tool calls from one inbox
 
-Claude Code and Codex permission prompts, the tool calls of Grok sessions running in always-approve mode, and every pi tool call appear in a shared in-window approval queue. Inspect the exact request, allow or deny it, and move through pending requests without hunting for the pane that raised them. Enable the integration explicitly in Settings; nothing is automatically approved unless you separately opt in. pi ships no permission prompt of its own, so with the integration off its tool calls run unreviewed.
+Claude Code and Codex permission prompts, the tool calls of Grok sessions running in always-approve mode, and every pi tool call appear in a floating approval panel at the top-right of your screen. Inspect the exact request, allow or deny it, and move through pending requests without hunting for the pane that raised them. Enable the integration explicitly in Settings; nothing is automatically approved unless you separately opt in. pi ships no permission prompt of its own, so with the integration off its tool calls run unreviewed.
 
 ### Review code without leaving the terminal
 

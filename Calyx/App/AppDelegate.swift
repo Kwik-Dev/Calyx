@@ -15,6 +15,133 @@ class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver
     private var pendingURLs: [URL] = []
     private var quickTerminalController: QuickTerminalController?
 
+    /// Tracks the window the user is working in app-wide -- see
+    /// `CurrentWindowTracker.swift`'s own file header for the full
+    /// resolution contract.
+    let currentWindowTracker = CurrentWindowTracker()
+
+    /// The window the user is working in right now: a real key
+    /// `CalyxWindowController` if one exists, else
+    /// `currentWindowTracker`'s own resolution (the last one that was
+    /// key, else the first open window, nil with zero open windows).
+    /// Every consumer that needs a "which window" answer with no more
+    /// specific signal -- a target-pane-less approval request, a new-
+    /// tab/attach flow with no explicit source window -- resolves
+    /// through this.
+    var currentWindowController: CalyxWindowController? {
+        windowControllers.first { $0.window?.isKeyWindow == true } ?? currentWindowTracker.resolve(in: windowControllers)
+    }
+
+    /// The window controller whose `windowSession.groups` registry
+    /// reports ownership of `id` (`tabAndGroup(owningSurface:)`), or nil
+    /// if no open window does.
+    func windowController(owningSurface id: UUID) -> CalyxWindowController? {
+        windowControllers.first { $0.windowSession.groups.tabAndGroup(owningSurface: id) != nil }
+    }
+
+    /// Restores terminal focus after an approval decision resolves (or a
+    /// question's free-text field loses relevance): a surface-targeted
+    /// request reaches the window owning that surface, a window-agnostic
+    /// (nil `targetSurfaceID`) request reaches `currentWindowController`.
+    /// `reclaimKey` is computed here, at call time, from whether the
+    /// app-wide approval panel actually holds key status right now --
+    /// reading `_approvalPanelController` directly (never the creating
+    /// `approvalPanelController` getter), so a request resolving before
+    /// any panel was ever shown reads as "the panel does not hold key"
+    /// rather than creating one just to ask it.
+    func restoreTerminalFocusAfterApproval(targetSurfaceID: UUID?) {
+        let reclaimKey = _approvalPanelController?.panel?.isKeyWindow == true
+        (targetSurfaceID.flatMap(windowController(owningSurface:)) ?? currentWindowController)?
+            .restoreTerminalFocusAfterApproval(reclaimKey: reclaimKey)
+    }
+
+    /// The single, app-wide Cockpit approval queue -- one instance for
+    /// the whole app, not one per window (see ApprovalBannerModel.swift's
+    /// own header).
+    ///
+    /// `lazy`: `restoreTerminalFocus` captures `self` (to call
+    /// `restoreTerminalFocusAfterApproval(targetSurfaceID:)`), which a
+    /// plain stored property initializer cannot do (`self` does not
+    /// exist yet at that point).
+    lazy var approvalBannerModel = ApprovalBannerModel(
+        store: .shared,
+        restoreTerminalFocus: { [weak self] targetSurfaceID in
+            self?.restoreTerminalFocusAfterApproval(targetSurfaceID: targetSurfaceID)
+        }
+    )
+
+    /// Backing storage for `approvalPanelController` below, so
+    /// `applicationWillTerminate` can tear it down without creating one
+    /// that was never needed -- `nil` reads cleanly as "never rendered".
+    private var _approvalPanelController: ApprovalPanelController?
+
+    /// The single, app-wide floating approval panel: one page-style
+    /// panel for the whole app, not one per window (see
+    /// `ApprovalPanelController.swift`'s own header). Lazily created on
+    /// first access, same self-capturing rationale as
+    /// `approvalBannerModel` above; implemented as a manual lazy
+    /// (`_approvalPanelController`) rather than `lazy var` so
+    /// `applicationWillTerminate` can tear it down only if it was
+    /// actually created.
+    var approvalPanelController: ApprovalPanelController {
+        if let existing = _approvalPanelController { return existing }
+        let controller = ApprovalPanelController(
+            model: approvalBannerModel,
+            hostWindow: { [weak self] in self?.currentWindowController?.window },
+            hostWindowTitle: { [weak self] in
+                self?.currentWindowController?.activeTabDisplayTitle ?? self?.currentWindowController?.window?.title ?? "Calyx"
+            }
+        )
+        _approvalPanelController = controller
+        return controller
+    }
+
+    /// Re-renders the single app-wide approval panel: called whenever a
+    /// window is added/removed, the current window changes, or the
+    /// current window's own geometry changes. Only `.calyxApprovalInboxChanged`
+    /// (`handleApprovalInboxChangedForPanel`) creates the panel controller;
+    /// every other caller renders the existing one if any, since none of
+    /// these events can themselves put a new request in the inbox. Reads
+    /// `_approvalPanelController` directly rather than the creating
+    /// `approvalPanelController` getter, so this never creates a panel
+    /// controller just to render an inbox that is still empty.
+    ///
+    /// Kept after every `windowControllers.append`/`removeWindowController`/
+    /// `cleanupFailedWindow` even though it cannot create the controller:
+    /// a window created while Calyx is inactive never becomes key, so
+    /// `windowDidBecomeKey` (and this app's `windowControllerDidBecomeKey`
+    /// re-render) cannot be relied on to pick up the new/removed window as
+    /// the panel's host.
+    ///
+    /// A no-op while `isApplicationTerminating`: nothing should show or
+    /// move a floating panel once the app is already tearing down.
+    func refreshApprovalPanel() {
+        guard !isApplicationTerminating else { return }
+        _approvalPanelController?.render()
+    }
+
+    /// `CalyxWindowController.windowDidBecomeKey` calls this instead of
+    /// refreshing its own (now nonexistent) per-window banner.
+    /// Re-renders the app-wide panel only when the current window
+    /// actually changes (`CurrentWindowTracker.didBecomeKey(_:)`'s own
+    /// return value) -- a window becoming key that was already the
+    /// current window changes nothing this panel cares about.
+    func windowControllerDidBecomeKey(_ controller: CalyxWindowController) {
+        guard currentWindowTracker.didBecomeKey(controller) else { return }
+        refreshApprovalPanel()
+    }
+
+    /// `CalyxWindowController.windowDidChangeScreen`/full-screen enter/
+    /// exit call this instead of re-anchoring their own (now
+    /// nonexistent) per-window panel. Re-renders (re-measures and
+    /// re-anchors) the app-wide panel only when `controller` is the
+    /// CURRENT window -- a geometry change on some other window never
+    /// affects where the panel sits.
+    func windowControllerGeometryChanged(_ controller: CalyxWindowController) {
+        guard controller === currentWindowController else { return }
+        refreshApprovalPanel()
+    }
+
     /// Herdr-to-`AgentRegistry` state translator -- see
     /// `HerdrAgentMirror.swift`'s own header. Hoisted to its own stored
     /// property (rather than inlined into `herdrIntegrationCoordinator`'s
@@ -695,7 +822,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver
     /// open can ever interleave its own Phase 2 calls into this one's.
     private func herdrCreateSurface(command: String) -> UUID? {
         guard let app = GhosttyAppController.shared.app,
-              let window = (windowControllers.first(where: { $0.window?.isKeyWindow == true }) ?? windowControllers.first)?.window
+              let window = currentWindowController?.window
         else {
             return nil
         }
@@ -752,7 +879,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver
     /// after this returns `false`, via `herdrDestroySurface(_:)`, which
     /// still needs to find them through this SAME property.
     private func attachHerdrNativeTab(_ tab: Tab) -> Bool {
-        guard let target = windowControllers.first(where: { $0.window?.isKeyWindow == true }) ?? windowControllers.first,
+        guard let target = currentWindowController,
               let registry = herdrPendingSurfaceRegistry,
               target.windowSession.activeGroup != nil
         else {
@@ -786,9 +913,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver
     /// entry and routes to `CalyxWindowController.applyHerdrRatioMutation(
     /// leafA:leafB:direction:ratio:)`.
     private func applyHerdrNativeRatioMutation(leafA: UUID, leafB: UUID, direction: SplitDirection, ratio: Double) {
-        guard let wc = windowControllers.first(where: { wc in
-            wc.windowSession.groups.tabAndGroup(owningSurface: leafA) != nil
-        }) else {
+        guard let wc = windowController(owningSurface: leafA) else {
             return
         }
         wc.applyHerdrRatioMutation(leafA: leafA, leafB: leafB, direction: direction, ratio: ratio)
@@ -799,9 +924,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver
     /// `CalyxWindowController.closeHerdrTrackedSurface(_:)` -- the
     /// existing pane-close path for that surface.
     private func closeHerdrNativeLeaf(_ surfaceID: UUID) {
-        guard let wc = windowControllers.first(where: { wc in
-            wc.windowSession.groups.tabAndGroup(owningSurface: surfaceID) != nil
-        }) else {
+        guard let wc = windowController(owningSurface: surfaceID) else {
             return
         }
         wc.closeHerdrTrackedSurface(surfaceID)
@@ -1077,6 +1200,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver
         // isApplicationTerminating's own doc comment).
         isApplicationTerminating = true
 
+        // Only if the app-wide approval panel was ever actually created --
+        // reading `_approvalPanelController` directly, never the
+        // `approvalPanelController` computed property, so this never
+        // creates one that was never needed just to tear it down again.
+        _approvalPanelController?.tearDown()
+
         // Give any kill(id:) calls dispatched by an explicit pane/tab
         // close that raced with this quit a short, bounded window to
         // actually finish (see SessionKillTracker's header comment) —
@@ -1187,6 +1316,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver
             self, selector: #selector(handleSurfaceDestroyedForAgentMonitor(_:)),
             name: .calyxSurfaceDestroyed, object: nil
         )
+        // Drives the single app-wide floating approval panel -- see
+        // `refreshApprovalPanel()`'s own doc comment. Observed here
+        // (not by any `CalyxWindowController`) since the panel is now
+        // owned by AppDelegate itself, not one per window.
+        center.addObserver(
+            self, selector: #selector(handleApprovalInboxChangedForPanel(_:)),
+            name: .calyxApprovalInboxChanged, object: nil
+        )
     }
 
     @objc private func handleNewTab(_ notification: Notification) {
@@ -1194,9 +1331,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver
         guard let surfaceView = notification.object as? SurfaceView,
               let window = surfaceView.window,
               let wc = windowControllers.first(where: { $0.window === window }) else {
-            // No source — create tab in the key window's controller
-            if let keyWC = windowControllers.first(where: { $0.window?.isKeyWindow == true }) {
-                keyWC.createNewTab(inheritedConfig: notification.userInfo?["inherited_config"])
+            // No source — create tab in the current window's controller
+            if let currentWC = currentWindowController {
+                currentWC.createNewTab(inheritedConfig: notification.userInfo?["inherited_config"])
             }
             return
         }
@@ -1251,6 +1388,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver
         AgentRegistry.shared.handleSurfaceDestroyed(surfaceID: surfaceID)
     }
 
+    /// `ApprovalInboxStore` posts `.calyxApprovalInboxChanged` on every
+    /// submit/decide -- the sole trigger for re-rendering the app-wide
+    /// approval panel outside of a window/designated-host change.
+    @objc private func handleApprovalInboxChangedForPanel(_ notification: Notification) {
+        guard !isApplicationTerminating else { return }
+        approvalPanelController.render()
+    }
+
     #if DEBUG
     /// Test seam: `registerNotificationObservers` is `private`, and its
     /// only production caller is `applicationDidFinishLaunching`, which
@@ -1289,6 +1434,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver
 
         let wc = CalyxWindowController(windowSession: windowSession, initialHost: initialHost)
         windowControllers.append(wc)
+        refreshApprovalPanel()
         wc.showWindow(nil)
     }
 
@@ -1319,7 +1465,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver
 
     #if DEBUG
     /// Test seam: called with the chosen target controller immediately
-    /// before `spawnRemoteSessionTab` calls `keyWC.createNewTab(host:)`.
+    /// before `spawnRemoteSessionTab` calls `targetWC.createNewTab(host:)`.
     /// Needed because `createNewTab` itself would silently no-op if
     /// driven for real here: it guards on `GhosttyAppController.shared.app`,
     /// which is `nil` in this test host (see
@@ -1346,36 +1492,28 @@ class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver
 
     /// `SessionBrowserModel.onRemoteSessionRequested`'s target (Session
     /// Browser's remote-host picker, `SessionBrowserWindowController
-    /// .attachRemote(_:)`): spawns a new tab against `host` in the key
-    /// window's controller if one exists -- mirrors `handleNewTab`'s own
-    /// key-window lookup for a local ghostty-originated new tab --
-    /// otherwise opens a fresh window whose sole initial tab spawns
-    /// against `host`, reaching a window controller the same way
-    /// `attachWindow` always does for a session with no live surface
-    /// anywhere yet.
+    /// .attachRemote(_:)`): spawns a new tab against `host` in the
+    /// current window's controller if one exists -- mirrors
+    /// `handleNewTab`'s own current-window lookup for a local
+    /// ghostty-originated new tab -- otherwise opens a fresh window whose
+    /// sole initial tab spawns against `host`, reaching a window
+    /// controller the same way `attachWindow` always does for a session
+    /// with no live surface anywhere yet.
     ///
     /// Every real caller of this method fires from inside the Session
     /// Browser's own button action, at which point the Session Browser's
     /// own window (not any `CalyxWindowController`'s window) is key -- so
-    /// an isKeyWindow-only lookup never matches in practice. This method
-    /// falls back to `windowControllers.first` when no controller is
-    /// literally key (`AppDelegateAttachSessionAsTabTests` covers the
-    /// identical case for the local session-browser Attach flow), so a
-    /// main window that exists but isn't key still receives the new tab
-    /// instead of a redundant new window opening. See
+    /// an isKeyWindow-only lookup never matches a real main window in
+    /// practice. Resolving through `currentWindowController` instead
+    /// (`AppDelegateAttachSessionAsTabTests` covers the identical case
+    /// for the local session-browser Attach flow) means a main window
+    /// that exists but isn't key still receives the new tab instead of a
+    /// redundant new window opening. See
     /// `AppDelegateSpawnRemoteSessionTabWindowLookupTests` for coverage;
     /// the two hooks above make this lookup observable without driving a
     /// real window/surface in the test process.
     func spawnRemoteSessionTab(host: String?) {
-        // The real caller fires
-        // from inside the Session Browser's own button action, at which
-        // point the Session Browser's plain NSWindow, not any
-        // CalyxWindowController's window, is key -- so an isKeyWindow-
-        // only lookup never matched in practice. Prefer the actually-key
-        // window if one exists, but fall back to the first available
-        // controller instead of dead-ending on the Session Browser panel
-        // holding key status.
-        if let targetWC = windowControllers.first(where: { $0.window?.isKeyWindow == true }) ?? windowControllers.first {
+        if let targetWC = currentWindowController {
             #if DEBUG
             _spawnRemoteSessionTabAddTabHookForTesting?(targetWC)
             if _spawnRemoteSessionTabAddTabHookForTesting != nil { return }
@@ -1405,6 +1543,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver
         appSession.addWindow(windowSession)
         let wc = CalyxWindowController(windowSession: windowSession)
         windowControllers.append(wc)
+        refreshApprovalPanel()
         wc.showWindow(nil)
     }
 
@@ -1603,9 +1742,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver
     /// per `SessionAttachRoutingPolicy`'s own doc comment. Computes both
     /// of that policy's inputs from real `AppDelegate` state --
     /// `isAttachedHere` from `SessionSurfaceMap` (identical to
-    /// `attachWindow`'s own double-attach guard), `hasAvailableWindow` from the same
-    /// "prefer the key window, else the first available one" lookup
-    /// `spawnRemoteSessionTab` now also uses (see that method's own doc
+    /// `attachWindow`'s own double-attach guard), `hasAvailableWindow`
+    /// from the same `currentWindowController` resolution
+    /// `spawnRemoteSessionTab` also uses (see that method's own doc
     /// comment for why an `isKeyWindow`-only lookup never matches a real
     /// main window from either call site: both fire from inside the
     /// Session Browser's own button action, at which point the Session
@@ -1614,13 +1753,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver
     ///
     func attachSessionAsTab(sessionID: String, cwd: String?, host: String? = nil) {
         let isAttachedHere = SessionSurfaceMap.shared.surfaceID(for: sessionID) != nil
-        // Same "prefer key, else first" fallback as `spawnRemoteSessionTab`'s
-        // own fix, and for the identical reason: whichever controller this
-        // resolves to is also the one `.attachAsTab` below adds the new tab
-        // to, so `hasAvailableWindow` and the eventual target come from the
+        // Same `currentWindowController` resolution as
+        // `spawnRemoteSessionTab`'s own fix, and for the identical
+        // reason: whichever controller this resolves to is also the one
+        // `.attachAsTab` below adds the new tab to, so
+        // `hasAvailableWindow` and the eventual target come from the
         // same lookup.
-        let targetWindowController = windowControllers.first(where: { $0.window?.isKeyWindow == true })
-            ?? windowControllers.first
+        let targetWindowController = currentWindowController
         let decision = SessionAttachRoutingPolicy.decide(
             isAttachedHere: isAttachedHere, hasAvailableWindow: targetWindowController != nil
         )
@@ -1724,9 +1863,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver
     /// reconnect/kill/restore paths.
     ///
     /// Builds the placeholder `Tab` (empty `sessionRefs`, fires the
-    /// observer above), resolves a target window the same "prefer key,
-    /// else first" way `attachSessionAsTab` does, then creates the real
-    /// surface and attaches the tab to that window.
+    /// observer above), resolves a target window through the same
+    /// `currentWindowController` resolution `attachSessionAsTab` does,
+    /// then creates the real surface and attaches the tab to that
+    /// window.
     ///
     /// No target window available (e.g. every Calyx window closed while
     /// the Session Browser itself, a separate `NSWindow`, stayed open)
@@ -1751,7 +1891,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver
         _openHerdrAttachTabPlaceholderTabObserverForTesting?(tab)
         #endif
 
-        guard let target = windowControllers.first(where: { $0.window?.isKeyWindow == true }) ?? windowControllers.first,
+        guard let target = currentWindowController,
               let app = GhosttyAppController.shared.app,
               let window = target.window
         else { return }
@@ -1839,6 +1979,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver
         )
         let wc = CalyxWindowController(window: window, windowSession: windowSession, restoring: true)
         windowControllers.append(wc)
+        refreshApprovalPanel()
         return (window, wc)
     }
 
@@ -1861,6 +2002,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver
         window.close()
         appSession.removeWindow(id: windowSession.id)
         windowControllers.removeAll { $0 === wc }
+        refreshApprovalPanel()
         logger.error("\(message, privacy: .public)")
     }
 
@@ -1887,6 +2029,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver
         appSession.removeWindow(id: controller.windowSession.id)
         windowControllers.removeAll { $0 === controller }
         guard !isApplicationTerminating else { return }
+        // The removed controller may have been the current window --
+        // re-render so the panel picks up whatever window-agnostic
+        // request it was showing, now against the new current window.
+        refreshApprovalPanel()
         if windowControllers.isEmpty {
             saveImmediately()
         } else {

@@ -100,8 +100,13 @@ final class LiveCockpitAppAccess: CockpitAppAccessing {
         NSApp.delegate as? AppDelegate
     }
 
-    private func keyWindowController(_ appDelegate: AppDelegate) -> CalyxWindowController? {
-        appDelegate.allWindowControllers.first { $0.window?.isKeyWindow == true }
+    /// `AppDelegate.currentWindowController` -- the key window while one
+    /// exists, else the last one that was key, else the first open
+    /// window -- so a `palette_execute` approved with no window
+    /// currently key still executes somewhere sensible instead of
+    /// failing with `.appUnavailable`.
+    private func designatedWindowController(_ appDelegate: AppDelegate) -> CalyxWindowController? {
+        appDelegate.currentWindowController
     }
 
     /// The single window controller whose `windowSession` owns
@@ -195,7 +200,7 @@ final class LiveCockpitAppAccess: CockpitAppAccessing {
 
     func createTab(groupName: String?, cwd: String?) throws -> CockpitNewTab {
         guard let appDelegate else { throw CockpitAccessError.appUnavailable }
-        guard let controller = keyWindowController(appDelegate) else { throw CockpitAccessError.appUnavailable }
+        guard let controller = designatedWindowController(appDelegate) else { throw CockpitAccessError.appUnavailable }
 
         let windowSession = controller.windowSession
         let group: TabGroup
@@ -227,7 +232,7 @@ final class LiveCockpitAppAccess: CockpitAppAccessing {
     }
 
     func availablePaletteCommands() -> [CockpitPaletteCommand] {
-        guard let appDelegate, let controller = keyWindowController(appDelegate) else { return [] }
+        guard let appDelegate, let controller = designatedWindowController(appDelegate) else { return [] }
         return controller.commandRegistry.allCommands.map {
             CockpitPaletteCommand(id: $0.id, title: $0.title, category: $0.category, isAvailable: $0.isAvailable())
         }
@@ -244,7 +249,7 @@ final class LiveCockpitAppAccess: CockpitAppAccessing {
     /// unavailable handler regardless.
     func executePaletteCommand(id: String) throws -> CockpitPaletteCommand {
         guard let appDelegate else { throw CockpitAccessError.appUnavailable }
-        guard let controller = keyWindowController(appDelegate) else { throw CockpitAccessError.appUnavailable }
+        guard let controller = designatedWindowController(appDelegate) else { throw CockpitAccessError.appUnavailable }
         guard let (command, executed) = controller.cockpitExecutePaletteCommand(id: id) else {
             throw CockpitAccessError.paletteCommandNotFound(id)
         }

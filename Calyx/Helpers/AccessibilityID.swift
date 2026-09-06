@@ -129,7 +129,8 @@ enum AccessibilityID {
         static let restoreButton = "calyx.recoveryBar.restoreButton"
         static let dismissButton = "calyx.recoveryBar.dismissButton"
     }
-    /// Cockpit approval banner, shown at the top of a window when
+    /// Cockpit approval banner, shown in a floating panel
+    /// (ApprovalPanelWindow) at the screen's top-right corner when
     /// ApprovalBannerModel.current is non-nil (see ApprovalBannerModel,
     /// Calyx/Features/ApprovalInbox/). Same `calyx.approvalBanner.*`
     /// shape as RecoveryBar (a container + its action buttons), plus a

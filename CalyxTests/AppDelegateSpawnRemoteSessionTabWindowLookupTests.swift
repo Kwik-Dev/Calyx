@@ -55,6 +55,11 @@
 //    regression companion, passes both before and after the fix, same
 //    convention as AppDelegateAttachWindowTests' own regression
 //    companion).
+//  - Two available controllers with the second designated current via
+//    `currentWindowTracker.didBecomeKey(_:)`: must add a tab to the
+//    designated (last-key) controller, not the insertion-order-first
+//    one -- proves this lookup resolves through
+//    `AppDelegate.currentWindowController`, not a live isKeyWindow check.
 //
 
 import XCTest
@@ -124,6 +129,33 @@ final class AppDelegateSpawnRemoteSessionTabWindowLookupTests: XCTestCase {
                       "FIRST available controller, not an arbitrary one")
         XCTAssertEqual(newWindowHookCallCount, 0,
                        "spawnRemoteSessionTab must never open a new window when a window is already available")
+    }
+
+    /// This lookup resolves through `AppDelegate.currentWindowController`
+    /// (`currentWindowTracker`'s last-key controller, else the first
+    /// open one), not a live `isKeyWindow` check -- proven here: with
+    /// `second` designated via
+    /// `currentWindowTracker.didBecomeKey(_:)`, the new tab must go to
+    /// `second`, not the insertion-order-first `first`, even though
+    /// neither controller's window is ever actually shown/made key.
+    func test_spawnRemoteSessionTab_withCurrentWindowTrackerDesignatingSecond_addsATabToTheDesignatedController() {
+        let appDelegate = AppDelegate()
+        var addTabTargets: [CalyxWindowController] = []
+        appDelegate._spawnRemoteSessionTabAddTabHookForTesting = { addTabTargets.append($0) }
+        var newWindowHookCallCount = 0
+        appDelegate._spawnRemoteSessionTabNewWindowHookForTesting = { newWindowHookCallCount += 1 }
+
+        let first = makeController(title: "First")
+        let second = makeController(title: "Second")
+        appDelegate._testInsertWindowController(first)
+        appDelegate._testInsertWindowController(second)
+        _ = appDelegate.currentWindowTracker.didBecomeKey(second)
+
+        appDelegate.spawnRemoteSessionTab(host: nil)
+
+        XCTAssertTrue(addTabTargets.first === second,
+                      "with second designated as the current window (last-key), the new tab must go to it, not the insertion-order-first controller")
+        XCTAssertEqual(newWindowHookCallCount, 0)
     }
 
     /// Sanity/regression companion: passes already (no controller exists

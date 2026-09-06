@@ -1,13 +1,12 @@
 // ApprovalBannerView.swift
 // Calyx
 //
-// SwiftUI view for the Cockpit approval banner: shown at the top of a
-// window's content when `model.current` is non-nil (see
-// ApprovalBannerModel's own file header for the full ownership/
-// visibility rules). Hosted via `MainContentView.body`'s
-// `mainContent.safeAreaInset(edge: .top)`, stacked with RecoveryBarView
-// -- see RecoveryBarView's own file header for why neither bar is ever
-// made first responder.
+// SwiftUI view for the Cockpit approval banner: shown when
+// `model.current` is non-nil (see ApprovalBannerModel's own file header
+// for the full ownership/visibility rules), hosted by the floating
+// approval panel's `ApprovalPanelContentView.body` (`ApprovalPanelWindow`,
+// Calyx/Features/ApprovalInbox/) -- an independent window, not a strip
+// of the terminal window's own content.
 //
 // `request` is threaded in explicitly (rather than read from
 // `model.current` inside `body`) so this view's content is never itself
@@ -58,6 +57,12 @@ import AppKit
 struct ApprovalBannerView: View {
     let model: ApprovalBannerModel
     let request: ApprovalRequest
+    /// The designated host window's active tab title, for a
+    /// window-agnostic (nil `targetSurfaceID`) request's header (see
+    /// `targetLabel`'s own doc comment). Already rendered through
+    /// `ControlCharacterDisplay.render` by the caller
+    /// (`ApprovalPanelContentView.glassWrapped(request:)`).
+    let hostWindowTitle: String
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
@@ -72,10 +77,12 @@ struct ApprovalBannerView: View {
 
     /// Short, human-scannable target label -- the first 8 characters of
     /// the target surface's UUID (enough to disambiguate panes at a
-    /// glance without printing a full UUID into the banner), or "this
-    /// window" for a window-agnostic (nil targetSurfaceID) request.
+    /// glance without printing a full UUID into the banner), or the
+    /// designated host window's own active tab title for a
+    /// window-agnostic (nil targetSurfaceID) request (e.g.
+    /// `palette_execute`, which carries no target pane at all).
     private var targetLabel: String {
-        guard let targetSurfaceID = request.targetSurfaceID else { return "this window" }
+        guard let targetSurfaceID = request.targetSurfaceID else { return hostWindowTitle }
         return String(targetSurfaceID.uuidString.prefix(8))
     }
 
@@ -162,7 +169,7 @@ struct ApprovalBannerView: View {
                         prompt: prompt,
                         onAnswer: { answers in model.answer(id: request.id, answers: answers) },
                         onChatAboutQuestion: { model.chatAboutQuestion(id: request.id) },
-                        onTextFieldRemoved: { model.restoreTerminalFocusAfterInput() }
+                        onTextFieldRemoved: { model.restoreTerminalFocusAfterInput(targetSurfaceID: request.targetSurfaceID) }
                     )
                     .id(request.id)
                     .frame(maxWidth: .infinity, alignment: .leading)

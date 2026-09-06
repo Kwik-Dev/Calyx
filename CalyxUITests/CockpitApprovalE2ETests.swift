@@ -68,6 +68,7 @@
 //
 
 import XCTest
+import AppKit
 
 final class CockpitApprovalE2ETests: CalyxUITestCase {
 
@@ -89,6 +90,7 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
     private static let approvalBannerNextButtonID = "calyx.approvalBanner.nextButton"
     private static let approvalBannerPreviousButtonID = "calyx.approvalBanner.previousButton"
     private static let approvalBannerQueueMenuID = "calyx.approvalBanner.queueMenu"
+    private static let approvalBannerContainerID = "calyx.approvalBanner.container"
 
     // MARK: - Test
 
@@ -369,6 +371,251 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
             thirdPanes.contains { ($0["group_name"] as? String) == newGroupName },
             "pane_list must reflect a pane in the newly created group \"\(newGroupName)\" -- got: \(thirdPanes)"
         )
+    }
+
+    // MARK: - Floating approval panel: top-right placement
+
+    /// The approval banner is hosted in an independent,
+    /// `ApprovalPanelArranger`-anchored floating panel
+    /// (`ApprovalPanelController`/`ApprovalPanelWindow`,
+    /// `Calyx/Features/ApprovalInbox/`) rather than inline inside the
+    /// main window's own content -- its window sits at the screen's own
+    /// visible top-right corner, independent of the main window's own
+    /// frame. The banner's `.accessibilityElement(children: .contain)`
+    /// container reports only the union of its accessible descendants,
+    /// which excludes `ApprovalBannerView`'s own padding, so its frame
+    /// sits 16pt inside the panel's true edges; the panel window's own
+    /// frame is measured instead.
+    func test_approvalBanner_isPositionedAtVisibleFrameTopRightCorner() throws {
+        var counter = 0
+        enableAIAgentIPCViaCommandPalette()
+
+        let surfaceID = paneExec("echo $CALYX_SURFACE_ID", counter: &counter)
+        XCTAssertFalse(surfaceID.isEmpty, "$CALYX_SURFACE_ID must be set for every ghostty-spawned pane")
+
+        let outFile = "/tmp/calyx-e2e-cockpit-panel-position-\(ProcessInfo.processInfo.processIdentifier).json"
+        toolCallBackgrounded(
+            name: "pane_run",
+            argumentsJSON: "{\"surface_id\": \"\(surfaceID)\", \"command\": \"echo PANEL_POSITION_MARKER\", \"await\": false}",
+            outFile: outFile, counter: &counter
+        )
+
+        let denyButton = app.buttons[Self.approvalBannerDenyButtonID]
+        XCTAssertTrue(waitFor(denyButton, timeout: 15), "the approval banner's Deny button never appeared")
+
+        let panelWindow = app.windows
+            .containing(.any, identifier: Self.approvalBannerContainerID)
+            .firstMatch
+        XCTAssertTrue(waitFor(panelWindow, timeout: 5), "the floating approval panel window never appeared")
+        let bannerFrame = panelWindow.frame
+
+        let windowFrame = app.windows.firstMatch.frame
+        let screen = try XCTUnwrap(
+            screenContaining(windowFrame),
+            "could not resolve which NSScreen the app-under-test's window is displayed on"
+        )
+
+        // NSScreen.visibleFrame is bottom-left-origin AppKit space;
+        // XCUIElement.frame is top-left-origin. Flipped using THIS
+        // screen's own frame.maxY, which coincides with the correct
+        // global flip axis exactly when this is the primary (menu-bar)
+        // screen -- true for every single-display CI/dev runner this
+        // suite is expected to run on.
+        let visibleFrame = screen.visibleFrame
+        let visibleTop = screen.frame.maxY - visibleFrame.maxY
+        let visibleRight = visibleFrame.maxX
+
+        XCTAssertEqual(bannerFrame.maxX, visibleRight - 12, accuracy: 2,
+                       "the floating approval panel's right edge must sit 12pt inside the screen's visible right edge (the arranger margin) -- got window frame \(bannerFrame), visible right edge \(visibleRight)")
+        XCTAssertEqual(bannerFrame.minY, visibleTop + 12, accuracy: 2,
+                       "the floating approval panel's top edge must sit 12pt below the screen's visible top edge (the arranger margin) -- got window frame \(bannerFrame), visible top edge \(visibleTop)")
+
+        denyButton.click()
+
+        let resultText = waitForFileContent(atPath: outFile)
+        XCTAssertNotEqual(resultText, "(no output)", "the backgrounded pane_run curl produced no output")
+        let result = try parseJSONObject(resultText, context: "pane_run panel-position Deny result")
+        XCTAssertEqual(result["status"] as? String, "denied", "Deny must report status \"denied\" -- got: \(resultText)")
+    }
+
+    /// The `NSScreen` (in the RUNNER process, sharing the same physical
+    /// displays as the app-under-test) whose frame -- converted to
+    /// top-left-origin global coordinates using the primary
+    /// (`NSScreen.screens.first`, the menu-bar screen) as the flip
+    /// reference -- contains `windowFrame`'s center point.
+    private func screenContaining(_ windowFrame: CGRect) -> NSScreen? {
+        guard let primary = NSScreen.screens.first else { return nil }
+        let primaryHeight = primary.frame.maxY
+        let windowCenter = CGPoint(x: windowFrame.midX, y: windowFrame.midY)
+        return NSScreen.screens.first { screen in
+            let topLeftFrame = CGRect(
+                x: screen.frame.minX,
+                y: primaryHeight - screen.frame.maxY,
+                width: screen.frame.width,
+                height: screen.frame.height
+            )
+            return topLeftFrame.contains(windowCenter)
+        }
+    }
+
+    // MARK: - palette_execute header: designated-host tab title, not "this window"
+
+    /// `palette_execute` submits a nil-`targetSurfaceID` (window-
+    /// agnostic) approval request; its header must read
+    /// `"palette_execute → <the designated host's active tab title>"`,
+    /// never the literal placeholder `"palette_execute → this window"`
+    /// (`ApprovalBannerView`'s `hostWindowTitle` parameter, threaded
+    /// through from the designated host's own active tab title).
+    func test_paletteExecute_headerShowsDesignatedHostTabTitle_notThisWindow() throws {
+        var counter = 0
+        enableAIAgentIPCViaCommandPalette()
+
+        // A real, UNGATED MCP round trip first (mirrors
+        // `test_cockpitTools_endToEnd`'s own opening `pane_list` call):
+        // `toolCallSync` blocks (with its own internal retry budget)
+        // until the real MCP server actually answers over HTTP, so
+        // `agent-endpoint.json` is guaranteed to exist and be readable by
+        // the time the BACKGROUNDED `palette_execute` curl below fires --
+        // without this, that curl can race the endpoint file's own
+        // creation and fail immediately with a connection/parse error
+        // instead of ever reaching the approval gate at all. A plain
+        // pane-side `echo` (no MCP traffic at all) would not catch this.
+        _ = toolCallSync(name: "pane_list", argumentsJSON: "{}", counter: &counter)
+
+        let outFile = "/tmp/calyx-e2e-cockpit-palette-header-\(ProcessInfo.processInfo.processIdentifier).json"
+        toolCallBackgrounded(
+            name: "palette_execute",
+            argumentsJSON: "{\"command_id\": \"view.sidebar\"}",
+            outFile: outFile, counter: &counter
+        )
+
+        // Separates "the banner never rendered at all" from "this
+        // suite's own header lookup is wrong": the Deny button existing
+        // proves the gate fired and a banner is showing, independent of
+        // how its header text happens to surface to the accessibility
+        // tree.
+        let denyButton = app.buttons[Self.approvalBannerDenyButtonID]
+        XCTAssertTrue(waitFor(denyButton, timeout: 15), "the approval banner's Deny button never appeared for the palette_execute request")
+
+        // `elementText()`'s own doc comment (below): a SwiftUI Text's
+        // rendered content can surface via `.value` rather than `.label`
+        // on this macOS version, so every static text under the
+        // container is scanned rather than querying by `label` alone.
+        let container = app.descendants(matching: .any)
+            .matching(identifier: Self.approvalBannerContainerID)
+            .firstMatch
+        XCTAssertTrue(waitFor(container, timeout: 5), "the approval banner's own container element never appeared")
+
+        var headerLabel: String?
+        for _ in 0..<50 {
+            let candidates = container.descendants(matching: .staticText).allElementsBoundByIndex
+            if let match = candidates.first(where: { elementText($0).hasPrefix("palette_execute → ") }) {
+                headerLabel = elementText(match)
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        let header = try XCTUnwrap(headerLabel,
+            "no static text under the approval banner's container ever read \"palette_execute → ...\" -- container tree: \(container.debugDescription)")
+        XCTAssertNotEqual(header, "palette_execute → this window",
+                          "a nil-targetSurfaceID request's header must show the designated host's own active tab title, not the literal placeholder \"this window\"")
+        XCTAssertTrue(denyButton.exists, "the approval banner's Deny button must be present alongside its header")
+        denyButton.click()
+
+        let resultText = waitForFileContent(atPath: outFile)
+        XCTAssertNotEqual(resultText, "(no output)", "the backgrounded palette_execute curl produced no output")
+        let result = try parseJSONObject(resultText, context: "palette_execute Deny result")
+        XCTAssertEqual(result["status"] as? String, "denied", "Deny must report status \"denied\" -- got: \(resultText)")
+    }
+
+    // MARK: - Single, app-wide panel across two windows
+
+    /// One gated `pane_run` request per window (two windows total) must
+    /// still surface exactly ONE approval panel -- the panel is app-wide
+    /// and page-style, never one per window. The still-displayed first
+    /// request reads "1 / 2"; Next advances to the second window's own
+    /// request, reading "2 / 2"; both are then denied.
+    func test_twoWindows_onePendingRequestEach_singleAppWidePanel_pagesBetweenBoth() throws {
+        var counter = 0
+        enableAIAgentIPCViaCommandPalette()
+
+        let firstSurfaceID = paneExec("echo $CALYX_SURFACE_ID", counter: &counter)
+        XCTAssertFalse(firstSurfaceID.isEmpty, "$CALYX_SURFACE_ID must be set for the first window's own pane")
+
+        menuAction("File", item: "New Window")
+        XCTAssertTrue(waitFor(app.windows.element(boundBy: 1), timeout: 8),
+                     "a second window never appeared after File > New Window (Cmd+N)")
+
+        // The newly-created window becomes key, so this reads ITS OWN
+        // pane's surface id, not the first window's.
+        let secondSurfaceID = paneExec("echo $CALYX_SURFACE_ID", counter: &counter)
+        XCTAssertFalse(secondSurfaceID.isEmpty, "$CALYX_SURFACE_ID must be set for the second window's own pane")
+        XCTAssertNotEqual(firstSurfaceID, secondSurfaceID, "the two windows must have distinct panes")
+
+        // Both curl calls are issued from whichever pane is currently
+        // key (the second window's) -- `surface_id` in each argument
+        // payload is what targets the request at a given pane, not
+        // which pane's own shell happens to run the curl.
+        let firstOutFile = "/tmp/calyx-e2e-cockpit-twowin-first-\(ProcessInfo.processInfo.processIdentifier).json"
+        toolCallBackgrounded(
+            name: "pane_run",
+            argumentsJSON: "{\"surface_id\": \"\(firstSurfaceID)\", \"command\": \"echo COCKPIT_MARKER_TWOWIN_FIRST\", \"await\": false}",
+            outFile: firstOutFile, counter: &counter
+        )
+
+        let payloadText = app.staticTexts[Self.approvalBannerPayloadID]
+        XCTAssertTrue(waitFor(payloadText, timeout: 15), "the approval banner never appeared for the first window's request")
+        XCTAssertTrue(elementText(payloadText).contains("TWOWIN_FIRST"),
+                     "the banner must display the first window's own pending command -- got: \(elementText(payloadText))")
+
+        let secondOutFile = "/tmp/calyx-e2e-cockpit-twowin-second-\(ProcessInfo.processInfo.processIdentifier).json"
+        toolCallBackgrounded(
+            name: "pane_run",
+            argumentsJSON: "{\"surface_id\": \"\(secondSurfaceID)\", \"command\": \"echo COCKPIT_MARKER_TWOWIN_SECOND\", \"await\": false}",
+            outFile: secondOutFile, counter: &counter
+        )
+
+        let positionLabel = app.descendants(matching: .any)
+            .matching(identifier: Self.approvalBannerQueueMenuID)
+            .firstMatch
+        XCTAssertTrue(waitFor(positionLabel, timeout: 15), "the position label never appeared once the second window's request queued behind the first")
+        XCTAssertTrue(elementText(positionLabel).contains("1 / 2"),
+                     "with two requests queued (one per window), the still-displayed first request must read \"1 / 2\" -- got: \(elementText(positionLabel))")
+
+        let containers = app.descendants(matching: .any).matching(identifier: Self.approvalBannerContainerID)
+        XCTAssertEqual(containers.count, 1,
+                       "with one pending request in EACH of two different windows, there must be exactly ONE approval panel -- it is app-wide and page-style, never one per window")
+
+        app.buttons[Self.approvalBannerNextButtonID].click()
+
+        var advancedToSecond = false
+        for _ in 0..<5 {
+            if elementText(payloadText).contains("TWOWIN_SECOND") && elementText(positionLabel).contains("2 / 2") {
+                advancedToSecond = true
+                break
+            }
+            Thread.sleep(forTimeInterval: 1)
+        }
+        XCTAssertTrue(advancedToSecond, "clicking Next must advance the single app-wide panel to the second window's own request, reading \"2 / 2\"")
+
+        app.buttons[Self.approvalBannerDenyButtonID].click()
+
+        let secondResultText = waitForFileContent(atPath: secondOutFile)
+        XCTAssertNotEqual(secondResultText, "(no output)", "the backgrounded pane_run (second window) curl produced no output")
+        let secondResult = try parseJSONObject(secondResultText, context: "two-window second-request Deny result")
+        XCTAssertEqual(secondResult["status"] as? String, "denied",
+                       "Deny must resolve the second window's own request -- got: \(secondResultText)")
+
+        let remainingDenyButton = app.buttons[Self.approvalBannerDenyButtonID]
+        XCTAssertTrue(waitFor(remainingDenyButton, timeout: 10),
+                     "once the second window's request is resolved, the panel must fall back to the still-pending first window's own request")
+        remainingDenyButton.click()
+
+        let firstResultText = waitForFileContent(atPath: firstOutFile)
+        XCTAssertNotEqual(firstResultText, "(no output)", "the backgrounded pane_run (first window) curl produced no output")
+        let firstResult = try parseJSONObject(firstResultText, context: "two-window first-request Deny result")
+        XCTAssertEqual(firstResult["status"] as? String, "denied",
+                       "Deny must resolve the first window's own request -- got: \(firstResultText)")
     }
 
     // MARK: - Helpers

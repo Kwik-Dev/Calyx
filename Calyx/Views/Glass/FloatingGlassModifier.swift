@@ -105,6 +105,58 @@ struct TabChromeModifier: ViewModifier {
     }
 }
 
+/// The atmosphere-gradient background shared by `MainContentView`,
+/// `QuickTerminalContentView`, and `ApprovalPanelContentView`: a theme-
+/// derived linear gradient with a bottom-trailing radial accent, applied
+/// as a `.background` layer that ignores the safe area. Renders nothing
+/// while `reduceTransparency` is true. `specularStroke` adds the
+/// hairline `GlassTheme.specularStroke` outline -- `MainContentView`
+/// passes `true`, `QuickTerminalContentView`/`ApprovalPanelContentView`
+/// pass `false` for a stroke-less atmosphere.
+struct GlassAtmosphereBackground: ViewModifier {
+    let themeColor: NSColor
+    let glassOpacity: Double
+    let reduceTransparency: Bool
+    let specularStroke: Bool
+
+    func body(content: Content) -> some View {
+        content.background {
+            if !reduceTransparency {
+                atmosphereLayer
+                    .ignoresSafeArea()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var atmosphereLayer: some View {
+        let gradient = Rectangle()
+            .fill(
+                LinearGradient(
+                    colors: [Color(nsColor: GlassTheme.atmosphereTop(for: themeColor, glassOpacity: glassOpacity)), Color(nsColor: GlassTheme.atmosphereBottom(for: themeColor, glassOpacity: glassOpacity))],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+            .overlay(
+                RadialGradient(
+                    colors: [Color(nsColor: GlassTheme.accentGradient(for: themeColor)), Color.clear],
+                    center: .bottomTrailing,
+                    startRadius: 20,
+                    endRadius: 420
+                )
+            )
+        if specularStroke {
+            gradient.overlay(
+                Rectangle()
+                    .stroke(GlassTheme.specularStroke.opacity(0.30), lineWidth: 1)
+            )
+        } else {
+            gradient
+        }
+    }
+}
+
 /// Overlays a theme-derived tint (hue, saturation, and brightness carried
 /// through unchanged) when the window is not key, matching Ghostty's
 /// inactive-window dimming (ported from TerminalViewContainer.swift).

@@ -62,8 +62,12 @@ struct RecoveryBarView: View {
 /// path keeps its `Divider()`, since that flat mode has no shared glass
 /// surface to stay seamless with.
 ///
-/// Reused by `ApprovalBannerView`, `BrowserContainerView`'s toolbar,
-/// and its `ErrorBannerView`, all hosted on the same root sheet.
+/// Reused by `BrowserContainerView`'s toolbar and its `ErrorBannerView`,
+/// both hosted on the same root sheet, and by `ApprovalBannerView` --
+/// hosted instead inside the floating approval panel's own glass
+/// container (`ApprovalPanelContentView`), which still wants the same
+/// theme-color-derived text/button legibility handling this modifier
+/// supplies.
 struct RecoveryBarBackgroundModifier: ViewModifier {
     let reduceTransparency: Bool
     @AppStorage("terminalGlassOpacity") private var glassOpacity = 0.7

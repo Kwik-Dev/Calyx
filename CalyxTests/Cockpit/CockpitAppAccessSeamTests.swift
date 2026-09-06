@@ -8,8 +8,14 @@
 //  handleNewSplitNotification) and
 //  CalyxWindowController.normalizedCwdOverride(_:) (factored out of
 //  createNewTab's inline spawnCwd expression, backing its future
-//  spawnCwdOverride parameter). LiveCockpitAppAccess itself is untested
-//  here -- see CockpitAppAccess.swift's header for why.
+//  spawnCwdOverride parameter). LiveCockpitAppAccess itself is mostly
+//  untested here -- see CockpitAppAccess.swift's header for why -- with
+//  one exception: `LiveCockpitAppAccessCurrentWindowTests` (bottom of
+//  this file) DOES drive `LiveCockpitAppAccess.availablePaletteCommands()`
+//  directly, because it resolves through `AppDelegate.currentWindowController`,
+//  not a live `isKeyWindow` lookup, so no real, shown window is needed at all -- only
+//  `NSApp.delegate` swapped to a real `AppDelegate()` and a controller
+//  designated via `currentWindowTracker.didBecomeKey(_:)`.
 //
 //  DEVIATIONS FROM THE ORIGINAL SPEC (forced by this test host's
 //  existing constraints, already documented in
@@ -71,6 +77,18 @@
 //    both agree with ownsSplitLeaf on tab resolution -- a split-tree
 //    leaf with no registry entry and a genuinely-foreign id both
 //    return false without crashing
+//  - LiveCockpitAppAccess.availablePaletteCommands(): it resolves
+//    `designatedWindowController(_:)` through
+//    `AppDelegate.currentWindowController`, so this IS drivable from
+//    this test host, unlike this file's own header note above
+//    about `LiveCockpitAppAccess` in general -- `NSApp.delegate` is
+//    swapped to a real `AppDelegate()` (mirrors
+//    `SessionCommandPaletteRecoverPreviousSessionTests.withAppDelegate`'s
+//    own established convention for driving a real `AppDelegate` from
+//    this test host), with a controller inserted via
+//    `_testInsertWindowController` and designated current via
+//    `currentWindowTracker.didBecomeKey(_:)` alone -- never shown, so
+//    its own `window?.isKeyWindow` stays false the entire time.
 //
 
 import XCTest
@@ -264,5 +282,61 @@ final class CockpitAppAccessSeamTests: XCTestCase {
         let (controller, _) = makeController()
 
         XCTAssertNil(controller.cockpitExecutePaletteCommand(id: "test.doesNotExist"))
+    }
+}
+
+// MARK: - LiveCockpitAppAccess: current-window resolution (no key window)
+
+/// See `CockpitAppAccessSeamTests`'s own header for why this one
+/// `LiveCockpitAppAccess` entry point CAN be driven from this test
+/// host, unlike every other one it documents as untestable here: once
+/// `designatedWindowController(_:)` resolves through
+/// `AppDelegate.currentWindowController` instead of a live `isKeyWindow`
+/// lookup, no window needs to be SHOWN at all -- only designated via
+/// `currentWindowTracker.didBecomeKey(_:)`.
+@MainActor
+final class LiveCockpitAppAccessCurrentWindowTests: XCTestCase {
+
+    private func makeController(title: String = "Host") -> CalyxWindowController {
+        let window = CalyxWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        let tab = Tab(title: title)
+        let group = TabGroup(name: "Default", tabs: [tab], activeTabID: tab.id)
+        let session = WindowSession(groups: [group], activeGroupID: group.id)
+        return CalyxWindowController(window: window, windowSession: session, restoring: true)
+    }
+
+    /// Mirrors `SessionCommandPaletteRecoverPreviousSessionTests
+    /// .withAppDelegate`'s own doc comment: `NSApp.delegate` is a weak
+    /// reference, so the caller must keep a strong reference to
+    /// `appDelegate` alive for the whole call.
+    private func withAppDelegate(_ body: (AppDelegate) -> Void) {
+        let appDelegate = AppDelegate()
+        let original = NSApp.delegate
+        NSApp.delegate = appDelegate
+        defer { NSApp.delegate = original }
+        withExtendedLifetime(appDelegate) {
+            body(appDelegate)
+        }
+    }
+
+    func test_availablePaletteCommands_noKeyWindow_currentWindow_resolvesThroughCurrentWindowController() {
+        withAppDelegate { appDelegate in
+            let host = makeController()
+            appDelegate._testInsertWindowController(host)
+            _ = appDelegate.currentWindowTracker.didBecomeKey(host)
+            XCTAssertTrue(appDelegate.currentWindowController === host, "precondition: host is the current window")
+            XCTAssertFalse(host.window?.isKeyWindow ?? false, "precondition: this controller's window is never shown, so it is never the real key window")
+
+            let access = LiveCockpitAppAccess()
+            let commands = access.availablePaletteCommands()
+
+            XCTAssertFalse(commands.isEmpty,
+                           "availablePaletteCommands() must resolve through AppDelegate.currentWindowController rather than a live isKeyWindow lookup, so it still reports this window's registered commands even though nothing is actually key")
+        }
     }
 }
