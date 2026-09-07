@@ -21,8 +21,11 @@ struct ApprovalRequest: Identifiable, Sendable {
         case agentHook(toolName: String, kind: String, summary: String, offers: AgentHookOffers)
         /// Claude Code's `AskUserQuestion` tool call, decoded into an
         /// `AgentQuestionPrompt` rather than the generic `.agentHook`
-        /// summary -- the approval banner renders this as option buttons
-        /// instead of a Deny/Always Allow/Allow row. `kind` is always
+        /// summary -- the approval banner renders this question's own
+        /// options (through the Options pull-down, or inline when the
+        /// question wants it, see `AgentQuestionPrompt.Question.
+        /// wantsInlineOptionList`) instead of a Deny/Always Allow/Allow
+        /// row. `kind` is always
         /// `AgentEntry.claudeCodeKind` (see `AgentHookToolCall.question`'s
         /// own doc comment for why no other kind ever produces one), kept
         /// here rather than hardcoded so `displayToolName` stays a plain
@@ -133,6 +136,21 @@ extension ApprovalRequest {
         case .agentQuestion(_, let prompt):
             return prompt.questions.map(\.text).joined(separator: "\n")
         }
+    }
+
+    /// Whether the floating panel should show at `ApprovalPanelArranger.
+    /// wideWidth` instead of its default `fixedWidth` for this request --
+    /// true only for an `.agentQuestion` prompt carrying any question
+    /// whose inline option rows would show (`AgentQuestionPrompt.
+    /// Question.wantsInlineOptionList`). Derived from EVERY question in
+    /// `prompt.questions`, not just whichever one is currently displayed
+    /// -- the displayed question index lives in `AgentQuestionFormState`,
+    /// view state this model layer does not have -- so the panel never
+    /// changes width mid-answer as the form advances from a narrow
+    /// question to a wide one or back.
+    var prefersWideApprovalPanel: Bool {
+        guard case .agentQuestion(_, let prompt) = source else { return false }
+        return prompt.questions.contains { $0.wantsInlineOptionList }
     }
 
     /// One-line summary for the queue preview menu

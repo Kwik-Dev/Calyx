@@ -11,9 +11,11 @@
 // through it (Allow/Deny/a choice row) never itself takes key status;
 // only a view that requests key status (the question form's free-text
 // field, or `NSHostingView` when it answers `needsPanelToBecomeKey`
-// true) can. Any key status the panel does take is handed back to the
-// host window by `ApprovalPanelController.render()`, either when the
-// displayed request changes or when the panel orders out.
+// true) can. Any key status the panel does take is handed back by
+// `ApprovalPanelController.render()`, either when the displayed request
+// changes or when the panel orders out, to the window owning the
+// displayed request's own target pane, falling back to the current
+// window (`AppDelegate.restoreTerminalFocusAfterApproval(targetSurfaceID:)`).
 //
 // `canBecomeMain = false`: taking main away from the host window would
 // misroute Cmd+W to `closeTab(_:)` on the wrong window (see

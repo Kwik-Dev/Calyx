@@ -471,8 +471,8 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// approval panel's header (`ApprovalBannerView.targetLabel`) for a
     /// window-agnostic (nil `targetSurfaceID`) request when this window
     /// is `AppDelegate.currentWindowController`. Not `private`: read
-    /// directly from `AppDelegate.approvalPanelController`'s own
-    /// `hostWindowTitle` closure.
+    /// directly from `ApprovalPanelContentView.glassWrapped(request:)`
+    /// through `ApprovalPanelLayout.hostWindowController`.
     var activeTabDisplayTitle: String? {
         activeTab?.displayTitle
     }

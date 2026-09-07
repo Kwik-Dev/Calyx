@@ -18,7 +18,7 @@
 //  - Submitting a request then calling render() lazily creates the
 //    panel, records exactly one `.orderFront(frame)`, and that frame's
 //    top-right corner sits `margin` inside the injected visibleFrame,
-//    with a width in [minimumWidth, cap].
+//    with a width equal to fixedWidth (380pt) on a screen wide enough.
 //  - A second render() with the SAME still-pending request is
 //    idempotent: records another `.orderFront` with an identical frame,
 //    but creates no second panel instance.
@@ -26,10 +26,11 @@
 //    `.orderOut`.
 //  - tearDown() then render() records nothing further, `isTornDown`
 //    becomes true, and the panel is no longer visible.
-//  - Width clamping is exercised end-to-end through render(): an
-//    extremely long payload clamps the frame's width up to the cap; a
-//    short one stays within [minimumWidth, cap); a visible frame
-//    narrower than the minimum makes the cap win over the minimum.
+//  - Width is exercised end-to-end through render(): the panel is
+//    ALWAYS exactly `ApprovalPanelArranger.fixedWidth` (380pt),
+//    regardless of payload length -- a single-pass measurement at a
+//    fixed width, never content-dependent; a visible frame narrower
+//    than fixedWidth clamps down to the available cap instead.
 //  - reanchor() re-measures (the same path render() itself takes) and
 //    reports a fresh order intent anchored to whatever the injected
 //    `visibleFrame` closure currently reports, not whatever it reported
@@ -64,7 +65,6 @@ final class ApprovalPanelControllerTests: XCTestCase {
         let controller = ApprovalPanelController(
             model: model,
             hostWindow: { nil },
-            hostWindowTitle: { "Terminal" },
             visibleFrame: { [weak self] in self?.fixedVisibleFrame ?? .zero }
         )
         return (controller, model)
@@ -106,8 +106,7 @@ final class ApprovalPanelControllerTests: XCTestCase {
                        "the panel's right edge must sit `margin` (12pt) inside the visible frame's right edge")
         XCTAssertEqual(frame.maxY, fixedVisibleFrame.maxY - 12, accuracy: 0.5,
                        "the panel's top edge must sit `margin` (12pt) inside the visible frame's top edge")
-        XCTAssertGreaterThanOrEqual(frame.width, 360, "the panel's width must never fall below the 360pt minimum")
-        XCTAssertLessThanOrEqual(frame.width, fixedVisibleFrame.width - 24, "the panel's width must never exceed the available cap (visibleFrame.width - 2*margin)")
+        XCTAssertEqual(frame.width, 380, accuracy: 0.5, "the panel's width must always be the fixed 380pt width on a screen wide enough to fit it")
         XCTAssertGreaterThan(frame.height, 0, "the panel must always have a positive height")
 
         // Clean up so this store doesn't leak a pending request.
@@ -186,9 +185,12 @@ final class ApprovalPanelControllerTests: XCTestCase {
         store.decide(id: request.id, .denied(.userRejected))
     }
 
-    // MARK: - Width clamping end-to-end
+    // MARK: - Width is fixed, end-to-end
 
-    func test_render_veryLongPayload_clampsWidthUpToCap() {
+    /// A payload far too long to fit at 380pt must NOT grow the panel --
+    /// the notification-style panel is a fixed width, and a long payload
+    /// scrolls/wraps within it instead.
+    func test_render_veryLongPayload_widthStaysFixed() {
         let store = ApprovalInboxStore()
         let controller = makeController(store: store)
         var intents: [ApprovalPanelController.OrderIntent] = []
@@ -202,21 +204,16 @@ final class ApprovalPanelControllerTests: XCTestCase {
             XCTFail("expected an .orderFront intent")
             return
         }
-        XCTAssertEqual(frame.width, fixedVisibleFrame.width - 24, accuracy: 0.5,
-                       "a payload far wider than the available screen must clamp the panel's width up to the cap (visibleFrame.width - 2*margin)")
+        XCTAssertEqual(frame.width, 380, accuracy: 0.5,
+                       "a very long payload must never grow the panel past its fixed 380pt width")
 
         store.decide(id: request.id, .denied(.userRejected))
     }
 
-    /// A short `.mcpTool` payload's own natural content width (its
-    /// header row, e.g. "pane_run", plus the fixed chrome around a
-    /// `.mcpTool` banner) is roughly 404pt -- ABOVE the 360pt minimum --
-    /// so this can only pin the width into `[minimumWidth, cap)`, never
-    /// an exact value: asserting exactly 360 here would pass for a
-    /// wrong implementation that happened to also clamp everything down
-    /// to the floor. `test_render_visibleFrameNarrowerThanMinimum_capWinsOverMinimum`
-    /// below is what actually exercises the minimum-vs-cap boundary.
-    func test_render_veryShortPayload_widthWithinBounds_belowCap() {
+    /// A short payload's own natural content width is irrelevant now --
+    /// the panel is always exactly `fixedWidth` (380pt), never
+    /// content-dependent.
+    func test_render_veryShortPayload_widthStaysFixed() {
         let store = ApprovalInboxStore()
         let controller = makeController(store: store)
         var intents: [ApprovalPanelController.OrderIntent] = []
@@ -230,28 +227,24 @@ final class ApprovalPanelControllerTests: XCTestCase {
             XCTFail("expected an .orderFront intent")
             return
         }
-        let cap = fixedVisibleFrame.width - 24
-        XCTAssertGreaterThanOrEqual(frame.width, ApprovalPanelArranger.minimumWidth,
-                                    "a tiny payload's natural content width must never clamp below the 360pt minimum")
-        XCTAssertLessThan(frame.width, cap,
-                          "a tiny payload's natural content width, well under the available cap, must not clamp UP to the cap either")
+        XCTAssertEqual(frame.width, 380, accuracy: 0.5,
+                       "a tiny payload must still render at the fixed 380pt width, never shrunk to its own content")
 
         store.decide(id: request.id, .denied(.userRejected))
     }
 
     /// The available cap itself (visibleFrame.width - 2*margin = 300 -
-    /// 24 = 276) falls BELOW the 360pt minimum here -- proves the cap
-    /// wins over the minimum end-to-end through `render()`, mirroring
-    /// `ApprovalPanelArrangerTests.test_clampWidth_capBelowMinimum_capWins`'s
+    /// 24 = 276) falls BELOW `fixedWidth` (380) here -- proves the cap
+    /// wins over the fixed width end-to-end through `render()`,
+    /// mirroring `ApprovalPanelArrangerTests.test_panelWidth_nilRequest_narrowScreen_clampsToAvailableCap`'s
     /// own pure-geometry pin.
-    func test_render_visibleFrameNarrowerThanMinimum_capWinsOverMinimum() {
+    func test_render_visibleFrameNarrowerThanFixedWidth_capWinsOverFixedWidth() {
         let store = ApprovalInboxStore()
         let model = ApprovalBannerModel(store: store)
         let narrowVisibleFrame = NSRect(x: 0, y: 0, width: 300, height: 850)
         let controller = ApprovalPanelController(
             model: model,
             hostWindow: { nil },
-            hostWindowTitle: { "Terminal" },
             visibleFrame: { narrowVisibleFrame }
         )
         var intents: [ApprovalPanelController.OrderIntent] = []
@@ -266,7 +259,7 @@ final class ApprovalPanelControllerTests: XCTestCase {
             return
         }
         XCTAssertEqual(frame.width, 276, accuracy: 0.5,
-                       "with a 300pt-wide visible frame, the cap (300 - 2*12 = 276) must win over the 360pt minimum")
+                       "with a 300pt-wide visible frame, the cap (300 - 2*12 = 276) must win over the 380pt fixedWidth")
 
         store.decide(id: request.id, .denied(.userRejected))
     }
@@ -288,7 +281,6 @@ final class ApprovalPanelControllerTests: XCTestCase {
         let controller = ApprovalPanelController(
             model: model,
             hostWindow: { nil },
-            hostWindowTitle: { "Terminal" },
             visibleFrame: { currentVisibleFrame }
         )
         var intents: [ApprovalPanelController.OrderIntent] = []

@@ -1,14 +1,14 @@
 // ChoiceRowStyle.swift
 // Calyx
 //
-// The full-width, leading-aligned row style every choice row in both
-// approval banners uses -- the question banner's option/"Other" rows
-// (`AgentQuestionBannerView`) and the tool-approval banner's "Yes"/
-// permission-suggestion/"Always allow ... in this pane"/"No" rows
-// (`AgentToolApprovalView`) -- so a click target and its hover/pressed/
-// selected visual states read identically no matter which banner mode
-// is on screen. Mirrors the CLI's own dialog: a vertical list of full-
-// width choices.
+// The full-width, leading-aligned row style `AgentQuestionBannerView`'s
+// own inline option list uses -- the listed-option rows and the standing
+// "Other" row (`optionButton(index:option:)`/`otherRow`), shown inline
+// whenever the current question wants that layout (a multi-select
+// question, or one where any option carries a `preview`; see that
+// view's own file header) -- so every row in that list shares one click
+// target and one hover/pressed/selected visual language. Mirrors the
+// CLI's own dialog: a vertical list of full-width choices.
 //
 // A `ButtonStyle` (not a plain `View`) so `Button { action } label: {
 // content }` keeps supplying `configuration.isPressed`, and so every
@@ -25,9 +25,6 @@ import SwiftUI
 
 struct ChoiceRowStyle: ButtonStyle {
     enum Glyph {
-        /// A tool-approval row -- "Yes", a permission-suggestion choice,
-        /// "No" -- carries no leading glyph at all.
-        case none
         /// A single-select question option: ◯ unselected, ● selected.
         case singleSelect
         /// A multi-select question option: ☐ unselected, ☑ selected.
@@ -78,11 +75,9 @@ struct ChoiceRowStyle: ButtonStyle {
         /// click.
         var body: some View {
             HStack(alignment: .top, spacing: 8) {
-                if let glyphText {
-                    Text(glyphText)
-                        .font(.callout)
-                        .frame(width: 16)
-                }
+                Text(glyphText)
+                    .font(.callout)
+                    .frame(width: 16)
                 configuration.label
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -94,12 +89,8 @@ struct ChoiceRowStyle: ButtonStyle {
             .onHover { isHovering = $0 }
         }
 
-        /// `nil` for `.none` -- the tool-approval banner's own rows carry
-        /// no leading glyph, so no fixed-width column is reserved for
-        /// one there either.
-        private var glyphText: String? {
+        private var glyphText: String {
             switch glyph {
-            case .none: return nil
             case .singleSelect: return isSelected ? "●" : "◯"
             case .multiSelect: return isSelected ? "☑" : "☐"
             }

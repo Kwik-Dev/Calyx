@@ -5,8 +5,11 @@
 // array -- populated by AgentHookToolCall.decode(from:kind:) only for a
 // claude-code AskUserQuestion call (see that method's own doc comment),
 // and rendered by the approval banner (AgentQuestionBannerView, driven
-// by AgentQuestionFormState) as option buttons instead of a Deny/Always
-// Allow/Allow row. AgentQuestionAnswers is the human's response, free of
+// by AgentQuestionFormState) as this question's own options (through the
+// Options pull-down, or an inline list for a multi-select or
+// preview-carrying question, see Question.wantsInlineOptionList) instead
+// of a Deny/Always Allow/Allow row. AgentQuestionAnswers is the human's
+// response, free of
 // any wire encoding -- threaded back through ApprovalDecision.answered(_:)
 // into AgentHookPermissionResponse.encodeAnswered, the ONE place that
 // knows how Claude Code's own hook wants each answer spelled (see that
@@ -31,6 +34,21 @@ struct AgentQuestionPrompt: Sendable, Equatable {
         let header: String?
         let options: [Option]
         let multiSelect: Bool
+
+        /// Whether `AgentQuestionBannerView` renders this question's
+        /// options as the inline option-list layout (a vertical list,
+        /// side by side with a markdown preview box once any option
+        /// carries one) rather than through the Options pull-down menu --
+        /// a non-empty option list that is either multi-select (toggling
+        /// never submits on its own, so its rows must stay reachable
+        /// without reopening the menu per click) or carries a `preview`
+        /// on any option (a hover-driven preview has no menu equivalent).
+        /// `false` for a zero-option question regardless of `multiSelect`
+        /// -- there is nothing to list inline, so it falls through to the
+        /// standing free-text field instead.
+        var wantsInlineOptionList: Bool {
+            !options.isEmpty && (multiSelect || options.contains { $0.preview != nil })
+        }
     }
 
     let questions: [Question]

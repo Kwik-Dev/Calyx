@@ -17,10 +17,12 @@
 //    (0, 0) -- proves the arithmetic is expressed in terms of
 //    visibleFrame.maxX/maxY, never hardcoded against a screen at the
 //    origin.
-//  - clampWidth(ideal:minimum:visibleFrame:margin:): below the minimum
-//    clamps up to the minimum; above the available cap clamps down to
-//    the cap; and when the cap itself falls below the minimum (a
-//    narrow screen), the cap wins over the minimum.
+//  - panelWidth(for:visibleFrame:margin:): the notification-style panel
+//    is one of exactly two fixed widths, never content-dependent -- nil
+//    or a non-wide request reads fixedWidth (380pt), a request whose
+//    prompt wants inline option rows reads wideWidth (640pt), and either
+//    way min(desiredWidth, visibleFrame.width - 2*margin) so a narrow
+//    screen still clamps down to the available cap.
 //  - heightCap(visibleFrame:margin:): the visible height minus 2*margin.
 //
 
@@ -62,47 +64,91 @@ final class ApprovalPanelArrangerTests: XCTestCase {
         XCTAssertEqual(rect.maxY, visibleFrame.maxY - 20, accuracy: 0.001)
     }
 
-    // MARK: - clampWidth
+    // MARK: - panelWidth
 
-    func test_clampWidth_belowMinimum_clampsUpToMinimum() {
-        let width = ApprovalPanelArranger.clampWidth(ideal: 200, visibleFrame: visibleFrame)
-
-        XCTAssertEqual(width, ApprovalPanelArranger.minimumWidth, accuracy: 0.001,
-                       "an ideal width narrower than the minimum must clamp up to the minimum")
+    /// A wide-preferring request, for exercising the `wideWidth` branch.
+    private func makeWideRequest() -> ApprovalRequest {
+        let prompt = AgentQuestionPrompt(
+            questions: [
+                AgentQuestionPrompt.Question(
+                    text: "Which?", header: nil,
+                    options: [AgentQuestionPrompt.Option(label: "a", description: nil, preview: "preview")],
+                    multiSelect: false
+                ),
+            ],
+            originalToolInputJSON: Data()
+        )
+        return ApprovalRequest(
+            id: UUID(), source: .agentQuestion(kind: AgentEntry.claudeCodeKind, prompt: prompt),
+            targetSurfaceID: nil, payload: "", createdAt: Date()
+        )
     }
 
-    func test_clampWidth_aboveCap_clampsDownToCap() {
-        let width = ApprovalPanelArranger.clampWidth(ideal: 5000, visibleFrame: visibleFrame)
+    /// On a normal-sized screen a `nil` request (nothing pending) reads
+    /// exactly `fixedWidth` (380pt) -- never content-dependent, and never
+    /// clamped down, since the available cap (1440 - 24 = 1416) is far
+    /// above it.
+    func test_panelWidth_nilRequest_normalScreen_isFixedWidth() {
+        let width = ApprovalPanelArranger.panelWidth(for: nil, visibleFrame: visibleFrame)
 
-        // cap = visibleFrame.width - 2*margin = 1440 - 24 = 1416
-        XCTAssertEqual(width, 1416, accuracy: 0.001,
-                       "an ideal width wider than the available cap must clamp down to visibleFrame.width - 2*margin")
+        XCTAssertEqual(width, 380, accuracy: 0.001,
+                       "panelWidth for a nil request must be the fixed 380pt width on a screen wide enough to fit it")
+        XCTAssertEqual(width, ApprovalPanelArranger.fixedWidth, accuracy: 0.001)
     }
 
-    func test_clampWidth_withinBounds_isUnchanged() {
-        let width = ApprovalPanelArranger.clampWidth(ideal: 500, visibleFrame: visibleFrame)
+    /// A non-wide request (e.g. `.mcpTool`) reads the same `fixedWidth`
+    /// as a `nil` request.
+    func test_panelWidth_nonWideRequest_normalScreen_isFixedWidth() {
+        let request = ApprovalRequest(id: UUID(), source: .mcpTool(name: "pane_run"), targetSurfaceID: nil, payload: "ls", createdAt: Date())
 
-        XCTAssertEqual(width, 500, accuracy: 0.001, "an ideal width already within [minimum, cap] must pass through unchanged")
+        let width = ApprovalPanelArranger.panelWidth(for: request, visibleFrame: visibleFrame)
+
+        XCTAssertEqual(width, ApprovalPanelArranger.fixedWidth, accuracy: 0.001)
     }
 
-    /// A narrow "screen" whose own cap (width - 2*margin) is itself
-    /// BELOW the 360pt minimum: the cap must win over the minimum, so a
-    /// panel can never be wider than the available space no matter how
-    /// small that space is.
-    func test_clampWidth_capBelowMinimum_capWins() {
+    /// A request whose prompt wants inline option rows
+    /// (`ApprovalRequest.prefersWideApprovalPanel`) reads `wideWidth`
+    /// (640pt) instead.
+    func test_panelWidth_wideRequest_normalScreen_isWideWidth() {
+        let width = ApprovalPanelArranger.panelWidth(for: makeWideRequest(), visibleFrame: visibleFrame)
+
+        XCTAssertEqual(width, 640, accuracy: 0.001,
+                       "panelWidth for a request wanting inline option rows must be the 640pt wideWidth")
+        XCTAssertEqual(width, ApprovalPanelArranger.wideWidth, accuracy: 0.001)
+    }
+
+    /// A narrow "screen" whose own cap (width - 2*margin) falls BELOW
+    /// `fixedWidth`: the cap must win for a `nil`/non-wide request, so
+    /// the panel can never be wider than the available space no matter
+    /// how small that space is.
+    func test_panelWidth_nilRequest_narrowScreen_clampsToAvailableCap() {
         let narrowVisibleFrame = NSRect(x: 0, y: 0, width: 300, height: 850)
 
-        let width = ApprovalPanelArranger.clampWidth(ideal: 200, visibleFrame: narrowVisibleFrame)
+        let width = ApprovalPanelArranger.panelWidth(for: nil, visibleFrame: narrowVisibleFrame)
 
-        // cap = 300 - 24 = 276, which is below minimumWidth (360)
+        // cap = 300 - 24 = 276, which is below fixedWidth (380)
         XCTAssertEqual(width, 276, accuracy: 0.001,
-                       "when the available cap itself falls below the minimum width, the cap must win")
+                       "when the available cap itself falls below fixedWidth, the cap must win")
     }
 
-    func test_clampWidth_customMinimumAndMargin_areRespected() {
-        let width = ApprovalPanelArranger.clampWidth(ideal: 100, minimum: 250, visibleFrame: visibleFrame, margin: 12)
+    /// The same cap-wins behavior for a wide request: the cap
+    /// (visibleFrame.width - 2*margin) falls below `wideWidth` (640) too,
+    /// and must win over it the same way.
+    func test_panelWidth_wideRequest_narrowScreen_clampsToAvailableCap() {
+        let narrowVisibleFrame = NSRect(x: 0, y: 0, width: 300, height: 850)
 
-        XCTAssertEqual(width, 250, accuracy: 0.001)
+        let width = ApprovalPanelArranger.panelWidth(for: makeWideRequest(), visibleFrame: narrowVisibleFrame)
+
+        // cap = 300 - 24 = 276, which is below wideWidth (640)
+        XCTAssertEqual(width, 276, accuracy: 0.001,
+                       "when the available cap itself falls below wideWidth, the cap must win")
+    }
+
+    func test_panelWidth_customMargin_isRespected() {
+        let width = ApprovalPanelArranger.panelWidth(for: nil, visibleFrame: visibleFrame, margin: 600)
+
+        // cap = 1440 - 1200 = 240, below fixedWidth (380)
+        XCTAssertEqual(width, 240, accuracy: 0.001)
     }
 
     // MARK: - heightCap
@@ -123,6 +169,7 @@ final class ApprovalPanelArrangerTests: XCTestCase {
 
     func test_constants_matchSpec() {
         XCTAssertEqual(ApprovalPanelArranger.margin, 12, accuracy: 0.001)
-        XCTAssertEqual(ApprovalPanelArranger.minimumWidth, 360, accuracy: 0.001)
+        XCTAssertEqual(ApprovalPanelArranger.fixedWidth, 380, accuracy: 0.001)
+        XCTAssertEqual(ApprovalPanelArranger.wideWidth, 640, accuracy: 0.001)
     }
 }

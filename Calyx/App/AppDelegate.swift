@@ -88,9 +88,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver
         let controller = ApprovalPanelController(
             model: approvalBannerModel,
             hostWindow: { [weak self] in self?.currentWindowController?.window },
-            hostWindowTitle: { [weak self] in
-                self?.currentWindowController?.activeTabDisplayTitle ?? self?.currentWindowController?.window?.title ?? "Calyx"
-            }
+            handOffKey: { [weak self] targetSurfaceID in
+                self?.restoreTerminalFocusAfterApproval(targetSurfaceID: targetSurfaceID)
+            },
+            hostWindowController: { [weak self] in self?.currentWindowController }
         )
         _approvalPanelController = controller
         return controller

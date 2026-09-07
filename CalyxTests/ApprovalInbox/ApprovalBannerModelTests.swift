@@ -1194,6 +1194,37 @@ final class ApprovalBannerModelTests: XCTestCase {
     // "calyx.approvalBanner.*" prefix convention as
     // container/allowButton/denyButton/alwaysAllowButton/payload above.
 
+    func test_accessibilityID_approvalBanner_optionsMenuAndPayloadExpandedIdentifiers_existAndAreDistinct() {
+        XCTAssertEqual(AccessibilityID.ApprovalBanner.optionsMenu, "calyx.approvalBanner.optionsMenu")
+        XCTAssertEqual(AccessibilityID.ApprovalBanner.payloadExpanded, "calyx.approvalBanner.payloadExpanded")
+
+        let newIdentifiers = [
+            AccessibilityID.ApprovalBanner.optionsMenu,
+            AccessibilityID.ApprovalBanner.payloadExpanded,
+        ]
+
+        for identifier in newIdentifiers {
+            XCTAssertTrue(identifier.hasPrefix("calyx.approvalBanner."),
+                         "\(identifier) must follow the existing calyx.approvalBanner.* naming convention")
+        }
+
+        let preExistingIdentifiers = [
+            AccessibilityID.ApprovalBanner.container,
+            AccessibilityID.ApprovalBanner.allowButton,
+            AccessibilityID.ApprovalBanner.denyButton,
+            AccessibilityID.ApprovalBanner.alwaysAllowButton,
+            AccessibilityID.ApprovalBanner.payload,
+            AccessibilityID.ApprovalBanner.previousButton,
+            AccessibilityID.ApprovalBanner.nextButton,
+            AccessibilityID.ApprovalBanner.positionLabel,
+            AccessibilityID.ApprovalBanner.queueMenu,
+        ]
+        XCTAssertEqual(Set(newIdentifiers).intersection(preExistingIdentifiers), [],
+                       "optionsMenu/payloadExpanded must be distinct from every pre-existing ApprovalBanner identifier")
+        XCTAssertEqual(Set(newIdentifiers).count, newIdentifiers.count,
+                       "optionsMenu and payloadExpanded must also be distinct from each other")
+    }
+
     func test_accessibilityID_approvalBanner_queueNavigationIdentifiers_existAndAreDistinct() {
         // Queue navigation (prev/next cursor): the banner's Previous/Next
         // buttons and their "N / M" position label.

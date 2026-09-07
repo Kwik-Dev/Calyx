@@ -14,14 +14,13 @@
 // doc comment in ApprovalBannerModel.swift) -- this view is that reader.
 //
 // The root shape -- `ScrollView` clamped to `layout.heightCap`,
-// `.fixedSize(horizontal: layout.width == nil, ...)` before
-// `.frame(width: layout.width)` -- lets `ApprovalPanelController.render()`
-// measure this view's own ideal (unclamped) width on a first pass
-// (`layout.width == nil`), then re-measure at its final, clamped width
-// on a second pass, WITHOUT changing this view's own structure between
-// passes: only `layout.width` changes, so `AgentQuestionFormState`'s
-// `@State` (owned deeper inside `ApprovalBannerView`) is created exactly
-// once per request.
+// `.fixedSize(horizontal: false, vertical: true)` before `.frame(width:
+// layout.width)` -- reports this view's own content height at the
+// panel's own width for the displayed request (`layout.width`, one of
+// `ApprovalPanelArranger.fixedWidth`/`wideWidth`, never measured from
+// content itself, see `ApprovalPanelArranger.panelWidth(for:
+// visibleFrame:)`), so `ApprovalPanelController.render()`'s single
+// measurement pass sees the content's actual height at that width.
 //
 // Glass: the same sheet construction as `MainContentView`'s own root
 // glass sheet -- a `Color.clear` `.background` behind the content,
@@ -41,11 +40,6 @@ import AppKit
 struct ApprovalPanelContentView: View {
     let model: ApprovalBannerModel
     let layout: ApprovalPanelLayout
-    /// Invoked inside `body` so the `@Observable` `Tab.displayTitle` read
-    /// it wraps is tracked by SwiftUI, and this view re-renders when the
-    /// designated host's active tab is renamed while a request is
-    /// pending.
-    let hostWindowTitle: () -> String
     let onContentSizeChange: (CGSize) -> Void
     let onRequestChange: () -> Void
 
@@ -70,7 +64,7 @@ struct ApprovalPanelContentView: View {
                     glassWrapped(request: request)
                 }
                 .frame(maxHeight: layout.heightCap)
-                .fixedSize(horizontal: layout.width == nil, vertical: true)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(width: layout.width)
                 .onGeometryChange(for: CGSize.self) { proxy in
                     proxy.size
@@ -90,9 +84,21 @@ struct ApprovalPanelContentView: View {
         }
     }
 
+    /// `layout.hostWindowController?.activeTabDisplayTitle` (its active
+    /// tab's own title) falling back to the window's own `title`, then to
+    /// "Calyx" while no host is designated -- both reads go through
+    /// `layout`, an `@Observable` reference this view tracks directly, so
+    /// SwiftUI re-renders both when the designated host WINDOW changes
+    /// (`layout.hostWindowController` reassigned by `ApprovalPanelController
+    /// .render()`) and when its active tab is renamed in place (`Tab.
+    /// displayTitle`, itself `@Observable`, read through that same
+    /// reference).
     private func glassWrapped(request: ApprovalRequest) -> some View {
-        GlassEffectContainer {
-            ApprovalBannerView(model: model, request: request, hostWindowTitle: ControlCharacterDisplay.render(hostWindowTitle()))
+        let title = layout.hostWindowController?.activeTabDisplayTitle
+            ?? layout.hostWindowController?.window?.title
+            ?? "Calyx"
+        return GlassEffectContainer {
+            ApprovalBannerView(model: model, request: request, hostWindowTitle: ControlCharacterDisplay.render(title))
                 .id(request.id)
         }
         .background {

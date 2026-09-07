@@ -85,12 +85,13 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
     /// here (rather than inlined at each call site) purely because this
     /// suite references them from more than one place.
     private static let approvalBannerAllowButtonID = "calyx.approvalBanner.allowButton"
-    private static let approvalBannerDenyButtonID = "calyx.approvalBanner.denyButton"
     private static let approvalBannerPayloadID = "calyx.approvalBanner.payload"
+    private static let approvalBannerPayloadExpandedID = "calyx.approvalBanner.payloadExpanded"
     private static let approvalBannerNextButtonID = "calyx.approvalBanner.nextButton"
     private static let approvalBannerPreviousButtonID = "calyx.approvalBanner.previousButton"
     private static let approvalBannerQueueMenuID = "calyx.approvalBanner.queueMenu"
     private static let approvalBannerContainerID = "calyx.approvalBanner.container"
+    private static let approvalBannerOptionsMenuID = "calyx.approvalBanner.optionsMenu"
 
     // MARK: - Test
 
@@ -163,15 +164,15 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
             outFile: denyOutFile, counter: &counter
         )
 
-        let denyButton = app.buttons[Self.approvalBannerDenyButtonID]
-        XCTAssertTrue(waitFor(denyButton, timeout: 15), "the approval banner's Deny button never appeared for the second request")
+        let container = app.descendants(matching: .any).matching(identifier: Self.approvalBannerContainerID).firstMatch
+        XCTAssertTrue(waitFor(container, timeout: 15), "the approval banner never appeared for the second request")
 
         let denyPayloadText = app.staticTexts[Self.approvalBannerPayloadID]
         XCTAssertTrue(waitFor(denyPayloadText, timeout: 5))
         XCTAssertTrue(elementText(denyPayloadText).contains("COCKPIT_MARKER_DENY"),
                      "the banner must now display the SECOND pending command -- got: \(elementText(denyPayloadText))")
 
-        denyButton.click()
+        denyViaOptionsMenu()
 
         let denyResultText = waitForFileContent(atPath: denyOutFile)
         XCTAssertNotEqual(denyResultText, "(no output)", "the backgrounded pane_run (Deny) curl produced no output")
@@ -336,7 +337,7 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
         XCTAssertFalse(app.descendants(matching: .any).matching(identifier: Self.approvalBannerQueueMenuID).firstMatch.exists,
                       "with only one request left pending, single-request rendering must show no position label")
 
-        app.buttons[Self.approvalBannerDenyButtonID].click()
+        denyViaOptionsMenu()
 
         let navAResultText = waitForFileContent(atPath: navAOutFile)
         XCTAssertNotEqual(navAResultText, "(no output)", "the backgrounded pane_run (NAV_A) curl produced no output")
@@ -400,14 +401,15 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
             outFile: outFile, counter: &counter
         )
 
-        let denyButton = app.buttons[Self.approvalBannerDenyButtonID]
-        XCTAssertTrue(waitFor(denyButton, timeout: 15), "the approval banner's Deny button never appeared")
+        let container = app.descendants(matching: .any).matching(identifier: Self.approvalBannerContainerID).firstMatch
+        XCTAssertTrue(waitFor(container, timeout: 15), "the approval banner never appeared")
 
         let panelWindow = app.windows
             .containing(.any, identifier: Self.approvalBannerContainerID)
             .firstMatch
         XCTAssertTrue(waitFor(panelWindow, timeout: 5), "the floating approval panel window never appeared")
         let bannerFrame = panelWindow.frame
+        XCTAssertEqual(bannerFrame.width, 380, accuracy: 1, "the floating approval panel's own window must be the fixed 380pt panel width")
 
         let windowFrame = app.windows.firstMatch.frame
         let screen = try XCTUnwrap(
@@ -430,7 +432,7 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
         XCTAssertEqual(bannerFrame.minY, visibleTop + 12, accuracy: 2,
                        "the floating approval panel's top edge must sit 12pt below the screen's visible top edge (the arranger margin) -- got window frame \(bannerFrame), visible top edge \(visibleTop)")
 
-        denyButton.click()
+        denyViaOptionsMenu()
 
         let resultText = waitForFileContent(atPath: outFile)
         XCTAssertNotEqual(resultText, "(no output)", "the backgrounded pane_run curl produced no output")
@@ -489,14 +491,6 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
             outFile: outFile, counter: &counter
         )
 
-        // Separates "the banner never rendered at all" from "this
-        // suite's own header lookup is wrong": the Deny button existing
-        // proves the gate fired and a banner is showing, independent of
-        // how its header text happens to surface to the accessibility
-        // tree.
-        let denyButton = app.buttons[Self.approvalBannerDenyButtonID]
-        XCTAssertTrue(waitFor(denyButton, timeout: 15), "the approval banner's Deny button never appeared for the palette_execute request")
-
         // `elementText()`'s own doc comment (below): a SwiftUI Text's
         // rendered content can surface via `.value` rather than `.label`
         // on this macOS version, so every static text under the
@@ -504,7 +498,7 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
         let container = app.descendants(matching: .any)
             .matching(identifier: Self.approvalBannerContainerID)
             .firstMatch
-        XCTAssertTrue(waitFor(container, timeout: 5), "the approval banner's own container element never appeared")
+        XCTAssertTrue(waitFor(container, timeout: 15), "the approval banner's own container element never appeared for the palette_execute request")
 
         var headerLabel: String?
         for _ in 0..<50 {
@@ -519,12 +513,63 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
             "no static text under the approval banner's container ever read \"palette_execute → ...\" -- container tree: \(container.debugDescription)")
         XCTAssertNotEqual(header, "palette_execute → this window",
                           "a nil-targetSurfaceID request's header must show the designated host's own active tab title, not the literal placeholder \"this window\"")
-        XCTAssertTrue(denyButton.exists, "the approval banner's Deny button must be present alongside its header")
-        denyButton.click()
+        denyViaOptionsMenu()
 
         let resultText = waitForFileContent(atPath: outFile)
         XCTAssertNotEqual(resultText, "(no output)", "the backgrounded palette_execute curl produced no output")
         let result = try parseJSONObject(resultText, context: "palette_execute Deny result")
+        XCTAssertEqual(result["status"] as? String, "denied", "Deny must report status \"denied\" -- got: \(resultText)")
+    }
+
+    // MARK: - Notification-style body: tap-to-expand payload
+
+    /// The body row shows `payload` truncated to 2 lines with the FULL
+    /// text as its accessibility label; clicking it reveals
+    /// `payloadExpanded` (the full monospaced payload) below it, and
+    /// clicking again collapses it away.
+    func test_payloadTap_togglesExpandedPayload() throws {
+        var counter = 0
+        enableAIAgentIPCViaCommandPalette()
+
+        let surfaceID = paneExec("echo $CALYX_SURFACE_ID", counter: &counter)
+        XCTAssertFalse(surfaceID.isEmpty, "$CALYX_SURFACE_ID must be set for every ghostty-spawned pane")
+
+        let outFile = "/tmp/calyx-e2e-cockpit-payload-expand-\(ProcessInfo.processInfo.processIdentifier).json"
+        toolCallBackgrounded(
+            name: "pane_run",
+            argumentsJSON: "{\"surface_id\": \"\(surfaceID)\", \"command\": \"echo PAYLOAD_EXPAND_MARKER\", \"await\": false}",
+            outFile: outFile, counter: &counter
+        )
+
+        let payloadText = app.staticTexts[Self.approvalBannerPayloadID]
+        XCTAssertTrue(waitFor(payloadText, timeout: 15), "the approval banner's payload text never appeared")
+        XCTAssertTrue(elementText(payloadText).contains("PAYLOAD_EXPAND_MARKER"),
+                     "the payload text's accessibility label must carry the FULL command text even while visually truncated -- got: \(elementText(payloadText))")
+
+        let payloadExpanded = app.staticTexts[Self.approvalBannerPayloadExpandedID]
+        XCTAssertFalse(payloadExpanded.exists, "the expanded payload must not exist before the body is clicked")
+
+        let panelWindow = app.windows
+            .containing(.any, identifier: Self.approvalBannerContainerID)
+            .firstMatch
+        XCTAssertTrue(waitFor(panelWindow, timeout: 5), "the floating approval panel window never appeared")
+        XCTAssertEqual(panelWindow.frame.width, 380, accuracy: 1, "the panel window must be the fixed 380pt panel width")
+
+        payloadText.click()
+
+        XCTAssertTrue(waitFor(payloadExpanded, timeout: 5), "clicking the payload text must reveal the expanded payload")
+        XCTAssertTrue(elementText(payloadExpanded).contains("PAYLOAD_EXPAND_MARKER"),
+                     "the expanded payload must carry the full command text -- got: \(elementText(payloadExpanded))")
+
+        payloadText.click()
+
+        waitForNonExistence(payloadExpanded, timeout: 5)
+
+        denyViaOptionsMenu()
+
+        let resultText = waitForFileContent(atPath: outFile)
+        XCTAssertNotEqual(resultText, "(no output)", "the backgrounded pane_run curl produced no output")
+        let result = try parseJSONObject(resultText, context: "pane_run payload-expand Deny result")
         XCTAssertEqual(result["status"] as? String, "denied", "Deny must report status \"denied\" -- got: \(resultText)")
     }
 
@@ -598,7 +643,7 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
         }
         XCTAssertTrue(advancedToSecond, "clicking Next must advance the single app-wide panel to the second window's own request, reading \"2 / 2\"")
 
-        app.buttons[Self.approvalBannerDenyButtonID].click()
+        denyViaOptionsMenu()
 
         let secondResultText = waitForFileContent(atPath: secondOutFile)
         XCTAssertNotEqual(secondResultText, "(no output)", "the backgrounded pane_run (second window) curl produced no output")
@@ -606,10 +651,23 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
         XCTAssertEqual(secondResult["status"] as? String, "denied",
                        "Deny must resolve the second window's own request -- got: \(secondResultText)")
 
-        let remainingDenyButton = app.buttons[Self.approvalBannerDenyButtonID]
-        XCTAssertTrue(waitFor(remainingDenyButton, timeout: 10),
-                     "once the second window's request is resolved, the panel must fall back to the still-pending first window's own request")
-        remainingDenyButton.click()
+        // The panel's own container never disappears here (it falls
+        // straight back to the still-pending first request), so the
+        // real gate is the payload text switching to the FIRST window's
+        // own marker -- same bounded 10x1s poll pattern this file uses
+        // elsewhere, not a container-existence sentinel that would pass
+        // instantly against the stale second-request page.
+        var fellBackToFirst = false
+        for _ in 0..<10 {
+            if elementText(payloadText).contains("TWOWIN_FIRST") {
+                fellBackToFirst = true
+                break
+            }
+            Thread.sleep(forTimeInterval: 1)
+        }
+        XCTAssertTrue(fellBackToFirst, "once the second window's request is resolved, the panel must fall back to the still-pending first window's own request")
+
+        denyViaOptionsMenu()
 
         let firstResultText = waitForFileContent(atPath: firstOutFile)
         XCTAssertNotEqual(firstResultText, "(no output)", "the backgrounded pane_run (first window) curl produced no output")
@@ -619,6 +677,25 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
     }
 
     // MARK: - Helpers
+
+    /// Opens the notification-style banner's Options pulldown and clicks
+    /// its "Deny" item -- Deny is no longer its own top-level button (see
+    /// `AccessibilityID.ApprovalBanner.optionsMenu`'s own doc comment):
+    /// it is one titled `NSMenuItem` inside the Options menu, found by
+    /// title exactly the same way the queue preview menu's own rows
+    /// already are (`navARow` above) -- macOS never exposes an
+    /// `NSMenuItem`'s identifier to the accessibility tree.
+    private func denyViaOptionsMenu() {
+        let optionsMenu = app.descendants(matching: .any)
+            .matching(identifier: Self.approvalBannerOptionsMenuID)
+            .firstMatch
+        XCTAssertTrue(waitFor(optionsMenu, timeout: 15), "the approval banner's Options menu never appeared")
+        optionsMenu.click()
+
+        let denyItem = app.menuItems.matching(NSPredicate(format: "title == %@", "Deny")).firstMatch
+        XCTAssertTrue(waitFor(denyItem, timeout: 10), "the Options menu never listed a \"Deny\" item")
+        denyItem.click()
+    }
 
     /// Opens the Command Palette, executes "Enable AI Agent IPC", and
     /// dismisses the resulting `NSAlert.runModal()` confirmation --

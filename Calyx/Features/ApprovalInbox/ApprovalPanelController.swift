@@ -19,18 +19,26 @@
 import AppKit
 import SwiftUI
 
-/// The app-wide floating panel's own layout state: `width` is nil while
-/// `render()`'s first measurement pass is in flight (letting
-/// `ApprovalPanelContentView`'s root report its own unconstrained ideal
-/// width via `.fixedSize(horizontal: true)`), then holds the clamped,
-/// final width for every subsequent layout pass. `heightCap` mirrors
-/// `ApprovalPanelArranger.heightCap(visibleFrame:)` for the screen this
-/// panel currently sits on.
+/// The app-wide floating panel's own layout state: `width` holds the
+/// panel's own width for the currently displayed request
+/// (`ApprovalPanelArranger.panelWidth(for:visibleFrame:)` -- `fixedWidth`
+/// or `wideWidth`, whichever that request wants), read by
+/// `ApprovalPanelContentView`'s root `.frame(width:)`. `heightCap`
+/// mirrors `ApprovalPanelArranger.heightCap(visibleFrame:)` for the
+/// screen this panel currently sits on. `hostWindowController` is the
+/// designated host window controller as of the last `render()` --
+/// `ApprovalPanelContentView` reads its `activeTabDisplayTitle`/`window?.
+/// title` directly from this `@Observable` property, so it re-renders
+/// both when the designated host WINDOW changes (this property is
+/// reassigned) and when its active tab is renamed in place (`Tab.
+/// displayTitle`, a property read reached through this same reference,
+/// is itself `@Observable`).
 @MainActor
 @Observable
 final class ApprovalPanelLayout {
-    var width: CGFloat?
+    var width: CGFloat = ApprovalPanelArranger.fixedWidth
     var heightCap: CGFloat = 0
+    weak var hostWindowController: CalyxWindowController?
 }
 
 @MainActor
@@ -42,8 +50,17 @@ final class ApprovalPanelController: NSObject {
 
     private let model: ApprovalBannerModel
     private let hostWindow: () -> NSWindow?
-    private let hostWindowTitle: () -> String
     private let visibleFrame: () -> NSRect
+    /// Hands key status back to the pane that asked, called with
+    /// `lastRenderedTargetSurfaceID` -- see `handOffKeyIfNeeded()`'s own
+    /// doc comment. `{ _ in }` by default so every existing test-only
+    /// `ApprovalPanelController` construction (none of which cares about
+    /// key hand-off) keeps compiling unchanged.
+    private let handOffKey: (UUID?) -> Void
+    /// `ApprovalPanelLayout.hostWindowController`'s own source -- see that
+    /// property's doc comment. `{ nil }` by default, same rationale as
+    /// `handOffKey`.
+    private let hostWindowController: () -> CalyxWindowController?
     private let layout = ApprovalPanelLayout()
 
     private(set) var panel: ApprovalPanelWindow?
@@ -58,6 +75,12 @@ final class ApprovalPanelController: NSObject {
     /// already performed for the same change (see that method's own doc
     /// comment).
     private var lastRenderedRequestID: UUID?
+
+    /// `lastRenderedRequestID`'s own `targetSurfaceID`, written alongside
+    /// it -- the pane `handOffKeyIfNeeded()` hands key back to is always
+    /// the one the DISPLAYED (about to be replaced or hidden) request
+    /// targeted, never the incoming one.
+    private var lastRenderedTargetSurfaceID: UUID?
 
     #if DEBUG
     /// Test seam: records every order intent this controller would have
@@ -74,12 +97,14 @@ final class ApprovalPanelController: NSObject {
     init(
         model: ApprovalBannerModel,
         hostWindow: @escaping () -> NSWindow?,
-        hostWindowTitle: @escaping () -> String,
-        visibleFrame: (() -> NSRect)? = nil
+        visibleFrame: (() -> NSRect)? = nil,
+        handOffKey: @escaping (UUID?) -> Void = { _ in },
+        hostWindowController: @escaping () -> CalyxWindowController? = { nil }
     ) {
         self.model = model
         self.hostWindow = hostWindow
-        self.hostWindowTitle = hostWindowTitle
+        self.handOffKey = handOffKey
+        self.hostWindowController = hostWindowController
         // Same NSScreen.main?.visibleFrame fallback shape as
         // AppDelegate's own screen-frame lookups: a real screen may be
         // unavailable, and `.zero` would collapse every subsequent
@@ -106,19 +131,31 @@ final class ApprovalPanelController: NSObject {
     /// `ApprovalPanelArranger`. A complete no-op once `tearDown()` has
     /// run.
     ///
-    /// Before applying either change, hands key status back to
-    /// `hostWindow()` if the panel currently holds it AND the change is
-    /// either an order-out or a genuine request change (`request.id !=
-    /// lastRenderedRequestID`) -- key status the panel took (e.g. the
-    /// question form's free-text field, or `NSHostingView
-    /// .needsPanelToBecomeKey` answering true for an Allow/Deny click)
-    /// must return to the window it came from, not linger on a panel
-    /// about to disappear or show unrelated content. An idempotent
-    /// re-render of the SAME still-displayed request (`applyContentHeight
-    /// (_:)`'s own re-measure) never hands key back, since nothing the
-    /// user is looking at is changing.
+    /// Writes `layout.hostWindowController` from `hostWindowController()`
+    /// unconditionally, before either branch below -- see
+    /// `ApprovalPanelLayout.hostWindowController`'s own doc comment.
+    ///
+    /// Before applying either change, hands key status back via
+    /// `handOffKeyIfNeeded()` if the panel currently holds it AND the
+    /// change is either an order-out or a genuine request change
+    /// (`request.id != lastRenderedRequestID`) -- key status the panel
+    /// took (e.g. the question form's free-text field, or
+    /// `NSHostingView.needsPanelToBecomeKey` answering true for an
+    /// Allow/Deny click) must return to the pane it came from, not linger
+    /// on a panel about to disappear or show unrelated content. An
+    /// idempotent re-render of the SAME still-displayed request
+    /// (`applyContentHeight(_:)`'s own re-measure) never hands key back,
+    /// since nothing the user is looking at is changing. Every removal
+    /// cause routes through this same `render()` call -- hold-window
+    /// expiry (`ApprovalHookTiming`), `ApprovalInboxStore.expireAll`/
+    /// `expireForSurface`, and paging (`selectNext()`/`selectPrevious()`
+    /// via `handleRequestChange()`) all clear or change `model.current`,
+    /// which reaches here the same way a decision does -- so the pane
+    /// that asked always gets key and terminal focus back through this
+    /// one path.
     func render() {
         guard !isTornDown else { return }
+        layout.hostWindowController = hostWindowController()
 
         guard let request = model.current else {
             if let panel {
@@ -126,6 +163,7 @@ final class ApprovalPanelController: NSObject {
                 performOrderOut(panel: panel)
             }
             lastRenderedRequestID = nil
+            lastRenderedTargetSurfaceID = nil
             return
         }
 
@@ -133,6 +171,7 @@ final class ApprovalPanelController: NSObject {
             handOffKeyIfNeeded()
         }
         lastRenderedRequestID = request.id
+        lastRenderedTargetSurfaceID = request.targetSurfaceID
 
         let (thePanel, hostingController) = ensurePanelAndHostingController()
         let frame = measureFrame(hostingController: hostingController)
@@ -140,17 +179,30 @@ final class ApprovalPanelController: NSObject {
         performOrderFront(frame: frame, panel: thePanel)
     }
 
-    /// Hands key status from the panel to `hostWindow()`, only if the
-    /// panel actually holds it right now and `hostWindow()` is actually
-    /// showable (visible, not miniaturized, on the active Space) --
-    /// reclaiming key for a minimized or off-Space window would silently
-    /// deminiaturize/Space-switch it out from under the user, mirroring
+    /// Hands key status from the panel to whichever pane asked, only if
+    /// the panel actually holds key right now -- called BEFORE the
+    /// order-out/re-render that follows, so `panel?.isKeyWindow` still
+    /// reads true for the request about to be replaced or hidden.
+    /// `lastRenderedTargetSurfaceID` is the DISPLAYED request's own
+    /// target (not the incoming one, which `render()` has not yet
+    /// written it to), passed to `handOffKey(_:)` -- `AppDelegate` wires
+    /// this to `restoreTerminalFocusAfterApproval(targetSurfaceID:)`,
+    /// which resolves the owning window (or `currentWindowController` for
+    /// a window-agnostic request) and computes `reclaimKey` from
+    /// `panel?.isKeyWindow` at that same call, still true at this point --
+    /// that method's own guard (visible, not miniaturized, on the active
+    /// Space) is what actually decides whether `makeKey()` runs, mirroring
     /// `CalyxWindowController.restoreTerminalFocusAfterApproval(reclaimKey:)`'s
-    /// own guard.
+    /// own guard. The question view's later
+    /// `ApprovalBannerModel.restoreTerminalFocusAfterInput(targetSurfaceID:)`
+    /// (fired when a text field is torn down without a decision) reaches
+    /// the SAME `restoreTerminalFocusAfterApproval(targetSurfaceID:)`
+    /// method, which by then finds `reclaimKey == false` (the panel no
+    /// longer holds key, having never been handed it back by this path)
+    /// and only restores first responder.
     private func handOffKeyIfNeeded() {
         guard panel?.isKeyWindow == true else { return }
-        guard let window = hostWindow(), window.isVisible, !window.isMiniaturized, window.isOnActiveSpace else { return }
-        window.makeKey()
+        handOffKey(lastRenderedTargetSurfaceID)
     }
 
     /// Tears the app-wide floating panel down for good: the panel
@@ -191,7 +243,6 @@ final class ApprovalPanelController: NSObject {
         let content = ApprovalPanelContentView(
             model: model,
             layout: layout,
-            hostWindowTitle: hostWindowTitle,
             onContentSizeChange: { [weak self] size in self?.applyContentHeight(size) },
             onRequestChange: { [weak self] in self?.handleRequestChange() }
         )
@@ -210,34 +261,29 @@ final class ApprovalPanelController: NSObject {
         return (thePanel, hostingController)
     }
 
-    /// Two-pass measure: the first pass (`layout.width = nil`) lets
-    /// `ApprovalPanelContentView`'s root report its own unconstrained
-    /// ideal width; the second, at the clamped width, reports the
-    /// content's actual height at that width. `layout` is `@Observable`,
-    /// but `NSHostingController.sizeThatFits(in:)` does not itself pump
-    /// the Observation update from a property mutation into a fresh
-    /// layout pass -- forcing `needsLayout`/`layoutSubtreeIfNeeded()`
-    /// after EACH mutation, before its corresponding `sizeThatFits`
-    /// call, is what makes that call see this measurement's own latest
-    /// `layout.width`/`layout.heightCap` rather than whatever was
-    /// current as of some earlier call.
+    /// Single-pass measure: the panel's width is settled for the
+    /// currently displayed request before any layout pass
+    /// (`ApprovalPanelArranger.panelWidth(for:visibleFrame:)` --
+    /// `fixedWidth` or `wideWidth`, whichever `model.current` wants, see
+    /// `ApprovalRequest.prefersWideApprovalPanel`), so this measures
+    /// height only, at that width. `layout` is `@Observable`, but
+    /// `NSHostingController.sizeThatFits(in:)` does not itself pump the
+    /// Observation update from a property mutation into a fresh layout
+    /// pass -- forcing `needsLayout`/`layoutSubtreeIfNeeded()` after the
+    /// mutation, before `sizeThatFits`, is what makes that call see this
+    /// measurement's own latest `layout.width`/`layout.heightCap` rather
+    /// than whatever was current as of some earlier call.
     private func measureFrame(hostingController: NSHostingController<ApprovalPanelContentView>) -> NSRect {
         let frame = visibleFrame()
         let heightCap = ApprovalPanelArranger.heightCap(visibleFrame: frame)
-        let widthCap = ApprovalPanelArranger.clampWidth(ideal: .greatestFiniteMagnitude, visibleFrame: frame)
+        let width = ApprovalPanelArranger.panelWidth(for: model.current, visibleFrame: frame)
         layout.heightCap = heightCap
-
-        layout.width = nil
-        hostingController.view.needsLayout = true
-        hostingController.view.layoutSubtreeIfNeeded()
-        let idealSize = hostingController.sizeThatFits(in: CGSize(width: widthCap, height: heightCap))
-        let width = ApprovalPanelArranger.clampWidth(ideal: idealSize.width, visibleFrame: frame)
-
         layout.width = width
+
         hostingController.view.needsLayout = true
         hostingController.view.layoutSubtreeIfNeeded()
-        let finalSize = hostingController.sizeThatFits(in: CGSize(width: width, height: heightCap))
-        let size = CGSize(width: width, height: min(finalSize.height, heightCap))
+        let measuredSize = hostingController.sizeThatFits(in: CGSize(width: width, height: heightCap))
+        let size = CGSize(width: width, height: min(measuredSize.height, heightCap))
 
         // Set here (not left for `applyContentHeight(_:)`'s own first
         // call to discover) so the content view's own measured-size echo
@@ -252,14 +298,13 @@ final class ApprovalPanelController: NSObject {
     /// `ApprovalPanelContentView.onContentSizeChange`: a later, purely
     /// runtime content-height change (e.g. the question form's notes
     /// field appearing) while the SAME request is still showing at the
-    /// SAME clamped width `render()`'s own measurement already settled
-    /// on. Ignores any report against a stale/intermediate width (the
-    /// unclamped first pass, or a width from before a request change
-    /// resets `layout.width` to nil) and any report that doesn't
-    /// actually change the height, so this can never loop against
-    /// `render()`'s own measurement passes.
+    /// SAME width `render()`'s own measurement already settled on for
+    /// it.
+    /// Ignores any report against a stale width and any report that
+    /// doesn't actually change the height, so this can never loop
+    /// against `render()`'s own measurement pass.
     private func applyContentHeight(_ size: CGSize) {
-        guard !isTornDown, let width = layout.width, size.width == width else { return }
+        guard !isTornDown, size.width == layout.width else { return }
         if let lastAppliedContentHeight, abs(lastAppliedContentHeight - size.height) < 0.5 { return }
         lastAppliedContentHeight = size.height
         render()
@@ -278,8 +323,8 @@ final class ApprovalPanelController: NSObject {
     /// `ApprovalBannerModel.selectNext()`'s own doc comment), so this
     /// re-renders only when `model.current`'s id genuinely does not match
     /// what was last rendered. `render()` -> `measureFrame(hostingController:)`
-    /// already resets `layout.width` to nil and re-measures from scratch
-    /// for the new request, so this performs no reset of its own.
+    /// already re-measures from scratch for the new request, so this
+    /// performs no reset of its own.
     private func handleRequestChange() {
         guard !isTornDown else { return }
         guard model.current?.id != lastRenderedRequestID else { return }
