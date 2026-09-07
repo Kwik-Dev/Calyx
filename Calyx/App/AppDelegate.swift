@@ -1332,9 +1332,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver
         guard let surfaceView = notification.object as? SurfaceView,
               let window = surfaceView.window,
               let wc = windowControllers.first(where: { $0.window === window }) else {
-            // No source — create tab in the current window's controller
-            if let currentWC = currentWindowController {
-                currentWC.createNewTab(inheritedConfig: notification.userInfo?["inherited_config"])
+            // No source: only a KEY CalyxWindowController receives the
+            // tab. A surface outside windowControllers (the Quick
+            // Terminal) therefore produces no tab at all rather than one
+            // landing in a background main window -- this does not
+            // resolve through currentWindowController, whose fallback
+            // (last-key, else first open window) would do exactly that.
+            if let keyWC = windowControllers.first(where: { $0.window?.isKeyWindow == true }) {
+                keyWC.createNewTab(inheritedConfig: notification.userInfo?["inherited_config"])
             }
             return
         }
@@ -1494,18 +1499,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver
     /// `SessionBrowserModel.onRemoteSessionRequested`'s target (Session
     /// Browser's remote-host picker, `SessionBrowserWindowController
     /// .attachRemote(_:)`): spawns a new tab against `host` in the
-    /// current window's controller if one exists -- mirrors
-    /// `handleNewTab`'s own current-window lookup for a local
-    /// ghostty-originated new tab -- otherwise opens a fresh window whose
-    /// sole initial tab spawns against `host`, reaching a window
-    /// controller the same way `attachWindow` always does for a session
-    /// with no live surface anywhere yet.
+    /// current window's controller if one exists -- unlike `handleNewTab`'s
+    /// own key-window-only lookup for a local ghostty-originated new tab,
+    /// this resolves through `currentWindowController` -- otherwise opens
+    /// a fresh window whose sole initial tab spawns against `host`,
+    /// reaching a window controller the same way `attachWindow` always
+    /// does for a session with no live surface anywhere yet.
     ///
     /// Every real caller of this method fires from inside the Session
     /// Browser's own button action, at which point the Session Browser's
     /// own window (not any `CalyxWindowController`'s window) is key -- so
     /// an isKeyWindow-only lookup never matches a real main window in
-    /// practice. Resolving through `currentWindowController` instead
+    /// practice, unlike `handleNewTab`, whose source surface is always a
+    /// `CalyxWindowController`'s own window when one owns it at all.
+    /// Resolving through `currentWindowController` instead
     /// (`AppDelegateAttachSessionAsTabTests` covers the identical case
     /// for the local session-browser Attach flow) means a main window
     /// that exists but isn't key still receives the new tab instead of a

@@ -15,15 +15,15 @@
 //
 // A macOS-notification-style shell, at `ApprovalPanelArranger.fixedWidth`
 // or, for a request wanting inline option rows (`ApprovalRequest.
-// prefersWideApprovalPanel`), `wideWidth`: a leading column (header row,
-// a 1-2-line body, and any source-specific extras) beside a fixed-width
-// trailing column holding
-// one primary action button and an "Options" pull-down menu
+// prefersWideApprovalPanel`), `wideWidth`: the app icon on the left, a
+// leading column (header row, a 1-2-line body, and any source-specific
+// extras) in the middle, and a fixed-width trailing column holding one
+// primary action button and an "Options" pull-down menu
 // (`ApprovalActionColumn`) listing every choice the CLI offers beyond
-// that primary action. One `HStack(alignment: .top, spacing: 12)` per
-// `request.source` case, all sharing the same outer padding/background/
-// `container` identifier applied once below the `switch` -- never more
-// than one `container`-identified element per render.
+// that primary action -- one `HStack(alignment: .center, spacing: 10)`
+// (icon, then a `switch` over `request.source`), all sharing the same
+// outer padding/`container` identifier applied once below the `switch`
+// -- never more than one `container`-identified element per render.
 //
 // - `.mcpTool` (Calyx's own pane_run approval): entirely inline here --
 //   `toolLeftColumn` (header row + tappable body + expanded payload) and
@@ -33,17 +33,19 @@
 //   the SAME `toolLeftColumn` (its body is the hook call's own
 //   `summary`, `ApprovalRequest.displayPayload` already picks the right
 //   field per source) beside an `ApprovalActionColumn` fed by
-//   `AgentToolApprovalView`, a stateless provider of the "Yes" primary
-//   button and its menu items (one row per `AgentHookOffers.
-//   permissionUpdates` offer, Calyx's own pane-scoped Always-Allow row
-//   only when the CLI sent none of its own, "No").
+//   `agentHookPrimaryButton`/`agentHookMenuItems(toolName:offers:)`, this
+//   file's own "Yes" primary button and its menu items (one row per
+//   `AgentHookOffers.permissionUpdates` offer, Calyx's own pane-scoped
+//   Always-Allow row only when the CLI sent none of its own, "No").
 // - `.agentQuestion` (Claude Code's AskUserQuestion): `AgentQuestionBannerView`
 //   renders its OWN full two-column row (it owns `AgentQuestionFormState`
 //   and the free-text fields' focus state, which a stateless provider
 //   cannot safely expose to a separate render pass -- see that view's
 //   own file header), taking this shell's `headerRow` as its `header`
 //   parameter so the tool/target label and queue navigator still read
-//   identically across all three sources.
+//   identically across all three sources. The app icon sits in this
+//   shell's own root `HStack`, to the left of that two-column row, same
+//   as the other two sources.
 //
 // `AgentQuestionBannerView` is given `.id(request.id)`, so a different
 // request tears its whole subtree (and `form`) down and creates a fresh
@@ -79,8 +81,6 @@ struct ApprovalBannerView: View {
     /// (`ApprovalPanelContentView.glassWrapped(request:)`).
     let hostWindowTitle: String
 
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-
     /// Whether the tap-to-expand body (`.mcpTool`/`.agentHook` only) is
     /// showing its full, scrolling payload below the 2-line summary.
     /// Reset per request by this view's own `.id(request.id)` at its
@@ -113,23 +113,18 @@ struct ApprovalBannerView: View {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .center, spacing: 10) {
+            appIcon
             switch request.source {
             case .mcpTool:
                 toolLeftColumn
                 ApprovalActionColumn(primary: AnyView(mcpPrimaryButton)) { mcpMenuItems }
 
             case .agentHook(let toolName, _, _, let offers):
-                let provider = AgentToolApprovalView(
-                    toolName: toolName,
-                    offers: offers,
-                    onAllow: { model.allow(id: request.id) },
-                    onAllowWithPermissions: { offer in model.allowWithPermissions(id: request.id, offer: offer) },
-                    onAlwaysAllow: { model.alwaysAllow(id: request.id) },
-                    onDeny: { model.deny(id: request.id) }
-                )
                 toolLeftColumn
-                ApprovalActionColumn(primary: AnyView(provider.primaryButton)) { provider.menuItems }
+                ApprovalActionColumn(primary: AnyView(agentHookPrimaryButton)) {
+                    agentHookMenuItems(toolName: toolName, offers: offers)
+                }
 
             case .agentQuestion(_, let prompt):
                 AgentQuestionBannerView(
@@ -142,11 +137,21 @@ struct ApprovalBannerView: View {
                 .id(request.id)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 6)
-        .modifier(RecoveryBarBackgroundModifier(reduceTransparency: reduceTransparency))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AccessibilityID.ApprovalBanner.container)
+    }
+
+    /// The app icon, matching a macOS notification banner's own leading
+    /// icon -- shared by every `request.source` case, including
+    /// `.agentQuestion` (whose own two-column row renders only the
+    /// middle/trailing columns; this shell supplies the icon for it too).
+    private var appIcon: some View {
+        Image(nsImage: NSApp.applicationIconImage)
+            .resizable()
+            .frame(width: 40, height: 40)
+            .accessibilityHidden(true)
     }
 
     // MARK: - `.mcpTool`/`.agentHook`: shared left column
@@ -179,8 +184,9 @@ struct ApprovalBannerView: View {
     private var bodyText: some View {
         let rendered = ControlCharacterDisplay.render(request.displayPayload)
         return Text(rendered)
-            .font(.system(.callout, design: .monospaced))
+            .font(.system(size: 12))
             .lineLimit(2)
+            .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityIdentifier(AccessibilityID.ApprovalBanner.payload)
             .accessibilityLabel(Text(rendered))
@@ -210,7 +216,7 @@ struct ApprovalBannerView: View {
 
     private var mcpPrimaryButton: some View {
         Button("Allow") { model.allow(id: request.id) }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.bordered)
             .accessibilityIdentifier(AccessibilityID.ApprovalBanner.allowButton)
     }
 
@@ -222,6 +228,48 @@ struct ApprovalBannerView: View {
             .accessibilityIdentifier(AccessibilityID.ApprovalBanner.denyButton)
     }
 
+    // MARK: - `.agentHook`: primary button + menu items
+
+    /// Primary: "Yes". Unlike `mcpPrimaryButton`/`mcpMenuItems`, this
+    /// source's action column also needs `toolName`/`offers` (both carried
+    /// by `request.source` itself, unpacked at the `.agentHook` switch
+    /// case), which is why the menu half below is a function rather than
+    /// a plain computed property.
+    private var agentHookPrimaryButton: some View {
+        Button("Yes") { model.allow(id: request.id) }
+            .buttonStyle(.bordered)
+            .accessibilityIdentifier(AccessibilityID.ApprovalBanner.allowButton)
+    }
+
+    /// Menu, mirroring the CLI's own dialog order: one row per
+    /// `AgentHookOffers.permissionUpdates` always-allow suggestion
+    /// (already labeled by `AgentPermissionOffer.label(for:)`), Calyx's
+    /// own pane-scoped Always-Allow row only when the CLI doesn't already
+    /// own persisting that choice itself (`offers.cliOwnsPersistence`),
+    /// "No". See `AgentHookOffers.cliOwnsPersistence`'s own doc comment
+    /// for why that flag is what decides whether Calyx's row renders.
+    @ViewBuilder
+    private func agentHookMenuItems(toolName: String, offers: AgentHookOffers) -> some View {
+        ForEach(Array(offers.permissionUpdates.enumerated()), id: \.offset) { index, offer in
+            Button(Self.menuRowTitle(offer.label)) {
+                model.allowWithPermissions(id: request.id, offer: offer)
+            }
+            .accessibilityIdentifier(AccessibilityID.ApprovalBanner.choiceRow(index))
+        }
+
+        if !offers.cliOwnsPersistence {
+            Button(Self.menuRowTitle("Always Allow \(toolName) in This Pane")) {
+                model.alwaysAllow(id: request.id)
+            }
+            .accessibilityIdentifier(AccessibilityID.ApprovalBanner.alwaysAllowButton)
+        }
+
+        Button(Self.menuRowTitle("No")) {
+            model.deny(id: request.id)
+        }
+        .accessibilityIdentifier(AccessibilityID.ApprovalBanner.denyButton)
+    }
+
     // MARK: - Header row (shared by every source)
 
     /// `headerText` (the tool name/target label), then the queue
@@ -229,11 +277,14 @@ struct ApprovalBannerView: View {
     private var headerRow: some View {
         HStack {
             Text(headerText)
-                .font(.callout)
-                .fontWeight(.semibold)
+                .font(.system(size: 13, weight: .bold))
+                .lineLimit(1)
+                .truncationMode(.middle)
             Spacer()
             if let positionInfo = model.positionInfo, positionInfo.count > 1 {
                 queueNavigator(positionInfo: positionInfo)
+                    .fixedSize()
+                    .layoutPriority(1)
             }
         }
     }
@@ -354,10 +405,10 @@ struct ApprovalBannerView: View {
     /// descriptions -- goes through this: `ControlCharacterDisplay.
     /// render`, fold any literal newline to a space (an `NSMenuItem`
     /// draws one as a real line break), then `fittedToMenuWidth(_:)`.
-    /// Shared by `AgentToolApprovalView`/`AgentQuestionBannerView` (both
-    /// in this module, so `ApprovalBannerView.menuRowTitle(_:)` is a
-    /// plain cross-file call, no protocol needed) as well as this file's
-    /// own `.mcpTool` menu items.
+    /// Shared by `AgentQuestionBannerView` (in the same module, so
+    /// `ApprovalBannerView.menuRowTitle(_:)` is a plain cross-file call,
+    /// no protocol needed) as well as this file's own `.mcpTool`/
+    /// `.agentHook` menu items.
     static func menuRowTitle(_ text: String) -> String {
         let rendered = ControlCharacterDisplay.render(text).replacingOccurrences(of: "\n", with: " ")
         return fittedToMenuWidth(rendered)
@@ -405,21 +456,26 @@ struct ApprovalBannerView: View {
 /// `request.source` case: a primary action (optional -- `nil` renders
 /// no button at all, only the menu, e.g. an `.agentQuestion` whose
 /// single-select click already confirms without a separate confirm
-/// step) above an "Options" pull-down listing every other choice.
-/// `.frame(maxWidth: .infinity)` on both controls, inside a column
-/// fixed to `width`, is what keeps them the same width as each other --
-/// `.fixedSize()` would defeat that by letting each control hug its own
-/// content instead.
+/// step) above an "Options" pull-down listing every other choice, both
+/// `.buttonStyle(.bordered)` -- a native notification never emphasizes
+/// one action over the other. `.frame(maxWidth: .infinity)` on both
+/// controls, inside a column fixed to `width`, is what keeps them the
+/// same width as each other -- `.fixedSize()` would defeat that by
+/// letting each control hug its own content instead. The root shell's
+/// own `HStack(alignment: .center)` centers this column vertically
+/// against the body.
 struct ApprovalActionColumn<Items: View>: View {
-    static var width: CGFloat { 96 }
+    static var width: CGFloat { 80 }
 
     let primary: AnyView?
     @ViewBuilder let menuItems: () -> Items
 
     var body: some View {
-        VStack(alignment: .trailing, spacing: 6) {
+        VStack(spacing: 6) {
             if let primary {
                 primary
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
                     .frame(maxWidth: .infinity)
             }
             Menu {
@@ -427,11 +483,12 @@ struct ApprovalActionColumn<Items: View>: View {
             } label: {
                 Text("Options")
             }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
             .frame(maxWidth: .infinity)
             .accessibilityIdentifier(AccessibilityID.ApprovalBanner.optionsMenu)
             .accessibilityLabel(Text("Options"))
         }
-        .controlSize(.small)
         .frame(width: Self.width)
     }
 }

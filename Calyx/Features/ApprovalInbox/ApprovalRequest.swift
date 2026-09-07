@@ -45,9 +45,9 @@ struct ApprovalRequest: Identifiable, Sendable {
 }
 
 /// What an `.agentHook`-sourced request may offer beyond the plain
-/// "Yes"/"No" -- everything `AgentToolApprovalView` reads to decide which
-/// choice rows to render, derived once at decode time (`AgentHookToolCall`)
-/// so the view never branches on `kind` itself.
+/// "Yes"/"No" -- everything `ApprovalBannerView.agentHookMenuItems(toolName:offers:)`
+/// reads to decide which choice rows to render, derived once at decode
+/// time (`AgentHookToolCall`) so the view never branches on `kind` itself.
 struct AgentHookOffers: Sendable, Equatable {
     /// One choice row per element -- see `AgentPermissionOffer`.
     let permissionUpdates: [AgentPermissionOffer]

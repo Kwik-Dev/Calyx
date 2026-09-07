@@ -2,8 +2,8 @@
 // Calyx
 //
 // SwiftUI content of the floating `ApprovalPanelWindow`: hosts
-// `ApprovalBannerView` inside a vertically scrolling, width-clamped,
-// theme-glass container, independent of `MainContentView`'s own
+// `ApprovalBannerView` inside a vertically scrolling, width-clamped
+// glass container, independent of `MainContentView`'s own
 // `safeAreaInset`.
 //
 // Reads `model.current` directly in `body` (not threaded in as a
@@ -22,17 +22,25 @@
 // visibleFrame:)`), so `ApprovalPanelController.render()`'s single
 // measurement pass sees the content's actual height at that width.
 //
-// Glass: the same sheet construction as `MainContentView`'s own root
-// glass sheet -- a `Color.clear` `.background` behind the content,
-// `.glassEffect(.clear.tint(...))` on that clear color, `.ignoresSafeArea()`
-// and `.allowsHitTesting(false)`, then `GlassAtmosphereBackground` behind
-// that -- so the two read as one material (this panel's own rounded
-// corners come from the titled window itself, so no extra corner radius
-// is applied here). No `GlassInactiveTintModifier`: unlike the main
-// window, this panel is never expected to visibly darken just because
-// it isn't key. `ApprovalBannerView`'s own `RecoveryBarBackgroundModifier`
-// stays -- on this glass path it only picks text/button colors, since the
-// actual translucent surface is this sheet's.
+// Glass: the panel uses the same untinted regular glass as macOS
+// notification banners, independent of the Calyx theme -- a `Color.clear`
+// `.glassEffect(.regular, in: .rect(cornerRadius: 20))` behind the
+// content, `.ignoresSafeArea()` and `.allowsHitTesting(false)`. The
+// `reduceTransparency` path fills the same rounded rect with
+// `.windowBackgroundColor` instead. No theme-color tint, no atmosphere
+// layer, no inactive-window dimming: unlike the main window, this panel
+// never reads the Calyx theme at all.
+//
+// Rounded outline ownership: `ApprovalPanelWindow` stays `.titled`
+// because `.glassEffect` needs a titled window to render at all (see
+// `QuickTerminalWindow` for the sibling panel this mirrors), but its
+// background is `.clear` with `isOpaque = false`, so the titled frame's
+// own corner mask -- smaller than this view's 20pt radius -- clips
+// nothing this view draws. The `.rect(cornerRadius: 20)` shape below is
+// therefore the panel's entire visible outline, the window shadow
+// (`hasShadow = true`) follows that same shape, and the
+// `reduceTransparency` fill reuses the identical 20pt shape so both
+// paths show the same corners.
 
 import SwiftUI
 import AppKit
@@ -44,18 +52,6 @@ struct ApprovalPanelContentView: View {
     let onRequestChange: () -> Void
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @AppStorage("terminalGlassOpacity") private var glassOpacity = 0.7
-    @AppStorage("themeColorPreset") private var themePreset = "original"
-    @AppStorage("themeColorCustomHex") private var customHex = "#050D1C"
-    @State private var ghosttyProvider = GhosttyThemeProvider.shared
-
-    private var themeColor: NSColor {
-        ThemeColorPreset.resolve(
-            preset: themePreset,
-            customHex: customHex,
-            ghosttyBackground: ghosttyProvider.ghosttyBackground
-        )
-    }
 
     var body: some View {
         Group {
@@ -104,15 +100,13 @@ struct ApprovalPanelContentView: View {
         .background {
             Group {
                 if reduceTransparency {
-                    Color(nsColor: .windowBackgroundColor)
+                    RoundedRectangle(cornerRadius: 20).fill(Color(nsColor: .windowBackgroundColor))
                 } else {
-                    Color.clear
-                        .glassEffect(.clear.tint(Color(nsColor: GlassTheme.chromeTint(for: themeColor, glassOpacity: glassOpacity))), in: .rect)
+                    Color.clear.glassEffect(.regular, in: .rect(cornerRadius: 20))
                 }
             }
             .ignoresSafeArea()
             .allowsHitTesting(false)
         }
-        .modifier(GlassAtmosphereBackground(themeColor: themeColor, glassOpacity: glassOpacity, reduceTransparency: reduceTransparency, specularStroke: false))
     }
 }

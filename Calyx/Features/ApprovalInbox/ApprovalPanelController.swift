@@ -132,17 +132,23 @@ final class ApprovalPanelController: NSObject {
     /// run.
     ///
     /// Writes `layout.hostWindowController` from `hostWindowController()`
-    /// unconditionally, before either branch below -- see
+    /// before either branch below, but only when it actually names a
+    /// different controller (identity, since `hostWindowController()` is
+    /// resolved fresh on every call) -- `@Observable` invalidates this
+    /// property's readers on assignment regardless of whether the new
+    /// value differs, and `ApprovalPanelContentView`'s content body is one
+    /// such reader, so a same-controller re-render (e.g. a content-height
+    /// re-measure) must not reassign it. See
     /// `ApprovalPanelLayout.hostWindowController`'s own doc comment.
     ///
     /// Before applying either change, hands key status back via
     /// `handOffKeyIfNeeded()` if the panel currently holds it AND the
     /// change is either an order-out or a genuine request change
     /// (`request.id != lastRenderedRequestID`) -- key status the panel
-    /// took (e.g. the question form's free-text field, or
-    /// `NSHostingView.needsPanelToBecomeKey` answering true for an
-    /// Allow/Deny click) must return to the pane it came from, not linger
-    /// on a panel about to disappear or show unrelated content. An
+    /// took (only the question form's free-text field takes it; Allow/
+    /// Deny/a choice row, the Options menu, and the payload body's
+    /// tap-to-expand never do) must return to the pane it came from, not
+    /// linger on a panel about to disappear or show unrelated content. An
     /// idempotent re-render of the SAME still-displayed request
     /// (`applyContentHeight(_:)`'s own re-measure) never hands key back,
     /// since nothing the user is looking at is changing. Every removal
@@ -155,7 +161,10 @@ final class ApprovalPanelController: NSObject {
     /// one path.
     func render() {
         guard !isTornDown else { return }
-        layout.hostWindowController = hostWindowController()
+        let designatedHost = hostWindowController()
+        if layout.hostWindowController !== designatedHost {
+            layout.hostWindowController = designatedHost
+        }
 
         guard let request = model.current else {
             if let panel {
@@ -266,19 +275,29 @@ final class ApprovalPanelController: NSObject {
     /// (`ApprovalPanelArranger.panelWidth(for:visibleFrame:)` --
     /// `fixedWidth` or `wideWidth`, whichever `model.current` wants, see
     /// `ApprovalRequest.prefersWideApprovalPanel`), so this measures
-    /// height only, at that width. `layout` is `@Observable`, but
-    /// `NSHostingController.sizeThatFits(in:)` does not itself pump the
-    /// Observation update from a property mutation into a fresh layout
-    /// pass -- forcing `needsLayout`/`layoutSubtreeIfNeeded()` after the
-    /// mutation, before `sizeThatFits`, is what makes that call see this
-    /// measurement's own latest `layout.width`/`layout.heightCap` rather
-    /// than whatever was current as of some earlier call.
+    /// height only, at that width. `layout.heightCap`/`layout.width` are
+    /// only reassigned when the freshly computed value actually differs
+    /// from what is already there -- `@Observable` invalidates every
+    /// reader on assignment regardless of whether the value changed, and
+    /// `ApprovalPanelContentView`'s content body is one such reader, so a
+    /// same-input re-render must not invalidate it. `layout` is
+    /// `@Observable`, but `NSHostingController.sizeThatFits(in:)` does not
+    /// itself pump the Observation update from a property mutation into a
+    /// fresh layout pass -- forcing `needsLayout`/`layoutSubtreeIfNeeded()`
+    /// after the mutation, before `sizeThatFits`, is what makes that call
+    /// see this measurement's own latest `layout.width`/`layout.heightCap`
+    /// rather than whatever was current as of some earlier call, whether
+    /// or not either was actually reassigned just now.
     private func measureFrame(hostingController: NSHostingController<ApprovalPanelContentView>) -> NSRect {
         let frame = visibleFrame()
         let heightCap = ApprovalPanelArranger.heightCap(visibleFrame: frame)
         let width = ApprovalPanelArranger.panelWidth(for: model.current, visibleFrame: frame)
-        layout.heightCap = heightCap
-        layout.width = width
+        if layout.heightCap != heightCap {
+            layout.heightCap = heightCap
+        }
+        if layout.width != width {
+            layout.width = width
+        }
 
         hostingController.view.needsLayout = true
         hostingController.view.layoutSubtreeIfNeeded()

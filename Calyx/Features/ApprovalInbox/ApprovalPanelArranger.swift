@@ -26,7 +26,7 @@ nonisolated enum ApprovalPanelArranger {
     static let margin: CGFloat = 12
     /// The panel's own default fixed width, mirroring a macOS
     /// notification banner's shell.
-    static let fixedWidth: CGFloat = 380
+    static let fixedWidth: CGFloat = 350
     /// The panel's width when the displayed request wants inline option
     /// rows (`ApprovalRequest.prefersWideApprovalPanel`) -- wide enough
     /// for the option list and its markdown preview box to each keep a

@@ -18,7 +18,7 @@
 //  - Submitting a request then calling render() lazily creates the
 //    panel, records exactly one `.orderFront(frame)`, and that frame's
 //    top-right corner sits `margin` inside the injected visibleFrame,
-//    with a width equal to fixedWidth (380pt) on a screen wide enough.
+//    with a width equal to fixedWidth (350pt) on a screen wide enough.
 //  - A second render() with the SAME still-pending request is
 //    idempotent: records another `.orderFront` with an identical frame,
 //    but creates no second panel instance.
@@ -27,7 +27,7 @@
 //  - tearDown() then render() records nothing further, `isTornDown`
 //    becomes true, and the panel is no longer visible.
 //  - Width is exercised end-to-end through render(): the panel is
-//    ALWAYS exactly `ApprovalPanelArranger.fixedWidth` (380pt),
+//    ALWAYS exactly `ApprovalPanelArranger.fixedWidth` (350pt),
 //    regardless of payload length -- a single-pass measurement at a
 //    fixed width, never content-dependent; a visible frame narrower
 //    than fixedWidth clamps down to the available cap instead.
@@ -106,7 +106,7 @@ final class ApprovalPanelControllerTests: XCTestCase {
                        "the panel's right edge must sit `margin` (12pt) inside the visible frame's right edge")
         XCTAssertEqual(frame.maxY, fixedVisibleFrame.maxY - 12, accuracy: 0.5,
                        "the panel's top edge must sit `margin` (12pt) inside the visible frame's top edge")
-        XCTAssertEqual(frame.width, 380, accuracy: 0.5, "the panel's width must always be the fixed 380pt width on a screen wide enough to fit it")
+        XCTAssertEqual(frame.width, 350, accuracy: 0.5, "the panel's width must always be the fixed 350pt width on a screen wide enough to fit it")
         XCTAssertGreaterThan(frame.height, 0, "the panel must always have a positive height")
 
         // Clean up so this store doesn't leak a pending request.
@@ -187,7 +187,7 @@ final class ApprovalPanelControllerTests: XCTestCase {
 
     // MARK: - Width is fixed, end-to-end
 
-    /// A payload far too long to fit at 380pt must NOT grow the panel --
+    /// A payload far too long to fit at 350pt must NOT grow the panel --
     /// the notification-style panel is a fixed width, and a long payload
     /// scrolls/wraps within it instead.
     func test_render_veryLongPayload_widthStaysFixed() {
@@ -204,14 +204,14 @@ final class ApprovalPanelControllerTests: XCTestCase {
             XCTFail("expected an .orderFront intent")
             return
         }
-        XCTAssertEqual(frame.width, 380, accuracy: 0.5,
-                       "a very long payload must never grow the panel past its fixed 380pt width")
+        XCTAssertEqual(frame.width, 350, accuracy: 0.5,
+                       "a very long payload must never grow the panel past its fixed 350pt width")
 
         store.decide(id: request.id, .denied(.userRejected))
     }
 
     /// A short payload's own natural content width is irrelevant now --
-    /// the panel is always exactly `fixedWidth` (380pt), never
+    /// the panel is always exactly `fixedWidth` (350pt), never
     /// content-dependent.
     func test_render_veryShortPayload_widthStaysFixed() {
         let store = ApprovalInboxStore()
@@ -227,14 +227,14 @@ final class ApprovalPanelControllerTests: XCTestCase {
             XCTFail("expected an .orderFront intent")
             return
         }
-        XCTAssertEqual(frame.width, 380, accuracy: 0.5,
-                       "a tiny payload must still render at the fixed 380pt width, never shrunk to its own content")
+        XCTAssertEqual(frame.width, 350, accuracy: 0.5,
+                       "a tiny payload must still render at the fixed 350pt width, never shrunk to its own content")
 
         store.decide(id: request.id, .denied(.userRejected))
     }
 
     /// The available cap itself (visibleFrame.width - 2*margin = 300 -
-    /// 24 = 276) falls BELOW `fixedWidth` (380) here -- proves the cap
+    /// 24 = 276) falls BELOW `fixedWidth` (350) here -- proves the cap
     /// wins over the fixed width end-to-end through `render()`,
     /// mirroring `ApprovalPanelArrangerTests.test_panelWidth_nilRequest_narrowScreen_clampsToAvailableCap`'s
     /// own pure-geometry pin.
@@ -259,7 +259,7 @@ final class ApprovalPanelControllerTests: XCTestCase {
             return
         }
         XCTAssertEqual(frame.width, 276, accuracy: 0.5,
-                       "with a 300pt-wide visible frame, the cap (300 - 2*12 = 276) must win over the 380pt fixedWidth")
+                       "with a 300pt-wide visible frame, the cap (300 - 2*12 = 276) must win over the 350pt fixedWidth")
 
         store.decide(id: request.id, .denied(.userRejected))
     }

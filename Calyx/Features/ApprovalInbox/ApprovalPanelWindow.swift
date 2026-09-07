@@ -8,10 +8,10 @@
 // Deny must work without bringing Calyx to the front.
 //
 // `becomesKeyOnlyIfNeeded = true`: ordering the panel front or clicking
-// through it (Allow/Deny/a choice row) never itself takes key status;
-// only a view that requests key status (the question form's free-text
-// field, or `NSHostingView` when it answers `needsPanelToBecomeKey`
-// true) can. Any key status the panel does take is handed back by
+// through it (Allow/Deny/a choice row, the payload body's tap-to-expand,
+// or opening the Options menu) never itself takes key status; only a
+// text field (the question form's free-text field) requesting key
+// status can. Any key status the panel does take is handed back by
 // `ApprovalPanelController.render()`, either when the displayed request
 // changes or when the panel orders out, to the window owning the
 // displayed request's own target pane, falling back to the current
@@ -35,6 +35,7 @@ final class ApprovalPanelWindow: NSPanel {
     convenience init() {
         self.init(
             contentRect: NSRect(x: 0, y: 0, width: 360, height: 100),
+            // `.titled` stays for glass rendering; the content sheet rounds the visible corners.
             styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel],
             backing: .buffered,
             defer: false

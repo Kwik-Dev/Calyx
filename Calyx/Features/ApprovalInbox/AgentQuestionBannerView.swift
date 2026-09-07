@@ -9,10 +9,11 @@
 // else is this view's own.
 //
 // This view owns `@State private var form: AgentQuestionFormState` and
-// `@FocusState`, so unlike `AgentToolApprovalView` (a plain, stateless
-// struct `ApprovalBannerView` can read computed properties off directly)
-// this view CANNOT expose `primaryButton`/`menuItems` as computed
-// properties for `ApprovalBannerView` to read: accessing a `@State`
+// `@FocusState`, so unlike `.agentHook`'s primary button/menu items
+// (`ApprovalBannerView.agentHookPrimaryButton`/`agentHookMenuItems(
+// toolName:offers:)`, plain computed properties/functions `ApprovalBannerView`
+// itself owns) this view CANNOT expose `primaryButton`/`menuItems` as
+// computed properties for `ApprovalBannerView` to read: accessing a `@State`
 // property outside of SwiftUI's own render pass for the view that owns
 // it reads back only that property's `State(initialValue:)`, never the
 // persisted value from a prior interaction -- concretely, calling
@@ -146,7 +147,7 @@ struct AgentQuestionBannerView: View {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .center, spacing: 10) {
             leftColumn
             ApprovalActionColumn(primary: primaryButton) { menuItems }
         }
@@ -178,7 +179,7 @@ struct AgentQuestionBannerView: View {
 
             if let questionHeader = form.currentQuestion.header, !questionHeader.isEmpty {
                 Text(ControlCharacterDisplay.render(questionHeader))
-                    .font(.caption)
+                    .font(.system(size: 11))
                     .fontWeight(.semibold)
                     .foregroundStyle(.secondary)
             }
@@ -193,7 +194,7 @@ struct AgentQuestionBannerView: View {
 
             let rendered = ControlCharacterDisplay.render(form.currentQuestion.text)
             Text(rendered)
-                .font(.callout)
+                .font(.system(size: 12))
                 .lineLimit(2)
                 .accessibilityIdentifier(AccessibilityID.ApprovalBanner.questionText)
                 .accessibilityLabel(Text(rendered))
@@ -510,7 +511,7 @@ struct AgentQuestionBannerView: View {
         return AnyView(
             Button(form.isLastQuestion ? "Answer" : "Next") { confirm() }
                 .disabled(!form.canConfirm)
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.bordered)
                 .accessibilityIdentifier(AccessibilityID.ApprovalBanner.answerButton)
         )
     }

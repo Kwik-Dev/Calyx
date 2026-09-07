@@ -385,8 +385,9 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
     /// frame. The banner's `.accessibilityElement(children: .contain)`
     /// container reports only the union of its accessible descendants,
     /// which excludes `ApprovalBannerView`'s own padding, so its frame
-    /// sits 16pt inside the panel's true edges; the panel window's own
-    /// frame is measured instead.
+    /// sits 12pt inside the panel's left and right edges and 10pt inside
+    /// its top and bottom edges; the panel window's own frame is measured
+    /// instead.
     func test_approvalBanner_isPositionedAtVisibleFrameTopRightCorner() throws {
         var counter = 0
         enableAIAgentIPCViaCommandPalette()
@@ -409,7 +410,7 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
             .firstMatch
         XCTAssertTrue(waitFor(panelWindow, timeout: 5), "the floating approval panel window never appeared")
         let bannerFrame = panelWindow.frame
-        XCTAssertEqual(bannerFrame.width, 380, accuracy: 1, "the floating approval panel's own window must be the fixed 380pt panel width")
+        XCTAssertEqual(bannerFrame.width, 350, accuracy: 1, "the floating approval panel's own window must be the fixed 350pt panel width")
 
         let windowFrame = app.windows.firstMatch.frame
         let screen = try XCTUnwrap(
@@ -418,13 +419,14 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
         )
 
         // NSScreen.visibleFrame is bottom-left-origin AppKit space;
-        // XCUIElement.frame is top-left-origin. Flipped using THIS
-        // screen's own frame.maxY, which coincides with the correct
-        // global flip axis exactly when this is the primary (menu-bar)
-        // screen -- true for every single-display CI/dev runner this
-        // suite is expected to run on.
+        // XCUIElement.frame is top-left-origin. XCUIElement frames are
+        // flipped against the PRIMARY screen's frame.maxY (the menu-bar
+        // screen), not the resolved screen's own frame.maxY -- the same
+        // reference screenContaining() uses to convert screen frames into
+        // top-left-origin global coordinates.
+        let primaryHeight = try XCTUnwrap(NSScreen.screens.first, "no primary NSScreen").frame.maxY
         let visibleFrame = screen.visibleFrame
-        let visibleTop = screen.frame.maxY - visibleFrame.maxY
+        let visibleTop = primaryHeight - visibleFrame.maxY
         let visibleRight = visibleFrame.maxX
 
         XCTAssertEqual(bannerFrame.maxX, visibleRight - 12, accuracy: 2,
@@ -553,7 +555,7 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
             .containing(.any, identifier: Self.approvalBannerContainerID)
             .firstMatch
         XCTAssertTrue(waitFor(panelWindow, timeout: 5), "the floating approval panel window never appeared")
-        XCTAssertEqual(panelWindow.frame.width, 380, accuracy: 1, "the panel window must be the fixed 380pt panel width")
+        XCTAssertEqual(panelWindow.frame.width, 350, accuracy: 1, "the panel window must be the fixed 350pt panel width")
 
         payloadText.click()
 

@@ -69,8 +69,8 @@ struct AgentHookToolCall: Sendable {
 
     /// This call's own top-level `permission_suggestions` array (a
     /// sibling of `tool_input` in the hook payload, never a key inside
-    /// it), decoded into the choices `AgentToolApprovalView` renders
-    /// alongside the plain "Yes"/"No" -- always empty when
+    /// it), decoded into the choices `ApprovalBannerView.agentHookMenuItems(
+    /// toolName:offers:)` renders alongside the plain "Yes"/"No" -- always empty when
     /// `acceptsPermissionUpdates(kind:)` is false, regardless of whether
     /// `permission_suggestions` is present. See `decodePermissionOffers
     /// (from:acceptsPermissionUpdates:)` for the full leniency contract.

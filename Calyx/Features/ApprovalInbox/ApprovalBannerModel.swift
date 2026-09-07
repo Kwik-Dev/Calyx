@@ -290,8 +290,9 @@ final class ApprovalBannerModel {
         store.decide(id: id, .denied(.userRejected))
     }
 
-    /// `AgentToolApprovalView`'s per-`AgentHookOffers.permissionUpdates`
-    /// choice row: accepts `offer`, the CLI's own always-allow choice
+    /// `ApprovalBannerView.agentHookMenuItems(toolName:offers:)`'s
+    /// per-`AgentHookOffers.permissionUpdates` choice row: accepts
+    /// `offer`, the CLI's own always-allow choice
     /// (`.allowedWithPermissions(offer)`, echoed verbatim). A no-op for
     /// an `.agentQuestion`/`.mcpTool`-sourced `id` -- only an
     /// `.agentHook` request ever carries `AgentHookOffers.permissionUpdates`

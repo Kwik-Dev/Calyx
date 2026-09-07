@@ -132,13 +132,19 @@ enum AccessibilityID {
     /// Cockpit approval banner, shown in a floating panel
     /// (ApprovalPanelWindow) at the screen's top-right corner when
     /// ApprovalBannerModel.current is non-nil (see ApprovalBannerModel,
-    /// Calyx/Features/ApprovalInbox/). A notification-style layout: a
-    /// header row (tool/target label, plus the queue navigator while
-    /// more than one request is queued), a one-to-two-line body
-    /// (`payload`, tap-to-expand into `payloadExpanded`), and a trailing
-    /// column holding one source-specific primary action button plus an
+    /// Calyx/Features/ApprovalInbox/). A macOS-notification-style
+    /// layout, at a fixed 350pt (640pt for a request wanting inline
+    /// option rows): the app icon on the left, a bold single-line,
+    /// middle-truncated title (tool/target label, plus the queue
+    /// navigator while more than one request is queued), a one-to-two-
+    /// line secondary body (`payload`, tap-to-expand into
+    /// `payloadExpanded`), and a vertically centered trailing column
+    /// holding one source-specific primary action button plus an
     /// `optionsMenu` pull-down that lists every choice the CLI offers
-    /// beyond that primary action (ApprovalBannerView).
+    /// beyond that primary action (ApprovalBannerView). The panel itself
+    /// paints with the same untinted regular glass as a native
+    /// notification, independent of the Calyx theme
+    /// (ApprovalPanelContentView).
     ///
     /// `payload` carries the FULL rendered text as its accessibility
     /// label (queried while visually truncated to two lines); clicking
