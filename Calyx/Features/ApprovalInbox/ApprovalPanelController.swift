@@ -61,6 +61,16 @@ final class ApprovalPanelController: NSObject {
     /// property's doc comment. `{ nil }` by default, same rationale as
     /// `handOffKey`.
     private let hostWindowController: () -> CalyxWindowController?
+    /// `ApprovalPanelContentView`'s own source for a surface-targeted
+    /// request's target label (`ApprovalBannerView.targetLabel`) -- the
+    /// owning tab's `displayTitle`, or nil if no open window owns the
+    /// surface. `AppDelegate` supplies `{ [weak self] id in self?.
+    /// windowController(owningSurface: id)?.tabDisplayTitle(owningSurface:
+    /// id) }`. `{ _ in nil }` by default, same rationale as `handOffKey`/
+    /// `hostWindowController` above -- every existing test-only
+    /// construction (none of which cares about the target label) keeps
+    /// compiling unchanged.
+    private let targetTabTitle: (UUID) -> String?
     private let layout = ApprovalPanelLayout()
 
     private(set) var panel: ApprovalPanelWindow?
@@ -92,19 +102,41 @@ final class ApprovalPanelController: NSObject {
     /// window. `nil` (the default) leaves production behavior
     /// unchanged. DO NOT use from production code.
     var _orderHookForTesting: ((OrderIntent) -> Void)?
+
+    /// Test seam: stands in for `panel?.isKeyWindow` wherever
+    /// `handOffKeyIfNeeded()` reads it, so `handOffKey(_:)` invocation can
+    /// be exercised in the unit-test host without ever making a real
+    /// window key (an XCTest host cannot reliably do that -- see this
+    /// file's own `_orderHookForTesting` doc comment for the identical
+    /// constraint on showing a real window at all). `nil` (the default)
+    /// falls through to the real `panel?.isKeyWindow` read, leaving
+    /// production behavior unchanged. DO NOT use from production code.
+    var _panelIsKeyForTesting: Bool?
     #endif
+
+    /// `panel?.isKeyWindow`, or `_panelIsKeyForTesting` when that test
+    /// seam is set (`#if DEBUG` only) -- the single read `handOffKeyIfNeeded()`
+    /// uses to decide whether the panel currently holds key.
+    private var panelIsKey: Bool {
+        #if DEBUG
+        if let overridden = _panelIsKeyForTesting { return overridden }
+        #endif
+        return panel?.isKeyWindow == true
+    }
 
     init(
         model: ApprovalBannerModel,
         hostWindow: @escaping () -> NSWindow?,
         visibleFrame: (() -> NSRect)? = nil,
         handOffKey: @escaping (UUID?) -> Void = { _ in },
-        hostWindowController: @escaping () -> CalyxWindowController? = { nil }
+        hostWindowController: @escaping () -> CalyxWindowController? = { nil },
+        targetTabTitle: @escaping (UUID) -> String? = { _ in nil }
     ) {
         self.model = model
         self.hostWindow = hostWindow
         self.handOffKey = handOffKey
         self.hostWindowController = hostWindowController
+        self.targetTabTitle = targetTabTitle
         // Same NSScreen.main?.visibleFrame fallback shape as
         // AppDelegate's own screen-frame lookups: a real screen may be
         // unavailable, and `.zero` would collapse every subsequent
@@ -157,8 +189,9 @@ final class ApprovalPanelController: NSObject {
     /// `expireForSurface`, and paging (`selectNext()`/`selectPrevious()`
     /// via `handleRequestChange()`) all clear or change `model.current`,
     /// which reaches here the same way a decision does -- so the pane
-    /// that asked always gets key and terminal focus back through this
-    /// one path.
+    /// that asked always gets key status back through this one path
+    /// (`handOffKeyIfNeeded()`'s own doc comment covers how this relates
+    /// to `ApprovalBannerModel`'s own, separate first-responder restore).
     func render() {
         guard !isTornDown else { return }
         let designatedHost = hostWindowController()
@@ -188,7 +221,7 @@ final class ApprovalPanelController: NSObject {
         performOrderFront(frame: frame, panel: thePanel)
     }
 
-    /// Hands key status from the panel to whichever pane asked, only if
+    /// Hands KEY status from the panel to whichever pane asked, only if
     /// the panel actually holds key right now -- called BEFORE the
     /// order-out/re-render that follows, so `panel?.isKeyWindow` still
     /// reads true for the request about to be replaced or hidden.
@@ -202,15 +235,24 @@ final class ApprovalPanelController: NSObject {
     /// that method's own guard (visible, not miniaturized, on the active
     /// Space) is what actually decides whether `makeKey()` runs, mirroring
     /// `CalyxWindowController.restoreTerminalFocusAfterApproval(reclaimKey:)`'s
-    /// own guard. The question view's later
-    /// `ApprovalBannerModel.restoreTerminalFocusAfterInput(targetSurfaceID:)`
-    /// (fired when a text field is torn down without a decision) reaches
-    /// the SAME `restoreTerminalFocusAfterApproval(targetSurfaceID:)`
-    /// method, which by then finds `reclaimKey == false` (the panel no
-    /// longer holds key, having never been handed it back by this path)
-    /// and only restores first responder.
+    /// own guard.
+    ///
+    /// This is a DIFFERENT question from `ApprovalBannerModel
+    /// .resolveQuestion(id:_:)`'s own `restoreTerminalFocus(_:)` call (and
+    /// `dismiss(id:)`'s matching call for `.mcpTool`/`.agentHook`): this
+    /// method only runs while the panel holds key, and answers "who
+    /// should be KEY window now" -- `resolveQuestion`/`dismiss` restore
+    /// FIRST RESPONDER inside the owning window regardless of whether the
+    /// panel ever held key (an Options-menu answer, "Chat about this", or
+    /// a × dismiss never take key at all, since none of those click
+    /// targets is the question's free-text field). Both reach the same
+    /// `restoreTerminalFocusAfterApproval(targetSurfaceID:)`, and both run
+    /// synchronously on the main actor with no `await` between them, so
+    /// there is no race: whichever runs second finds `CalyxWindowController
+    /// .restoreTerminalFocusAfterApproval(reclaimKey:)`'s own
+    /// first-responder restore already idempotent.
     private func handOffKeyIfNeeded() {
-        guard panel?.isKeyWindow == true else { return }
+        guard panelIsKey else { return }
         handOffKey(lastRenderedTargetSurfaceID)
     }
 
@@ -252,6 +294,7 @@ final class ApprovalPanelController: NSObject {
         let content = ApprovalPanelContentView(
             model: model,
             layout: layout,
+            targetTabTitle: targetTabTitle,
             onContentSizeChange: { [weak self] size in self?.applyContentHeight(size) },
             onRequestChange: { [weak self] in self?.handleRequestChange() }
         )

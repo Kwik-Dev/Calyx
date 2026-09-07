@@ -505,6 +505,11 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// `restoreFocus()`'s own `attemptFocusRestore` guards on
     /// `window?.isKeyWindow`, so when `reclaimKey` is false and this
     /// window was never key to begin with, it is simply a no-op.
+    ///
+    /// When this window cannot actually take key (minimized, off-Space,
+    /// or otherwise not showable), this method does nothing further: no
+    /// other window is made key on this window's behalf. AppKit's own
+    /// key-window restoration decides once the panel orders out.
     func restoreTerminalFocusAfterApproval(reclaimKey: Bool) {
         #if DEBUG
         if let hook = _restoreTerminalFocusAfterApprovalHookForTesting {
@@ -518,6 +523,14 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         if case .terminal = activeTab?.content {
             restoreFocus()
         }
+    }
+
+    /// The tab (in any group) whose `SurfaceRegistry` owns `surfaceID`'s
+    /// own `displayTitle`, or nil if no tab in this window does -- backs
+    /// the app-wide approval panel's header for a surface-targeted
+    /// request (`ApprovalBannerView.targetLabel`).
+    func tabDisplayTitle(owningSurface surfaceID: UUID) -> String? {
+        windowSession.groups.tabAndGroup(owningSurface: surfaceID)?.tab.displayTitle
     }
 
     /// Gate shared by the `session.detach`/`session.kill` command

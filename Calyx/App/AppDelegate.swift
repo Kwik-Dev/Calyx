@@ -20,16 +20,40 @@ class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver
     /// resolution contract.
     let currentWindowTracker = CurrentWindowTracker()
 
-    /// The window the user is working in right now: a real key
-    /// `CalyxWindowController` if one exists, else
-    /// `currentWindowTracker`'s own resolution (the last one that was
-    /// key, else the first open window, nil with zero open windows).
-    /// Every consumer that needs a "which window" answer with no more
-    /// specific signal -- a target-pane-less approval request, a new-
-    /// tab/attach flow with no explicit source window -- resolves
+    /// The window the user is working in right now, resolved in three
+    /// tiers: (1) a real key `CalyxWindowController`, if one exists; (2)
+    /// else the front-most `CalyxWindowController` among `NSApp.
+    /// orderedWindows` that could actually take key right now -- that
+    /// array is front-to-back but includes never-shown, miniaturized, and
+    /// off-Space windows, so tier 2 filters to `window.isVisible &&
+    /// window.isOnActiveSpace` before taking the first member of
+    /// `windowControllers` found (a window on another Space cannot take
+    /// key without a Space switch, so it is not what the user is looking
+    /// at), giving the most-recently-used Calyx window on the current
+    /// Space even while none is key (e.g. Calyx is inactive, or some
+    /// other app's window is key); (3) else `currentWindowTracker.
+    /// lastKeyWindowController` while it's still a member of
+    /// `windowControllers`, else `windowControllers.first` -- the fallback
+    /// for when every Calyx window is minimized, off-Space, or not yet
+    /// shown (tier 2 finds nothing), nil with zero open windows. Tiers 1
+    /// and 2 are resolved here, against live `NSWindow` state; the actual
+    /// three-tier decision is delegated to `CurrentWindowResolver.resolve(
+    /// key:frontMostVisible:lastKey:ordered:)`, the pure form of this same
+    /// rule. Every consumer that needs a "which window" answer with no
+    /// more specific signal -- a target-pane-less approval request, a
+    /// new-tab/attach flow with no explicit source window -- resolves
     /// through this.
     var currentWindowController: CalyxWindowController? {
-        windowControllers.first { $0.window?.isKeyWindow == true } ?? currentWindowTracker.resolve(in: windowControllers)
+        let key = windowControllers.first(where: { $0.window?.isKeyWindow == true })
+        let frontMostVisible = NSApp.orderedWindows.lazy.filter({ $0.isVisible && $0.isOnActiveSpace }).compactMap({ window in
+            self.windowControllers.first { $0.window === window }
+        }).first
+        return CurrentWindowResolver.resolve(
+            key: key,
+            frontMostVisible: frontMostVisible,
+            lastKey: currentWindowTracker.lastKeyWindowController,
+            ordered: windowControllers
+        )
     }
 
     /// The window controller whose `windowSession.groups` registry
@@ -49,10 +73,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver
     /// `approvalPanelController` getter), so a request resolving before
     /// any panel was ever shown reads as "the panel does not hold key"
     /// rather than creating one just to ask it.
+    ///
+    /// When the owning window cannot actually take key (minimized,
+    /// off-Space, or otherwise not showable), Calyx does nothing further:
+    /// the panel orders out and AppKit's own key-window restoration
+    /// decides, so Calyx never moves an unrelated window's first
+    /// responder into its terminal.
     func restoreTerminalFocusAfterApproval(targetSurfaceID: UUID?) {
         let reclaimKey = _approvalPanelController?.panel?.isKeyWindow == true
-        (targetSurfaceID.flatMap(windowController(owningSurface:)) ?? currentWindowController)?
-            .restoreTerminalFocusAfterApproval(reclaimKey: reclaimKey)
+        let owner = targetSurfaceID.flatMap(windowController(owningSurface:)) ?? currentWindowController
+        guard let owner else { return }
+        owner.restoreTerminalFocusAfterApproval(reclaimKey: reclaimKey)
     }
 
     /// The single, app-wide Cockpit approval queue -- one instance for
@@ -91,7 +122,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, HerdrSessionPresenceObserver
             handOffKey: { [weak self] targetSurfaceID in
                 self?.restoreTerminalFocusAfterApproval(targetSurfaceID: targetSurfaceID)
             },
-            hostWindowController: { [weak self] in self?.currentWindowController }
+            hostWindowController: { [weak self] in self?.currentWindowController },
+            targetTabTitle: { [weak self] id in self?.windowController(owningSurface: id)?.tabDisplayTitle(owningSurface: id) }
         )
         _approvalPanelController = controller
         return controller

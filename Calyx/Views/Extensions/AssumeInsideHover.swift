@@ -26,9 +26,16 @@ struct AssumeInsideHover: NSViewRepresentable {
         override func updateTrackingAreas() {
             super.updateTrackingAreas()
             for area in trackingAreas { removeTrackingArea(area) }
+            // A non-activating panel (the floating approval panel) never
+            // becomes key, so `.activeInKeyWindow` would never fire there;
+            // every other window uses `.activeInKeyWindow`, since a
+            // sidebar/tab-bar hover state is meaningless for a background
+            // window.
+            let activeOptions: NSTrackingArea.Options =
+                window?.styleMask.contains(.nonactivatingPanel) == true ? .activeAlways : .activeInKeyWindow
             let area = NSTrackingArea(
                 rect: bounds,
-                options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+                options: [.mouseEnteredAndExited, activeOptions, .inVisibleRect],
                 owner: self
             )
             addTrackingArea(area)

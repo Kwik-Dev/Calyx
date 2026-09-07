@@ -16,8 +16,9 @@ class BrowserTabBroker {
             return nil
         }
         // No tab_id → active browser tab in AppDelegate
-        // .currentWindowController (the key window, else the last one
-        // that was key, else the first open window).
+        // .currentWindowController (the key window, else the front-most
+        // window that is visible and on the active Space, else the last
+        // one that was key, else the first open window).
         return appDelegate.currentWindowController?.activeBrowserControllerForExternal
     }
 

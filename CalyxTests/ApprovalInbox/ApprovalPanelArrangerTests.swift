@@ -19,7 +19,7 @@
 //    origin.
 //  - panelWidth(for:visibleFrame:margin:): the notification-style panel
 //    is one of exactly two fixed widths, never content-dependent -- nil
-//    or a non-wide request reads fixedWidth (350pt), a request whose
+//    or a non-wide request reads fixedWidth (344pt), a request whose
 //    prompt wants inline option rows reads wideWidth (640pt), and either
 //    way min(desiredWidth, visibleFrame.width - 2*margin) so a narrow
 //    screen still clamps down to the available cap.
@@ -85,14 +85,14 @@ final class ApprovalPanelArrangerTests: XCTestCase {
     }
 
     /// On a normal-sized screen a `nil` request (nothing pending) reads
-    /// exactly `fixedWidth` (350pt) -- never content-dependent, and never
+    /// exactly `fixedWidth` (344pt) -- never content-dependent, and never
     /// clamped down, since the available cap (1440 - 24 = 1416) is far
     /// above it.
     func test_panelWidth_nilRequest_normalScreen_isFixedWidth() {
         let width = ApprovalPanelArranger.panelWidth(for: nil, visibleFrame: visibleFrame)
 
-        XCTAssertEqual(width, 350, accuracy: 0.001,
-                       "panelWidth for a nil request must be the fixed 350pt width on a screen wide enough to fit it")
+        XCTAssertEqual(width, 344, accuracy: 0.001,
+                       "panelWidth for a nil request must be the fixed 344pt width on a screen wide enough to fit it")
         XCTAssertEqual(width, ApprovalPanelArranger.fixedWidth, accuracy: 0.001)
     }
 
@@ -126,7 +126,7 @@ final class ApprovalPanelArrangerTests: XCTestCase {
 
         let width = ApprovalPanelArranger.panelWidth(for: nil, visibleFrame: narrowVisibleFrame)
 
-        // cap = 300 - 24 = 276, which is below fixedWidth (350)
+        // cap = 300 - 24 = 276, which is below fixedWidth (344)
         XCTAssertEqual(width, 276, accuracy: 0.001,
                        "when the available cap itself falls below fixedWidth, the cap must win")
     }
@@ -147,7 +147,7 @@ final class ApprovalPanelArrangerTests: XCTestCase {
     func test_panelWidth_customMargin_isRespected() {
         let width = ApprovalPanelArranger.panelWidth(for: nil, visibleFrame: visibleFrame, margin: 600)
 
-        // cap = 1440 - 1200 = 240, below fixedWidth (350)
+        // cap = 1440 - 1200 = 240, below fixedWidth (344)
         XCTAssertEqual(width, 240, accuracy: 0.001)
     }
 
@@ -169,7 +169,7 @@ final class ApprovalPanelArrangerTests: XCTestCase {
 
     func test_constants_matchSpec() {
         XCTAssertEqual(ApprovalPanelArranger.margin, 12, accuracy: 0.001)
-        XCTAssertEqual(ApprovalPanelArranger.fixedWidth, 350, accuracy: 0.001)
+        XCTAssertEqual(ApprovalPanelArranger.fixedWidth, 344, accuracy: 0.001)
         XCTAssertEqual(ApprovalPanelArranger.wideWidth, 640, accuracy: 0.001)
     }
 }

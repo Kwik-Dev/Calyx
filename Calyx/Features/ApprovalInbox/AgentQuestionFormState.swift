@@ -53,7 +53,7 @@ struct AgentQuestionFormState: Equatable {
     private(set) var lastInteractedOptionIndex: Int?
 
     /// The option currently under the pointer -- set/cleared directly by
-    /// the view's own `.onHover` (`var`, not `private(set)`). Highest
+    /// the view's own hover tracking (`var`, not `private(set)`). Highest
     /// priority for `previewText`.
     var hoveredOptionIndex: Int?
 

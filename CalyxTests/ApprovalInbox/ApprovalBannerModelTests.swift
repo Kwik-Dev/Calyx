@@ -1192,7 +1192,10 @@ final class ApprovalBannerModelTests: XCTestCase {
     // exist, are distinct from each other and from the pre-existing
     // ApprovalBanner identifiers, and follow the same
     // "calyx.approvalBanner.*" prefix convention as
-    // container/allowButton/denyButton/alwaysAllowButton/payload above.
+    // container/allowButton/optionsMenu/payload above. Deny/Always Allow/
+    // Chat about this/Back/Add notes carry no identifier of their own --
+    // they are `optionsMenu` rows looked up by title, not by identifier
+    // (see AccessibilityID.ApprovalBanner's own doc comment).
 
     func test_accessibilityID_approvalBanner_optionsMenuAndPayloadExpandedIdentifiers_existAndAreDistinct() {
         XCTAssertEqual(AccessibilityID.ApprovalBanner.optionsMenu, "calyx.approvalBanner.optionsMenu")
@@ -1211,8 +1214,6 @@ final class ApprovalBannerModelTests: XCTestCase {
         let preExistingIdentifiers = [
             AccessibilityID.ApprovalBanner.container,
             AccessibilityID.ApprovalBanner.allowButton,
-            AccessibilityID.ApprovalBanner.denyButton,
-            AccessibilityID.ApprovalBanner.alwaysAllowButton,
             AccessibilityID.ApprovalBanner.payload,
             AccessibilityID.ApprovalBanner.previousButton,
             AccessibilityID.ApprovalBanner.nextButton,
@@ -1242,8 +1243,7 @@ final class ApprovalBannerModelTests: XCTestCase {
         let preExistingIdentifiers = [
             AccessibilityID.ApprovalBanner.container,
             AccessibilityID.ApprovalBanner.allowButton,
-            AccessibilityID.ApprovalBanner.denyButton,
-            AccessibilityID.ApprovalBanner.alwaysAllowButton,
+            AccessibilityID.ApprovalBanner.optionsMenu,
             AccessibilityID.ApprovalBanner.payload,
         ]
         XCTAssertEqual(Set(newIdentifiers).intersection(preExistingIdentifiers), [],
@@ -1263,8 +1263,7 @@ final class ApprovalBannerModelTests: XCTestCase {
         let preExistingIdentifiers = [
             AccessibilityID.ApprovalBanner.container,
             AccessibilityID.ApprovalBanner.allowButton,
-            AccessibilityID.ApprovalBanner.denyButton,
-            AccessibilityID.ApprovalBanner.alwaysAllowButton,
+            AccessibilityID.ApprovalBanner.optionsMenu,
             AccessibilityID.ApprovalBanner.payload,
             AccessibilityID.ApprovalBanner.previousButton,
             AccessibilityID.ApprovalBanner.nextButton,
@@ -1274,7 +1273,33 @@ final class ApprovalBannerModelTests: XCTestCase {
                        "queueMenu must be distinct from every pre-existing ApprovalBanner identifier")
     }
 
+    // MARK: - AccessibilityID coverage for the dismiss button (spec-level only, same shape as the queue menu coverage above)
+
+    func test_accessibilityID_approvalBanner_dismissButtonIdentifier_existsAndIsDistinct() {
+        XCTAssertEqual(AccessibilityID.ApprovalBanner.dismissButton, "calyx.approvalBanner.dismissButton")
+
+        let preExistingIdentifiers = [
+            AccessibilityID.ApprovalBanner.container,
+            AccessibilityID.ApprovalBanner.allowButton,
+            AccessibilityID.ApprovalBanner.payload,
+            AccessibilityID.ApprovalBanner.previousButton,
+            AccessibilityID.ApprovalBanner.nextButton,
+            AccessibilityID.ApprovalBanner.positionLabel,
+            AccessibilityID.ApprovalBanner.queueMenu,
+            AccessibilityID.ApprovalBanner.optionsMenu,
+            AccessibilityID.ApprovalBanner.payloadExpanded,
+        ]
+        XCTAssertFalse(preExistingIdentifiers.contains(AccessibilityID.ApprovalBanner.dismissButton),
+                       "dismissButton must be distinct from every pre-existing ApprovalBanner identifier")
+    }
+
     // MARK: - AccessibilityID coverage for the AskUserQuestion prompt UI (spec-level only, same shape as the other coverage above)
+    //
+    // Only the identifiers that still exist on `AgentQuestionBannerView`'s
+    // question UI: "Other…"/Add notes/Back/Chat about this render as
+    // `optionsMenu` (or, for a multi-select/preview-carrying question, an
+    // inline list) rows looked up by title, so they carry no identifier of
+    // their own -- see AccessibilityID.ApprovalBanner's own doc comment.
 
     func test_accessibilityID_approvalBanner_questionIdentifiers_existAndAreDistinct() {
         let newIdentifiers = [
@@ -1286,9 +1311,6 @@ final class ApprovalBannerModelTests: XCTestCase {
             AccessibilityID.ApprovalBanner.answerButton,
             AccessibilityID.ApprovalBanner.questionPosition,
             AccessibilityID.ApprovalBanner.previewText,
-            AccessibilityID.ApprovalBanner.chatButton,
-            AccessibilityID.ApprovalBanner.backButton,
-            AccessibilityID.ApprovalBanner.notesButton,
             AccessibilityID.ApprovalBanner.notesTextField,
         ]
 
@@ -1303,8 +1325,7 @@ final class ApprovalBannerModelTests: XCTestCase {
         let preExistingIdentifiers = [
             AccessibilityID.ApprovalBanner.container,
             AccessibilityID.ApprovalBanner.allowButton,
-            AccessibilityID.ApprovalBanner.denyButton,
-            AccessibilityID.ApprovalBanner.alwaysAllowButton,
+            AccessibilityID.ApprovalBanner.optionsMenu,
             AccessibilityID.ApprovalBanner.payload,
             AccessibilityID.ApprovalBanner.previousButton,
             AccessibilityID.ApprovalBanner.nextButton,
@@ -1323,7 +1344,7 @@ final class ApprovalBannerModelTests: XCTestCase {
         AgentQuestionAnswers(prompt: prompt, entries: prompt.questions.map { _ in .init(answer: .selectedOne("zsh"), notes: nil) })
     }
 
-    func test_answer_resolvesAnswered_advancesCursor_invokesRestoreFocusOnce() async throws {
+    func test_answer_resolvesAnswered_advancesCursor_invokesRestoreFocusOnceWithTargetSurfaceID() async throws {
         let store = ApprovalInboxStore()
         let surfaceID = UUID()
         let request = makeAgentQuestionRequest(targetSurfaceID: surfaceID)
@@ -1350,7 +1371,7 @@ final class ApprovalBannerModelTests: XCTestCase {
         XCTAssertTrue(store.pending.isEmpty, "answer(id:answers:) must decide that request, removing it from pending")
         XCTAssertNil(model.current, "the banner must clear once its current request has been decided")
         XCTAssertEqual(spy.targets, [surfaceID],
-                       "answer(id:answers:) must invoke restoreTerminalFocus exactly once, with the decided request's own targetSurfaceID -- read BEFORE store.decide removes the request")
+                       "answer(id:answers:) must invoke restoreTerminalFocus exactly once, with the decided request's own targetSurfaceID, read before store.decide removes it")
 
         let result = await waiter.value
         XCTAssertEqual(result, .answered(answers), "answer(id:answers:) must resolve the awaiter with .answered(answers)")
@@ -1358,7 +1379,7 @@ final class ApprovalBannerModelTests: XCTestCase {
 
     // MARK: - chatAboutQuestion(id:)
 
-    func test_chatAboutQuestion_resolvesInterruptedChatAboutQuestion_advancesCursor_invokesRestoreFocusOnce() async throws {
+    func test_chatAboutQuestion_resolvesInterruptedChatAboutQuestion_advancesCursor_invokesRestoreFocusOnceWithTargetSurfaceID() async throws {
         let store = ApprovalInboxStore()
         let surfaceID = UUID()
         let request = makeAgentQuestionRequest(targetSurfaceID: surfaceID)
@@ -1423,6 +1444,161 @@ final class ApprovalBannerModelTests: XCTestCase {
         model.chatAboutQuestion(id: request.id)
 
         XCTAssertEqual(store.pending.map(\.id), [request.id], "chatAboutQuestion(id:) must never decide a non-.agentQuestion request")
+    }
+
+    // MARK: - dismiss(id:)
+    //
+    // Unlike allow(id:)/deny(id:) (which no-op on an .agentQuestion) and
+    // answer(id:answers:)/chatAboutQuestion(id:) (which no-op on
+    // anything else), dismiss(id:) works for EVERY source -- "Calyx does
+    // not answer this request" applies regardless of what asked.
+
+    /// After a × dismiss, the interaction continues in the pane (the
+    /// CLI's own prompt for `.mcpTool`/`.agentHook`), so `dismiss(id:)`
+    /// must invoke `restoreTerminalFocus` exactly once with the decided
+    /// request's own `targetSurfaceID`.
+    func test_dismiss_mcpToolSource_decidesDismissed_advancesCursor_invokesRestoreFocusOnceWithTargetSurfaceID() async throws {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let request = makeRequest(targetSurfaceID: surfaceID)
+        store.submit(request)
+        let spy = RestoreFocusSpy()
+
+        let model = ApprovalBannerModel(
+            store: store, restoreTerminalFocus: { spy.call($0) }
+        )
+
+        let waiter = Task { @MainActor in
+            await store.awaitDecision(id: request.id, timeoutMs: 5_000)
+        }
+        await yieldToScheduler()
+
+        model.dismiss(id: request.id)
+
+        XCTAssertTrue(store.pending.isEmpty, "dismiss(id:) must decide that request, removing it from pending")
+        XCTAssertNil(model.current, "the banner must clear once its current request has been decided")
+        XCTAssertEqual(spy.targets, [surfaceID],
+                       "dismiss(id:) on an .mcpTool-sourced request must invoke restoreTerminalFocus exactly once with its targetSurfaceID")
+
+        let result = await waiter.value
+        XCTAssertEqual(result, .dismissed, "dismiss(id:) must resolve the in-flight awaitDecision with .dismissed")
+    }
+
+    func test_dismiss_agentHookSource_decidesDismissed_invokesRestoreFocusOnceWithTargetSurfaceID() async throws {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let request = makeAgentHookRequest(targetSurfaceID: surfaceID)
+        store.submit(request)
+        let spy = RestoreFocusSpy()
+
+        let model = ApprovalBannerModel(
+            store: store, restoreTerminalFocus: { spy.call($0) }
+        )
+
+        let waiter = Task { @MainActor in
+            await store.awaitDecision(id: request.id, timeoutMs: 5_000)
+        }
+        await yieldToScheduler()
+
+        model.dismiss(id: request.id)
+
+        XCTAssertTrue(store.pending.isEmpty, "dismiss(id:) must decide an .agentHook-sourced request too")
+        XCTAssertEqual(spy.targets, [surfaceID],
+                       "dismiss(id:) on an .agentHook-sourced request must invoke restoreTerminalFocus exactly once with its targetSurfaceID")
+        let result = await waiter.value
+        XCTAssertEqual(result, .dismissed)
+    }
+
+    /// For an `.agentQuestion`, `dismiss(id:)` goes through
+    /// `resolveQuestion(id:_:)`, which restores terminal focus after
+    /// `store.decide` (see that method's own doc comment) -- the
+    /// injected `restoreTerminalFocus` spy must see exactly one call,
+    /// with the decided request's own `targetSurfaceID`.
+    func test_dismiss_agentQuestionSource_decidesDismissed_invokesRestoreFocusOnceWithTargetSurfaceID() async throws {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let request = makeAgentQuestionRequest(targetSurfaceID: surfaceID)
+        store.submit(request)
+        let spy = RestoreFocusSpy()
+
+        let model = ApprovalBannerModel(
+            store: store, restoreTerminalFocus: { spy.call($0) }
+        )
+
+        let waiter = Task { @MainActor in
+            await store.awaitDecision(id: request.id, timeoutMs: 5_000)
+        }
+        await yieldToScheduler()
+
+        model.dismiss(id: request.id)
+
+        XCTAssertTrue(store.pending.isEmpty, "dismiss(id:) must decide an .agentQuestion-sourced request too")
+        XCTAssertEqual(spy.targets, [surfaceID],
+                       "dismiss(id:) on an .agentQuestion must invoke restoreTerminalFocus exactly once with its targetSurfaceID")
+
+        let result = await waiter.value
+        XCTAssertEqual(result, .dismissed)
+    }
+
+    /// grok/pi requests are never dismissible (`ApprovalRequest.
+    /// isDismissible`, false for either kind: Calyx's gate is their only
+    /// prompt, there is nothing else to hand a dismissed call back to) --
+    /// `dismiss(id:)` must leave the request pending, undecided.
+    func test_dismiss_nonDismissibleAgentHookSource_isNoOp() async throws {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let request = makeAgentHookRequest(targetSurfaceID: surfaceID, kind: AgentEntry.grokKind)
+        store.submit(request)
+
+        let model = ApprovalBannerModel(store: store)
+
+        model.dismiss(id: request.id)
+
+        XCTAssertEqual(store.pending.map(\.id), [request.id],
+                       "dismiss(id:) on a non-dismissible (grok) request must leave it pending, undecided")
+        XCTAssertEqual(model.current?.id, request.id)
+    }
+
+    func test_dismiss_staleID_isNoOp() {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let requestA = makeRequest(targetSurfaceID: surfaceID, payload: "A", createdAt: Date(timeIntervalSince1970: 1_700_000_000))
+        let requestB = makeRequest(targetSurfaceID: surfaceID, payload: "B", createdAt: Date(timeIntervalSince1970: 1_700_000_100))
+        store.submit(requestA)
+        store.submit(requestB)
+
+        let model = ApprovalBannerModel(store: store)
+        store.decide(id: requestA.id, .allowed)
+        XCTAssertEqual(model.current?.id, requestB.id, "precondition: current has advanced to B once A left pending")
+
+        model.dismiss(id: requestA.id)
+
+        XCTAssertEqual(store.pending.map(\.id), [requestB.id],
+                       "a stale dismiss(id: A) must not touch B, which is still pending")
+    }
+
+    /// Mirrors `test_deny_onLastDisplayedRequest_fallsBackToPredecessor`:
+    /// dismissing the currently-displayed (and here, last) request must
+    /// fall back to its predecessor in the visible queue.
+    func test_dismiss_onLastDisplayedRequest_fallsBackToPredecessor() {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        let first = makeRequest(targetSurfaceID: surfaceID, payload: "first", createdAt: Date(timeIntervalSince1970: 1_700_000_000))
+        let second = makeRequest(targetSurfaceID: surfaceID, payload: "second", createdAt: Date(timeIntervalSince1970: 1_700_000_100))
+        let third = makeRequest(targetSurfaceID: surfaceID, payload: "third", createdAt: Date(timeIntervalSince1970: 1_700_000_200))
+        store.submit(first)
+        store.submit(second)
+        store.submit(third)
+
+        let model = ApprovalBannerModel(store: store)
+        model.selectNext()
+        model.selectNext()
+        XCTAssertEqual(model.current?.id, third.id, "precondition: navigated to the last (newest) displayed request")
+
+        model.dismiss(id: third.id)
+
+        XCTAssertEqual(model.current?.id, second.id,
+                       "dismiss(id:) on the last displayed request must fall back to its predecessor in the visible queue, since there is no successor")
     }
 
     // MARK: - allowWithPermissions(id:offer:)

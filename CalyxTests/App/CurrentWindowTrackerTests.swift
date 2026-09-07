@@ -2,32 +2,29 @@
 //  CurrentWindowTrackerTests.swift
 //  CalyxTests
 //
-//  Covers resolution of "the window the user is working in": the key
-//  `CalyxWindowController`, else the last one that was key, else the
-//  first open window. `AppDelegate.currentWindowController` exposes
-//  this app-wide, and every consumer that used to resolve its own
-//  "key, else first" window (the app-wide floating approval panel, a
-//  target-pane-less MCP tool call, a new-tab/attach flow with no
+//  Covers resolution of "the window the user is working in", in three
+//  tiers: the key `CalyxWindowController`, else the front-most window
+//  that is visible and on the active Space, else the last one that was
+//  key, else the first open window. `AppDelegate.currentWindowController`
+//  exposes this app-wide, and every consumer that needs a "which window"
+//  answer with no more specific signal (the app-wide floating approval
+//  panel, a target-pane-less MCP tool call, a new-tab/attach flow with no
 //  explicit source window) resolves through it instead.
 //
 //  Coverage:
-//  - `CurrentWindowResolver.resolve(lastKey:ordered:)`: a pure, identity
-//    (`===`)-based function -- lastKey wins while it is still a member
-//    of `ordered`, else the first element of `ordered`, nil when
-//    `ordered` is empty regardless of `lastKey`.
+//  - `CurrentWindowResolver.resolve(key:frontMostVisible:lastKey:
+//    ordered:)`: a pure, identity (`===`)-based function -- `key` wins if
+//    non-nil, else `frontMostVisible` if non-nil, else `lastKey` while it
+//    is still a member of `ordered`, else the first element of `ordered`,
+//    nil when `ordered` is empty and every tier above is nil.
 //  - `CurrentWindowTracker.didBecomeKey(_:)`: returns true exactly when
 //    the designated host actually CHANGES (first designation, or a
 //    switch to a different controller), false on every repeat call
 //    with the SAME controller already designated.
-//  - `CurrentWindowTracker.resolve(in:)`: delegates to the resolver
-//    above using its own `lastKeyWindowController`, so it returns the last-key
-//    controller while it is still present in the given list, and falls
-//    back to the list's first element once that controller has been
-//    removed.
 //  - `lastKeyWindowController` is declared `weak`: once every strong reference to
 //    the controller it points at is released, the property itself
-//    reads nil, and `resolve(in:)` falls back to `ordered.first` rather
-//    than crash or return a dangling reference.
+//    reads nil, and `CurrentWindowResolver.resolve` falls back to
+//    `ordered.first` rather than crash or return a dangling reference.
 //
 //  Every `CalyxWindowController` fixture below is built via
 //  `GroupControllerFixture.swift`'s shared `GroupFixture.make(tabCount:)`
@@ -45,39 +42,39 @@ import AppKit
 @MainActor
 final class CurrentWindowTrackerTests: XCTestCase {
 
-    // MARK: - CurrentWindowResolver (pure function)
+    // MARK: - CurrentWindowResolver (full three-tier rule)
 
     private final class DummyHost {}
 
-    func test_resolve_nilLastKey_emptyOrdered_returnsNil() {
-        let result = CurrentWindowResolver.resolve(lastKey: nil, ordered: [DummyHost]())
+    func test_resolveThreeTier_nilEverything_emptyOrdered_returnsNil() {
+        let result = CurrentWindowResolver.resolve(key: nil, frontMostVisible: nil, lastKey: nil, ordered: [DummyHost]())
 
         XCTAssertNil(result, "With no candidates at all, there is nothing to resolve to")
     }
 
-    func test_resolve_nilLastKey_returnsFirstOfOrdered() {
+    func test_resolveThreeTier_nilLastKey_fallsBackToFirstOfOrdered() {
         let a = DummyHost()
         let b = DummyHost()
 
-        let result = CurrentWindowResolver.resolve(lastKey: nil, ordered: [a, b])
+        let result = CurrentWindowResolver.resolve(key: nil, frontMostVisible: nil, lastKey: nil, ordered: [a, b])
 
-        XCTAssertTrue(result === a, "With no last-key host, the resolver must fall back to the FIRST ordered candidate")
+        XCTAssertTrue(result === a, "With no key, no front-most-visible host, and no last-key host, the resolver must fall back to the FIRST ordered candidate")
     }
 
-    func test_resolve_lastKeyMemberOfOrdered_returnsLastKey() {
+    func test_resolveThreeTier_lastKeyMemberOfOrdered_returnsLastKey() {
         let a = DummyHost()
         let b = DummyHost()
 
-        let result = CurrentWindowResolver.resolve(lastKey: b, ordered: [a, b])
+        let result = CurrentWindowResolver.resolve(key: nil, frontMostVisible: nil, lastKey: b, ordered: [a, b])
 
         XCTAssertTrue(result === b, "A last-key host that is still present in ordered must win over ordered.first")
     }
 
-    func test_resolve_lastKeyNotMemberOfOrdered_fallsBackToFirst() {
+    func test_resolveThreeTier_lastKeyNotMemberOfOrdered_fallsBackToFirst() {
         let a = DummyHost()
         let b = DummyHost()
 
-        let result = CurrentWindowResolver.resolve(lastKey: b, ordered: [a])
+        let result = CurrentWindowResolver.resolve(key: nil, frontMostVisible: nil, lastKey: b, ordered: [a])
 
         XCTAssertTrue(result === a, "Once the last-key host is no longer a member of ordered, the resolver must fall back to ordered.first")
     }
@@ -88,14 +85,49 @@ final class CurrentWindowTrackerTests: XCTestCase {
     /// conformance but must never be treated as the same host here.
     /// `DummyHost` deliberately has no `Equatable` conformance at all,
     /// so this test only compiles if `resolve` never requires one.
-    func test_resolve_usesIdentityNotEquality() {
+    func test_resolveThreeTier_usesIdentityNotEquality() {
         let a = DummyHost()
         let bOriginal = DummyHost()
         let bReplacement = DummyHost()
 
-        let result = CurrentWindowResolver.resolve(lastKey: bOriginal, ordered: [a, bReplacement])
+        let result = CurrentWindowResolver.resolve(key: nil, frontMostVisible: nil, lastKey: bOriginal, ordered: [a, bReplacement])
 
         XCTAssertTrue(result === a, "A distinct instance occupying the same 'logical' slot must not satisfy identity: with the exact lastKey instance absent from ordered, this must fall back to ordered.first")
+    }
+
+    func test_resolveThreeTier_keyBeatsFrontMostVisible() {
+        let key = DummyHost()
+        let frontMost = DummyHost()
+
+        let result = CurrentWindowResolver.resolve(key: key, frontMostVisible: frontMost, lastKey: nil, ordered: [])
+
+        XCTAssertTrue(result === key, "A real key host must win over every lower tier")
+    }
+
+    func test_resolveThreeTier_frontMostVisibleBeatsLastKey() {
+        let frontMost = DummyHost()
+        let lastKey = DummyHost()
+
+        let result = CurrentWindowResolver.resolve(key: nil, frontMostVisible: frontMost, lastKey: lastKey, ordered: [lastKey])
+
+        XCTAssertTrue(result === frontMost, "With no real key host, the front-most visible-on-active-Space host must win over the last-key tier")
+    }
+
+    func test_resolveThreeTier_lastKeyBeatsFirstOfOrdered() {
+        let first = DummyHost()
+        let lastKey = DummyHost()
+
+        let result = CurrentWindowResolver.resolve(key: nil, frontMostVisible: nil, lastKey: lastKey, ordered: [first, lastKey])
+
+        XCTAssertTrue(result === lastKey, "With no key and no front-most-visible host, the last-key host must win over ordered.first")
+    }
+
+    func test_resolveThreeTier_noCandidatesAtAll_fallsBackToFirstOfOrdered() {
+        let first = DummyHost()
+
+        let result = CurrentWindowResolver.resolve(key: nil, frontMostVisible: nil, lastKey: nil, ordered: [first])
+
+        XCTAssertTrue(result === first, "With no key, no front-most-visible host, and no last-key host, the resolver must fall back to ordered.first")
     }
 
     // MARK: - CurrentWindowTracker fixtures
@@ -138,36 +170,36 @@ final class CurrentWindowTrackerTests: XCTestCase {
         XCTAssertTrue(tracker.lastKeyWindowController === second)
     }
 
-    // MARK: - resolve(in:)
+    // MARK: - CurrentWindowTracker.lastKeyWindowController feeding CurrentWindowResolver
 
-    func test_resolve_returnsLastKeyController_whileStillInList() {
+    func test_lastKeyWindowController_winsTierThree_whileStillInList() {
         let tracker = CurrentWindowTracker()
         let first = makeController()
         let second = makeController()
         _ = tracker.didBecomeKey(second)
 
-        let resolved = tracker.resolve(in: [first, second])
+        let resolved = CurrentWindowResolver.resolve(key: nil, frontMostVisible: nil, lastKey: tracker.lastKeyWindowController, ordered: [first, second])
 
-        XCTAssertTrue(resolved === second, "resolve(in:) must return the last-key host while it's still a member of the given list")
+        XCTAssertTrue(resolved === second, "tier 3 must return the last-key host while it's still a member of the given list")
     }
 
-    func test_resolve_fallsBackToFirst_onceLastKeyControllerRemoved() {
+    func test_lastKeyWindowController_fallsBackToFirst_onceRemovedFromList() {
         let tracker = CurrentWindowTracker()
         let first = makeController()
         let second = makeController()
         _ = tracker.didBecomeKey(second)
 
-        let resolved = tracker.resolve(in: [first])
+        let resolved = CurrentWindowResolver.resolve(key: nil, frontMostVisible: nil, lastKey: tracker.lastKeyWindowController, ordered: [first])
 
-        XCTAssertTrue(resolved === first, "Once the last-key host has been removed from the list, resolve(in:) must fall back to the list's first element")
+        XCTAssertTrue(resolved === first, "Once the last-key host has been removed from the list, tier 3 must fall back to the list's first element")
     }
 
-    func test_resolve_emptyList_returnsNil() {
+    func test_lastKeyWindowController_emptyList_returnsNil() {
         let tracker = CurrentWindowTracker()
         let controller = makeController()
         _ = tracker.didBecomeKey(controller)
 
-        let resolved = tracker.resolve(in: [])
+        let resolved = CurrentWindowResolver.resolve(key: nil, frontMostVisible: nil, lastKey: tracker.lastKeyWindowController, ordered: [CalyxWindowController]())
 
         XCTAssertNil(resolved, "With zero open windows, there is no host at all -- a target-pane-less request must simply wait")
     }
@@ -204,7 +236,7 @@ final class CurrentWindowTrackerTests: XCTestCase {
 
         XCTAssertNil(tracker.lastKeyWindowController, "lastKeyWindowController is weak: once every strong reference to the designated controller is released, this must read nil, never a dangling reference")
 
-        let resolved = tracker.resolve(in: [survivor])
-        XCTAssertTrue(resolved === survivor, "With the last-key host deallocated, resolve(in:) must fall back to the given list's first element")
+        let resolved = CurrentWindowResolver.resolve(key: nil, frontMostVisible: nil, lastKey: tracker.lastKeyWindowController, ordered: [survivor])
+        XCTAssertTrue(resolved === survivor, "With the last-key host deallocated, tier 3 must fall back to the given list's first element")
     }
 }

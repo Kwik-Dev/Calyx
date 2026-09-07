@@ -84,6 +84,9 @@ final class AwaitBridgeTests: XCTestCase {
             case .interrupted:
                 XCTFail("this race only ever resumes with .expired (cancel) or .allowed (resume) -- " +
                         ".interrupted is unreachable")
+            case .dismissed:
+                XCTFail("this race only ever resumes with .expired (cancel) or .allowed (resume) -- " +
+                        ".dismissed is unreachable")
             }
 
             // Whichever side won, calling the other operation again must

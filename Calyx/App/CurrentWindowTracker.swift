@@ -1,13 +1,22 @@
 // CurrentWindowTracker.swift
 // Calyx
 //
-// The window the user is working in: the key `CalyxWindowController`,
-// else the last one that was key, else the first open window. Every
-// consumer that needs a "which window" answer with no more specific
-// signal -- the app-wide floating approval panel, a target-pane-less
-// MCP tool call, a new-tab/attach flow with no explicit source window
-// -- resolves through this instead of its own local `isKeyWindow`
-// lookup. `AppDelegate.currentWindowController` exposes this app-wide.
+// This type supplies the LAST of the three tiers `AppDelegate.
+// currentWindowController` resolves through -- its own
+// `lastKeyWindowController` -- while `CurrentWindowResolver.resolve(
+// key:frontMostVisible:lastKey:ordered:)` below implements the full
+// three-tier rule as a pure function: the key `CalyxWindowController`
+// first, then the front-most member of `NSApp.orderedWindows` that is both
+// visible and on the active Space (never-shown, minimized, and off-Space
+// windows are all skipped -- a window on another Space cannot take key
+// without a Space switch), and only once BOTH of those find nothing (every
+// Calyx window is minimized, off-Space, or not yet shown) does tier 3 --
+// `lastKey` while still a member of `ordered`, else `ordered.first` --
+// decide. `AppDelegate.currentWindowController` calls this resolver
+// directly, passing its own already-resolved key/front-most-visible
+// candidates and `currentWindowTracker.lastKeyWindowController`; see that
+// property's own doc comment for the full three-tier contract as consumed
+// in production.
 //
 // See CalyxTests/App/CurrentWindowTrackerTests.swift for the specced
 // contract.
@@ -18,7 +27,20 @@ import Foundation
 /// equality, so two distinct instances occupying the same "logical"
 /// slot are never conflated.
 nonisolated enum CurrentWindowResolver {
-    static func resolve<Host: AnyObject>(lastKey: Host?, ordered: [Host]) -> Host? {
+    /// The full three-tier rule `AppDelegate.currentWindowController`
+    /// implements, as a pure function: `key` wins if non-nil, else
+    /// `frontMostVisible` if non-nil, else tier 3 (`lastKey` while still a
+    /// member of `ordered`, else `ordered.first`). Callers supply each
+    /// tier's already-resolved candidate (or nil) rather than raw window
+    /// state, so this stays testable with plain stand-in hosts.
+    static func resolve<Host: AnyObject>(
+        key: Host?,
+        frontMostVisible: Host?,
+        lastKey: Host?,
+        ordered: [Host]
+    ) -> Host? {
+        if let key { return key }
+        if let frontMostVisible { return frontMostVisible }
         if let lastKey, ordered.contains(where: { $0 === lastKey }) {
             return lastKey
         }
@@ -37,7 +59,8 @@ nonisolated enum CurrentWindowResolver {
 final class CurrentWindowTracker {
     /// `weak`: once every strong reference to the designated controller
     /// is released, this reads nil rather than a dangling reference, and
-    /// `resolve(in:)` falls back to the given list's first element.
+    /// `CurrentWindowResolver.resolve` falls back to its `ordered`
+    /// argument's first element.
     private(set) weak var lastKeyWindowController: CalyxWindowController?
 
     /// Designates `controller` as the most-recently-key window. Returns
@@ -48,12 +71,5 @@ final class CurrentWindowTracker {
         guard lastKeyWindowController !== controller else { return false }
         lastKeyWindowController = controller
         return true
-    }
-
-    /// The current window among `ordered`: `lastKeyWindowController`
-    /// while it's still a member, else `ordered.first`, nil when
-    /// `ordered` is empty.
-    func resolve(in ordered: [CalyxWindowController]) -> CalyxWindowController? {
-        CurrentWindowResolver.resolve(lastKey: lastKeyWindowController, ordered: ordered)
     }
 }

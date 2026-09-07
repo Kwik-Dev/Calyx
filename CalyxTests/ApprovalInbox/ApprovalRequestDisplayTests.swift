@@ -211,4 +211,48 @@ final class ApprovalRequestDisplayTests: XCTestCase {
         XCTAssertFalse(request.prefersWideApprovalPanel,
                        "a zero-option question has nothing to list inline regardless of multiSelect")
     }
+
+    // MARK: - isDismissible
+    //
+    // .mcpTool: always dismissible -- the calling MCP agent gets a valid
+    // {"status": "dismissed"} either way (MCPCockpitBridge.gate).
+    // .agentHook/.agentQuestion: dismissible only for claude-code/codex,
+    // whose PermissionRequest hook has a "no output" fallback to lean on
+    // (same as .expired); grok/pi have no such fallback -- Calyx's gate
+    // is their only prompt -- so neither is ever dismissible.
+
+    private func makeQuestionRequest(kind: String) -> ApprovalRequest {
+        let question = makeQuestion(
+            options: [AgentQuestionPrompt.Option(label: "yes", description: nil, preview: nil)],
+            multiSelect: false
+        )
+        let prompt = AgentQuestionPrompt(questions: [question], originalToolInputJSON: Data())
+        return makeRequest(source: .agentQuestion(kind: kind, prompt: prompt))
+    }
+
+    func test_isDismissible_mcpTool_isAlwaysTrue() {
+        let request = makeRequest(source: .mcpTool(name: "pane_run"))
+
+        XCTAssertTrue(request.isDismissible)
+    }
+
+    func test_isDismissible_agentHook_trueOnlyForClaudeCodeAndCodex() {
+        for kind in [AgentEntry.claudeCodeKind, AgentEntry.codexKind] {
+            let request = makeRequest(source: .agentHook(toolName: "Bash", kind: kind, summary: "ls", offers: .none))
+            XCTAssertTrue(request.isDismissible, "kind=\(kind)")
+        }
+        for kind in [AgentEntry.grokKind, AgentEntry.piKind] {
+            let request = makeRequest(source: .agentHook(toolName: "Bash", kind: kind, summary: "ls", offers: .none))
+            XCTAssertFalse(request.isDismissible, "kind=\(kind)")
+        }
+    }
+
+    func test_isDismissible_agentQuestion_trueOnlyForClaudeCodeAndCodex() {
+        for kind in [AgentEntry.claudeCodeKind, AgentEntry.codexKind] {
+            XCTAssertTrue(makeQuestionRequest(kind: kind).isDismissible, "kind=\(kind)")
+        }
+        for kind in [AgentEntry.grokKind, AgentEntry.piKind] {
+            XCTAssertFalse(makeQuestionRequest(kind: kind).isDismissible, "kind=\(kind)")
+        }
+    }
 }

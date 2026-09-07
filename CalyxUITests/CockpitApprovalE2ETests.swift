@@ -92,6 +92,7 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
     private static let approvalBannerQueueMenuID = "calyx.approvalBanner.queueMenu"
     private static let approvalBannerContainerID = "calyx.approvalBanner.container"
     private static let approvalBannerOptionsMenuID = "calyx.approvalBanner.optionsMenu"
+    private static let approvalBannerDismissButtonID = "calyx.approvalBanner.dismissButton"
 
     // MARK: - Test
 
@@ -410,7 +411,7 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
             .firstMatch
         XCTAssertTrue(waitFor(panelWindow, timeout: 5), "the floating approval panel window never appeared")
         let bannerFrame = panelWindow.frame
-        XCTAssertEqual(bannerFrame.width, 350, accuracy: 1, "the floating approval panel's own window must be the fixed 350pt panel width")
+        XCTAssertEqual(bannerFrame.width, 344, accuracy: 1, "the floating approval panel's own window must be the fixed 344pt panel width")
 
         let windowFrame = app.windows.firstMatch.frame
         let screen = try XCTUnwrap(
@@ -555,7 +556,7 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
             .containing(.any, identifier: Self.approvalBannerContainerID)
             .firstMatch
         XCTAssertTrue(waitFor(panelWindow, timeout: 5), "the floating approval panel window never appeared")
-        XCTAssertEqual(panelWindow.frame.width, 350, accuracy: 1, "the panel window must be the fixed 350pt panel width")
+        XCTAssertEqual(panelWindow.frame.width, 344, accuracy: 1, "the panel window must be the fixed 344pt panel width")
 
         payloadText.click()
 
@@ -572,6 +573,92 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
         let resultText = waitForFileContent(atPath: outFile)
         XCTAssertNotEqual(resultText, "(no output)", "the backgrounded pane_run curl produced no output")
         let result = try parseJSONObject(resultText, context: "pane_run payload-expand Deny result")
+        XCTAssertEqual(result["status"] as? String, "denied", "Deny must report status \"denied\" -- got: \(resultText)")
+    }
+
+    // MARK: - Dismiss button: tool never executes, panel closes
+
+    /// Clicking `dismissButton` (the panel's own top-left × button) must
+    /// resolve the gated `pane_run` call with `{"status":"dismissed"}`
+    /// and remove the banner -- the tool call is never told allow or
+    /// deny, since Calyx never answers the question at all.
+    func test_dismissButton_returnsStatusDismissed_removesBanner() throws {
+        var counter = 0
+        enableAIAgentIPCViaCommandPalette()
+
+        let surfaceID = paneExec("echo $CALYX_SURFACE_ID", counter: &counter)
+        XCTAssertFalse(surfaceID.isEmpty, "$CALYX_SURFACE_ID must be set for every ghostty-spawned pane")
+
+        let outFile = "/tmp/calyx-e2e-cockpit-dismiss-\(ProcessInfo.processInfo.processIdentifier).json"
+        toolCallBackgrounded(
+            name: "pane_run",
+            argumentsJSON: "{\"surface_id\": \"\(surfaceID)\", \"command\": \"echo DISMISS_MARKER\", \"await\": false}",
+            outFile: outFile, counter: &counter
+        )
+
+        let container = app.descendants(matching: .any).matching(identifier: Self.approvalBannerContainerID).firstMatch
+        XCTAssertTrue(waitFor(container, timeout: 15), "the approval banner never appeared")
+
+        let dismissButton = app.buttons[Self.approvalBannerDismissButtonID]
+        XCTAssertTrue(waitFor(dismissButton, timeout: 5), "the dismiss button never appeared in the accessibility tree")
+        dismissButton.click()
+
+        let resultText = waitForFileContent(atPath: outFile)
+        XCTAssertNotEqual(resultText, "(no output)", "the backgrounded pane_run curl produced no output")
+        let result = try parseJSONObject(resultText, context: "pane_run Dismiss result")
+        XCTAssertEqual(result["status"] as? String, "dismissed", "Dismiss must report status \"dismissed\" -- got: \(resultText)")
+
+        waitForNonExistence(container, timeout: 5)
+    }
+
+    // MARK: - Hover expansion
+
+    /// Hovering the payload body for its 0.5s threshold must expand it,
+    /// exactly like a click; moving the pointer away must collapse it
+    /// again, since no click ever pinned it open.
+    func test_hoverPayload_expandsAfterDelay_collapsesWhenPointerLeaves() throws {
+        var counter = 0
+        enableAIAgentIPCViaCommandPalette()
+
+        let surfaceID = paneExec("echo $CALYX_SURFACE_ID", counter: &counter)
+        XCTAssertFalse(surfaceID.isEmpty, "$CALYX_SURFACE_ID must be set for every ghostty-spawned pane")
+
+        let outFile = "/tmp/calyx-e2e-cockpit-hover-\(ProcessInfo.processInfo.processIdentifier).json"
+        toolCallBackgrounded(
+            name: "pane_run",
+            argumentsJSON: "{\"surface_id\": \"\(surfaceID)\", \"command\": \"echo HOVER_MARKER\", \"await\": false}",
+            outFile: outFile, counter: &counter
+        )
+
+        let payloadText = app.staticTexts[Self.approvalBannerPayloadID]
+        XCTAssertTrue(waitFor(payloadText, timeout: 15), "the approval banner's payload text never appeared")
+
+        let payloadExpanded = app.staticTexts[Self.approvalBannerPayloadExpandedID]
+        XCTAssertFalse(payloadExpanded.exists, "the expanded payload must not exist before the body is hovered")
+
+        let panelWindow = app.windows
+            .containing(.any, identifier: Self.approvalBannerContainerID)
+            .firstMatch
+        XCTAssertTrue(waitFor(panelWindow, timeout: 5), "the floating approval panel window never appeared")
+
+        payloadText.hover()
+        Thread.sleep(forTimeInterval: 1)
+        XCTAssertTrue(payloadExpanded.exists, "hovering the payload body past its 0.5s threshold must expand it")
+
+        // A point well outside the panel window's own bounds (rather than
+        // `app.windows.firstMatch`, which is order-dependent and could
+        // resolve to this same panel window) -- deterministically moves
+        // the pointer off the payload regardless of window enumeration
+        // order.
+        panelWindow.coordinate(withNormalizedOffset: CGVector(dx: -1, dy: 2)).hover()
+        Thread.sleep(forTimeInterval: 1)
+        XCTAssertFalse(payloadExpanded.exists, "moving the pointer away from an unclicked payload must collapse it again")
+
+        denyViaOptionsMenu()
+
+        let resultText = waitForFileContent(atPath: outFile)
+        XCTAssertNotEqual(resultText, "(no output)", "the backgrounded pane_run curl produced no output")
+        let result = try parseJSONObject(resultText, context: "pane_run hover-expand Deny result")
         XCTAssertEqual(result["status"] as? String, "denied", "Deny must report status \"denied\" -- got: \(resultText)")
     }
 

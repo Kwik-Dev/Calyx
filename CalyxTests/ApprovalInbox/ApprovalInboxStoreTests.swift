@@ -438,6 +438,31 @@ final class ApprovalInboxStoreTests: XCTestCase {
         XCTAssertEqual(result, .expired)
     }
 
+    /// `.dismissed` grants nothing (unlike `.allowed`/`.allowedWithPermissions`/
+    /// `.answered`), so `awaitDecisionHonoringCancellation` must pass it
+    /// through unchanged even when the awaiting Task is concurrently
+    /// cancelled -- it is never demoted to `.expired`, the same
+    /// pass-through contract `.denied`/`.interrupted`/`.expired` already
+    /// have.
+    func test_awaitDecisionHonoringCancellation_dismissedRacingCancellation_passesThroughUnchanged() async throws {
+        let store = ApprovalInboxStore()
+        let request = makeRequest()
+        store.submit(request)
+
+        let waiter = Task { @MainActor in
+            await store.awaitDecisionHonoringCancellation(id: request.id, timeoutMs: 5_000)
+        }
+        await yieldToScheduler()
+
+        store.decide(id: request.id, .dismissed)
+        waiter.cancel()
+
+        let result = await waiter.value
+        XCTAssertEqual(result, .dismissed,
+                       "a .dismissed decision racing a concurrent cancellation of the awaiting Task must pass " +
+                       "through unchanged, never demoted to .expired -- nothing was granted for a vanished caller to act on")
+    }
+
     func test_expireForSurface_unknownSurface_isNoOp() {
         let store = ApprovalInboxStore()
         let request = makeRequest(targetSurfaceID: UUID())

@@ -48,6 +48,10 @@ import AppKit
 struct ApprovalPanelContentView: View {
     let model: ApprovalBannerModel
     let layout: ApprovalPanelLayout
+    /// `ApprovalBannerView.targetLabel`'s own source for a surface-
+    /// targeted request -- see `ApprovalPanelController`'s own stored
+    /// property of the same name for the full chain.
+    let targetTabTitle: (UUID) -> String?
     let onContentSizeChange: (CGSize) -> Void
     let onRequestChange: () -> Void
 
@@ -94,8 +98,11 @@ struct ApprovalPanelContentView: View {
             ?? layout.hostWindowController?.window?.title
             ?? "Calyx"
         return GlassEffectContainer {
-            ApprovalBannerView(model: model, request: request, hostWindowTitle: ControlCharacterDisplay.render(title))
-                .id(request.id)
+            ApprovalBannerView(
+                model: model, request: request,
+                hostWindowTitle: ControlCharacterDisplay.render(title), targetTabTitle: targetTabTitle
+            )
+            .id(request.id)
         }
         .background {
             Group {

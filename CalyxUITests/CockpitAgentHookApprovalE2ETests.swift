@@ -46,6 +46,8 @@ final class CockpitAgentHookApprovalE2ETests: CalyxUITestCase {
     private static let questionTextID = "calyx.approvalBanner.questionText"
     private static let answerButtonID = "calyx.approvalBanner.answerButton"
     private static let otherTextFieldID = "calyx.approvalBanner.otherTextField"
+    private static let dismissButtonID = "calyx.approvalBanner.dismissButton"
+    private static let containerID = "calyx.approvalBanner.container"
 
     // MARK: - .agentHook: permission_suggestions present
 
@@ -241,6 +243,52 @@ final class CockpitAgentHookApprovalE2ETests: CalyxUITestCase {
                        "submitting \"Other…\" free text must echo it verbatim into answers[\"Pick a color\"] -- got: \(resultText)")
     }
 
+    // MARK: - .agentHook: dismiss produces an empty PermissionRequest body
+
+    /// Claude Code's PermissionRequest hook has no vocabulary for
+    /// "Calyx does not answer this" -- `AgentHookPermissionResponse.body`
+    /// returns `nil` for `.dismissed` under claude-code, exactly like
+    /// `.expired`, so the curl call backing this hook receives an EMPTY
+    /// response body (no `hookSpecificOutput` at all) rather than any
+    /// allow/deny decision, and the panel closes.
+    ///
+    /// An empty body alone is indistinguishable from "curl never
+    /// finished" or "the file was never written" -- both a hung curl and
+    /// a not-yet-run script also read as empty/absent. `includeExitMarker`
+    /// appends `CURL_EXIT_<code>` after the response body specifically so
+    /// this test can assert on the completed, empty-body case: the file
+    /// must read EXACTLY `CURL_EXIT_0`, proving curl actually finished
+    /// with a 0-byte body rather than merely not having produced output
+    /// yet.
+    func test_agentHook_dismiss_producesEmptyResponseBody_removesBanner() throws {
+        var counter = 0
+        enableAIAgentIPCViaCommandPalette()
+
+        let surfaceID = try resolveFocusedSurfaceID(counter: &counter)
+
+        let bodyJSON = """
+        {"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"echo DISMISS_HOOK_MARKER"}}
+        """
+        let outFile = "/tmp/calyx-e2e-agenthook-dismiss-\(ProcessInfo.processInfo.processIdentifier).json"
+        postApprovalRequestBackgrounded(
+            bodyJSON: bodyJSON, surfaceID: surfaceID, outFile: outFile, counter: &counter, includeExitMarker: true
+        )
+
+        let container = app.descendants(matching: .any).matching(identifier: Self.containerID).firstMatch
+        XCTAssertTrue(waitFor(container, timeout: 15), "the approval banner never appeared for the agentHook request")
+
+        let dismissButton = app.buttons[Self.dismissButtonID]
+        XCTAssertTrue(waitFor(dismissButton, timeout: 5), "the dismiss button never appeared in the accessibility tree")
+        dismissButton.click()
+
+        waitForNonExistence(container, timeout: 5)
+
+        let resultText = waitForFileContent(atPath: outFile)
+        XCTAssertEqual(resultText, "CURL_EXIT_0",
+                       "dismissing a claude-code hook request must produce an EMPTY curl response body (curl itself " +
+                       "exiting 0) -- got: \"\(resultText)\"")
+    }
+
     // MARK: - Helpers (file-private near-duplicates -- see this file's own header)
 
     /// Opens the Command Palette, executes "Enable AI Agent IPC", and
@@ -369,8 +417,24 @@ final class CockpitAgentHookApprovalE2ETests: CalyxUITestCase {
     /// `outFile`. Mirrors `CockpitApprovalE2ETests.toolCallBackgrounded`'s
     /// own detached-subshell shape (`(cmd &); disown` via
     /// `panePasteAndReturn`, never waiting inline).
-    private func postApprovalRequestBackgrounded(bodyJSON: String, surfaceID: String, outFile: String, counter: inout Int) {
+    ///
+    /// `includeExitMarker`, default false (every existing caller parses
+    /// `outFile` as JSON and must see nothing extra appended): when
+    /// true, appends a `CURL_EXIT_<code>` line after the response body.
+    /// An EMPTY response body (the `.dismissed` case this file's own
+    /// dismiss test exercises) writes only a trailing newline to
+    /// `outFile`, which a bare `waitForFileContent` poll cannot
+    /// distinguish from "the curl call never finished" -- both read as
+    /// non-empty-once-the-newline-lands, and both also match the
+    /// zero-byte file the shell redirect itself pre-creates before the
+    /// script ever runs. The marker line is the only signal that
+    /// distinguishes "curl completed with an empty body" from "nothing
+    /// has run yet" or "curl is still hanging".
+    private func postApprovalRequestBackgrounded(
+        bodyJSON: String, surfaceID: String, outFile: String, counter: inout Int, includeExitMarker: Bool = false
+    ) {
         try? FileManager.default.removeItem(atPath: outFile)
+        let exitMarkerLine = includeExitMarker ? "print(\"CURL_EXIT_%d\" % proc.returncode)" : ""
         let script = """
         import json
         import os
@@ -400,6 +464,7 @@ final class CockpitAgentHookApprovalE2ETests: CalyxUITestCase {
                 capture_output=True, text=True,
             )
             print(proc.stdout)
+            \(exitMarkerLine)
 
         try:
             main()

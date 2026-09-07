@@ -65,6 +65,10 @@ struct ChoiceRowStyle: ButtonStyle {
         let isSelected: Bool
         let configuration: Configuration
 
+        /// Tracked through `onAssumeInsideHover` rather than plain
+        /// SwiftUI `.onHover`: this row is rendered inside the floating
+        /// approval panel, a non-activating window that never becomes
+        /// key, where `.onHover`'s underlying tracking area never fires.
         @State private var isHovering = false
 
         /// `.contentShape` after `.clipShape` makes the whole rounded rect the
@@ -86,7 +90,7 @@ struct ChoiceRowStyle: ButtonStyle {
             .background(backgroundColor)
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .contentShape(RoundedRectangle(cornerRadius: 6))
-            .onHover { isHovering = $0 }
+            .onAssumeInsideHover($isHovering)
         }
 
         private var glyphText: String {

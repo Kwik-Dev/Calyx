@@ -28,9 +28,10 @@
 // any) + "i / n" position (only while more than one question is queued
 // in THIS prompt -- distinct from `ApprovalBannerView`'s own queue
 // navigator "N / M", which browses every pending request queued for
-// this WINDOW, not the questions within this one prompt) + a tap-to-
-// expand question text (mirrors `ApprovalBannerView.bodyText`'s own
-// 2-line clip + `payloadExpanded` reveal), then source-specific extras:
+// this WINDOW, not the questions within this one prompt) + a tap/hover-
+// to-expand question text (`ExpandableBodyText`, shared with
+// `ApprovalBannerView`'s own tool/hook payload), then source-specific
+// extras:
 // the inline option-list layout (plus a side-by-side markdown preview
 // box when any option carries a `preview`) for a multi-select question
 // or one with any preview -- AskUserQuestion's own schema for the
@@ -192,53 +193,18 @@ struct AgentQuestionBannerView: View {
                     .accessibilityIdentifier(AccessibilityID.ApprovalBanner.questionPosition)
             }
 
-            let rendered = ControlCharacterDisplay.render(form.currentQuestion.text)
-            Text(rendered)
-                .font(.system(size: 12))
-                .lineLimit(2)
-                .accessibilityIdentifier(AccessibilityID.ApprovalBanner.questionText)
-                .accessibilityLabel(Text(rendered))
-                .contentShape(Rectangle())
-                .onTapGesture { isExpanded.toggle() }
-
-            if isExpanded {
-                expandedQuestionText
-            }
+            ExpandableBodyText(
+                text: ControlCharacterDisplay.render(form.currentQuestion.text),
+                collapsedFont: .system(size: 12),
+                collapsedIdentifier: AccessibilityID.ApprovalBanner.questionText,
+                expandedFont: .callout,
+                collapsedForegroundIsSecondary: false
+            )
 
             extrasSection
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .onChange(of: focusedField) { _, newValue in textFieldWasFocused = newValue != nil }
-    }
-
-    /// Whether the tap-to-expand question text (below) is showing the
-    /// full, scrolling text below its own 2-line clip -- mirrors
-    /// `ApprovalBannerView.isExpanded`'s identical tap-to-expand body,
-    /// but scoped to `currentQuestion.text` rather than `request.
-    /// displayPayload`. Not reset on question advance: `expandedQuestionText`
-    /// reads `form.currentQuestion.text` live, so it always shows the
-    /// question currently on screen, whether or not it was the one that
-    /// was expanded.
-    @State private var isExpanded = false
-
-    /// The full, scrolling question text shown below the 2-line clip
-    /// while `isExpanded` -- same construction as `ApprovalBannerView.
-    /// expandedPayload` (a short question must never reserve blank
-    /// space; `.frame(maxHeight: 120)` caps a long one, applied BEFORE
-    /// `.fixedSize` so it clamps what content height gets reported), and
-    /// the SAME `payloadExpanded` identifier that view's own expanded
-    /// body uses -- one "the full text is showing" element per banner
-    /// mode, not two different ones an XCUITest would need to branch on.
-    private var expandedQuestionText: some View {
-        ScrollView(.vertical) {
-            Text(ControlCharacterDisplay.render(form.currentQuestion.text))
-                .font(.callout)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .textSelection(.enabled)
-                .accessibilityIdentifier(AccessibilityID.ApprovalBanner.payloadExpanded)
-        }
-        .frame(maxHeight: 120)
-        .fixedSize(horizontal: false, vertical: true)
     }
 
     /// The inline option-list layout (`questionOptionsSection`) whenever
@@ -350,8 +316,14 @@ struct AgentQuestionBannerView: View {
     /// why that string is never treated specially here). Rendered
     /// whenever `extrasSection` shows the inline layout -- see
     /// `optionListView`'s own doc comment. Shares `ChoiceRowStyle` with
-    /// `otherRow` below. `.onHover` tracks `form.hoveredOptionIndex`, the
-    /// highest-priority input to `form.previewText`.
+    /// `otherRow` below. `onAssumeInsideHover` (not plain SwiftUI
+    /// `.onHover`: this row is rendered inside the floating approval
+    /// panel, a non-activating window that never becomes key, where
+    /// `.onHover`'s underlying tracking area never fires) tracks
+    /// `form.hoveredOptionIndex`, the highest-priority input to
+    /// `form.previewText`, through a synthetic `Binding<Bool>` since
+    /// `hoveredOptionIndex` is one `Int?` shared across every row rather
+    /// than a per-row `Bool`.
     private func optionButton(index: Int, option: AgentQuestionPrompt.Option) -> some View {
         let selected = form.selectedOptionIndices.contains(index)
         return Button {
@@ -372,13 +344,16 @@ struct AgentQuestionBannerView: View {
             glyph: form.currentQuestion.multiSelect ? .multiSelect : .singleSelect, isSelected: selected
         ))
         .accessibilityIdentifier(AccessibilityID.ApprovalBanner.optionButton(index))
-        .onHover { isHovering in
-            if isHovering {
-                form.hoveredOptionIndex = index
-            } else if form.hoveredOptionIndex == index {
-                form.hoveredOptionIndex = nil
+        .onAssumeInsideHover(Binding(
+            get: { form.hoveredOptionIndex == index },
+            set: { isHovering in
+                if isHovering {
+                    form.hoveredOptionIndex = index
+                } else if form.hoveredOptionIndex == index {
+                    form.hoveredOptionIndex = nil
+                }
             }
-        }
+        ))
     }
 
     /// The standing "Other" choice, appended after every question's own
@@ -427,13 +402,17 @@ struct AgentQuestionBannerView: View {
         .background(ChoiceRowStyle.backgroundColor(isSelected: form.otherSelected, isHovering: otherRowHovering))
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .contentShape(Rectangle())
-        .onHover { otherRowHovering = $0 }
+        .onAssumeInsideHover($otherRowHovering)
         .onTapGesture {
             form.chooseOther()
         }
         .accessibilityIdentifier(AccessibilityID.ApprovalBanner.otherButton)
     }
 
+    /// Tracked through `onAssumeInsideHover` rather than plain SwiftUI
+    /// `.onHover`: this row is rendered inside the floating approval
+    /// panel, a non-activating window that never becomes key, where
+    /// `.onHover`'s underlying tracking area never fires.
     @State private var otherRowHovering = false
 
     /// ◯/● for a single-select question, ☐/☑ for multi-select -- the
@@ -577,26 +556,27 @@ struct AgentQuestionBannerView: View {
         .accessibilityIdentifier(AccessibilityID.ApprovalBanner.optionButton(index))
     }
 
-    /// "Add notes" (`notesButton`, only while `!form.notesVisible`),
-    /// "Back" (`backButton`, only while `form.canGoBack`), "Chat about
-    /// this" (`chatButton`) -- shared by every `menuItems` branch.
+    /// "Add notes" (only while `!form.notesVisible`), "Back" (only while
+    /// `form.canGoBack`), "Chat about this" -- shared by every
+    /// `menuItems` branch. No accessibility identifiers: every row here
+    /// lands in a SwiftUI `Menu`, which macOS exposes as plain
+    /// `NSMenuItem`s with no identifier of their own -- an XCUITest finds
+    /// these rows by title instead, same as every other `Menu` row in
+    /// this feature.
     @ViewBuilder
     private var notesAndNavigationItems: some View {
         if !form.notesVisible {
             Button(ApprovalBannerView.menuRowTitle("Add notes")) {
                 form.showNotes()
             }
-            .accessibilityIdentifier(AccessibilityID.ApprovalBanner.notesButton)
         }
         if form.canGoBack {
             Button(ApprovalBannerView.menuRowTitle("Back")) {
                 form.goBack()
             }
-            .accessibilityIdentifier(AccessibilityID.ApprovalBanner.backButton)
         }
         Button(ApprovalBannerView.menuRowTitle("Chat about this")) {
             onChatAboutQuestion()
         }
-        .accessibilityIdentifier(AccessibilityID.ApprovalBanner.chatButton)
     }
 }

@@ -132,9 +132,10 @@ final class AppDelegateSpawnRemoteSessionTabWindowLookupTests: XCTestCase {
     }
 
     /// This lookup resolves through `AppDelegate.currentWindowController`
-    /// (`currentWindowTracker`'s last-key controller, else the first
-    /// open one), not a live `isKeyWindow` check -- proven here: with
-    /// `second` designated via
+    /// (with no window ever shown or made key in this test, tiers 1 and 2
+    /// both find nothing, so this falls through to `currentWindowTracker`'s
+    /// last-key controller, else the first open one), not a live
+    /// `isKeyWindow` check -- proven here: with `second` designated via
     /// `currentWindowTracker.didBecomeKey(_:)`, the new tab must go to
     /// `second`, not the insertion-order-first `first`, even though
     /// neither controller's window is ever actually shown/made key.

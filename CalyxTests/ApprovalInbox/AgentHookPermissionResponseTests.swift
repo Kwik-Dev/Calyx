@@ -106,6 +106,12 @@ final class AgentHookPermissionResponseTests: XCTestCase {
                     "Claude Code's own confirmation prompt take over")
     }
 
+    func test_body_claude_dismissed_isNil() {
+        XCTAssertNil(AgentHookPermissionResponse.body(kind: AgentEntry.claudeCodeKind, decision: .dismissed),
+                    "Claude Code's PermissionRequest hook has no vocabulary for \"Calyx does not answer this\" -- " +
+                    "a dismissed request must produce no body, exactly like .expired")
+    }
+
     // MARK: - codex: allowed / denied (any reason) / expired
 
     func test_body_codex_allowed_isAllowBehavior() throws {
@@ -124,6 +130,11 @@ final class AgentHookPermissionResponseTests: XCTestCase {
     func test_body_codex_expired_isNil() {
         XCTAssertNil(AgentHookPermissionResponse.body(kind: AgentEntry.codexKind, decision: .expired),
                     "Codex has no fallback body for an expired decision either")
+    }
+
+    func test_body_codex_dismissed_isNil() {
+        XCTAssertNil(AgentHookPermissionResponse.body(kind: AgentEntry.codexKind, decision: .dismissed),
+                    "Codex has no vocabulary for a dismissed request either -- must produce no body, same as .expired")
     }
 
     // MARK: - claude-code: allowedWithPermissions
@@ -284,7 +295,7 @@ final class AgentHookPermissionResponseTests: XCTestCase {
             let expiredBody = try XCTUnwrap(AgentHookPermissionResponse.body(kind: kind, decision: .expired))
 
             let unexpressible: [ApprovalDecision] = [
-                .allowedWithPermissions(offer), .interrupted(.chatAboutQuestion), .answered(answers),
+                .allowedWithPermissions(offer), .interrupted(.chatAboutQuestion), .answered(answers), .dismissed,
             ]
             for decision in unexpressible {
                 let body = try XCTUnwrap(AgentHookPermissionResponse.body(kind: kind, decision: decision), "kind=\(kind)")
@@ -293,12 +304,22 @@ final class AgentHookPermissionResponseTests: XCTestCase {
         }
     }
 
+    // MARK: - cliKeepsOwnPrompt(kind:)
+
+    func test_cliKeepsOwnPrompt_trueForClaudeCodeAndCodex_falseForGrokAndPi() {
+        XCTAssertTrue(AgentHookPermissionResponse.cliKeepsOwnPrompt(kind: AgentEntry.claudeCodeKind))
+        XCTAssertTrue(AgentHookPermissionResponse.cliKeepsOwnPrompt(kind: AgentEntry.codexKind))
+        XCTAssertFalse(AgentHookPermissionResponse.cliKeepsOwnPrompt(kind: AgentEntry.grokKind))
+        XCTAssertFalse(AgentHookPermissionResponse.cliKeepsOwnPrompt(kind: AgentEntry.piKind))
+        XCTAssertFalse(AgentHookPermissionResponse.cliKeepsOwnPrompt(kind: "some-unrecognized-cli"))
+    }
+
     func test_body_codex_unexpressibleDecisions_areNil_sameAsExpired() throws {
         let offer = makeOffer(entry: ["type": "addDirectories", "directories": ["/tmp"]], label: "x")
         let answers = makeAnswers()
 
         let unexpressible: [ApprovalDecision] = [
-            .allowedWithPermissions(offer), .interrupted(.chatAboutQuestion), .answered(answers),
+            .allowedWithPermissions(offer), .interrupted(.chatAboutQuestion), .answered(answers), .dismissed,
         ]
         for decision in unexpressible {
             XCTAssertNil(AgentHookPermissionResponse.body(kind: AgentEntry.codexKind, decision: decision))
@@ -317,6 +338,7 @@ final class AgentHookPermissionResponseTests: XCTestCase {
         XCTAssertNil(AgentHookPermissionResponse.body(kind: unknownKind, decision: .allowedWithPermissions(offer)))
         XCTAssertNil(AgentHookPermissionResponse.body(kind: unknownKind, decision: .interrupted(.chatAboutQuestion)))
         XCTAssertNil(AgentHookPermissionResponse.body(kind: unknownKind, decision: .answered(makeAnswers())))
+        XCTAssertNil(AgentHookPermissionResponse.body(kind: unknownKind, decision: .dismissed))
     }
 
     // MARK: - claude-code: .answered (AskUserQuestion)

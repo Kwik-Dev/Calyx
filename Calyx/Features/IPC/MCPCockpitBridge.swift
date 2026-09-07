@@ -26,9 +26,9 @@
 // .allowed: re-check Task.isCancelled (approvals' own documented
 // caller obligation -- a cancelled Task must NOT execute even on
 // .allowed) then EXECUTE / .denied: {"status": "denied"} / .expired:
-// {"status": "approval_timeout"} (both non-error success payloads). If
-// auto-approve is on, execute immediately without ever calling
-// approvals.submit.
+// {"status": "approval_timeout"} / .dismissed: {"status": "dismissed"}
+// (all non-error success payloads). If auto-approve is on, execute
+// immediately without ever calling approvals.submit.
 
 import Foundation
 
@@ -185,9 +185,9 @@ final class MCPCockpitBridge {
             name: "pane_run",
             description: "Run a command in a pane by pasting its text and pressing Return. surface_id "
                 + "also accepts a calyx-session ID in place of the raw surface UUID. Requires in-app "
-                + "user approval unless auto-approve is enabled; {\"status\":\"denied\"} and "
-                + "{\"status\":\"approval_timeout\"} are normal results — after denied, do not retry "
-                + "without new user intent.",
+                + "user approval unless auto-approve is enabled; {\"status\":\"denied\"}, "
+                + "{\"status\":\"approval_timeout\"}, and {\"status\":\"dismissed\"} are normal results "
+                + "— after denied or dismissed, do not retry without new user intent.",
             inputSchema: MCPRouter.schema(
                 properties: [
                     "surface_id": MCPRouter.prop("string", "Surface UUID or calyx-session ID of the pane to run the command in"),
@@ -202,9 +202,9 @@ final class MCPCockpitBridge {
             name: "pane_send_keys",
             description: "Send raw text to a pane verbatim, with no Return appended. surface_id also "
                 + "accepts a calyx-session ID in place of the raw surface UUID. Requires in-app user "
-                + "approval unless auto-approve is enabled; {\"status\":\"denied\"} and "
-                + "{\"status\":\"approval_timeout\"} are normal results — after denied, do not retry "
-                + "without new user intent.",
+                + "approval unless auto-approve is enabled; {\"status\":\"denied\"}, "
+                + "{\"status\":\"approval_timeout\"}, and {\"status\":\"dismissed\"} are normal results "
+                + "— after denied or dismissed, do not retry without new user intent.",
             inputSchema: MCPRouter.schema(
                 properties: [
                     "surface_id": MCPRouter.prop("string", "Surface UUID or calyx-session ID of the pane to send text to"),
@@ -217,8 +217,9 @@ final class MCPCockpitBridge {
             name: "palette_execute",
             description: "Execute a command-palette entry by its id. An unknown id is rejected with "
                 + "the list of currently available ids. Requires in-app user approval unless "
-                + "auto-approve is enabled; {\"status\":\"denied\"} and {\"status\":\"approval_timeout\"} "
-                + "are normal results — after denied, do not retry without new user intent.",
+                + "auto-approve is enabled; {\"status\":\"denied\"}, {\"status\":\"approval_timeout\"}, "
+                + "and {\"status\":\"dismissed\"} are normal results — after denied or dismissed, do "
+                + "not retry without new user intent.",
             inputSchema: MCPRouter.schema(
                 properties: [
                     "command_id": MCPRouter.prop("string", "The command-palette entry's id to execute"),
@@ -542,7 +543,9 @@ final class MCPCockpitBridge {
         /// doc comment requires callers to re-check `Task.isCancelled`
         /// before acting on `.allowed`; the caller is gone either way, so
         /// "approval_timeout" over "denied" better reflects that nobody
-        /// actually decided anything).
+        /// actually decided anything -- and `"dismissed"` for the
+        /// banner's own [x] dismiss action, distinct from `"denied"`
+        /// since nobody actually refused the call).
         case respond([String: Any])
     }
 
@@ -571,6 +574,8 @@ final class MCPCockpitBridge {
             return .respond(["status": "approval_timeout"])
         case .allowed:
             return .proceed
+        case .dismissed:
+            return .respond(["status": "dismissed"])
         case .allowedWithPermissions, .interrupted, .answered:
             // Every one of these three is only ever produced for an
             // `.agentHook`/`.agentQuestion`-sourced request (the approval

@@ -3,10 +3,11 @@
 //
 // View-model behind the Cockpit approval banner, choosing which single
 // pending ApprovalRequest (if any) to show and forwarding Allow/Deny/
-// Always Allow to ApprovalInboxStore.decide(id:_:) /
+// Always Allow/Dismiss to ApprovalInboxStore.decide(id:_:) /
 // CockpitSettings.autoApproveEnabled / AgentHookApprovalMemory (see
 // alwaysAllow(id:)'s own doc comment for the .mcpTool vs .agentHook
-// source split).
+// source split, and dismiss(id:)'s own doc comment for why it, alone,
+// applies to every source).
 // Mirrors RecoveryBarModel's shape: UI-independent, injected closures
 // instead of reaching for CalyxWindowController/NSWindow directly.
 // `AppDelegate` owns exactly one instance of this class app-wide, hosted
@@ -110,7 +111,8 @@ final class ApprovalBannerModel {
     /// request is queued app-wide. Resolves the displayed request's
     /// index through `currentIndex(in:)` against its own already-computed
     /// `visible` local rather than calling `current` itself, which would
-    /// re-filter `store.pending` a second time for the same answer.
+    /// read `store.pending` a second time for the same answer -- one
+    /// snapshot for consistency.
     var positionInfo: (index: Int, count: Int)? {
         let visible = visibleRequests
         guard !visible.isEmpty else { return nil }
@@ -140,9 +142,9 @@ final class ApprovalBannerModel {
     /// that menu renders one row per entry. Resolves the current entry's
     /// index through `currentIndex(in:)` against its own local `visible`,
     /// the same single rule `current`/`positionInfo` resolve through,
-    /// rather than reading either of them -- so `visibleRequests` is read
-    /// only once here (see `positionInfo`'s own doc comment for the same
-    /// rationale). Empty whenever `visibleRequests` is.
+    /// rather than reading either of them -- so `store.pending` is read
+    /// only once here, one snapshot for consistency, same as
+    /// `positionInfo` above. Empty whenever `visibleRequests` is.
     var queueEntries: [QueueEntry] {
         let visible = visibleRequests
         let currentEntryIndex = currentIndex(in: visible)
@@ -218,10 +220,11 @@ final class ApprovalBannerModel {
 
     /// Called immediately before the `store.decide`/`store.decide(ids:)`
     /// that actually resolves `id`, in every action below (`allow`/
-    /// `deny`/`alwaysAllow`) -- for `allow`/`deny` that's still their very
-    /// first line (neither has an intervening bail-out guard); for
-    /// `alwaysAllow`'s `.agentHook` branch, this call is placed AFTER its
-    /// own early-return guard (a missing `targetSurfaceID`) -- a path that
+    /// `deny`/`alwaysAllow`, and `dismiss`'s own `.mcpTool`/`.agentHook`
+    /// branch) -- for `allow`/`deny` that's still their very first line
+    /// (neither has an intervening bail-out guard); for `alwaysAllow`'s
+    /// `.agentHook` branch, this call is placed AFTER its own
+    /// early-return guard (a missing `targetSurfaceID`) -- a path that
     /// bails out without deciding anything must never advance the cursor
     /// either. `store.pending` hasn't been mutated yet at the point this
     /// actually runs, so `visibleRequests` here still includes `id`,
@@ -327,21 +330,35 @@ final class ApprovalBannerModel {
         return true
     }
 
-    /// Shared body of `answer(id:answers:)`/`chatAboutQuestion(id:)`:
-    /// advances the cursor exactly like `allow(id:)`/`deny(id:)`, restores
-    /// terminal focus, THEN resolves `decision` -- the question banner's
-    /// own "Other"/notes free-text field may have taken first responder,
-    /// and resolving the request removes the banner out from under it.
-    /// Focus restoration runs first because `store.decide` posts
-    /// `.calyxApprovalInboxChanged` synchronously, which re-renders (and
-    /// may order out) the app-wide approval panel before this method's
-    /// caller returns -- reclaiming key status after that would inspect a
-    /// panel already off screen.
+    /// Shared body of `answer(id:answers:)`/`chatAboutQuestion(id:)`/
+    /// `dismiss(id:)`'s own `.agentQuestion` branch: advances the cursor
+    /// exactly like `allow(id:)`/`deny(id:)`, resolves `decision`, then
+    /// restores terminal focus to the request's own `targetSurfaceID`.
+    ///
+    /// `targetSurfaceID` is looked up BEFORE `store.decide`: a decided
+    /// request is removed from `store.pending`, so looking it up
+    /// afterwards would always read nil.
+    ///
+    /// This call and `ApprovalPanelController.render()`'s own
+    /// `handOffKeyIfNeeded()` answer two DIFFERENT questions and can both
+    /// fire for the same decision without racing (both run synchronously
+    /// on the main actor): `handOffKeyIfNeeded()` returns the panel's KEY
+    /// status to the owning window, but only runs while the panel
+    /// actually holds key (only a click into the question's free-text
+    /// field takes it -- an Options-menu answer, "Chat about this", or
+    /// this method's own dismiss ×, none of which touch that field, never
+    /// make the panel key at all). This call restores FIRST RESPONDER
+    /// inside the owning window regardless of whether the panel ever held
+    /// key, since some other control (the sidebar filter field, the find
+    /// bar) may hold it instead. When both fire, `CalyxWindowController
+    /// .restoreTerminalFocusAfterApproval(reclaimKey:)`'s own first-
+    /// responder restore is idempotent, so the second call changes
+    /// nothing further.
     private func resolveQuestion(id: UUID, _ decision: ApprovalDecision) {
         let targetSurfaceID = store.pending.first(where: { $0.id == id })?.targetSurfaceID
         advanceCursor(pastDisplayed: id)
-        restoreTerminalFocus(targetSurfaceID)
         store.decide(id: id, decision)
+        restoreTerminalFocus(targetSurfaceID)
     }
 
     /// The approval banner's answer to an `.agentQuestion`-sourced
@@ -354,8 +371,9 @@ final class ApprovalBannerModel {
     /// The question banner's [Chat about this] action: resolves
     /// `.interrupted(.chatAboutQuestion)` -- the human wants to reply
     /// free-form in the pane instead of answering the structured prompt.
-    /// `resolveQuestion(id:_:)`'s own `restoreTerminalFocus()` call is
-    /// exactly what lets the human start typing in the pane right away.
+    /// Terminal focus follows through `ApprovalPanelController.render()`'s
+    /// own hand-off (see `resolveQuestion(id:_:)`'s own doc comment), the
+    /// same path that lets the human start typing in the pane right away.
     /// A no-op for a non-`.agentQuestion` `id`.
     func chatAboutQuestion(id: UUID) {
         guard isPendingAgentQuestion(id) else { return }
@@ -378,6 +396,51 @@ final class ApprovalBannerModel {
     /// pane that asked it, not to whatever window is merely current.
     func restoreTerminalFocusAfterInput(targetSurfaceID: UUID?) {
         restoreTerminalFocus(targetSurfaceID)
+    }
+
+    /// The panel's own top-left × button: "Calyx does not answer this
+    /// request" -- unlike `allow(id:)`/`deny(id:)` (which no-op on an
+    /// `.agentQuestion`) and `answer(id:answers:)`/`chatAboutQuestion(id:)`
+    /// (which no-op on anything else), this applies to every source, but
+    /// only when `ApprovalRequest.isDismissible` -- someone other than
+    /// Calyx (that request's own CLI, or the calling MCP agent) can still
+    /// decide it once Calyx itself declines to; see that property's own
+    /// doc comment. A non-dismissible request (grok/pi: Calyx's gate is
+    /// their only prompt) leaves this a no-op, matching
+    /// `ApprovalBannerView`'s own disabled × for one.
+    /// `AgentHookPermissionResponse.body(kind:decision:)` maps
+    /// `.dismissed` per kind: nil for claude-code/codex (no vocabulary
+    /// for it, same as `.expired`, and the ONLY kinds this ever actually
+    /// reaches). `MCPCockpitBridge.gate` maps it to
+    /// `{"status": "dismissed"}`, distinct from `{"status": "denied"}`.
+    ///
+    /// For an `.agentQuestion`, this goes through `resolveQuestion(id:_:)`,
+    /// same as `answer(id:answers:)`/`chatAboutQuestion(id:)` -- that
+    /// shared body already restores terminal focus. For `.mcpTool`/
+    /// `.agentHook`, this mirrors `allow(id:)`/`deny(id:)` for the
+    /// advance/decide steps, but ALSO restores terminal focus to
+    /// `request.targetSurfaceID` afterwards, unlike `allow(id:)`/
+    /// `deny(id:)`: after a × dismiss, the interaction continues in the
+    /// pane -- that request's own CLI, or the calling MCP agent, prompts
+    /// there next -- so first responder must land there, exactly as it
+    /// does for `.agentQuestion`. `allow(id:)`/`deny(id:)` never restore
+    /// focus for the same reason `resolveQuestion(id:_:)`'s own doc
+    /// comment gives for `handOffKeyIfNeeded()`: after those two, nothing
+    /// further needs the pane's attention right away. `request` is read
+    /// BEFORE `store.decide`, so `request.targetSurfaceID` is still
+    /// available once the request itself is gone from `store.pending`. A
+    /// stale `id` is a safe no-op either way, same as every other action
+    /// here.
+    func dismiss(id: UUID) {
+        guard let request = store.pending.first(where: { $0.id == id }), request.isDismissible else { return }
+        switch request.source {
+        case .agentQuestion:
+            resolveQuestion(id: id, .dismissed)
+        case .mcpTool, .agentHook:
+            advanceCursor(pastDisplayed: id)
+            store.decide(id: id, .dismissed)
+            restoreTerminalFocus(request.targetSurfaceID)
+        }
     }
 
     /// Branches on the clicked request's own `source`.

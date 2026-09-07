@@ -101,7 +101,8 @@ final class LiveCockpitAppAccess: CockpitAppAccessing {
     }
 
     /// `AppDelegate.currentWindowController` -- the key window while one
-    /// exists, else the last one that was key, else the first open
+    /// exists, else the front-most window that is visible and on the
+    /// active Space, else the last one that was key, else the first open
     /// window -- so a `palette_execute` approved with no window
     /// currently key still executes somewhere sensible instead of
     /// failing with `.appUnavailable`.

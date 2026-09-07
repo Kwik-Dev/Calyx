@@ -100,6 +100,12 @@ enum ApprovalDecision: Sendable, Equatable {
     /// A human's answer to an `.agentQuestion`-sourced request's
     /// `AskUserQuestion` prompt -- see `AgentQuestionAnswers`.
     case answered(AgentQuestionAnswers)
+    /// The banner's own [x] dismiss action: "Calyx does not answer this
+    /// request" -- distinct from `.denied` (nobody actually refused the
+    /// call) and from `.expired` (nobody sat out the hold window, a
+    /// human actively dismissed it). Applies to every `Source`, unlike
+    /// `.interrupted`/`.answered` (`.agentQuestion` only).
+    case dismissed
 }
 
 extension ApprovalRequest {
@@ -151,6 +157,30 @@ extension ApprovalRequest {
     var prefersWideApprovalPanel: Bool {
         guard case .agentQuestion(_, let prompt) = source else { return false }
         return prompt.questions.contains { $0.wantsInlineOptionList }
+    }
+
+    /// Whether the panel's own × ("Calyx does not answer this request",
+    /// `ApprovalBannerModel.dismiss(id:)`) applies to this request --
+    /// true only when someone OTHER than Calyx can still decide it once
+    /// Calyx itself declines to. `.mcpTool`: always true, the calling MCP
+    /// agent receives `{"status": "dismissed"}` from `MCPCockpitBridge
+    /// .gate`, a valid "nobody decided" result for any caller. `.agentHook`/
+    /// `.agentQuestion`: delegates to `AgentHookPermissionResponse
+    /// .cliKeepsOwnPrompt(kind:)` -- true only for a CLI that falls back
+    /// to its own confirmation prompt on an absent hook response (a `nil`
+    /// body, what `.dismissed` produces for such a kind, same as
+    /// `.expired`; see that type's own file header). Grok and pi have no
+    /// such fallback -- Calyx's gate is their only prompt (same header) --
+    /// so a grok/pi request is never dismissible: `ApprovalBannerView`
+    /// renders its × disabled for one, and `ApprovalBannerModel.dismiss(id:)`
+    /// no-ops.
+    var isDismissible: Bool {
+        switch source {
+        case .mcpTool:
+            return true
+        case .agentHook(_, let kind, _, _), .agentQuestion(let kind, _):
+            return AgentHookPermissionResponse.cliKeepsOwnPrompt(kind: kind)
+        }
     }
 
     /// One-line summary for the queue preview menu

@@ -18,7 +18,7 @@
 //  - Submitting a request then calling render() lazily creates the
 //    panel, records exactly one `.orderFront(frame)`, and that frame's
 //    top-right corner sits `margin` inside the injected visibleFrame,
-//    with a width equal to fixedWidth (350pt) on a screen wide enough.
+//    with a width equal to fixedWidth (344pt) on a screen wide enough.
 //  - A second render() with the SAME still-pending request is
 //    idempotent: records another `.orderFront` with an identical frame,
 //    but creates no second panel instance.
@@ -27,7 +27,7 @@
 //  - tearDown() then render() records nothing further, `isTornDown`
 //    becomes true, and the panel is no longer visible.
 //  - Width is exercised end-to-end through render(): the panel is
-//    ALWAYS exactly `ApprovalPanelArranger.fixedWidth` (350pt),
+//    ALWAYS exactly `ApprovalPanelArranger.fixedWidth` (344pt),
 //    regardless of payload length -- a single-pass measurement at a
 //    fixed width, never content-dependent; a visible frame narrower
 //    than fixedWidth clamps down to the available cap instead.
@@ -52,8 +52,8 @@ final class ApprovalPanelControllerTests: XCTestCase {
 
     private let fixedVisibleFrame = NSRect(x: 0, y: 0, width: 1440, height: 850)
 
-    private func makeRequest(payload: String = "ls -la /tmp") -> ApprovalRequest {
-        ApprovalRequest(id: UUID(), source: .mcpTool(name: "pane_run"), targetSurfaceID: nil, payload: payload, createdAt: Date())
+    private func makeRequest(payload: String = "ls -la /tmp", targetSurfaceID: UUID? = nil) -> ApprovalRequest {
+        ApprovalRequest(id: UUID(), source: .mcpTool(name: "pane_run"), targetSurfaceID: targetSurfaceID, payload: payload, createdAt: Date())
     }
 
     private func makeController(store: ApprovalInboxStore) -> ApprovalPanelController {
@@ -66,6 +66,22 @@ final class ApprovalPanelControllerTests: XCTestCase {
             model: model,
             hostWindow: { nil },
             visibleFrame: { [weak self] in self?.fixedVisibleFrame ?? .zero }
+        )
+        return (controller, model)
+    }
+
+    /// Same as `makeControllerAndModel(store:)`, but also wires
+    /// `handOffKey` to a recording closure -- used by the
+    /// `handOffKey`/`_panelIsKeyForTesting` coverage below.
+    private func makeControllerAndModel(
+        store: ApprovalInboxStore, handOffKey: @escaping (UUID?) -> Void
+    ) -> (controller: ApprovalPanelController, model: ApprovalBannerModel) {
+        let model = ApprovalBannerModel(store: store)
+        let controller = ApprovalPanelController(
+            model: model,
+            hostWindow: { nil },
+            visibleFrame: { [weak self] in self?.fixedVisibleFrame ?? .zero },
+            handOffKey: handOffKey
         )
         return (controller, model)
     }
@@ -106,7 +122,7 @@ final class ApprovalPanelControllerTests: XCTestCase {
                        "the panel's right edge must sit `margin` (12pt) inside the visible frame's right edge")
         XCTAssertEqual(frame.maxY, fixedVisibleFrame.maxY - 12, accuracy: 0.5,
                        "the panel's top edge must sit `margin` (12pt) inside the visible frame's top edge")
-        XCTAssertEqual(frame.width, 350, accuracy: 0.5, "the panel's width must always be the fixed 350pt width on a screen wide enough to fit it")
+        XCTAssertEqual(frame.width, 344, accuracy: 0.5, "the panel's width must always be the fixed 344pt width on a screen wide enough to fit it")
         XCTAssertGreaterThan(frame.height, 0, "the panel must always have a positive height")
 
         // Clean up so this store doesn't leak a pending request.
@@ -187,7 +203,7 @@ final class ApprovalPanelControllerTests: XCTestCase {
 
     // MARK: - Width is fixed, end-to-end
 
-    /// A payload far too long to fit at 350pt must NOT grow the panel --
+    /// A payload far too long to fit at 344pt must NOT grow the panel --
     /// the notification-style panel is a fixed width, and a long payload
     /// scrolls/wraps within it instead.
     func test_render_veryLongPayload_widthStaysFixed() {
@@ -204,14 +220,14 @@ final class ApprovalPanelControllerTests: XCTestCase {
             XCTFail("expected an .orderFront intent")
             return
         }
-        XCTAssertEqual(frame.width, 350, accuracy: 0.5,
-                       "a very long payload must never grow the panel past its fixed 350pt width")
+        XCTAssertEqual(frame.width, 344, accuracy: 0.5,
+                       "a very long payload must never grow the panel past its fixed 344pt width")
 
         store.decide(id: request.id, .denied(.userRejected))
     }
 
     /// A short payload's own natural content width is irrelevant now --
-    /// the panel is always exactly `fixedWidth` (350pt), never
+    /// the panel is always exactly `fixedWidth` (344pt), never
     /// content-dependent.
     func test_render_veryShortPayload_widthStaysFixed() {
         let store = ApprovalInboxStore()
@@ -227,14 +243,14 @@ final class ApprovalPanelControllerTests: XCTestCase {
             XCTFail("expected an .orderFront intent")
             return
         }
-        XCTAssertEqual(frame.width, 350, accuracy: 0.5,
-                       "a tiny payload must still render at the fixed 350pt width, never shrunk to its own content")
+        XCTAssertEqual(frame.width, 344, accuracy: 0.5,
+                       "a tiny payload must still render at the fixed 344pt width, never shrunk to its own content")
 
         store.decide(id: request.id, .denied(.userRejected))
     }
 
     /// The available cap itself (visibleFrame.width - 2*margin = 300 -
-    /// 24 = 276) falls BELOW `fixedWidth` (350) here -- proves the cap
+    /// 24 = 276) falls BELOW `fixedWidth` (344) here -- proves the cap
     /// wins over the fixed width end-to-end through `render()`,
     /// mirroring `ApprovalPanelArrangerTests.test_panelWidth_nilRequest_narrowScreen_clampsToAvailableCap`'s
     /// own pure-geometry pin.
@@ -259,7 +275,7 @@ final class ApprovalPanelControllerTests: XCTestCase {
             return
         }
         XCTAssertEqual(frame.width, 276, accuracy: 0.5,
-                       "with a 300pt-wide visible frame, the cap (300 - 2*12 = 276) must win over the 350pt fixedWidth")
+                       "with a 300pt-wide visible frame, the cap (300 - 2*12 = 276) must win over the 344pt fixedWidth")
 
         store.decide(id: request.id, .denied(.userRejected))
     }
@@ -382,5 +398,90 @@ final class ApprovalPanelControllerTests: XCTestCase {
 
         store.decide(id: first.id, .denied(.userRejected))
         store.decide(id: second.id, .denied(.userRejected))
+    }
+
+    // MARK: - handOffKey(_:), via _panelIsKeyForTesting
+
+    /// `render()`'s own displayed-request-change branch: while the panel
+    /// holds key (simulated via `_panelIsKeyForTesting = true`, since an
+    /// XCTest host cannot reliably make a real window key -- see
+    /// `_orderHookForTesting`'s own doc comment for the identical
+    /// constraint), navigating to a different pending request must
+    /// invoke `handOffKey(_:)` exactly once, with the DISPLAYED (about to
+    /// be replaced) request's own `targetSurfaceID`.
+    func test_handOffKey_invokedOnceWithDisplayedTargetSurfaceID_whenDisplayedRequestChanges_andPanelIsKey() {
+        let store = ApprovalInboxStore()
+        let firstSurfaceID = UUID()
+        let secondSurfaceID = UUID()
+        var handOffTargets: [UUID?] = []
+        let (controller, model) = makeControllerAndModel(store: store, handOffKey: { handOffTargets.append($0) })
+        controller._orderHookForTesting = { _ in }
+        let first = makeRequest(payload: "first", targetSurfaceID: firstSurfaceID)
+        let second = makeRequest(payload: "second", targetSurfaceID: secondSurfaceID)
+        store.submit(first)
+        store.submit(second)
+        controller.render()
+        // Only marked key AFTER the panel's very first render, which
+        // hands off nothing of its own (nothing was previously
+        // displayed) -- isolates the assertion below to the navigation.
+        controller._panelIsKeyForTesting = true
+
+        model.selectNext()
+        controller.render()
+
+        XCTAssertEqual(handOffTargets, [firstSurfaceID],
+                       "navigating to a different displayed request while the panel is key must invoke handOffKey exactly once, with the request that WAS displayed")
+
+        store.decide(id: first.id, .denied(.userRejected))
+        store.decide(id: second.id, .denied(.userRejected))
+    }
+
+    /// `render()`'s own order-out branch: deciding the only pending
+    /// (displayed) request while the panel holds key must invoke
+    /// `handOffKey(_:)` exactly once, with that request's own
+    /// `targetSurfaceID`.
+    func test_handOffKey_invokedOnceWithDisplayedTargetSurfaceID_onOrderOut_whenPanelIsKey() {
+        let store = ApprovalInboxStore()
+        let surfaceID = UUID()
+        var handOffTargets: [UUID?] = []
+        let (controller, _) = makeControllerAndModel(store: store, handOffKey: { handOffTargets.append($0) })
+        controller._orderHookForTesting = { _ in }
+        let request = makeRequest(targetSurfaceID: surfaceID)
+        store.submit(request)
+        controller.render()
+        controller._panelIsKeyForTesting = true
+
+        store.decide(id: request.id, .allowed)
+        controller.render()
+
+        XCTAssertEqual(handOffTargets, [surfaceID],
+                       "ordering the panel out while it is key must invoke handOffKey exactly once, with the just-decided request's own targetSurfaceID")
+    }
+
+    /// While the panel does NOT hold key, neither a displayed-request
+    /// change nor an order-out may ever invoke `handOffKey(_:)` --
+    /// `handOffKeyIfNeeded()`'s own guard.
+    func test_handOffKey_neverInvoked_whenPanelIsNotKey() {
+        let store = ApprovalInboxStore()
+        let firstSurfaceID = UUID()
+        let secondSurfaceID = UUID()
+        var handOffTargets: [UUID?] = []
+        let (controller, model) = makeControllerAndModel(store: store, handOffKey: { handOffTargets.append($0) })
+        controller._orderHookForTesting = { _ in }
+        controller._panelIsKeyForTesting = false
+        let first = makeRequest(payload: "first", targetSurfaceID: firstSurfaceID)
+        let second = makeRequest(payload: "second", targetSurfaceID: secondSurfaceID)
+        store.submit(first)
+        store.submit(second)
+        controller.render()
+
+        model.selectNext()
+        controller.render()
+        store.decide(id: first.id, .denied(.userRejected))
+        store.decide(id: second.id, .denied(.userRejected))
+        controller.render()
+
+        XCTAssertTrue(handOffTargets.isEmpty,
+                      "handOffKey must never be invoked while the panel does not hold key, for any render() cause")
     }
 }

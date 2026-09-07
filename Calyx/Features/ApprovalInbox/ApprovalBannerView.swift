@@ -50,11 +50,13 @@
 // `AgentQuestionBannerView` is given `.id(request.id)`, so a different
 // request tears its whole subtree (and `form`) down and creates a fresh
 // one -- this shell keeps no request-specific `@State` of its own for
-// it, only `isExpanded` (the tap-to-expand body toggle shared by
-// `.mcpTool`/`.agentHook`), which the SAME `.id(request.id)` at THIS
-// view's own call site (`ApprovalPanelContentView.glassWrapped(request:)`)
-// resets identically. Every action routes through plain closures into
-// `model`.
+// it, only `isPanelHovered` (drives the dismiss button's opacity), which
+// the SAME `.id(request.id)` at THIS view's own call site
+// (`ApprovalPanelContentView.glassWrapped(request:)`) resets identically
+// -- the tap-to-expand/hover-to-expand body toggle shared by `.mcpTool`/
+// `.agentHook` lives in `ExpandableBodyText` instead, reset the same way
+// by that same `.id(request.id)`. Every action routes through plain
+// closures into `model`.
 //
 // Queue navigation: while `model.positionInfo.count > 1`, a Previous/
 // Next chevron pair + "N / M" position label (see
@@ -80,13 +82,31 @@ struct ApprovalBannerView: View {
     /// `ControlCharacterDisplay.render` by the caller
     /// (`ApprovalPanelContentView.glassWrapped(request:)`).
     let hostWindowTitle: String
+    /// The owning tab's `displayTitle` for a surface-targeted request
+    /// (see `targetLabel`'s own doc comment), nil if no open window owns
+    /// the surface -- supplied by `ApprovalPanelContentView.
+    /// glassWrapped(request:)`, itself threaded from `ApprovalPanelController`'s
+    /// own init. RAW, unescaped: `targetLabel` renders it through
+    /// `ControlCharacterDisplay.render` itself, same as `toolName`.
+    let targetTabTitle: (UUID) -> String?
 
-    /// Whether the tap-to-expand body (`.mcpTool`/`.agentHook` only) is
-    /// showing its full, scrolling payload below the 2-line summary.
-    /// Reset per request by this view's own `.id(request.id)` at its
-    /// call site, same as every other per-request `@State` in this
-    /// feature.
-    @State private var isExpanded = false
+    /// Whether the pointer is over the whole panel -- drives the
+    /// dismiss button's opacity, the same opacity-only show-on-hover
+    /// visual `SidebarContentView`'s group-header × already uses.
+    /// Tracked through `onAssumeInsideHover($isPanelHovered)` rather than
+    /// plain SwiftUI `.onHover`: `.onHover`'s underlying tracking area
+    /// only fires on a boundary crossing, so it misses a cursor already
+    /// stationary over the panel when it first appears; `AssumeInsideHover`
+    /// also checks on `updateTrackingAreas()`, which fires again on every
+    /// request advance (this view's own `.id(request.id)` tears it down
+    /// and recreates it), catching the still-hovered case there too.
+    /// `AssumeInsideHover.TrackingView` derives `.activeAlways` from its
+    /// own window's `.nonactivatingPanel` style mask, which the floating
+    /// approval panel carries, so its tracking area fires even though
+    /// that window never becomes key. Reset per request by this view's
+    /// own root `.id(request.id)` via
+    /// `ApprovalPanelContentView.glassWrapped(request:)`.
+    @State private var isPanelHovered = false
 
     /// Routed through `ControlCharacterDisplay.render` same as
     /// `request.displayPayload` below -- `displayToolName` comes from the
@@ -97,14 +117,30 @@ struct ApprovalBannerView: View {
         ControlCharacterDisplay.render(request.displayToolName)
     }
 
-    /// Short, human-scannable target label -- the first 8 characters of
-    /// the target surface's UUID (enough to disambiguate panes at a
-    /// glance without printing a full UUID into the banner), or the
-    /// designated host window's own active tab title for a
-    /// window-agnostic (nil targetSurfaceID) request (e.g.
-    /// `palette_execute`, which carries no target pane at all).
+    /// The owning tab's own `displayTitle` for a surface-targeted
+    /// request (`targetTabTitle(targetSurfaceID)`, routed through
+    /// `ControlCharacterDisplay.render` here, same as `toolName`),
+    /// falling back to the first 8 characters of the target surface's
+    /// UUID when no open window owns it, OR when the owning tab's title
+    /// renders as an empty string (a tab title can be set to "" via OSC;
+    /// an empty header label is worse than the UUID fallback, so an
+    /// empty rendered title is treated the same as "no title at all")
+    /// (enough to disambiguate panes at a glance without printing a full
+    /// UUID into the banner) -- or the designated host window's own
+    /// active tab title for a window-agnostic (nil targetSurfaceID)
+    /// request (e.g. `palette_execute`, which carries no target pane at
+    /// all). `targetTabTitle(targetSurfaceID)` reads the owning `Tab`'s
+    /// own `displayTitle`, itself `@Observable`, during body evaluation,
+    /// so SwiftUI tracks that read directly and re-renders this view on
+    /// rename -- the same mechanism `ApprovalPanelContentView
+    /// .glassWrapped(request:)`'s own doc comment describes for the host
+    /// window title.
     private var targetLabel: String {
         guard let targetSurfaceID = request.targetSurfaceID else { return hostWindowTitle }
+        if let title = targetTabTitle(targetSurfaceID) {
+            let rendered = ControlCharacterDisplay.render(title)
+            if !rendered.isEmpty { return rendered }
+        }
         return String(targetSurfaceID.uuidString.prefix(8))
     }
 
@@ -139,9 +175,72 @@ struct ApprovalBannerView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+        .overlay(alignment: .topLeading) { dismissButton }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AccessibilityID.ApprovalBanner.container)
+        .onAssumeInsideHover($isPanelHovered)
     }
+
+    /// The panel's own top-left × -- "Calyx does not answer this
+    /// request", applying to every `request.source` the shell owns it
+    /// like `appIcon`, but only ACTIONABLE while `request.isDismissible`
+    /// (see that property's own doc comment): someone other than Calyx
+    /// -- that request's own CLI, or the calling MCP agent -- must still
+    /// be able to decide it once Calyx declines to. For a non-dismissible
+    /// request (grok/pi, whose gate is their only prompt), the button
+    /// stays in the SAME spot rather than disappearing (`.disabled(true)`,
+    /// greyed to `.tertiary`), with a tooltip (`.help`) and accessibility
+    /// hint explaining why -- never a caption under the body, which would
+    /// shift every OTHER source's layout too. `dismissButton` identifies
+    /// both states alike, so a test can assert `isEnabled` directly.
+    ///
+    /// Sits in the padding gutter via `.overlay`, so it draws over the
+    /// leading edge rather than pushing the icon/columns aside.
+    /// `.offset(x: 6, y: 6)` moves the button's rendered hit-testing
+    /// position (not its layout frame, which `.offset` intentionally
+    /// leaves alone) off `ApprovalPanelWindow`'s literal top-left corner
+    /// pixels: `ApprovalPanelWindow` keeps `.titled` in its `styleMask`
+    /// (needed for glass rendering), and AppKit reserves a `.titled`
+    /// window's own top-left corner for its own chrome hit-testing, so a
+    /// click landing exactly there never reaches SwiftUI at all.
+    ///
+    /// Show-on-hover (`isPanelHovered`) fades the glyph via
+    /// `.foregroundStyle(.clear)` rather than `.opacity`: `.opacity` also
+    /// zeroes the element's accessibility geometry, which would remove
+    /// the button from hit-testing and from assistive technology
+    /// entirely. Color alpha leaves the `Button`'s layout frame, and
+    /// therefore its accessibility geometry and hit-testing, untouched,
+    /// so the button stays fully clickable at all times.
+    @ViewBuilder
+    private var dismissButton: some View {
+        let glyphColor: AnyShapeStyle = isPanelHovered
+            ? (request.isDismissible ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tertiary))
+            : AnyShapeStyle(.clear)
+        let button = Button(action: { model.dismiss(id: request.id) }) {
+            Image(systemName: "xmark.circle.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(glyphColor)
+                .frame(width: 20, height: 20)
+                .animation(.easeInOut(duration: 0.15), value: isPanelHovered)
+        }
+        .buttonStyle(.plain)
+        .disabled(!request.isDismissible)
+        .offset(x: 6, y: 6)
+        .accessibilityIdentifier(AccessibilityID.ApprovalBanner.dismissButton)
+        .accessibilityLabel("Dismiss")
+
+        if request.isDismissible {
+            button
+        } else {
+            button
+                .help(Self.notDismissibleHint)
+                .accessibilityHint(Self.notDismissibleHint)
+        }
+    }
+
+    /// `dismissButton`'s own tooltip/accessibility hint for a
+    /// non-dismissible (grok/pi) request.
+    private static let notDismissibleHint = "This CLI has no prompt of its own; choose Allow or an option here."
 
     /// The app icon, matching a macOS notification banner's own leading
     /// icon -- shared by every `request.source` case, including
@@ -158,58 +257,21 @@ struct ApprovalBannerView: View {
 
     /// `headerRow`, the tappable 2-line body (`request.displayPayload`
     /// -- `payload` for `.mcpTool`, the hook call's own `summary` for
-    /// `.agentHook`), and the expanded payload once `isExpanded`.
+    /// `.agentHook`), and the tap/hover-to-expand payload
+    /// (`ExpandableBodyText`, shared with `AgentQuestionBannerView`'s own
+    /// question text).
     private var toolLeftColumn: some View {
         VStack(alignment: .leading, spacing: 4) {
             headerRow
-            bodyText
-            if isExpanded {
-                expandedPayload
-            }
+            ExpandableBodyText(
+                text: ControlCharacterDisplay.render(request.displayPayload),
+                collapsedFont: .system(size: 12),
+                collapsedIdentifier: AccessibilityID.ApprovalBanner.payload,
+                expandedFont: .system(.callout, design: .monospaced),
+                collapsedForegroundIsSecondary: true
+            )
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    /// The 2-line, tap-to-expand body shared by `.mcpTool`/`.agentHook`.
-    /// The accessibility label carries the FULL rendered text (an
-    /// XCUITest suite reads it via `contains(marker)` while the on-
-    /// screen text is visually clipped to 2 lines); the tap toggles
-    /// `isExpanded`, revealing `expandedPayload` below. Not `.textSelection(
-    /// .enabled)`: on macOS that backs a `Text` with a real AppKit
-    /// selectable text view which consumes `mouseDown` for its own
-    /// selection handling and never forwards it, so no gesture attached
-    /// to this `Text` -- `.onTapGesture` or otherwise -- ever sees the
-    /// click. The full payload stays selectable via `expandedPayload`,
-    /// which this tap reveals.
-    private var bodyText: some View {
-        let rendered = ControlCharacterDisplay.render(request.displayPayload)
-        return Text(rendered)
-            .font(.system(size: 12))
-            .lineLimit(2)
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityIdentifier(AccessibilityID.ApprovalBanner.payload)
-            .accessibilityLabel(Text(rendered))
-            .contentShape(Rectangle())
-            .onTapGesture { isExpanded.toggle() }
-    }
-
-    /// The full, scrolling monospaced payload shown below `bodyText`
-    /// while `isExpanded` -- same construction as the pre-notification
-    /// banner's own payload view (a one-line command must never reserve
-    /// blank space; `.frame(maxHeight: 120)` caps a long one, applied
-    /// BEFORE `.fixedSize` so it clamps what content height gets
-    /// reported).
-    private var expandedPayload: some View {
-        ScrollView(.vertical) {
-            Text(ControlCharacterDisplay.render(request.displayPayload))
-                .font(.system(.callout, design: .monospaced))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .textSelection(.enabled)
-                .accessibilityIdentifier(AccessibilityID.ApprovalBanner.payloadExpanded)
-        }
-        .frame(maxHeight: 120)
-        .fixedSize(horizontal: false, vertical: true)
     }
 
     // MARK: - `.mcpTool`: primary button + menu items
@@ -223,9 +285,7 @@ struct ApprovalBannerView: View {
     @ViewBuilder
     private var mcpMenuItems: some View {
         Button(Self.menuRowTitle("Always Allow")) { model.alwaysAllow(id: request.id) }
-            .accessibilityIdentifier(AccessibilityID.ApprovalBanner.alwaysAllowButton)
         Button(Self.menuRowTitle("Deny")) { model.deny(id: request.id) }
-            .accessibilityIdentifier(AccessibilityID.ApprovalBanner.denyButton)
     }
 
     // MARK: - `.agentHook`: primary button + menu items
@@ -250,24 +310,21 @@ struct ApprovalBannerView: View {
     /// for why that flag is what decides whether Calyx's row renders.
     @ViewBuilder
     private func agentHookMenuItems(toolName: String, offers: AgentHookOffers) -> some View {
-        ForEach(Array(offers.permissionUpdates.enumerated()), id: \.offset) { index, offer in
+        ForEach(Array(offers.permissionUpdates.enumerated()), id: \.offset) { _, offer in
             Button(Self.menuRowTitle(offer.label)) {
                 model.allowWithPermissions(id: request.id, offer: offer)
             }
-            .accessibilityIdentifier(AccessibilityID.ApprovalBanner.choiceRow(index))
         }
 
         if !offers.cliOwnsPersistence {
             Button(Self.menuRowTitle("Always Allow \(toolName) in This Pane")) {
                 model.alwaysAllow(id: request.id)
             }
-            .accessibilityIdentifier(AccessibilityID.ApprovalBanner.alwaysAllowButton)
         }
 
         Button(Self.menuRowTitle("No")) {
             model.deny(id: request.id)
         }
-        .accessibilityIdentifier(AccessibilityID.ApprovalBanner.denyButton)
     }
 
     // MARK: - Header row (shared by every source)

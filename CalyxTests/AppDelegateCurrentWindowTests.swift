@@ -3,10 +3,12 @@
 //  CalyxTests
 //
 //  Covers `AppDelegate.currentWindowController` (the window the user is
-//  working in: the key `CalyxWindowController`, else the last one that
-//  was key, else the first open window, nil with zero open windows --
-//  resolved via `currentWindowTracker`, see `CurrentWindowTrackerTests
-//  .swift`'s own header for the full resolution contract), the app-wide
+//  working in, resolved in three tiers: the key `CalyxWindowController`,
+//  else the front-most window that is visible and on the active Space,
+//  else the last one that was key, else the first open window, nil with
+//  zero open windows -- the last tier resolved via `currentWindowTracker`,
+//  see `CurrentWindowTrackerTests.swift`'s own header for the full
+//  resolution contract), the app-wide
 //  approval panel wiring that hangs off it, `windowController(owningSurface:)`,
 //  and `restoreTerminalFocusAfterApproval(targetSurfaceID:)`.
 //  `approvalBannerModel`/`approvalPanelController` are singletons owned

@@ -676,6 +676,40 @@ final class MCPCockpitBridgeTests: XCTestCase {
         XCTAssertEqual(access.sendCommandCallCount, 0, "a denied command must never reach access.sendCommand")
     }
 
+    /// A `.dismissed` decision ("Calyx does not answer this request")
+    /// must return `{"status": "dismissed"}` -- distinct from
+    /// `{"status": "denied"}`, since nobody actually denied the call --
+    /// and, like every other non-`.allowed` outcome, must never reach
+    /// `access.sendCommand`.
+    func test_paneRun_dismissedDecision_returnsStatusDismissed_neverExecutes() async throws {
+        let suiteName = "com.calyx.tests.MCPCockpitBridgeTests.paneRunDismissed"
+        CockpitSettings._testUseSuite(named: suiteName)
+        defer { CockpitSettings._testTeardownSuite(named: suiteName) }
+
+        let access = FakeCockpitAccess()
+        access.paneExistsResult = true
+        let approvals = ApprovalInboxStore()
+        let bridge = MCPCockpitBridge(
+            access: access, sessionSurfaceMap: SessionSurfaceMap(),
+            approvals: approvals, agentRegistry: AgentRegistry(), commandLogStore: CommandLogStore()
+        )
+        let surfaceID = UUID()
+
+        let callTask = await startGatedCall(bridge, name: "pane_run", arguments: ["surface_id": surfaceID.uuidString, "command": "rm -rf /tmp/x"])
+
+        XCTAssertEqual(approvals.pending.count, 1)
+        guard let requestID = approvals.pending.first?.id else {
+            callTask.cancel()
+            return
+        }
+        approvals.decide(id: requestID, .dismissed)
+
+        let result = try await callTask.value
+        let json = try jsonDict(result)
+        XCTAssertEqual(json["status"] as? String, "dismissed")
+        XCTAssertEqual(access.sendCommandCallCount, 0, "a dismissed command must never reach access.sendCommand")
+    }
+
     /// `.answered` is only ever produced for an `.agentQuestion`-sourced
     /// request (the approval banner's own AskUserQuestion flow), never
     /// for an `.mcpTool`-sourced one like `pane_run` -- but `gate`'s
@@ -725,6 +759,8 @@ final class MCPCockpitBridgeTests: XCTestCase {
     /// `.mcpTool`-sourced one like `pane_run` -- but `gate`'s switch over
     /// `ApprovalDecision` must still handle each exhaustively, and map
     /// every one of them to `{"status": "denied"}`, never `.proceed`.
+    /// `.dismissed` is deliberately excluded from this table -- it has
+    /// its own status, see `test_paneRun_dismissedDecision_returnsStatusDismissed_neverExecutes`.
     func test_paneRun_everyNonAllowedNonExpiredDecision_returnsStatusDenied_neverExecutes() async throws {
         let suiteName = "com.calyx.tests.MCPCockpitBridgeTests.paneRunNonAllowedDecisions"
         CockpitSettings._testUseSuite(named: suiteName)

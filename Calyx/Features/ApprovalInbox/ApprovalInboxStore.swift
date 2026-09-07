@@ -164,17 +164,17 @@ final class ApprovalInboxStore {
     /// the same "the caller may already be gone" hazard: every one is a
     /// decision a human actually made that GRANTS something (a plain
     /// allow, the CLI's own always-allow choice, or an answered
-    /// question), as opposed to `.denied`/`.interrupted`/`.expired`,
-    /// which pass through unchanged -- none of those three grants
-    /// anything, so there is nothing for a vanished caller to leave
-    /// un-acted-on.
+    /// question), as opposed to `.denied`/`.interrupted`/`.expired`/
+    /// `.dismissed`, which pass through unchanged -- none of those four
+    /// grants anything, so there is nothing for a vanished caller to
+    /// leave un-acted-on.
     func awaitDecisionHonoringCancellation(id: UUID, timeoutMs: Int) async -> ApprovalDecision {
         let decision = await awaitDecision(id: id, timeoutMs: timeoutMs)
         switch decision {
         case .allowed, .allowedWithPermissions, .answered:
             guard Task.isCancelled else { return decision }
             return .expired
-        case .denied, .interrupted, .expired:
+        case .denied, .interrupted, .expired, .dismissed:
             return decision
         }
     }
