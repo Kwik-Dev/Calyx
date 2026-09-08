@@ -12,23 +12,25 @@
 //  re-simulation of whatever the implementation happens to compute.
 //
 //  Coverage:
-//  - anchor(size:visibleFrame:margin:): top-right corner, margin pt
-//    inset from BOTH edges, against a visibleFrame whose origin is NOT
-//    (0, 0) -- proves the arithmetic is expressed in terms of
+//  - anchor(size:visibleFrame:marginRight:marginTop:): top-right corner,
+//    marginRight pt inset from the right edge, marginTop pt inset from
+//    the top edge, against a visibleFrame whose origin is NOT (0, 0) --
+//    proves the arithmetic is expressed in terms of
 //    visibleFrame.maxX/maxY, never hardcoded against a screen at the
 //    origin.
-//  - windowFrame(sheetSize:visibleFrame:margin:): the WINDOW's own frame
-//    for a glass sheet of a given size -- 2*gutter points wider and
-//    taller than the sheet (gutter on every side), its right and top
-//    edges each pushed gutter further past the sheet's own right/top
-//    edges.
-//  - panelWidth(for:visibleFrame:margin:): the notification-style panel
-//    is one of exactly two fixed widths, never content-dependent -- nil
-//    or a non-wide request reads fixedWidth (344pt), a request whose
+//  - windowFrame(sheetSize:visibleFrame:marginRight:marginTop:): the
+//    WINDOW's own frame for a glass sheet of a given size -- 2*gutter
+//    points wider and taller than the sheet (gutter on every side), its
+//    right and top edges each pushed gutter further past the sheet's own
+//    right/top edges.
+//  - panelWidth(for:visibleFrame:marginRight:): the notification-style
+//    panel is one of exactly two fixed widths, never content-dependent --
+//    nil or a non-wide request reads fixedWidth (344pt), a request whose
 //    prompt wants inline option rows reads wideWidth (640pt), and either
-//    way min(desiredWidth, visibleFrame.width - 2*margin) so a narrow
-//    screen still clamps down to the available cap.
-//  - heightCap(visibleFrame:margin:): the visible height minus 2*margin.
+//    way min(desiredWidth, visibleFrame.width - 2*marginRight) so a
+//    narrow screen still clamps down to the available cap.
+//  - heightCap(visibleFrame:marginTop:): the visible height minus
+//    2*marginTop.
 //
 
 import XCTest
@@ -48,33 +50,32 @@ final class ApprovalPanelArrangerTests: XCTestCase {
 
         let rect = ApprovalPanelArranger.anchor(size: size, visibleFrame: visibleFrame)
 
-        // maxX = 100 + 1440 = 1540; x = 1540 - 12 - 400 = 1128
-        // maxY = 50 + 850 = 900;   y = 900 - 12 - 300 = 588
-        XCTAssertEqual(rect.origin.x, 1128, accuracy: 0.001, "anchor's x must be visibleFrame.maxX - margin - width")
-        XCTAssertEqual(rect.origin.y, 588, accuracy: 0.001, "anchor's y must be visibleFrame.maxY - margin - height")
+        // maxX = 100 + 1440 = 1540; x = 1540 - 17 - 400 = 1123
+        // maxY = 50 + 850 = 900;   y = 900 - 16 - 300 = 584
+        XCTAssertEqual(rect.origin.x, 1123, accuracy: 0.001, "anchor's x must be visibleFrame.maxX - marginRight - width")
+        XCTAssertEqual(rect.origin.y, 584, accuracy: 0.001, "anchor's y must be visibleFrame.maxY - marginTop - height")
         XCTAssertEqual(rect.width, 400, accuracy: 0.001)
         XCTAssertEqual(rect.height, 300, accuracy: 0.001)
-        XCTAssertEqual(rect.maxX, visibleFrame.maxX - ApprovalPanelArranger.margin, accuracy: 0.001,
-                       "the anchored rect's right edge must sit exactly `margin` inside visibleFrame's right edge")
-        XCTAssertEqual(rect.maxY, visibleFrame.maxY - ApprovalPanelArranger.margin, accuracy: 0.001,
-                       "the anchored rect's top edge must sit exactly `margin` inside visibleFrame's top edge")
+        XCTAssertEqual(rect.maxX, visibleFrame.maxX - ApprovalPanelArranger.marginRight, accuracy: 0.001,
+                       "the anchored rect's right edge must sit exactly `marginRight` inside visibleFrame's right edge")
+        XCTAssertEqual(rect.maxY, visibleFrame.maxY - ApprovalPanelArranger.marginTop, accuracy: 0.001,
+                       "the anchored rect's top edge must sit exactly `marginTop` inside visibleFrame's top edge")
     }
 
     func test_anchor_customMargin_isRespected() {
         let size = CGSize(width: 200, height: 100)
 
-        let rect = ApprovalPanelArranger.anchor(size: size, visibleFrame: visibleFrame, margin: 20)
+        let rect = ApprovalPanelArranger.anchor(size: size, visibleFrame: visibleFrame, marginRight: 20, marginTop: 30)
 
         XCTAssertEqual(rect.maxX, visibleFrame.maxX - 20, accuracy: 0.001)
-        XCTAssertEqual(rect.maxY, visibleFrame.maxY - 20, accuracy: 0.001)
+        XCTAssertEqual(rect.maxY, visibleFrame.maxY - 30, accuracy: 0.001)
     }
 
     // MARK: - windowFrame
 
     /// For a 400x300 sheet against the same non-origin visibleFrame:
     /// window width = 400 + 24 = 424, height = 300 + 24 = 324;
-    /// maxX = 1540 - 12 + 12 = 1540 (margin cancels gutter, both 12 here);
-    /// maxY = 900 - 12 + 12 = 900 (same cancellation).
+    /// maxX = 1540 - 17 + 12 = 1535; maxY = 900 - 16 + 12 = 896.
     func test_windowFrame_isSheetSizePlusGutter_topRightAnchored() {
         let sheetSize = CGSize(width: 400, height: 300)
 
@@ -82,10 +83,10 @@ final class ApprovalPanelArrangerTests: XCTestCase {
 
         XCTAssertEqual(rect.width, 424, accuracy: 0.001, "window width must be sheetSize.width + 2*gutter")
         XCTAssertEqual(rect.height, 324, accuracy: 0.001, "window height must be sheetSize.height + 2*gutter")
-        XCTAssertEqual(rect.maxX, visibleFrame.maxX - ApprovalPanelArranger.margin + ApprovalPanelArranger.gutter,
-                       accuracy: 0.001, "window maxX must be visibleFrame.maxX - margin + gutter")
-        XCTAssertEqual(rect.maxY, visibleFrame.maxY - ApprovalPanelArranger.margin + ApprovalPanelArranger.gutter,
-                       accuracy: 0.001, "window maxY must be visibleFrame.maxY - margin + gutter")
+        XCTAssertEqual(rect.maxX, visibleFrame.maxX - ApprovalPanelArranger.marginRight + ApprovalPanelArranger.gutter,
+                       accuracy: 0.001, "window maxX must be visibleFrame.maxX - marginRight + gutter")
+        XCTAssertEqual(rect.maxY, visibleFrame.maxY - ApprovalPanelArranger.marginTop + ApprovalPanelArranger.gutter,
+                       accuracy: 0.001, "window maxY must be visibleFrame.maxY - marginTop + gutter")
     }
 
     /// The SHEET's own top-right corner (window.maxX - gutter,
@@ -156,35 +157,35 @@ final class ApprovalPanelArrangerTests: XCTestCase {
         XCTAssertEqual(width, ApprovalPanelArranger.wideWidth, accuracy: 0.001)
     }
 
-    /// A narrow "screen" whose own cap (width - 2*margin) falls BELOW
-    /// `fixedWidth`: the cap must win for a `nil`/non-wide request, so
-    /// the panel can never be wider than the available space no matter
-    /// how small that space is.
+    /// A narrow "screen" whose own cap (width - 2*marginRight) falls
+    /// BELOW `fixedWidth`: the cap must win for a `nil`/non-wide request,
+    /// so the panel can never be wider than the available space no
+    /// matter how small that space is.
     func test_panelWidth_nilRequest_narrowScreen_clampsToAvailableCap() {
         let narrowVisibleFrame = NSRect(x: 0, y: 0, width: 300, height: 850)
 
         let width = ApprovalPanelArranger.panelWidth(for: nil, visibleFrame: narrowVisibleFrame)
 
-        // cap = 300 - 24 = 276, which is below fixedWidth (344)
-        XCTAssertEqual(width, 276, accuracy: 0.001,
+        // cap = 300 - 34 = 266, which is below fixedWidth (344)
+        XCTAssertEqual(width, 266, accuracy: 0.001,
                        "when the available cap itself falls below fixedWidth, the cap must win")
     }
 
     /// The same cap-wins behavior for a wide request: the cap
-    /// (visibleFrame.width - 2*margin) falls below `wideWidth` (640) too,
-    /// and must win over it the same way.
+    /// (visibleFrame.width - 2*marginRight) falls below `wideWidth` (640)
+    /// too, and must win over it the same way.
     func test_panelWidth_wideRequest_narrowScreen_clampsToAvailableCap() {
         let narrowVisibleFrame = NSRect(x: 0, y: 0, width: 300, height: 850)
 
         let width = ApprovalPanelArranger.panelWidth(for: makeWideRequest(), visibleFrame: narrowVisibleFrame)
 
-        // cap = 300 - 24 = 276, which is below wideWidth (640)
-        XCTAssertEqual(width, 276, accuracy: 0.001,
+        // cap = 300 - 34 = 266, which is below wideWidth (640)
+        XCTAssertEqual(width, 266, accuracy: 0.001,
                        "when the available cap itself falls below wideWidth, the cap must win")
     }
 
     func test_panelWidth_customMargin_isRespected() {
-        let width = ApprovalPanelArranger.panelWidth(for: nil, visibleFrame: visibleFrame, margin: 600)
+        let width = ApprovalPanelArranger.panelWidth(for: nil, visibleFrame: visibleFrame, marginRight: 600)
 
         // cap = 1440 - 1200 = 240, below fixedWidth (344)
         XCTAssertEqual(width, 240, accuracy: 0.001)
@@ -195,11 +196,11 @@ final class ApprovalPanelArrangerTests: XCTestCase {
     func test_heightCap_isVisibleHeightMinusTwoMargins() {
         let cap = ApprovalPanelArranger.heightCap(visibleFrame: visibleFrame)
 
-        XCTAssertEqual(cap, 826, accuracy: 0.001, "heightCap must be visibleFrame.height - 2*margin (850 - 24)")
+        XCTAssertEqual(cap, 818, accuracy: 0.001, "heightCap must be visibleFrame.height - 2*marginTop (850 - 32)")
     }
 
     func test_heightCap_customMargin_isRespected() {
-        let cap = ApprovalPanelArranger.heightCap(visibleFrame: visibleFrame, margin: 50)
+        let cap = ApprovalPanelArranger.heightCap(visibleFrame: visibleFrame, marginTop: 50)
 
         XCTAssertEqual(cap, 750, accuracy: 0.001)
     }
@@ -207,11 +208,10 @@ final class ApprovalPanelArrangerTests: XCTestCase {
     // MARK: - Constants
 
     func test_constants_matchSpec() {
-        XCTAssertEqual(ApprovalPanelArranger.margin, 12, accuracy: 0.001)
+        XCTAssertEqual(ApprovalPanelArranger.marginRight, 17, accuracy: 0.001)
+        XCTAssertEqual(ApprovalPanelArranger.marginTop, 16, accuracy: 0.001)
         XCTAssertEqual(ApprovalPanelArranger.fixedWidth, 344, accuracy: 0.001)
         XCTAssertEqual(ApprovalPanelArranger.wideWidth, 640, accuracy: 0.001)
         XCTAssertEqual(ApprovalPanelArranger.gutter, 12, accuracy: 0.001)
-        XCTAssertEqual(ApprovalPanelArranger.gutter, ApprovalPanelArranger.margin, accuracy: 0.001,
-                       "gutter is defined as margin, so the window's own top and right edges land exactly on visibleFrame's own top and right edges")
     }
 }

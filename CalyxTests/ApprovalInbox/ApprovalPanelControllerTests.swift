@@ -17,13 +17,14 @@
 //    run.
 //  - Submitting a request then calling render() lazily creates the
 //    panel, records exactly one `.orderFront(frame)`, and that WINDOW
-//    frame's own right/top edges land exactly on the injected
-//    visibleFrame's own right/top edges (margin cancels gutter, both
-//    12pt), with a width equal to fixedWidth + 2*gutter (344 + 24 =
-//    368pt) on a screen wide enough -- the window is
-//    `2 * ApprovalPanelArranger.gutter` points larger than the glass
-//    sheet on every side, so the sheet's own top-right corner (not the
-//    window's) is the one that sits exactly `margin` inside both edges.
+//    frame's own right/top edges land exactly at
+//    visibleFrame.maxX - marginRight + gutter and
+//    visibleFrame.maxY - marginTop + gutter, with a width equal to
+//    fixedWidth + 2*gutter (344 + 24 = 368pt) on a screen wide enough --
+//    the window is `2 * ApprovalPanelArranger.gutter` points larger than
+//    the glass sheet on every side, so the sheet's own top-right corner
+//    (not the window's) is the one that sits exactly `marginRight`/
+//    `marginTop` inside those edges.
 //  - A second render() with the SAME still-pending request is
 //    idempotent: records another `.orderFront` with an identical frame,
 //    but creates no second panel instance.
@@ -131,13 +132,13 @@ final class ApprovalPanelControllerTests: XCTestCase {
             return
         }
         XCTAssertEqual(frame.maxX,
-                       fixedVisibleFrame.maxX - ApprovalPanelArranger.margin + ApprovalPanelArranger.gutter,
+                       fixedVisibleFrame.maxX - ApprovalPanelArranger.marginRight + ApprovalPanelArranger.gutter,
                        accuracy: 0.5,
-                       "the window's right edge must sit at visibleFrame.maxX - margin + gutter, which cancels to exactly visibleFrame.maxX")
+                       "the window's right edge must sit at visibleFrame.maxX - marginRight + gutter")
         XCTAssertEqual(frame.maxY,
-                       fixedVisibleFrame.maxY - ApprovalPanelArranger.margin + ApprovalPanelArranger.gutter,
+                       fixedVisibleFrame.maxY - ApprovalPanelArranger.marginTop + ApprovalPanelArranger.gutter,
                        accuracy: 0.5,
-                       "the window's top edge must sit at visibleFrame.maxY - margin + gutter, which cancels to exactly visibleFrame.maxY")
+                       "the window's top edge must sit at visibleFrame.maxY - marginTop + gutter")
         XCTAssertEqual(frame.width, 368, accuracy: 0.5, "the window's width must always be the fixed 344pt sheet width plus 2*gutter (24pt)")
         XCTAssertGreaterThan(frame.height, 0, "the panel must always have a positive height")
 
@@ -265,8 +266,8 @@ final class ApprovalPanelControllerTests: XCTestCase {
         store.decide(id: request.id, .denied(.userRejected))
     }
 
-    /// The available cap itself (visibleFrame.width - 2*margin = 300 -
-    /// 24 = 276) falls BELOW `fixedWidth` (344) here -- proves the cap
+    /// The available cap itself (visibleFrame.width - 2*marginRight = 300
+    /// - 34 = 266) falls BELOW `fixedWidth` (344) here -- proves the cap
     /// wins over the fixed width end-to-end through `render()`,
     /// mirroring `ApprovalPanelArrangerTests.test_panelWidth_nilRequest_narrowScreen_clampsToAvailableCap`'s
     /// own pure-geometry pin.
@@ -290,8 +291,8 @@ final class ApprovalPanelControllerTests: XCTestCase {
             XCTFail("expected an .orderFront intent")
             return
         }
-        XCTAssertEqual(frame.width, 300, accuracy: 0.5,
-                       "with a 300pt-wide visible frame, the sheet cap (300 - 2*12 = 276) must win over the 344pt fixedWidth, plus 2*gutter (276 + 24 = 300) for the window")
+        XCTAssertEqual(frame.width, 290, accuracy: 0.5,
+                       "with a 300pt-wide visible frame, the sheet cap (300 - 2*17 = 266) must win over the 344pt fixedWidth, plus 2*gutter (266 + 24 = 290) for the window")
 
         store.decide(id: request.id, .denied(.userRejected))
     }
@@ -369,13 +370,13 @@ final class ApprovalPanelControllerTests: XCTestCase {
             return
         }
         XCTAssertEqual(frame.maxX,
-                       newVisibleFrame.maxX - ApprovalPanelArranger.margin + ApprovalPanelArranger.gutter,
+                       newVisibleFrame.maxX - ApprovalPanelArranger.marginRight + ApprovalPanelArranger.gutter,
                        accuracy: 0.5,
-                       "reanchor() must anchor to the NEW visible frame's own right edge (margin cancels gutter), not the one render() originally measured against")
+                       "reanchor() must anchor to the NEW visible frame's own right edge, not the one render() originally measured against")
         XCTAssertEqual(frame.maxY,
-                       newVisibleFrame.maxY - ApprovalPanelArranger.margin + ApprovalPanelArranger.gutter,
+                       newVisibleFrame.maxY - ApprovalPanelArranger.marginTop + ApprovalPanelArranger.gutter,
                        accuracy: 0.5,
-                       "reanchor() must anchor the window's top edge to the NEW visible frame's own top edge: visibleFrame.maxY - margin + gutter (margin cancels gutter)")
+                       "reanchor() must anchor the window's top edge to the NEW visible frame's own top edge: visibleFrame.maxY - marginTop + gutter")
         let newHeightCap = ApprovalPanelArranger.heightCap(visibleFrame: newVisibleFrame)
         XCTAssertLessThanOrEqual(frame.height, newHeightCap + (2 * ApprovalPanelArranger.gutter),
                                  "reanchor() must respect the NEW visible frame's own height cap, plus the window's 2*gutter")

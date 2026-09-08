@@ -385,13 +385,12 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
     /// main window's own content -- its window sits at the screen's own
     /// visible top-right corner, independent of the main window's own
     /// frame. The WINDOW itself carries a `gutter` (12pt) transparent
-    /// margin UNIFORMLY on all four sides, so its own top and right edges
-    /// sit exactly at the screen's visible top and right edges (not
-    /// `margin` (12pt) inside them: the glass sheet's own top-right
-    /// corner is the one that sits `margin` inside both edges, and the
-    /// window's top/right edges sit `gutter` further out than that --
-    /// since `gutter` is defined as `margin`, both exactly cancel). The
-    /// banner's `.accessibilityElement(children: .contain)` container
+    /// margin UNIFORMLY on all four sides: the glass sheet's own
+    /// top-right corner sits `marginRight` (17pt) inside the screen's
+    /// visible right edge and `marginTop` (16pt) inside its visible top
+    /// edge, and the window's own top/right edges sit `gutter` further
+    /// out than that. The banner's `.accessibilityElement(children:
+    /// .contain)` container
     /// reports only the union of its accessible descendants, which
     /// excludes `ApprovalBannerView`'s own padding, so its frame sits
     /// 12pt inside the sheet's left and right edges and 10pt inside its
@@ -437,24 +436,23 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
         let visibleFrame = screen.visibleFrame
         let visibleRight = visibleFrame.maxX
 
-        // Mirrors `ApprovalPanelArranger.margin`/`.gutter`, both 12pt
-        // (there is no module access to the real constants from this
-        // out-of-process UI test target) -- the WINDOW's own top and
-        // right edges each sit at `visibleFrame.maxY/maxX - margin +
-        // gutter`, which these two being equal reduces to
-        // `visibleFrame.maxY`/`visibleFrame.maxX` exactly (see
-        // `ApprovalPanelArranger.gutter`'s own doc comment for why it is
-        // defined as `margin`).
-        let margin: CGFloat = 12
+        // Mirrors `ApprovalPanelArranger.marginRight` (17pt),
+        // `.marginTop` (16pt), and `.gutter` (12pt) (there is no module
+        // access to the real constants from this out-of-process UI test
+        // target) -- the WINDOW's own right edge sits at
+        // `visibleFrame.maxX - marginRight + gutter`, and its own top
+        // edge sits at `visibleFrame.maxY - marginTop + gutter`.
+        let marginRight: CGFloat = 17
+        let marginTop: CGFloat = 16
         let gutter: CGFloat = 12
-        let expectedWindowMaxY = visibleFrame.maxY - margin + gutter
-        let visibleTop = primaryHeight - expectedWindowMaxY
-        let expectedWindowMaxX = visibleRight - margin + gutter
+        let visibleTop = primaryHeight - visibleFrame.maxY
+        let expectedWindowTop = visibleTop + marginTop - gutter
+        let expectedWindowMaxX = visibleRight - marginRight + gutter
 
         XCTAssertEqual(bannerFrame.maxX, expectedWindowMaxX, accuracy: 2,
-                       "the floating approval panel's right edge must sit at visibleFrame.maxX - margin + gutter, which cancels to exactly visibleFrame.maxX -- got window frame \(bannerFrame), visible right edge \(visibleRight)")
-        XCTAssertEqual(bannerFrame.minY, visibleTop, accuracy: 2,
-                       "the floating approval panel WINDOW's top edge must sit at visibleFrame.maxY - margin + gutter -- got window frame \(bannerFrame), expected top edge \(visibleTop)")
+                       "the floating approval panel's right edge must sit at visibleFrame.maxX - marginRight + gutter -- got window frame \(bannerFrame), visible right edge \(visibleRight)")
+        XCTAssertEqual(bannerFrame.minY, expectedWindowTop, accuracy: 2,
+                       "the floating approval panel WINDOW's top edge must sit at visibleFrame.maxY - marginTop + gutter (visibleTop + marginTop - gutter in top-left-origin space) -- got window frame \(bannerFrame), expected top edge \(expectedWindowTop)")
 
         denyViaOptionsMenu()
 
