@@ -28,8 +28,8 @@
 // any) + "i / n" position (only while more than one question is queued
 // in THIS prompt -- distinct from `ApprovalBannerView`'s own queue
 // navigator "N / M", which browses every pending request queued for
-// this WINDOW, not the questions within this one prompt) + a tap/hover-
-// to-expand question text (`ExpandableBodyText`, shared with
+// this WINDOW, not the questions within this one prompt) + a
+// tap-to-expand, hover-to-tooltip question text (`ExpandableBodyText`, shared with
 // `ApprovalBannerView`'s own tool/hook payload), then source-specific
 // extras:
 // the inline option-list layout (plus a side-by-side markdown preview

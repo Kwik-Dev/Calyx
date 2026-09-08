@@ -171,9 +171,9 @@ extension ApprovalRequest {
     /// body, what `.dismissed` produces for such a kind, same as
     /// `.expired`; see that type's own file header). Grok and pi have no
     /// such fallback -- Calyx's gate is their only prompt (same header) --
-    /// so a grok/pi request is never dismissible: `ApprovalBannerView`
-    /// renders its × disabled for one, and `ApprovalBannerModel.dismiss(id:)`
-    /// no-ops.
+    /// so a grok/pi request is never dismissible: `ApprovalPanelContentView
+    /// .dismissButton(request:)` renders its × disabled for one, and
+    /// `ApprovalBannerModel.dismiss(id:)` no-ops.
     var isDismissible: Bool {
         switch source {
         case .mcpTool:

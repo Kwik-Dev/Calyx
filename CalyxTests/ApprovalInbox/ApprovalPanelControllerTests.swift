@@ -16,9 +16,14 @@
 //    order intent, so `app.windows.count` stays untouched in a real
 //    run.
 //  - Submitting a request then calling render() lazily creates the
-//    panel, records exactly one `.orderFront(frame)`, and that frame's
-//    top-right corner sits `margin` inside the injected visibleFrame,
-//    with a width equal to fixedWidth (344pt) on a screen wide enough.
+//    panel, records exactly one `.orderFront(frame)`, and that WINDOW
+//    frame's own right edge sits `margin` inside the injected
+//    visibleFrame's right edge, with a width equal to fixedWidth +
+//    dismissGutter (344 + 12 = 356pt) on a screen wide enough -- the
+//    window is `ApprovalPanelArranger.dismissGutter` points larger than
+//    the glass sheet on its top and left, so the sheet's own top-right
+//    corner (not the window's) is the one that sits exactly `margin`
+//    inside both edges.
 //  - A second render() with the SAME still-pending request is
 //    idempotent: records another `.orderFront` with an identical frame,
 //    but creates no second panel instance.
@@ -26,11 +31,13 @@
 //    `.orderOut`.
 //  - tearDown() then render() records nothing further, `isTornDown`
 //    becomes true, and the panel is no longer visible.
-//  - Width is exercised end-to-end through render(): the panel is
-//    ALWAYS exactly `ApprovalPanelArranger.fixedWidth` (344pt),
-//    regardless of payload length -- a single-pass measurement at a
-//    fixed width, never content-dependent; a visible frame narrower
-//    than fixedWidth clamps down to the available cap instead.
+//  - Width is exercised end-to-end through render(): the WINDOW's own
+//    width is ALWAYS exactly `ApprovalPanelArranger.fixedWidth +
+//    dismissGutter` (344 + 12 = 356pt), regardless of payload length --
+//    a single-pass measurement at a fixed sheet width, never
+//    content-dependent; a visible frame narrower than fixedWidth clamps
+//    the SHEET down to the available cap instead, still `+ dismissGutter`
+//    for the window.
 //  - reanchor() re-measures (the same path render() itself takes) and
 //    reports a fresh order intent anchored to whatever the injected
 //    `visibleFrame` closure currently reports, not whatever it reported
@@ -41,6 +48,11 @@
 //    intent. After navigating to a different pending request
 //    (selectNext()) and pumping again, exactly one new order intent is
 //    recorded for the navigation itself, and no more after that.
+//  - A payload that hits `heightCap(visibleFrame:)` (a very short visible
+//    frame) yields a WINDOW height of exactly `heightCap + dismissGutter`
+//    -- pins `measureFrame(hostingController:)`'s own gutter arithmetic,
+//    ruling out both an un-inflated `heightCap` and a double-counted
+//    `heightCap + 2*dismissGutter`.
 //
 
 import XCTest
@@ -119,10 +131,12 @@ final class ApprovalPanelControllerTests: XCTestCase {
             return
         }
         XCTAssertEqual(frame.maxX, fixedVisibleFrame.maxX - 12, accuracy: 0.5,
-                       "the panel's right edge must sit `margin` (12pt) inside the visible frame's right edge")
-        XCTAssertEqual(frame.maxY, fixedVisibleFrame.maxY - 12, accuracy: 0.5,
-                       "the panel's top edge must sit `margin` (12pt) inside the visible frame's top edge")
-        XCTAssertEqual(frame.width, 344, accuracy: 0.5, "the panel's width must always be the fixed 344pt width on a screen wide enough to fit it")
+                       "the window's right edge must sit `margin` (12pt) inside the visible frame's right edge (the dismiss gutter never sits on the right)")
+        XCTAssertEqual(frame.maxY,
+                       fixedVisibleFrame.maxY - ApprovalPanelArranger.margin + ApprovalPanelArranger.dismissGutter,
+                       accuracy: 0.5,
+                       "the window's top edge must sit at visibleFrame.maxY - margin + dismissGutter: `margin` (12pt) inside the visible frame's top edge for the sheet, plus the 12pt dismissGutter above that")
+        XCTAssertEqual(frame.width, 356, accuracy: 0.5, "the window's width must always be the fixed 344pt sheet width plus the 12pt dismissGutter")
         XCTAssertGreaterThan(frame.height, 0, "the panel must always have a positive height")
 
         // Clean up so this store doesn't leak a pending request.
@@ -220,8 +234,8 @@ final class ApprovalPanelControllerTests: XCTestCase {
             XCTFail("expected an .orderFront intent")
             return
         }
-        XCTAssertEqual(frame.width, 344, accuracy: 0.5,
-                       "a very long payload must never grow the panel past its fixed 344pt width")
+        XCTAssertEqual(frame.width, 356, accuracy: 0.5,
+                       "a very long payload must never grow the window past its fixed 344pt sheet width plus the 12pt dismissGutter")
 
         store.decide(id: request.id, .denied(.userRejected))
     }
@@ -243,8 +257,8 @@ final class ApprovalPanelControllerTests: XCTestCase {
             XCTFail("expected an .orderFront intent")
             return
         }
-        XCTAssertEqual(frame.width, 344, accuracy: 0.5,
-                       "a tiny payload must still render at the fixed 344pt width, never shrunk to its own content")
+        XCTAssertEqual(frame.width, 356, accuracy: 0.5,
+                       "a tiny payload must still render at the fixed 344pt sheet width plus the 12pt dismissGutter, never shrunk to its own content")
 
         store.decide(id: request.id, .denied(.userRejected))
     }
@@ -274,8 +288,45 @@ final class ApprovalPanelControllerTests: XCTestCase {
             XCTFail("expected an .orderFront intent")
             return
         }
-        XCTAssertEqual(frame.width, 276, accuracy: 0.5,
-                       "with a 300pt-wide visible frame, the cap (300 - 2*12 = 276) must win over the 344pt fixedWidth")
+        XCTAssertEqual(frame.width, 288, accuracy: 0.5,
+                       "with a 300pt-wide visible frame, the sheet cap (300 - 2*12 = 276) must win over the 344pt fixedWidth, plus the 12pt dismissGutter (276 + 12 = 288) for the window")
+
+        store.decide(id: request.id, .denied(.userRejected))
+    }
+
+    /// A payload short enough to stay within `ExpandableBodyText`'s own
+    /// 2-line collapsed clip, on a visible frame short enough (44pt tall)
+    /// that `heightCap(visibleFrame:)` (44 - 24 = 20pt) falls well below
+    /// even the shortest banner's own minimum content height -- the
+    /// content is guaranteed to hit the `.frame(maxHeight: layout.heightCap)`
+    /// cap regardless of payload length. Pins `measureFrame(hostingController:)`'s
+    /// own gutter arithmetic: the WINDOW's own frame for a cap-hitting
+    /// payload must be exactly `heightCap + dismissGutter`, never
+    /// `heightCap` alone (the sheet's own capped height) and never
+    /// `heightCap + 2*dismissGutter` (double-counting the gutter).
+    func test_render_capHittingVisibleFrame_windowHeightIsHeightCapPlusDismissGutter() {
+        let store = ApprovalInboxStore()
+        let model = ApprovalBannerModel(store: store)
+        let shortVisibleFrame = NSRect(x: 0, y: 0, width: 1440, height: 44)
+        let controller = ApprovalPanelController(
+            model: model,
+            hostWindow: { nil },
+            visibleFrame: { shortVisibleFrame }
+        )
+        var intents: [ApprovalPanelController.OrderIntent] = []
+        controller._orderHookForTesting = { intents.append($0) }
+        let request = makeRequest(payload: "ls -la")
+        store.submit(request)
+
+        controller.render()
+
+        guard case .orderFront(let frame) = intents.last else {
+            XCTFail("expected an .orderFront intent")
+            return
+        }
+        let expectedHeightCap = ApprovalPanelArranger.heightCap(visibleFrame: shortVisibleFrame)
+        XCTAssertEqual(frame.height, expectedHeightCap + ApprovalPanelArranger.dismissGutter, accuracy: 0.5,
+                       "a cap-hitting payload's window height must be heightCap(visibleFrame:) + dismissGutter, never heightCap alone")
 
         store.decide(id: request.id, .denied(.userRejected))
     }
@@ -317,11 +368,13 @@ final class ApprovalPanelControllerTests: XCTestCase {
         }
         XCTAssertEqual(frame.maxX, newVisibleFrame.maxX - 12, accuracy: 0.5,
                        "reanchor() must anchor to the NEW visible frame's right edge, not the one render() originally measured against")
-        XCTAssertEqual(frame.maxY, newVisibleFrame.maxY - 12, accuracy: 0.5,
-                       "reanchor() must anchor to the NEW visible frame's top edge")
+        XCTAssertEqual(frame.maxY,
+                       newVisibleFrame.maxY - ApprovalPanelArranger.margin + ApprovalPanelArranger.dismissGutter,
+                       accuracy: 0.5,
+                       "reanchor() must anchor the window's top edge to the NEW visible frame's own top edge: visibleFrame.maxY - margin + dismissGutter (margin inside for the sheet, plus dismissGutter above that)")
         let newHeightCap = ApprovalPanelArranger.heightCap(visibleFrame: newVisibleFrame)
-        XCTAssertLessThanOrEqual(frame.height, newHeightCap,
-                                 "reanchor() must respect the NEW visible frame's own height cap")
+        XCTAssertLessThanOrEqual(frame.height, newHeightCap + ApprovalPanelArranger.dismissGutter,
+                                 "reanchor() must respect the NEW visible frame's own height cap, plus the window's dismissGutter")
 
         store.decide(id: request.id, .denied(.userRejected))
     }

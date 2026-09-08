@@ -407,7 +407,8 @@ final class ApprovalBannerModel {
     /// decide it once Calyx itself declines to; see that property's own
     /// doc comment. A non-dismissible request (grok/pi: Calyx's gate is
     /// their only prompt) leaves this a no-op, matching
-    /// `ApprovalBannerView`'s own disabled × for one.
+    /// `ApprovalPanelContentView.dismissButton(request:)`'s own disabled ×
+    /// for one.
     /// `AgentHookPermissionResponse.body(kind:decision:)` maps
     /// `.dismissed` per kind: nil for claude-code/codex (no vocabulary
     /// for it, same as `.expired`, and the ONLY kinds this ever actually

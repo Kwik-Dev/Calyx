@@ -213,11 +213,14 @@ enum AccessibilityID {
         static let questionPosition = "calyx.approvalBanner.questionPosition"
         static let previewText = "calyx.approvalBanner.previewText"
         static let notesTextField = "calyx.approvalBanner.notesTextField"
-        /// The panel's own top-left × button (`ApprovalBannerView`'s root
-        /// `.overlay(alignment: .topLeading)`), shown only while the
-        /// panel is hovered. Resolves `.dismissed` for a dismissible
-        /// request (`ApprovalRequest.isDismissible`); disabled (but still
-        /// present, same identifier) for one that isn't.
+        /// The panel's own top-left ×, straddling the glass sheet's
+        /// top-left corner (`ApprovalPanelContentView`'s own
+        /// `.overlay(alignment: .topLeading)`, drawn into the window's
+        /// transparent `ApprovalPanelArranger.dismissGutter`), shown only
+        /// while the panel is hovered. Resolves `.dismissed` for a
+        /// dismissible request (`ApprovalRequest.isDismissible`);
+        /// disabled (but still present, same identifier) for one that
+        /// isn't.
         static let dismissButton = "calyx.approvalBanner.dismissButton"
     }
     enum Diff {

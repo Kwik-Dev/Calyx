@@ -279,6 +279,15 @@ final class CockpitAgentHookApprovalE2ETests: CalyxUITestCase {
 
         let dismissButton = app.buttons[Self.dismissButtonID]
         XCTAssertTrue(waitFor(dismissButton, timeout: 5), "the dismiss button never appeared in the accessibility tree")
+
+        // The dismiss button is unpainted (`.clear`) until the glass
+        // sheet is hovered; `ApprovalPanelWindow` is non-opaque, so a
+        // click over unpainted pixels reaches the window behind it
+        // instead of this button. Hovering the allow button (inside the
+        // sheet) first paints the × in.
+        let allowButton = app.buttons[Self.allowButtonID]
+        XCTAssertTrue(waitFor(allowButton, timeout: 5), "the allow button never appeared in the accessibility tree")
+        allowButton.hover()
         dismissButton.click()
 
         waitForNonExistence(container, timeout: 5)

@@ -20,10 +20,13 @@ import AppKit
 import SwiftUI
 
 /// The app-wide floating panel's own layout state: `width` holds the
-/// panel's own width for the currently displayed request
+/// glass SHEET's own width for the currently displayed request
 /// (`ApprovalPanelArranger.panelWidth(for:visibleFrame:)` -- `fixedWidth`
 /// or `wideWidth`, whichever that request wants), read by
-/// `ApprovalPanelContentView`'s root `.frame(width:)`. `heightCap`
+/// `ApprovalPanelContentView`'s root `.frame(width:)` -- the WINDOW
+/// itself is `ApprovalPanelArranger.dismissGutter` points wider, see
+/// `ApprovalPanelController.measureFrame(hostingController:)`'s own doc
+/// comment. `heightCap`
 /// mirrors `ApprovalPanelArranger.heightCap(visibleFrame:)` for the
 /// screen this panel currently sits on. `hostWindowController` is the
 /// designated host window controller as of the last `render()` --
@@ -39,6 +42,15 @@ final class ApprovalPanelLayout {
     var width: CGFloat = ApprovalPanelArranger.fixedWidth
     var heightCap: CGFloat = 0
     weak var hostWindowController: CalyxWindowController?
+    /// `AssumeInsideHover`'s own `recheckToken` for both
+    /// `ApprovalPanelContentView` hover regions (the sheet and the
+    /// dismiss button) -- bumped by `ApprovalPanelController.render()`
+    /// exactly when the panel transitions from hidden to ordered front, a
+    /// HIDDEN window being the only case that can miss real
+    /// `mouseEntered`/`mouseExited` events. See `AssumeInsideHover
+    /// .updateNSView(_:context:)`'s own doc comment for why this must NOT
+    /// happen on every re-render instead.
+    var hoverRecheckToken: Int = 0
 }
 
 @MainActor
@@ -296,7 +308,8 @@ final class ApprovalPanelController: NSObject {
             layout: layout,
             targetTabTitle: targetTabTitle,
             onContentSizeChange: { [weak self] size in self?.applyContentHeight(size) },
-            onRequestChange: { [weak self] in self?.handleRequestChange() }
+            onRequestChange: { [weak self] in self?.handleRequestChange() },
+            panelHoverChanged: { [weak self] in self?.panel?.invalidateShadow() }
         )
         let hostingController = NSHostingController(rootView: content)
         // Excludes the titled window's own titlebar safe area from this
@@ -313,7 +326,7 @@ final class ApprovalPanelController: NSObject {
         return (thePanel, hostingController)
     }
 
-    /// Single-pass measure: the panel's width is settled for the
+    /// Single-pass measure: the glass SHEET's width is settled for the
     /// currently displayed request before any layout pass
     /// (`ApprovalPanelArranger.panelWidth(for:visibleFrame:)` --
     /// `fixedWidth` or `wideWidth`, whichever `model.current` wants, see
@@ -331,6 +344,21 @@ final class ApprovalPanelController: NSObject {
     /// see this measurement's own latest `layout.width`/`layout.heightCap`
     /// rather than whatever was current as of some earlier call, whether
     /// or not either was actually reassigned just now.
+    ///
+    /// `hostingController.sizeThatFits(in:)` measures the WHOLE content
+    /// view, which includes `ApprovalPanelContentView`'s own
+    /// `dismissGutter` padding (top and leading) around the sheet -- its
+    /// returned height is therefore `sheetHeight + dismissGutter`, one
+    /// `dismissGutter` taller than the sheet itself, so `dismissGutter`
+    /// is subtracted back out here before this measurement's own
+    /// `heightCap` (a SHEET-height cap) clamps it, and before it is
+    /// handed to `ApprovalPanelArranger.windowFrame(sheetSize:visibleFrame:)`,
+    /// which itself re-adds that same gutter to compute the WINDOW's own
+    /// frame. `lastAppliedContentHeight` is set to the SHEET height (not
+    /// the gutter-inflated one), matching what `ApprovalPanelContentView`'s
+    /// own `onGeometryChange` -- attached to the pre-padding node, see
+    /// that file's own header -- reports back through
+    /// `onContentSizeChange` -> `applyContentHeight(_:)`.
     private func measureFrame(hostingController: NSHostingController<ApprovalPanelContentView>) -> NSRect {
         let frame = visibleFrame()
         let heightCap = ApprovalPanelArranger.heightCap(visibleFrame: frame)
@@ -344,17 +372,24 @@ final class ApprovalPanelController: NSObject {
 
         hostingController.view.needsLayout = true
         hostingController.view.layoutSubtreeIfNeeded()
-        let measuredSize = hostingController.sizeThatFits(in: CGSize(width: width, height: heightCap))
-        let size = CGSize(width: width, height: min(measuredSize.height, heightCap))
+        // The content view includes `ApprovalPanelContentView`'s own
+        // `dismissGutter` padding, so the size proposed to `sizeThatFits(in:)`
+        // carries that gutter on both axes, matching what the content
+        // view actually occupies at the SHEET's own `width`/`heightCap`.
+        let measuredSize = hostingController.sizeThatFits(
+            in: CGSize(width: width + ApprovalPanelArranger.dismissGutter, height: heightCap + ApprovalPanelArranger.dismissGutter)
+        )
+        let sheetHeight = min(measuredSize.height - ApprovalPanelArranger.dismissGutter, heightCap)
+        let sheetSize = CGSize(width: width, height: sheetHeight)
 
         // Set here (not left for `applyContentHeight(_:)`'s own first
         // call to discover) so the content view's own measured-size echo
         // (`onContentSizeChange` -> `applyContentHeight(_:)`), once it
         // reports back this SAME height, reads as a no-op rather than a
         // change worth re-rendering for.
-        lastAppliedContentHeight = size.height
+        lastAppliedContentHeight = sheetSize.height
 
-        return ApprovalPanelArranger.anchor(size: size, visibleFrame: frame)
+        return ApprovalPanelArranger.windowFrame(sheetSize: sheetSize, visibleFrame: frame)
     }
 
     /// `ApprovalPanelContentView.onContentSizeChange`: a later, purely
@@ -404,6 +439,10 @@ final class ApprovalPanelController: NSObject {
         #endif
         if !panel.isVisible {
             panel.orderFrontRegardless()
+            // Only a HIDDEN window can have missed real `mouseEntered`/
+            // `mouseExited` events -- see `ApprovalPanelLayout
+            // .hoverRecheckToken`'s own doc comment.
+            layout.hoverRecheckToken += 1
         }
     }
 
