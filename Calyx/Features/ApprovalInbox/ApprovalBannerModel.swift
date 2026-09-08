@@ -1,18 +1,22 @@
 // ApprovalBannerModel.swift
 // Calyx
 //
-// Per-window view-model behind the Cockpit approval banner, choosing
-// which single pending ApprovalRequest (if any) this window should show
-// and forwarding Allow/Deny/Always Allow to ApprovalInboxStore.decide(
-// id:_:) / CockpitSettings.autoApproveEnabled / AgentHookApprovalMemory
-// (see alwaysAllow(id:)'s own doc comment for the .mcpTool vs .agentHook
-// source split).
+// View-model behind the Cockpit approval banner, choosing which single
+// pending ApprovalRequest (if any) to show and forwarding Allow/Deny/
+// Always Allow/Dismiss to ApprovalInboxStore.decide(id:_:) /
+// CockpitSettings.autoApproveEnabled / AgentHookApprovalMemory (see
+// alwaysAllow(id:)'s own doc comment for the .mcpTool vs .agentHook
+// source split, and dismiss(id:)'s own doc comment for why it, alone,
+// applies to every source).
 // Mirrors RecoveryBarModel's shape: UI-independent, injected closures
-// instead of reaching for CalyxWindowController/NSWindow directly, one
-// instance per window.
+// instead of reaching for CalyxWindowController/NSWindow directly.
+// `AppDelegate` owns exactly one instance of this class app-wide, hosted
+// by the single floating approval panel (`ApprovalPanelController.swift`):
+// every pending request, regardless of which surface it targets or
+// whether it targets one at all, sits in the same app-wide queue.
 //
 // Queue navigation (prev/next cursor): a stored `selectedRequestID`
-// lets a window step through every request visible to it via
+// lets the panel step through every pending request via
 // `selectNext()`/`selectPrevious()`, instead of only ever showing the
 // oldest one -- see `current`'s own doc comment for the full contract,
 // and `advanceCursor(pastDisplayed:)` for how deciding the DISPLAYED
@@ -28,7 +32,7 @@ final class ApprovalBannerModel {
 
     /// A single row of the queue preview menu (`queueEntries`, rendered
     /// by `ApprovalBannerView`'s queue navigator Menu): one per request
-    /// in this window's `visibleRequests`, oldest-first.
+    /// in the app-wide `visibleRequests`, oldest-first.
     struct QueueEntry: Identifiable, Equatable, Sendable {
         let id: UUID
         /// 1-based index into `visibleRequests`, matching `positionInfo`'s
@@ -41,75 +45,53 @@ final class ApprovalBannerModel {
     }
 
     private let store: ApprovalInboxStore
-    private let ownsSurface: (UUID) -> Bool
-    private let isKeyWindow: () -> Bool
-    private let restoreTerminalFocus: () -> Void
+    private let restoreTerminalFocus: (UUID?) -> Void
     private let memory: AgentHookApprovalMemory
 
-    /// This window's own navigation cursor -- see `current`'s own doc
-    /// comment for the full selected-if-still-visible/inert-once-stale
-    /// contract.
+    /// The app-wide navigation cursor -- see `current`'s own doc comment
+    /// for the full selected-if-still-pending/inert-once-stale contract.
     private var selectedRequestID: UUID?
 
     init(
         store: ApprovalInboxStore,
-        ownsSurface: @escaping (UUID) -> Bool,
-        isKeyWindow: @escaping () -> Bool,
-        restoreTerminalFocus: @escaping () -> Void = {},
+        restoreTerminalFocus: @escaping (UUID?) -> Void = { _ in },
         memory: AgentHookApprovalMemory = .shared
     ) {
         self.store = store
-        self.ownsSurface = ownsSurface
-        self.isKeyWindow = isKeyWindow
         self.restoreTerminalFocus = restoreTerminalFocus
         self.memory = memory
     }
 
-    /// Whether this window should surface `request` at all. A
-    /// surface-targeted request (e.g. a `pane_run` call) is visible only
-    /// to the window that owns that surface; a window-agnostic request
-    /// (nil `targetSurfaceID`, e.g. a palette-level tool call) is
-    /// visible only while this window is key, so every open window
-    /// doesn't surface the same banner at once.
-    private func isVisible(_ request: ApprovalRequest) -> Bool {
-        if let targetSurfaceID = request.targetSurfaceID {
-            return ownsSurface(targetSurfaceID)
-        }
-        return isKeyWindow()
-    }
-
-    /// Every pending request visible to this window (same ownership/
-    /// key-window filter as `isVisible`), in `store.pending`'s own
-    /// oldest-first order (see `ApprovalInboxStore.submit`'s own doc
-    /// comment) -- the queue `current`/`positionInfo`/`selectNext()`/
+    /// Every pending request, in `store.pending`'s own oldest-first
+    /// order (see `ApprovalInboxStore.submit`'s own doc comment) -- the
+    /// single app-wide queue `current`/`positionInfo`/`selectNext()`/
     /// `selectPrevious()`/`advanceCursor(pastDisplayed:)` all navigate.
     private var visibleRequests: [ApprovalRequest] {
-        store.pending.filter { isVisible($0) }
+        store.pending
     }
 
-    /// The request this window currently displays: `selectedRequestID`
-    /// while it is still pending AND visible to this window, else the
-    /// oldest visible request (mirrors this property's original,
-    /// pre-navigation behavior, and what a freshly-resolved selection
-    /// falls back to). `selectedRequestID` is deliberately never cleared
-    /// just because its request leaves `visibleRequests` -- it goes
-    /// permanently INERT instead, rather than being reset to nil. That's
-    /// safe because `ApprovalRequest.id` is a UUID: no future request
-    /// can ever be assigned that same id, so a stale cursor can never
-    /// accidentally resurrect and re-select some unrelated LATER
-    /// request -- it just keeps missing every lookup here (falling back
-    /// to the oldest visible request) until some action explicitly
-    /// reassigns it (`selectNext()`/`selectPrevious()`/
-    /// `advanceCursor(pastDisplayed:)`).
+    /// The request the app-wide panel currently displays:
+    /// `selectedRequestID` while it is still pending, else the oldest
+    /// pending request (mirrors this property's original, pre-navigation
+    /// behavior, and what a freshly-resolved selection falls back to).
+    /// `selectedRequestID` is deliberately never cleared just because its
+    /// request leaves `visibleRequests` -- it goes permanently INERT
+    /// instead, rather than being reset to nil. That's safe because
+    /// `ApprovalRequest.id` is a UUID: no future request can ever be
+    /// assigned that same id, so a stale cursor can never accidentally
+    /// resurrect and re-select some unrelated LATER request -- it just
+    /// keeps missing every lookup here (falling back to the oldest
+    /// pending request) until some action explicitly reassigns it
+    /// (`selectNext()`/`selectPrevious()`/`advanceCursor(pastDisplayed:)`).
     var current: ApprovalRequest? {
         let visible = visibleRequests
         guard !visible.isEmpty else { return nil }
         return visible[currentIndex(in: visible)]
     }
 
-    /// Index within `visible` of the request this window displays:
+    /// Index within `visible` of the request the panel displays:
     /// `selectedRequestID`'s own position while it is still present
-    /// there, else 0 (the oldest visible request, which is what a stale
+    /// there, else 0 (the oldest pending request, which is what a stale
     /// or unset cursor falls back to -- see `current`'s own doc comment).
     /// The single resolution rule `current`, `positionInfo` and
     /// `queueEntries` all share, so the three can never disagree about
@@ -122,15 +104,15 @@ final class ApprovalBannerModel {
         return index
     }
 
-    /// This window's 1-based (index, count) position of `current` within
+    /// The app-wide 1-based (index, count) position of `current` within
     /// `visibleRequests` -- nil exactly when `current` is nil. Backs the
     /// banner's "N / M" position label (`ApprovalBannerView.
     /// queueNavigator(positionInfo:)`), shown only while more than one
-    /// request is queued for this window. Resolves the displayed
-    /// request's index through `currentIndex(in:)` against its own
-    /// already-computed `visible` local rather than calling `current`
-    /// itself, which would re-filter `store.pending` a second time for
-    /// the same answer.
+    /// request is queued app-wide. Resolves the displayed request's
+    /// index through `currentIndex(in:)` against its own already-computed
+    /// `visible` local rather than calling `current` itself, which would
+    /// read `store.pending` a second time for the same answer -- one
+    /// snapshot for consistency.
     var positionInfo: (index: Int, count: Int)? {
         let visible = visibleRequests
         guard !visible.isEmpty else { return nil }
@@ -138,45 +120,31 @@ final class ApprovalBannerModel {
     }
 
     /// Whether `current` has a predecessor in `visibleRequests` to step
-    /// back to -- false at the oldest (first) visible request, and
-    /// whenever nothing is visible at all.
+    /// back to -- false at the oldest (first) pending request, and
+    /// whenever nothing is pending at all.
     var canSelectPrevious: Bool {
         guard let positionInfo else { return false }
         return positionInfo.index > 1
     }
 
     /// Whether `current` has a successor in `visibleRequests` to step
-    /// forward to -- false at the newest (last) visible request, and
-    /// whenever nothing is visible at all.
+    /// forward to -- false at the newest (last) pending request, and
+    /// whenever nothing is pending at all.
     var canSelectNext: Bool {
         guard let positionInfo else { return false }
         return positionInfo.index < positionInfo.count
     }
 
-    /// Mirrors `current`'s own ownership filter: the count of every
-    /// pending request this window owns/can see. `ApprovalBannerView`
-    /// no longer reads this directly -- the queue navigator now gates
-    /// on `positionInfo.count` instead (see that property's own doc
-    /// comment), which is derived from the SAME `visibleRequests` this
-    /// counts. Kept as its own model-level contract because
-    /// CalyxTests/ApprovalInbox/ApprovalBannerModelTests.swift asserts
-    /// it directly (`test_pendingCountForWindow_countsOnlyOwnedRequests`).
-    var pendingCountForWindow: Int {
-        visibleRequests.count
-    }
-
-    /// Every request in `visibleRequests` (same ownsSurface/isKeyWindow
-    /// filter as `current`/`pendingCountForWindow`), oldest-first, as a
-    /// `QueueEntry` -- what `ApprovalBannerView`'s queue preview menu
-    /// (`queueMenuItems`) draws its rows from. EVERY visible request is
-    /// reported here, and that menu renders one row per entry.
-    /// Resolves the current entry's index
-    /// through `currentIndex(in:)` against its own local `visible`, the
-    /// same single rule `current`/`positionInfo` resolve through, rather
-    /// than reading either of them -- so `visibleRequests` is filtered
-    /// from `store.pending` only once here (see `positionInfo`'s own doc
-    /// comment for the same rationale). Empty whenever `visibleRequests`
-    /// is.
+    /// Every request in `visibleRequests` (same order as
+    /// `current`/`positionInfo`), oldest-first, as a `QueueEntry` --
+    /// what `ApprovalBannerView`'s queue preview menu (`queueMenuItems`)
+    /// draws its rows from. EVERY pending request is reported here, and
+    /// that menu renders one row per entry. Resolves the current entry's
+    /// index through `currentIndex(in:)` against its own local `visible`,
+    /// the same single rule `current`/`positionInfo` resolve through,
+    /// rather than reading either of them -- so `store.pending` is read
+    /// only once here, one snapshot for consistency, same as
+    /// `positionInfo` above. Empty whenever `visibleRequests` is.
     var queueEntries: [QueueEntry] {
         let visible = visibleRequests
         let currentEntryIndex = currentIndex(in: visible)
@@ -188,9 +156,9 @@ final class ApprovalBannerModel {
     /// Neither this nor `selectPrevious()` below calls
     /// `refreshHostingView()` or posts `.calyxApprovalInboxChanged`: both
     /// are invoked from an in-hierarchy SwiftUI `Button` inside
-    /// `ApprovalBannerView`, itself hosted from `MainContentView.body`'s
-    /// own `safeAreaInset` closure, which reads `approvalBannerModel.
-    /// current` directly (MainContentView.swift's `body`). Mutating
+    /// `ApprovalBannerView`, itself hosted from the floating approval
+    /// panel's `ApprovalPanelContentView.body`, which reads
+    /// `approvalBannerModel.current` directly. Mutating
     /// `selectedRequestID` (a tracked, stored `@Observable` property)
     /// therefore invalidates that already-rendered `body` the same way
     /// `RecoveryBarModel.dismiss()` does for `recoveryBarModel.
@@ -228,10 +196,7 @@ final class ApprovalBannerModel {
     /// (`ApprovalBannerView`'s `queueNavigator(positionInfo:)` Menu):
     /// jump straight to a chosen request instead of stepping one at a
     /// time via `selectNext()`/`selectPrevious()`. A no-op unless `id`
-    /// is a member of THIS window's own `visibleRequests` -- checked
-    /// there rather than `store.pending`, so a request pending
-    /// store-wide but owned by another window can never be selected
-    /// here.
+    /// is a member of `visibleRequests` -- i.e. still pending.
     ///
     /// Unlike `selectNext()`/`selectPrevious()` above, this DOES post
     /// `.calyxApprovalInboxChanged` explicitly: those two are clicked
@@ -243,7 +208,7 @@ final class ApprovalBannerModel {
     /// `ApprovalInboxStore.swift`'s own `.calyxApprovalInboxChanged` doc
     /// comment). Posted only when the cursor's stored value actually
     /// changes: re-picking the row already selected mutates nothing, so
-    /// it must not make every open window rebuild its main content.
+    /// it must not trigger a needless re-render of the app-wide panel.
     /// `object` carries the store, same as every post
     /// `ApprovalInboxStore` makes itself, so the notification's object
     /// is one type across all senders.
@@ -255,16 +220,17 @@ final class ApprovalBannerModel {
 
     /// Called immediately before the `store.decide`/`store.decide(ids:)`
     /// that actually resolves `id`, in every action below (`allow`/
-    /// `deny`/`alwaysAllow`) -- for `allow`/`deny` that's still their very
-    /// first line (neither has an intervening bail-out guard); for
-    /// `alwaysAllow`'s `.agentHook` branch, this call is placed AFTER its
-    /// own early-return guard (a missing `targetSurfaceID`) -- a path that
+    /// `deny`/`alwaysAllow`, and `dismiss`'s own `.mcpTool`/`.agentHook`
+    /// branch) -- for `allow`/`deny` that's still their very first line
+    /// (neither has an intervening bail-out guard); for `alwaysAllow`'s
+    /// `.agentHook` branch, this call is placed AFTER its own
+    /// early-return guard (a missing `targetSurfaceID`) -- a path that
     /// bails out without deciding anything must never advance the cursor
     /// either. `store.pending` hasn't been mutated yet at the point this
     /// actually runs, so `visibleRequests` here still includes `id`,
     /// letting this compute its successor/predecessor within the
     /// PRE-removal queue, same as `selectNext()`/`selectPrevious()` do. A
-    /// no-op unless `id` is the request this window is actually
+    /// no-op unless `id` is the request the panel is actually
     /// DISPLAYING right now (`current?.id`) -- a stale `id` (already
     /// decided by some other path, see `allow(id:)`'s own stale-id
     /// contract below) can never equal `current?.id` in the first place
@@ -327,8 +293,9 @@ final class ApprovalBannerModel {
         store.decide(id: id, .denied(.userRejected))
     }
 
-    /// `AgentToolApprovalView`'s per-`AgentHookOffers.permissionUpdates`
-    /// choice row: accepts `offer`, the CLI's own always-allow choice
+    /// `ApprovalBannerView.agentHookMenuItems(toolName:offers:)`'s
+    /// per-`AgentHookOffers.permissionUpdates` choice row: accepts
+    /// `offer`, the CLI's own always-allow choice
     /// (`.allowedWithPermissions(offer)`, echoed verbatim). A no-op for
     /// an `.agentQuestion`/`.mcpTool`-sourced `id` -- only an
     /// `.agentHook` request ever carries `AgentHookOffers.permissionUpdates`
@@ -363,16 +330,35 @@ final class ApprovalBannerModel {
         return true
     }
 
-    /// Shared body of `answer(id:answers:)`/`chatAboutQuestion(id:)`:
-    /// advances the cursor exactly like `allow(id:)`/`deny(id:)`, resolves
-    /// `decision`, then restores terminal focus once -- the question
-    /// banner's own "Other"/notes free-text field may have taken first
-    /// responder, and resolving the request removes the banner out from
-    /// under it.
+    /// Shared body of `answer(id:answers:)`/`chatAboutQuestion(id:)`/
+    /// `dismiss(id:)`'s own `.agentQuestion` branch: advances the cursor
+    /// exactly like `allow(id:)`/`deny(id:)`, resolves `decision`, then
+    /// restores terminal focus to the request's own `targetSurfaceID`.
+    ///
+    /// `targetSurfaceID` is looked up BEFORE `store.decide`: a decided
+    /// request is removed from `store.pending`, so looking it up
+    /// afterwards would always read nil.
+    ///
+    /// This call and `ApprovalPanelController.render()`'s own
+    /// `handOffKeyIfNeeded()` answer two DIFFERENT questions and can both
+    /// fire for the same decision without racing (both run synchronously
+    /// on the main actor): `handOffKeyIfNeeded()` returns the panel's KEY
+    /// status to the owning window, but only runs while the panel
+    /// actually holds key (only a click into the question's free-text
+    /// field takes it -- an Options-menu answer, "Chat about this", or
+    /// this method's own dismiss ×, none of which touch that field, never
+    /// make the panel key at all). This call restores FIRST RESPONDER
+    /// inside the owning window regardless of whether the panel ever held
+    /// key, since some other control (the sidebar filter field, the find
+    /// bar) may hold it instead. When both fire, `CalyxWindowController
+    /// .restoreTerminalFocusAfterApproval(reclaimKey:)`'s own first-
+    /// responder restore is idempotent, so the second call changes
+    /// nothing further.
     private func resolveQuestion(id: UUID, _ decision: ApprovalDecision) {
+        let targetSurfaceID = store.pending.first(where: { $0.id == id })?.targetSurfaceID
         advanceCursor(pastDisplayed: id)
         store.decide(id: id, decision)
-        restoreTerminalFocus()
+        restoreTerminalFocus(targetSurfaceID)
     }
 
     /// The approval banner's answer to an `.agentQuestion`-sourced
@@ -385,8 +371,9 @@ final class ApprovalBannerModel {
     /// The question banner's [Chat about this] action: resolves
     /// `.interrupted(.chatAboutQuestion)` -- the human wants to reply
     /// free-form in the pane instead of answering the structured prompt.
-    /// `resolveQuestion(id:_:)`'s own `restoreTerminalFocus()` call is
-    /// exactly what lets the human start typing in the pane right away.
+    /// Terminal focus follows through `ApprovalPanelController.render()`'s
+    /// own hand-off (see `resolveQuestion(id:_:)`'s own doc comment), the
+    /// same path that lets the human start typing in the pane right away.
     /// A no-op for a non-`.agentQuestion` `id`.
     func chatAboutQuestion(id: UUID) {
         guard isPendingAgentQuestion(id) else { return }
@@ -402,9 +389,59 @@ final class ApprovalBannerModel {
     /// own `.onDisappear`, which also fires mid-prompt, e.g. on an
     /// ordinary question-to-question advance). Unlike `answer(id:)`/
     /// `chatAboutQuestion(id:)` above, this path decides nothing itself;
-    /// it only restores terminal focus.
-    func restoreTerminalFocusAfterInput() {
-        restoreTerminalFocus()
+    /// it only restores terminal focus. `targetSurfaceID` is the removed
+    /// request's own (threaded in by `ApprovalBannerView` from its
+    /// `request.targetSurfaceID`, same as `allow(id:)`/`deny(id:)`
+    /// thread in `request.id`): the decision on a question goes to the
+    /// pane that asked it, not to whatever window is merely current.
+    func restoreTerminalFocusAfterInput(targetSurfaceID: UUID?) {
+        restoreTerminalFocus(targetSurfaceID)
+    }
+
+    /// The panel's own top-left × button: "Calyx does not answer this
+    /// request" -- unlike `allow(id:)`/`deny(id:)` (which no-op on an
+    /// `.agentQuestion`) and `answer(id:answers:)`/`chatAboutQuestion(id:)`
+    /// (which no-op on anything else), this applies to every source, but
+    /// only when `ApprovalRequest.isDismissible` -- someone other than
+    /// Calyx (that request's own CLI, or the calling MCP agent) can still
+    /// decide it once Calyx itself declines to; see that property's own
+    /// doc comment. A non-dismissible request (grok/pi: Calyx's gate is
+    /// their only prompt) leaves this a no-op, matching
+    /// `ApprovalPanelContentView.dismissButton(request:)`'s own disabled ×
+    /// for one.
+    /// `AgentHookPermissionResponse.body(kind:decision:)` maps
+    /// `.dismissed` per kind: nil for claude-code/codex (no vocabulary
+    /// for it, same as `.expired`, and the ONLY kinds this ever actually
+    /// reaches). `MCPCockpitBridge.gate` maps it to
+    /// `{"status": "dismissed"}`, distinct from `{"status": "denied"}`.
+    ///
+    /// For an `.agentQuestion`, this goes through `resolveQuestion(id:_:)`,
+    /// same as `answer(id:answers:)`/`chatAboutQuestion(id:)` -- that
+    /// shared body already restores terminal focus. For `.mcpTool`/
+    /// `.agentHook`, this mirrors `allow(id:)`/`deny(id:)` for the
+    /// advance/decide steps, but ALSO restores terminal focus to
+    /// `request.targetSurfaceID` afterwards, unlike `allow(id:)`/
+    /// `deny(id:)`: after a × dismiss, the interaction continues in the
+    /// pane -- that request's own CLI, or the calling MCP agent, prompts
+    /// there next -- so first responder must land there, exactly as it
+    /// does for `.agentQuestion`. `allow(id:)`/`deny(id:)` never restore
+    /// focus for the same reason `resolveQuestion(id:_:)`'s own doc
+    /// comment gives for `handOffKeyIfNeeded()`: after those two, nothing
+    /// further needs the pane's attention right away. `request` is read
+    /// BEFORE `store.decide`, so `request.targetSurfaceID` is still
+    /// available once the request itself is gone from `store.pending`. A
+    /// stale `id` is a safe no-op either way, same as every other action
+    /// here.
+    func dismiss(id: UUID) {
+        guard let request = store.pending.first(where: { $0.id == id }), request.isDismissible else { return }
+        switch request.source {
+        case .agentQuestion:
+            resolveQuestion(id: id, .dismissed)
+        case .mcpTool, .agentHook:
+            advanceCursor(pastDisplayed: id)
+            store.decide(id: id, .dismissed)
+            restoreTerminalFocus(request.targetSurfaceID)
+        }
     }
 
     /// Branches on the clicked request's own `source`.
@@ -412,16 +449,12 @@ final class ApprovalBannerModel {
     /// For an `.mcpTool`-sourced request: turns on auto-approve for every
     /// FUTURE gated action, resolves the clicked `id` allowed first (the
     /// request the human actually looked at), then drains every OTHER
-    /// `.mcpTool`-sourced request already queued and visible to THIS
-    /// window -- otherwise the user would have to separately dismiss each
-    /// banner already on screen right after turning auto-approve on.
-    /// Deliberately scoped to this window: a pending request owned by a
-    /// DIFFERENT window is left alone here (auto-approve only gates that
-    /// request's future re-submits; that other window drains its own
-    /// backlog the same way on its own next interaction). Also
-    /// deliberately scoped by SOURCE (R2 fix-pin): a queued
-    /// `.agentHook`-sourced request -- even one targeting the SAME
-    /// surface -- is never swept into this drain, since flipping global
+    /// `.mcpTool`-sourced request pending app-wide -- otherwise the user
+    /// would have to separately page through and dismiss each request
+    /// already queued right after turning auto-approve on. Also
+    /// deliberately scoped by SOURCE: a queued `.agentHook`-sourced
+    /// request -- even one targeting the SAME surface -- is never swept
+    /// into this drain, since flipping global
     /// auto-approve says nothing about that request's own, separate
     /// Always-Allow memory; only that request's own always-allow action
     /// (the `.agentHook` branch below) may ever decide it.
@@ -444,9 +477,8 @@ final class ApprovalBannerModel {
     /// (the batched form) rather than one `decide(id:_:)` call per
     /// request, so this posts exactly ONE `.calyxApprovalInboxChanged`
     /// change notification -- and therefore triggers exactly one
-    /// `refreshHostingView()` per open window -- no matter how many
-    /// requests the backlog contains, instead of one full main-content
-    /// rebuild per drained request.
+    /// re-render of the app-wide panel -- no matter how many requests the
+    /// backlog contains, instead of one re-render per drained request.
     func alwaysAllow(id: UUID) {
         guard let request = store.pending.first(where: { $0.id == id }) else { return }
 
@@ -454,7 +486,7 @@ final class ApprovalBannerModel {
         case .mcpTool:
             var idsToAllow = [id]
             idsToAllow.append(contentsOf: store.pending.filter { candidate in
-                guard candidate.id != id, isVisible(candidate) else { return false }
+                guard candidate.id != id else { return false }
                 guard case .mcpTool = candidate.source else { return false }
                 return true
             }.map(\.id))

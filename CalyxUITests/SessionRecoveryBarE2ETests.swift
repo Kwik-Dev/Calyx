@@ -93,6 +93,7 @@ final class SessionRecoveryBarE2ETests: CalyxUITestCase {
         app = XCUIApplication()
         app.launchArguments = ["--uitesting", "-AppleLanguages", "(en)"] + additionalLaunchArguments
         app.launchEnvironment["CALYX_UITEST_SESSION_DIR"] = sessionDir
+        terminateStaleAppUnderTestInstances()
         app.launch()
     }
 

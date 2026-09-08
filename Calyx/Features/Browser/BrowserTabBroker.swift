@@ -15,9 +15,11 @@ class BrowserTabBroker {
             }
             return nil
         }
-        // No tab_id → active browser tab in key window
-        let keyWC = appDelegate.allWindowControllers.first { $0.window?.isKeyWindow == true }
-        return keyWC?.activeBrowserControllerForExternal
+        // No tab_id → active browser tab in AppDelegate
+        // .currentWindowController (the key window, else the front-most
+        // window that is visible and on the active Space, else the last
+        // one that was key, else the first open window).
+        return appDelegate.currentWindowController?.activeBrowserControllerForExternal
     }
 
     func listTabs() -> [(id: UUID, url: String, title: String)] {
@@ -37,9 +39,7 @@ class BrowserTabBroker {
 
     func createTab(url: URL) -> UUID? {
         guard let appDelegate else { return nil }
-        let keyWC = appDelegate.allWindowControllers.first { $0.window?.isKeyWindow == true }
-            ?? appDelegate.allWindowControllers.first
-        guard let wc = keyWC else { return nil }
+        guard let wc = appDelegate.currentWindowController else { return nil }
         wc.createBrowserTab(url: url)
         // The last browser tab added to the active group is the one we just created
         guard let group = wc.windowSession.activeGroup,

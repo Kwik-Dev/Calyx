@@ -3,6 +3,7 @@
 //
 // Base class for all Calyx XCUITests with common helpers.
 
+import AppKit
 import XCTest
 
 class CalyxUITestCase: XCTestCase {
@@ -29,12 +30,67 @@ class CalyxUITestCase: XCTestCase {
     /// `cfprefsd` and keyed by the real macOS account, not by `HOME`).
     private var defaultsSuiteName: String?
 
+    /// Switches the Mac's active keyboard input source to ABC/US for the
+    /// duration of a test, so `typeText` keystrokes reach the app under
+    /// test literally instead of being composed by an IME (see
+    /// `InputSourceGuard`'s header). Activated once per test from
+    /// `terminateStaleAppUnderTestInstances()`, restored in `tearDown()`.
+    private let inputSourceGuard = InputSourceGuard()
+
     /// Override in subclasses to add extra launch arguments (e.g. UserDefaults overrides).
     var additionalLaunchArguments: [String] { [] }
+
+    /// Bundle identifier of the DebugUITesting build of Calyx launched by
+    /// these tests (`PRODUCT_BUNDLE_IDENTIFIER` set on the `DebugUITesting`
+    /// config in `project.yml`), distinct from the production
+    /// `com.calyx.terminal` used by every other config.
+    private static let appUnderTestBundleIdentifier = "com.calyx.terminal.e2e"
+
+    /// An aborted UI test run leaves the app under test running (its
+    /// process is never sent `terminate()` because `tearDown()` never
+    /// executes). That stale instance then blocks the next run's XCUITest
+    /// automation session: the new run's `app.launch()` hangs before
+    /// establishing the automation connection ("hung before establishing
+    /// connection" / "Timed out while enabling automation mode"), or the
+    /// run proceeds but every interaction crawls. Terminating any stale
+    /// instance before launching a fresh one removes the blocker at its
+    /// root.
+    ///
+    /// Scoped to instances whose bundle URL is under a `DebugUITesting`
+    /// build product directory, so this never touches a user's own Calyx
+    /// installed from `/Applications` or a plain `Debug` build running on
+    /// the same machine.
+    func terminateStaleAppUnderTestInstances() {
+        inputSourceGuard.activate()
+
+        let staleInstances = NSRunningApplication
+            .runningApplications(withBundleIdentifier: Self.appUnderTestBundleIdentifier)
+            .filter { $0.bundleURL?.path.contains("/DebugUITesting/") == true }
+
+        for instance in staleInstances {
+            instance.forceTerminate()
+            let deadline = Date().addingTimeInterval(5)
+            while !instance.isTerminated, Date() < deadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            }
+        }
+
+        try? FileManager.default.removeItem(atPath: "/tmp/.calyx-test-lock")
+    }
+
+    /// Re-selects the keyboard input source recorded by
+    /// `terminateStaleAppUnderTestInstances()`'s `inputSourceGuard.activate()`
+    /// call. `tearDown()` calls this itself; a subclass that overrides
+    /// `tearDown()` without calling `super.tearDown()` must call this
+    /// directly so the developer's own input source is always restored.
+    func restoreInputSource() {
+        inputSourceGuard.restore()
+    }
 
     override func setUp() {
         super.setUp()
         continueAfterFailure = false
+        terminateStaleAppUnderTestInstances()
         app = XCUIApplication()
         app.launchArguments = ["--uitesting", "-AppleLanguages", "(en)"] + additionalLaunchArguments
 
@@ -55,6 +111,7 @@ class CalyxUITestCase: XCTestCase {
     }
 
     override func tearDown() {
+        restoreInputSource()
         app.terminate()
         if let dir = sessionTempDir {
             try? FileManager.default.removeItem(atPath: dir)

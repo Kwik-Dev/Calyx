@@ -110,39 +110,6 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         hasPreservedSessionSnapshot: (NSApp.delegate as? AppDelegate)?.hasPreservedSessionSnapshot ?? false,
         onRestore: { (NSApp.delegate as? AppDelegate)?.recoverPreservedSession() }
     )
-    /// Cockpit approval banner's per-window view-model
-    /// (ApprovalBannerModel.swift). Unlike `recoveryBarModel` above, its
-    /// `ownsSurface`/`isKeyWindow` closures need `self` (to walk THIS
-    /// window's own `windowSession` / read THIS window's own key-window
-    /// state), so this cannot be a class-level default-value initializer
-    /// the way `recoveryBarModel` is -- Swift's two-phase init forbids
-    /// capturing `self` before every stored property is set and
-    /// `super.init` has run. `lazy var` sidesteps that entirely: its
-    /// initializer expression only runs on first access, by which point
-    /// this instance is always fully constructed, so `[weak self]` here
-    /// is safe without threading a post-`super.init()` assignment
-    /// through `init(window:windowSession:restoring:initialHost:)`.
-    lazy var approvalBannerModel: ApprovalBannerModel = ApprovalBannerModel(
-        store: .shared,
-        ownsSurface: { [weak self] id in self?.windowSessionOwnsSurface(id) ?? false },
-        isKeyWindow: { [weak self] in self?.window?.isKeyWindow ?? false },
-        restoreTerminalFocus: { [weak self] in
-            // This closure only returns first responder to the terminal
-            // and never refreshes the hosting view. A path that reached
-            // a real decision (answer / chat-about-this) already went
-            // through ApprovalInboxStore.decide, which posts
-            // .calyxApprovalInboxChanged synchronously and so reaches
-            // handleApprovalInboxChanged -> refreshHostingView() on its
-            // own; a path that decided nothing (the question view
-            // tearing down while its free-text field held focus, see
-            // ApprovalBannerModel.restoreTerminalFocusAfterInput's own
-            // doc comment) has no store mutation to refresh for.
-            guard let self else { return }
-            if case .terminal = self.activeTab?.content {
-                self.restoreFocus()
-            }
-        }
-    )
     private var closingTabIDs: Set<UUID> = []
     #if DEBUG
     /// Test seam: read-only observability
@@ -498,6 +465,72 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
 
     private var activeRegistry: SurfaceRegistry? {
         activeTab?.registry
+    }
+
+    /// This window's active tab's display title -- backs the app-wide
+    /// approval panel's header (`ApprovalBannerView.targetLabel`) for a
+    /// window-agnostic (nil `targetSurfaceID`) request when this window
+    /// is `AppDelegate.currentWindowController`. Not `private`: read
+    /// directly from `ApprovalPanelContentView.glassWrapped(request:)`
+    /// through `ApprovalPanelLayout.hostWindowController`.
+    var activeTabDisplayTitle: String? {
+        activeTab?.displayTitle
+    }
+
+    #if DEBUG
+    /// Test seam: replaces `restoreTerminalFocusAfterApproval(reclaimKey:)`'s
+    /// real AppKit `makeKey()`/`restoreFocus()` calls entirely when set. `nil`
+    /// (the default) leaves production behavior unchanged. DO NOT use
+    /// from production code.
+    var _restoreTerminalFocusAfterApprovalHookForTesting: (() -> Void)?
+    #endif
+
+    /// Called by `AppDelegate.restoreTerminalFocusAfterApproval(targetSurfaceID:)`
+    /// once an approval decision resolves (or a question's free-text
+    /// field loses relevance) while this window is the one that should
+    /// regain terminal focus.
+    ///
+    /// The floating approval panel can itself become key (its free-text
+    /// field taking first responder), which leaves this window non-key
+    /// even while its own terminal should get focus back. `reclaimKey`
+    /// (`AppDelegate`'s own `_approvalPanelController?.panel?.isKeyWindow
+    /// == true`, computed at call time) tells this window whether the
+    /// panel actually held key status just before the decision -- key is
+    /// reclaimed only in that case, `makeKey()`, never
+    /// `makeKeyAndOrderFront`, so Calyx is never brought to the front by
+    /// an approval decision made without it, and only when the window is
+    /// actually showable (visible, not miniaturized, on the current
+    /// Space): reclaiming key status for a minimized or off-Space window
+    /// would silently deminiaturize/Space-switch out from under the user.
+    /// `restoreFocus()`'s own `attemptFocusRestore` guards on
+    /// `window?.isKeyWindow`, so when `reclaimKey` is false and this
+    /// window was never key to begin with, it is simply a no-op.
+    ///
+    /// When this window cannot actually take key (minimized, off-Space,
+    /// or otherwise not showable), this method does nothing further: no
+    /// other window is made key on this window's behalf. AppKit's own
+    /// key-window restoration decides once the panel orders out.
+    func restoreTerminalFocusAfterApproval(reclaimKey: Bool) {
+        #if DEBUG
+        if let hook = _restoreTerminalFocusAfterApprovalHookForTesting {
+            hook()
+            return
+        }
+        #endif
+        if reclaimKey, let window, window.isVisible, !window.isMiniaturized, window.isOnActiveSpace {
+            window.makeKey()
+        }
+        if case .terminal = activeTab?.content {
+            restoreFocus()
+        }
+    }
+
+    /// The tab (in any group) whose `SurfaceRegistry` owns `surfaceID`'s
+    /// own `displayTitle`, or nil if no tab in this window does -- backs
+    /// the app-wide approval panel's header for a surface-targeted
+    /// request (`ApprovalBannerView.targetLabel`).
+    func tabDisplayTitle(owningSurface surfaceID: UUID) -> String? {
+        windowSession.groups.tabAndGroup(owningSurface: surfaceID)?.tab.displayTitle
     }
 
     /// Gate shared by the `session.detach`/`session.kill` command
@@ -1339,7 +1372,6 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
             activeDiffSource: activeDiffSource,
             activeDiffReviewStore: activeDiffReviewStore,
             recoveryBarModel: recoveryBarModel,
-            approvalBannerModel: approvalBannerModel,
             sidebarMode: Binding(
                 get: { [weak self] in self?.windowSession.sidebarMode ?? .tabs },
                 set: { [weak self] in self?.setSidebarMode($0) }
@@ -1430,23 +1462,6 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
     /// on to pick up an external `@Observable` change on its own). Not
     /// `private`: called from AppDelegate.swift, a different file.
     func refreshRecoveryBar() {
-        refreshHostingView()
-    }
-
-    /// Same "mutate observable state, then explicitly refresh" pattern
-    /// as `refreshRecoveryBar()` above -- called whenever
-    /// `ApprovalInboxStore` changes (relayed via the
-    /// `.calyxApprovalInboxChanged` notification, observed below) or
-    /// this window's key state changes: a window-agnostic (nil
-    /// `targetSurfaceID`) request's visibility depends on
-    /// `window.isKeyWindow`, which is plain `NSWindow` state, not itself
-    /// `@Observable`, so `windowDidBecomeKey`/`windowDidResignKey` must
-    /// also trigger this to re-evaluate `approvalBannerModel.current`.
-    @objc private func handleApprovalInboxChanged(_ notification: Notification) {
-        refreshApprovalBanner()
-    }
-
-    func refreshApprovalBanner() {
         refreshHostingView()
     }
 
@@ -2380,8 +2395,6 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
                            name: .ghosttyConfirmClipboard, object: nil)
         center.addObserver(self, selector: #selector(handleFocusSurfaceNotification(_:)),
                            name: .calyxFocusSurface, object: nil)
-        center.addObserver(self, selector: #selector(handleApprovalInboxChanged(_:)),
-                           name: .calyxApprovalInboxChanged, object: nil)
         center.addObserver(self, selector: #selector(handleShowChildExitedNotification(_:)),
                            name: .ghosttyShowChildExited, object: nil)
         center.addObserver(self, selector: #selector(handleConfirmingQuitDidEnd(_:)),
@@ -4723,13 +4736,6 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         windowSession.groups.tabAndGroup(owningSurface: surfaceID)?.tab
     }
 
-    /// Whether THIS window's `windowSession` owns `surfaceID` -- backs
-    /// `approvalBannerModel`'s `ownsSurface` predicate, reusing
-    /// `findTab(surfaceID:)`'s existing walk rather than duplicating it.
-    private func windowSessionOwnsSurface(_ surfaceID: UUID) -> Bool {
-        findTab(surfaceID: surfaceID) != nil
-    }
-
     /// Activates the tab (and, by extension via `switchToTab(id:)`, its
     /// group) containing `surfaceID`, reusing this controller's existing
     /// tab-switch logic rather than reimplementing containment. A no-op
@@ -4879,10 +4885,10 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
             restoreFocus()
         }
         // A window-agnostic (nil targetSurfaceID) approval request's
-        // visibility depends on `window.isKeyWindow` -- re-evaluate now
-        // that it just changed (see `refreshApprovalBanner()`'s own doc
-        // comment).
-        refreshApprovalBanner()
+        // visibility depends on which window is the current window
+        // (`CurrentWindowTracker`) -- only becoming key can ever change
+        // that (never resigning).
+        (NSApp.delegate as? AppDelegate)?.windowControllerDidBecomeKey(self)
     }
 
     func windowDidResignKey(_ notification: Notification) {
@@ -4891,7 +4897,10 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         if windowSession.showCommandPalette {
             dismissCommandPalette()
         }
-        refreshApprovalBanner()
+    }
+
+    func windowDidChangeScreen(_ notification: Notification) {
+        (NSApp.delegate as? AppDelegate)?.windowControllerGeometryChanged(self)
     }
 
     func windowDidChangeBackingProperties(_ notification: Notification) {
@@ -4989,6 +4998,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         if !isRestoring {
             requestSave()
         }
+        (NSApp.delegate as? AppDelegate)?.windowControllerGeometryChanged(self)
     }
 
     func windowDidExitFullScreen(_ notification: Notification) {
@@ -4999,6 +5009,7 @@ class CalyxWindowController: NSWindowController, NSWindowDelegate {
         if !isRestoring {
             requestSave()
         }
+        (NSApp.delegate as? AppDelegate)?.windowControllerGeometryChanged(self)
     }
 
     // MARK: - Git Source Control

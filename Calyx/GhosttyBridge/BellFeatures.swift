@@ -54,10 +54,11 @@ struct BellFeatures: OptionSet, Sendable {
 
 /// Injectable seam for `AppDelegate.processRingBell`'s per-feature side
 /// effects, following this codebase's closure-based DI convention (see
-/// `CalyxWindowController.recoveryBarModel`/`approvalBannerModel`'s own
-/// closure-injected callbacks) rather than a protocol: each `BellFeatures`
-/// bit maps to exactly one independent, parameterless action, so a
-/// struct-of-closures needs no additional abstraction. Tests substitute
+/// `CalyxWindowController.recoveryBarModel` and `AppDelegate
+/// .approvalBannerModel`'s own closure-injected callbacks) rather than a
+/// protocol: each `BellFeatures` bit maps to exactly one independent,
+/// parameterless action, so a struct-of-closures needs no additional
+/// abstraction. Tests substitute
 /// their own recording closures so `processRingBell`'s dispatch is
 /// assertable without actually playing a sound (`NSSound.beep()` is
 /// unmockable and audibly disruptive under a test run) or bouncing the

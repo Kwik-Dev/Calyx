@@ -25,6 +25,11 @@
 // `.interrupted`/`.answered` all produce nil for codex, exactly like
 // `.expired` (no fallback body under PermissionRequest for either CLI --
 // absent output lets that CLI's own confirmation prompt take over).
+// `.dismissed` ("Calyx does not answer this request") produces nil for
+// both too, folded into that same `.expired` arm: `cliKeepsOwnPrompt(
+// kind:)` is true for both, so an absent hook response there means the
+// same thing a dismissal does -- that CLI's own confirmation prompt
+// takes over.
 //
 // Grok and pi read neither the nested envelope nor any of those three
 // extra fields at all: both answer in a flat, top-level
@@ -62,7 +67,13 @@
 // anyone, so an unrepresentable decision must still deny explicitly"
 // reasoning `.expired` itself follows, reached through the very same
 // code path rather than a second, separately-written deny body that
-// could drift from it.
+// could drift from it. `.dismissed` joins that same group for grok/pi:
+// `cliKeepsOwnPrompt(kind:)` is false for both, so unlike claude-code/
+// codex there is no prompt to hand a dismissed call back to --
+// `ApprovalRequest.isDismissible` is false for both kinds for exactly
+// that reason, so `flatBody` never actually reaches `.dismissed` in
+// production, but answers it identically to `.expired` rather than
+// `nil`/a crash, should that guard ever be bypassed.
 //
 // `.answered` is claude-code's own AskUserQuestion decision (see
 // `ApprovalDecision.answered(_:)`): `behavior: "allow"` plus
@@ -96,6 +107,27 @@ enum AgentHookPermissionResponse {
     /// of the three kinds' gates ever reaches is `.userRejected`, so one
     /// message covers it.
     static let deniedMessage = "Denied from the Calyx approval inbox."
+
+    /// Whether `kind`'s own CLI keeps its own confirmation prompt to fall
+    /// back to when Calyx answers its PermissionRequest hook with no
+    /// decision at all (a `nil` body): true for claude-code/codex, which
+    /// treat an absent hook response as "let my own prompt decide" --
+    /// see this file's own header. False for grok/pi, which have no such
+    /// fallback (Calyx's gate is the only approval mechanism either ever
+    /// passes through), so an otherwise-unrepresentable decision must
+    /// still deny explicitly rather than fall silently through to
+    /// nothing.
+    ///
+    /// The single fact behind two call sites: `body(kind:decision:)`
+    /// returns `nil` for `.dismissed` only where this is true (folded
+    /// into the same nil arm `.expired` already uses), and
+    /// `ApprovalRequest.isDismissible` is true for `.agentHook`/
+    /// `.agentQuestion` only where this is true -- someone other than
+    /// Calyx can decide a dismissed request only for a CLI that keeps its
+    /// own prompt to hand it back to.
+    static func cliKeepsOwnPrompt(kind: String) -> Bool {
+        kind == AgentEntry.claudeCodeKind || kind == AgentEntry.codexKind
+    }
 
     /// claude-code's own `.denied(.userRejected)` message -- VERBATIM
     /// from the binary (2.1.251), the same text Claude Code's own TUI
@@ -185,7 +217,7 @@ enum AgentHookPermissionResponse {
             return envelope(decision: [
                 "behavior": "deny", "message": claudeCodeInterruptMessage(for: reason), "interrupt": true,
             ])
-        case .expired:
+        case .expired, .dismissed:
             return nil
         case .answered(let answers):
             return encodeAnswered(answers)
@@ -206,15 +238,15 @@ enum AgentHookPermissionResponse {
 
     /// codex's own vocabulary: `allow`/`deny` only, `message` always
     /// `deniedMessage`. Every decision codex fails closed on
-    /// (`.allowedWithPermissions`/`.interrupted`/`.answered`) produces
-    /// `nil`, exactly like `.expired`.
+    /// (`.allowedWithPermissions`/`.interrupted`/`.answered`/`.dismissed`)
+    /// produces `nil`, exactly like `.expired`.
     private static func codexBody(for decision: ApprovalDecision) -> Data? {
         switch decision {
         case .allowed:
             return envelope(decision: ["behavior": "allow"])
         case .denied:
             return envelope(decision: ["behavior": "deny", "message": deniedMessage])
-        case .allowedWithPermissions, .interrupted, .expired, .answered:
+        case .allowedWithPermissions, .interrupted, .expired, .answered, .dismissed:
             return nil
         }
     }
@@ -222,13 +254,15 @@ enum AgentHookPermissionResponse {
     /// Grok's and pi's flat body: `decision` alone for an allow,
     /// `decision` plus `reason: deniedMessage` for a deny (their spelling
     /// of the field Claude Code and Codex call `message`), and an
-    /// explicit deny with its own reason for an expiry. Every decision
-    /// neither kind has a vocabulary for (`.allowedWithPermissions`/`.
-    /// interrupted`/`.answered`) routes back through
-    /// `body(kind:decision:)` with `.expired`, so the produced bytes are
-    /// byte-identical to an actual expiry's own body rather than a
-    /// second, separately-written deny that could drift from it -- see
-    /// this file's own header comment.
+    /// explicit deny with its own reason for an expiry. Neither kind
+    /// keeps a confirmation prompt of its own to fall back to
+    /// (`cliKeepsOwnPrompt(kind:)` is false for both), so every decision
+    /// with no other representation here -- `.dismissed`, and every
+    /// decision neither kind has ANY vocabulary for
+    /// (`.allowedWithPermissions`/`.interrupted`/`.answered`) -- routes
+    /// back through `body(kind:decision:)` with `.expired`, producing
+    /// bytes byte-identical to an actual expiry's own body rather than a
+    /// second, separately-written deny that could drift from it.
     private static func flatBody(for decision: ApprovalDecision, kind: String) -> Data? {
         switch decision {
         case .allowed:
@@ -240,7 +274,7 @@ enum AgentHookPermissionResponse {
                 "decision": "deny",
                 "reason": "No approval was given in the Calyx approval inbox before the request expired.",
             ])
-        case .allowedWithPermissions, .interrupted, .answered:
+        case .allowedWithPermissions, .interrupted, .answered, .dismissed:
             return body(kind: kind, decision: .expired)
         }
     }

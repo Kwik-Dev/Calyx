@@ -703,11 +703,13 @@ final class CalyxMCPServer {
         // (decoded to `nil` by `decodeQuestions`) still reaches the
         // generic `.agentHook` banner below, but must still never be
         // auto-allowed just because decoding failed to produce option
-        // buttons to answer with -- the only path that ever hands an
-        // AskUserQuestion call to Claude Code's own in-pane prompt is the
-        // hold window expiring with no decision made (`.expired`, no
-        // body -- see `AgentHookPermissionResponse`'s own fail-safe
-        // contract).
+        // buttons to answer with -- the hold window expiring with no
+        // decision made (`.expired`, no body -- see
+        // `AgentHookPermissionResponse`'s own fail-safe contract) is one
+        // path that hands an AskUserQuestion call to Claude Code's own
+        // in-pane prompt; the panel's own × dismiss action
+        // (`ApprovalDecision.dismissed`, also no body for claude-code) is
+        // another.
         if !call.isQuestionTool {
             guard ApprovalPolicy.requiresApproval() else {
                 return HTTPParser.response(

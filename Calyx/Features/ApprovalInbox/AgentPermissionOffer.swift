@@ -5,8 +5,9 @@
 // `permission_suggestions` array (hooks.md), a sibling of `tool_input`
 // rather than a key inside it: "the always-allow choices
 // the CLI's own dialog itself offers." Decoded by `AgentHookToolCall`
-// into `permissionOffers`, rendered by `AgentToolApprovalView` as one
-// choice row per offer, and echoed back through `ApprovalDecision.
+// into `permissionOffers`, rendered by `ApprovalBannerView.
+// agentHookMenuItems(toolName:offers:)` as one choice row per offer, and
+// echoed back through `ApprovalDecision.
 // allowedWithPermissions(_:)` -> `AgentHookPermissionResponse` exactly
 // as received -- accepting one is documented to behave the same as
 // picking that same choice in the CLI's own dialog.

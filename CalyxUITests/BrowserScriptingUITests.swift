@@ -19,19 +19,40 @@ final class BrowserScriptingUITests: CalyxUITestCase {
         Thread.sleep(forTimeInterval: 0.5)
     }
 
-    /// Paste a command into the terminal via Cmd+V (bypasses IME), run it, read output from file.
+    /// Types a command into the terminal, run it, read output from file. The command itself is
+    /// written to a script file under the runner's own sandboxed container tmp (`/tmp` itself is
+    /// not writable by the sandboxed test runner) and only `sh <scriptPath>` followed by Return is
+    /// typed via `app.typeText`, never pasted: a paste long/slow enough that it is still being
+    /// delivered to the pane when Return arrives lands that Return inside the bracketed paste, so
+    /// the command is never executed, while typed keystrokes always arrive in order. `scriptPath`
+    /// is typed with NO surrounding quote: a typed `'` is delivered via whatever physical key
+    /// produces `'` under the OS's active keyboard layout, so under a non-US layout it can arrive
+    /// as a different character entirely (field-verified: `sh '<path>` arrived as `sh ;Su/...`,
+    /// and the mangled `sh` argument started an interactive shell instead of running the script).
+    /// Quoting is unnecessary since `scriptFile` here is always composed only from
+    /// `FileManager.default.temporaryDirectory` plus filename characters this function itself
+    /// controls, so `XCTFail`s (without typing anything) if that composition ever changes to
+    /// include a character requiring quoting.
     private func terminalExec(_ command: String) -> String {
         cmdCounter += 1
         let outFile = "/tmp/calyx-e2e-\(cmdCounter).txt"
+        let scriptFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("calyx-e2e-\(cmdCounter).sh").path
         try? FileManager.default.removeItem(atPath: outFile)
+        do {
+            try "\(command) > \(outFile) 2>&1\n".write(toFile: scriptFile, atomically: true, encoding: .utf8)
+        } catch {
+            XCTFail("failed to write pane script \(scriptFile): \(error)")
+        }
+
+        let allowedScriptPathCharacters = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/._-")
+        guard scriptFile.unicodeScalars.allSatisfy(allowedScriptPathCharacters.contains) else {
+            XCTFail("pane script path contains a character requiring quoting: \(scriptFile)")
+            return "(no output)"
+        }
 
         Thread.sleep(forTimeInterval: 1)
-        let pb = NSPasteboard.general
-        pb.clearContents()
-        pb.setString("\(command) > \(outFile) 2>&1", forType: .string)
-        app.typeKey("v", modifierFlags: .command)
-        Thread.sleep(forTimeInterval: 0.5)
-        app.typeKey(.return, modifierFlags: [])
+        app.typeText("sh \(scriptFile)\n")
 
         for _ in 0..<20 {
             Thread.sleep(forTimeInterval: 0.5)

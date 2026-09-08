@@ -129,41 +129,78 @@ enum AccessibilityID {
         static let restoreButton = "calyx.recoveryBar.restoreButton"
         static let dismissButton = "calyx.recoveryBar.dismissButton"
     }
-    /// Cockpit approval banner, shown at the top of a window when
+    /// Cockpit approval banner, shown in a floating panel
+    /// (ApprovalPanelWindow) at the screen's top-right corner when
     /// ApprovalBannerModel.current is non-nil (see ApprovalBannerModel,
-    /// Calyx/Features/ApprovalInbox/). Same `calyx.approvalBanner.*`
-    /// shape as RecoveryBar (a container + its action buttons), plus a
-    /// `payload` identifier so an XCUITest suite can assert the rendered
-    /// (control-character-escaped) command text. Queue navigation adds
-    /// `previousButton`/`nextButton`/`positionLabel`, shown only while
-    /// more than one request is queued for this window (see
-    /// ApprovalBannerModel.positionInfo). The queue preview menu wraps
-    /// that same position label in a `Menu` (`queueMenu`) listing every
-    /// request in ApprovalBannerModel.queueEntries, so a click can jump
-    /// straight to any queued request via ApprovalBannerModel.select(id:).
-    /// macOS collapses that `Menu` into one accessibility element, which
-    /// leaves `positionLabel` unreachable from the accessibility tree:
-    /// the "N / M" text is exposed as `queueMenu`'s own accessibility
-    /// label instead (see ApprovalBannerView.queueNavigator(positionInfo:)).
-    /// An `.agentQuestion`-sourced request renders choice rows instead of
-    /// the Deny/Always Allow/Allow row -- `questionText`/`optionButton(_:)`/
-    /// `otherButton`/`otherTextField`/`answerButton`/`chatButton`/
-    /// `backButton`/`notesButton`/`notesTextField`/`questionPosition`
-    /// cover that alternate layout (`AgentQuestionBannerView`).
-    /// `previewText` is the side-by-side markdown preview box shown only
-    /// when an option carries a `preview`. An `.agentHook`-sourced
-    /// request renders its own choice rows through `AgentToolApprovalView`
-    /// -- `choiceRow(_:)` covers that layout, alongside the ones this enum
-    /// already shares with `.agentQuestion` (`allowButton`/`denyButton`/
-    /// `alwaysAllowButton`, reused for its own "Yes"/"No"/"Always allow
-    /// ... in this pane" rows). Every choice row in an `.agentHook`
-    /// banner is the sole clickable content of that banner mode.
+    /// Calyx/Features/ApprovalInbox/). A macOS-notification-style
+    /// layout, at a fixed 344pt (640pt for a request wanting inline
+    /// option rows): the app icon on the left, a bold single-line,
+    /// middle-truncated title (tool/target label, plus the queue
+    /// navigator while more than one request is queued), a one-to-two-
+    /// line secondary body (`payload`, tap-to-expand into
+    /// `payloadExpanded`), and a vertically centered trailing column
+    /// holding one source-specific primary action button plus an
+    /// `optionsMenu` pull-down that lists every choice the CLI offers
+    /// beyond that primary action (ApprovalBannerView). The panel itself
+    /// paints with the same untinted regular glass as a native
+    /// notification, independent of the Calyx theme
+    /// (ApprovalPanelContentView).
+    ///
+    /// `payload` carries the FULL rendered text as its accessibility
+    /// label (queried while visually truncated to two lines); clicking
+    /// it toggles `payloadExpanded`, the scrolling full payload shown
+    /// below the body (`ExpandableBodyText`, shared by `.mcpTool`/
+    /// `.agentHook`'s payload and `.agentQuestion`'s question text).
+    /// `optionsMenu` is an `NSMenu` pull-down -- its own items reach the
+    /// accessibility tree as `NSMenuItem` titles, found by title text
+    /// rather than identifier, the same way the queue preview menu's rows
+    /// already are: every row that ever lands only in a `Menu` (a
+    /// `.mcpTool`/`.agentHook` choice row, a question option/"Other…"
+    /// row rendered through the Options menu rather than inline, "Add
+    /// notes"/"Back"/"Chat about this") carries no identifier of its own
+    /// for this reason, and is looked up by title in an XCUITest instead.
+    ///
+    /// `.mcpTool`'s primary action is "Allow" (`allowButton`); its
+    /// `optionsMenu` lists "Always Allow" and "Deny", by title.
+    /// `.agentHook`'s primary action is "Yes" (`allowButton`); its
+    /// `optionsMenu` lists one row per `AgentHookOffers.permissionUpdates`
+    /// element, Calyx's own pane-scoped "Always Allow ... in This Pane"
+    /// only when the CLI sent no offer of its own, and "No" -- all by
+    /// title. `.agentQuestion` shows no primary action at all for a plain
+    /// single-select click (an option click confirms immediately);
+    /// "Next"/"Answer" (`answerButton`) appears only while a multi-select
+    /// question or a visible free-text field needs confirming. For a
+    /// single-select question with no option carrying a `preview`, its
+    /// `optionsMenu` lists each option (`optionButton(_:)`), "Other…"
+    /// (`otherButton`), "Add notes", "Back" once available, and "Chat
+    /// about this" -- the last three by title. For a multi-select
+    /// question, or one where any option carries a `preview`, the
+    /// options themselves render as an inline list instead (still
+    /// `optionButton(_:)`, plus a standing `otherButton` row on the same
+    /// list) and `optionsMenu` holds only "Add notes"/"Back"/"Chat about
+    /// this" (by title) -- no `otherButton` of its own there, since the
+    /// inline list's own row already covers it. `questionText`/
+    /// `otherTextField`/`notesTextField`/`questionPosition` cover the
+    /// body/input elements that layout adds below the header and body
+    /// text. `previewText` is the side-by-side markdown preview box,
+    /// shown next to the inline option list only when an option carries a
+    /// `preview`. Queue navigation adds `previousButton`/
+    /// `nextButton`/`positionLabel`, shown only while more than one
+    /// request is queued for this window (see ApprovalBannerModel.
+    /// positionInfo). The queue preview menu wraps that same position
+    /// label in a `Menu` (`queueMenu`) listing every request in
+    /// ApprovalBannerModel.queueEntries, so a click can jump straight to
+    /// any queued request via ApprovalBannerModel.select(id:). macOS
+    /// collapses that `Menu` into one accessibility element, which leaves
+    /// `positionLabel` unreachable from the accessibility tree: the
+    /// "N / M" text is exposed as `queueMenu`'s own accessibility label
+    /// instead (see ApprovalBannerView.queueNavigator(positionInfo:)).
     enum ApprovalBanner {
         static let container = "calyx.approvalBanner.container"
         static let allowButton = "calyx.approvalBanner.allowButton"
-        static let denyButton = "calyx.approvalBanner.denyButton"
-        static let alwaysAllowButton = "calyx.approvalBanner.alwaysAllowButton"
         static let payload = "calyx.approvalBanner.payload"
+        static let payloadExpanded = "calyx.approvalBanner.payloadExpanded"
+        static let optionsMenu = "calyx.approvalBanner.optionsMenu"
         static let previousButton = "calyx.approvalBanner.previousButton"
         static let nextButton = "calyx.approvalBanner.nextButton"
         static let positionLabel = "calyx.approvalBanner.positionLabel"
@@ -175,14 +212,23 @@ enum AccessibilityID {
         static let answerButton = "calyx.approvalBanner.answerButton"
         static let questionPosition = "calyx.approvalBanner.questionPosition"
         static let previewText = "calyx.approvalBanner.previewText"
-        /// One `AgentToolApprovalView` row per `AgentHookOffers.
-        /// permissionUpdates` element, indexed the same way `optionButton
-        /// (_:)` indexes a question's options.
-        static func choiceRow(_ index: Int) -> String { "calyx.approvalBanner.choiceRow.\(index)" }
-        static let chatButton = "calyx.approvalBanner.chatButton"
-        static let backButton = "calyx.approvalBanner.backButton"
-        static let notesButton = "calyx.approvalBanner.notesButton"
         static let notesTextField = "calyx.approvalBanner.notesTextField"
+        /// The panel's own top-left ×, straddling the glass sheet's
+        /// top-left corner (`ApprovalPanelContentView`'s own
+        /// `.overlay(alignment: .topLeading)`, drawn into the window's
+        /// transparent `ApprovalPanelArranger.gutter`), shown only
+        /// while the panel is hovered. Resolves `.dismissed` for a
+        /// dismissible request (`ApprovalRequest.isDismissible`);
+        /// disabled (but still present, same identifier) for one that
+        /// isn't.
+        static let dismissButton = "calyx.approvalBanner.dismissButton"
+        /// `ApprovalTooltipWindow`'s own content -- the Calyx-drawn
+        /// tooltip `ExpandableBodyText`'s `collapsedText` shows on
+        /// hover, in place of AppKit's own `.help` (the panel is a
+        /// non-activating panel that never becomes key on hover, so a
+        /// pointer entering it elsewhere and sliding onto the text never
+        /// arms the system tooltip).
+        static let tooltip = "calyx.approvalBanner.tooltip"
     }
     enum Diff {
         static let container = "calyx.diff"
