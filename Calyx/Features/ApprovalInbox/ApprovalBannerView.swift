@@ -249,12 +249,16 @@ struct ApprovalBannerView: View {
 
     /// `headerText` (the tool name/target label), then the queue
     /// navigator when more than one request is queued for this window.
+    /// Truncates at the END, matching a macOS notification title -- the
+    /// tool name always survives, only the (already-disambiguating,
+    /// prefix-visible) target label loses its tail when the row is too
+    /// narrow.
     private var headerRow: some View {
         HStack {
             Text(headerText)
                 .font(.system(size: 13, weight: .bold))
                 .lineLimit(1)
-                .truncationMode(.middle)
+                .truncationMode(.tail)
             Spacer()
             if let positionInfo = model.positionInfo, positionInfo.count > 1 {
                 queueNavigator(positionInfo: positionInfo)
