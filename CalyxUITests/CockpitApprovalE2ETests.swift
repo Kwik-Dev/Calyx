@@ -93,6 +93,7 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
     private static let approvalBannerContainerID = "calyx.approvalBanner.container"
     private static let approvalBannerOptionsMenuID = "calyx.approvalBanner.optionsMenu"
     private static let approvalBannerDismissButtonID = "calyx.approvalBanner.dismissButton"
+    private static let approvalBannerTooltipID = "calyx.approvalBanner.tooltip"
 
     // MARK: - Test
 
@@ -383,17 +384,19 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
     /// `Calyx/Features/ApprovalInbox/`) rather than inline inside the
     /// main window's own content -- its window sits at the screen's own
     /// visible top-right corner, independent of the main window's own
-    /// frame. The WINDOW itself carries a `dismissGutter` (12pt)
-    /// transparent gutter on its top and left only, so its own top edge
-    /// sits exactly at the screen's visible top edge (not `margin` (12pt)
-    /// inside it: the glass sheet's own top-right corner is the one that
-    /// sits `margin` inside both edges, and the window's top edge sits
-    /// `dismissGutter` further out than that). The banner's
-    /// `.accessibilityElement(children: .contain)` container reports
-    /// only the union of its accessible descendants, which excludes
-    /// `ApprovalBannerView`'s own padding, so its frame sits 12pt inside
-    /// the sheet's left and right edges and 10pt inside its top and
-    /// bottom edges; the panel window's own frame is measured instead.
+    /// frame. The WINDOW itself carries a `gutter` (12pt) transparent
+    /// margin UNIFORMLY on all four sides, so its own top and right edges
+    /// sit exactly at the screen's visible top and right edges (not
+    /// `margin` (12pt) inside them: the glass sheet's own top-right
+    /// corner is the one that sits `margin` inside both edges, and the
+    /// window's top/right edges sit `gutter` further out than that --
+    /// since `gutter` is defined as `margin`, both exactly cancel). The
+    /// banner's `.accessibilityElement(children: .contain)` container
+    /// reports only the union of its accessible descendants, which
+    /// excludes `ApprovalBannerView`'s own padding, so its frame sits
+    /// 12pt inside the sheet's left and right edges and 10pt inside its
+    /// top and bottom edges; the panel window's own frame is measured
+    /// instead.
     func test_approvalBanner_isPositionedAtVisibleFrameTopRightCorner() throws {
         var counter = 0
         enableAIAgentIPCViaCommandPalette()
@@ -416,7 +419,7 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
             .firstMatch
         XCTAssertTrue(waitFor(panelWindow, timeout: 5), "the floating approval panel window never appeared")
         let bannerFrame = panelWindow.frame
-        XCTAssertEqual(bannerFrame.width, 356, accuracy: 1, "the floating approval panel's own window must be the fixed 344pt sheet width plus the 12pt dismissGutter")
+        XCTAssertEqual(bannerFrame.width, 368, accuracy: 1, "the floating approval panel's own window must be the fixed 344pt sheet width plus 2*gutter (24pt)")
 
         let windowFrame = app.windows.firstMatch.frame
         let screen = try XCTUnwrap(
@@ -434,22 +437,24 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
         let visibleFrame = screen.visibleFrame
         let visibleRight = visibleFrame.maxX
 
-        // Mirrors `ApprovalPanelArranger.margin`/`.dismissGutter`, both
-        // 12pt (there is no module access to the real constants from
-        // this out-of-process UI test target) -- the WINDOW's own top
-        // edge sits at `visibleFrame.maxY - margin + dismissGutter`,
-        // which these two being equal reduces to `visibleFrame.maxY`
-        // exactly (see `ApprovalPanelArranger.dismissGutter`'s own doc
-        // comment for why it is defined as `margin`).
+        // Mirrors `ApprovalPanelArranger.margin`/`.gutter`, both 12pt
+        // (there is no module access to the real constants from this
+        // out-of-process UI test target) -- the WINDOW's own top and
+        // right edges each sit at `visibleFrame.maxY/maxX - margin +
+        // gutter`, which these two being equal reduces to
+        // `visibleFrame.maxY`/`visibleFrame.maxX` exactly (see
+        // `ApprovalPanelArranger.gutter`'s own doc comment for why it is
+        // defined as `margin`).
         let margin: CGFloat = 12
-        let dismissGutter: CGFloat = 12
-        let expectedWindowMaxY = visibleFrame.maxY - margin + dismissGutter
+        let gutter: CGFloat = 12
+        let expectedWindowMaxY = visibleFrame.maxY - margin + gutter
         let visibleTop = primaryHeight - expectedWindowMaxY
+        let expectedWindowMaxX = visibleRight - margin + gutter
 
-        XCTAssertEqual(bannerFrame.maxX, visibleRight - margin, accuracy: 2,
-                       "the floating approval panel's right edge must sit 12pt inside the screen's visible right edge (the arranger margin, unaffected by the dismissGutter, which never sits on the right) -- got window frame \(bannerFrame), visible right edge \(visibleRight)")
+        XCTAssertEqual(bannerFrame.maxX, expectedWindowMaxX, accuracy: 2,
+                       "the floating approval panel's right edge must sit at visibleFrame.maxX - margin + gutter, which cancels to exactly visibleFrame.maxX -- got window frame \(bannerFrame), visible right edge \(visibleRight)")
         XCTAssertEqual(bannerFrame.minY, visibleTop, accuracy: 2,
-                       "the floating approval panel WINDOW's top edge must sit at visibleFrame.maxY - margin + dismissGutter -- got window frame \(bannerFrame), expected top edge \(visibleTop)")
+                       "the floating approval panel WINDOW's top edge must sit at visibleFrame.maxY - margin + gutter -- got window frame \(bannerFrame), expected top edge \(visibleTop)")
 
         denyViaOptionsMenu()
 
@@ -569,9 +574,10 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
         XCTAssertFalse(payloadExpanded.exists, "the expanded payload must not exist before the body is clicked")
 
         // The `ScrollView` itself now spans the glass sheet PLUS the
-        // `dismissGutter` (the gutter moved inside it so the × has
-        // in-bounds room to straddle the sheet's own corner -- see
-        // ApprovalPanelContentView's own header), so its own
+        // `gutter` on all four sides (the gutter moved inside it so the
+        // × has in-bounds room to straddle the sheet's own corner, and
+        // the sheet's own soft shadow room to blur outward on every edge
+        // -- see ApprovalPanelContentView's own header), so its own
         // accessibility frame is no longer the 344pt sheet width; the
         // panel WINDOW's own frame is checked instead, same width
         // relationship `test_dismissButton_returnsStatusDismissed_removesBanner`
@@ -580,8 +586,8 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
             .containing(.any, identifier: Self.approvalBannerContainerID)
             .firstMatch
         XCTAssertTrue(waitFor(panelWindow, timeout: 5), "the floating approval panel window never appeared")
-        XCTAssertEqual(panelWindow.frame.width, 344 + 12, accuracy: 1,
-                       "the panel window must be the fixed 344pt sheet width plus the 12pt dismissGutter")
+        XCTAssertEqual(panelWindow.frame.width, 344 + 24, accuracy: 1,
+                       "the panel window must be the fixed 344pt sheet width plus 2*gutter (24pt)")
 
         payloadText.click()
 
@@ -607,9 +613,9 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
     /// resolve the gated `pane_run` call with `{"status":"dismissed"}`
     /// and remove the banner -- the tool call is never told allow or
     /// deny, since Calyx never answers the question at all. The button
-    /// itself is a 22pt circle straddling the glass sheet's own top-left
-    /// corner, drawn into the WINDOW's transparent `dismissGutter` (12pt,
-    /// top and left only) -- its own frame and the panel window's own
+    /// itself is a 20pt circle straddling the glass sheet's own top-left
+    /// corner, drawn into the WINDOW's transparent `gutter` (12pt,
+    /// uniform on all four sides) -- its own frame and the panel window's own
     /// frame are both `XCUIElement.frame` (the same top-left-origin
     /// coordinate space), so no AppKit flip is needed to compare them,
     /// unlike `test_approvalBanner_isPositionedAtVisibleFrameTopRightCorner`'s
@@ -640,14 +646,13 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
         XCTAssertTrue(waitFor(panelWindow, timeout: 5), "the floating approval panel window never appeared")
 
         let buttonFrame = dismissButton.frame
-        XCTAssertEqual(buttonFrame.width, 22, accuracy: 1, "the dismiss button must be a 22pt circle")
-        XCTAssertEqual(buttonFrame.height, 22, accuracy: 1, "the dismiss button must be a 22pt circle")
+        XCTAssertEqual(buttonFrame.width, 20, accuracy: 1, "the dismiss button must be a 20pt circle")
+        XCTAssertEqual(buttonFrame.height, 20, accuracy: 1, "the dismiss button must be a 20pt circle")
 
-        // The glass sheet's own top-left corner sits `dismissGutter`
+        // The glass sheet's own top-left corner sits `gutter`
         // (12pt) inside the window's own top-left corner; the circle's
-        // center sits at `(sheet.minX + 3, sheet.top + 7)` -- 8pt of the
-        // disc left of the sheet and 4pt above it, both inside the 12pt
-        // gutter, matching a macOS notification banner's own × placement.
+        // center sits at `(sheet.minX + 4, sheet.top + 5)` -- matching a
+        // 1x pixel dump of macOS's own native notification × placement.
         // `panelWindow.frame`/`buttonFrame` are both `XCUIElement.frame`
         // (top-left-origin -- `minY` is the TOP edge, same convention
         // `test_approvalBanner_isPositionedAtVisibleFrameTopRightCorner`
@@ -656,12 +661,12 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
         // maxY - 12)` (an AppKit bottom-up reading of "top-left" that
         // does not apply to `XCUIElement.frame`).
         let sheetCorner = CGPoint(x: panelWindow.frame.minX + 12, y: panelWindow.frame.minY + 12)
-        let expectedCenter = CGPoint(x: sheetCorner.x + 3, y: sheetCorner.y + 7)
+        let expectedCenter = CGPoint(x: sheetCorner.x + 4, y: sheetCorner.y + 5)
         let buttonCenter = CGPoint(x: buttonFrame.midX, y: buttonFrame.midY)
         XCTAssertEqual(buttonCenter.x, expectedCenter.x, accuracy: 2,
-                       "the dismiss button's center must sit 3pt right of the glass sheet's top-left corner on the x axis")
+                       "the dismiss button's center must sit 4pt right of the glass sheet's top-left corner on the x axis")
         XCTAssertEqual(buttonCenter.y, expectedCenter.y, accuracy: 2,
-                       "the dismiss button's center must sit 7pt below the glass sheet's top-left corner on the y axis")
+                       "the dismiss button's center must sit 5pt below the glass sheet's top-left corner on the y axis")
 
         // The dismiss button is unpainted (`.clear`) until the glass
         // sheet is hovered; `ApprovalPanelWindow` is non-opaque, so a
@@ -701,15 +706,17 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
 
     // MARK: - Hover tooltip
 
-    /// Hovering the payload body must surface a system tooltip
-    /// (`.help`, `ExpandableBodyText.collapsedText`) -- nothing in the
-    /// panel moves: the panel window's own frame is identical before and
-    /// after the hover, and `payloadExpanded` (the tap-to-pin-expanded
-    /// text) never appears from hovering alone. Only the tooltip's own
-    /// EXISTENCE and proximity to the payload text are asserted, not its
-    /// text: a `HelpTag` accessibility element materializes after the
-    /// hover, but its own `label`/`value`/`title` expose an empty string,
-    /// so XCUITest cannot read a tooltip's text here.
+    /// Hovering the payload body must surface Calyx's own drawn tooltip
+    /// (`ApprovalTooltipWindow`, via `ApprovalTooltipPresenter`), even
+    /// when the pointer enters the panel somewhere ELSE first (the
+    /// system `.help` tooltip this replaces is armed only on the FIRST
+    /// cursor registration on the window, which a hover starting
+    /// elsewhere in a non-activating panel never gets -- see
+    /// `ExpandableBodyText`'s own header) -- nothing in the panel moves:
+    /// the panel window's own frame is identical before and after the
+    /// hover, and `payloadExpanded` (the tap-to-pin-expanded text) never
+    /// appears from hovering alone. Hovering a point outside the panel
+    /// afterward must dismiss the tooltip.
     func test_hoverPayload_showsTooltip_panelNeverMoves() throws {
         var counter = 0
         enableAIAgentIPCViaCommandPalette()
@@ -736,26 +743,55 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
         XCTAssertTrue(waitFor(panelWindow, timeout: 5), "the floating approval panel window never appeared")
         let frameBeforeHover = panelWindow.frame
 
-        payloadText.hover()
-        // AppKit arms the tooltip timer on a mouse-moved event received
-        // after the pointer has already come to rest over the view; the
-        // first `hover()` above is that rest position, and this second
-        // hover, at a slightly different point inside the same element,
-        // supplies the mouse-moved event the timer needs.
-        Thread.sleep(forTimeInterval: 0.3)
-        payloadText.coordinate(withNormalizedOffset: CGVector(dx: 0.51, dy: 0.51)).hover()
+        let tooltip = app.staticTexts[Self.approvalBannerTooltipID]
 
-        let helpTag = app.helpTags.firstMatch
-        XCTAssertTrue(waitFor(helpTag, timeout: 8),
-                     "hovering the payload body must surface a system tooltip within 8s")
-        XCTAssertTrue(helpTag.frame.minY >= payloadText.frame.maxY,
-                     "the tooltip must sit below the payload text it belongs to, not some unrelated tooltip elsewhere on screen")
-        XCTAssertTrue(helpTag.frame.minX < payloadText.frame.maxX && helpTag.frame.maxX > payloadText.frame.minX,
-                     "the tooltip must be horizontally over the payload text it belongs to, not some unrelated tooltip elsewhere on screen")
+        // The pointer must enter the panel somewhere OTHER than the
+        // payload text first, then slide onto it -- this is exactly the
+        // case AppKit's own `.help` tooltip misses (never getting a
+        // first-registration on the payload text's own view), and the
+        // Calyx-drawn tooltip must still appear.
+        let allowButton = app.buttons[Self.approvalBannerAllowButtonID]
+        XCTAssertTrue(waitFor(allowButton, timeout: 5), "the allow button never appeared")
+        allowButton.hover()
+        Thread.sleep(forTimeInterval: 0.3)
+        payloadText.hover()
+
+        XCTAssertTrue(waitFor(tooltip, timeout: 3),
+                     "hovering onto the payload body (after entering the panel elsewhere first) must surface the tooltip within 3s")
+        // Records the rendered tooltip for visual comparison.
+        let tooltipAttachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        tooltipAttachment.name = "tooltip-shown"
+        tooltipAttachment.lifetime = .keepAlways
+        add(tooltipAttachment)
+
+        // `payloadText.hover()` above hovers the element's own center,
+        // so that center is the pointer position `ApprovalTooltipPresenter
+        // .show(text:at:)` placed the tooltip window relative to
+        // (`ApprovalTooltipPresenter.frame(for:pointer:visibleFrame:)`:
+        // top-left corner at `pointer.x`, `pointer.y + 18` below it).
+        // `app.windows` does not expose the tooltip panel, so the box's
+        // own origin is derived from the static text's own frame instead,
+        // subtracting the chrome outside it (1pt border + 1pt inner line
+        // + insets: 4pt leading, 0pt top -- `ApprovalTooltipContent`'s
+        // own padding).
+        let payloadCenter = CGPoint(x: payloadText.frame.midX, y: payloadText.frame.midY)
+        let tooltipBoxOrigin = CGPoint(x: tooltip.frame.minX - 6, y: tooltip.frame.minY - 2)
+        XCTAssertEqual(tooltipBoxOrigin.x, payloadCenter.x, accuracy: 2,
+                       "the tooltip box's own left edge must be left-aligned with the pointer")
+        XCTAssertEqual(tooltipBoxOrigin.y, payloadCenter.y + 18, accuracy: 2,
+                       "the tooltip box's own top edge must sit 18pt below the pointer")
 
         XCTAssertEqual(panelWindow.frame, frameBeforeHover,
                        "the panel window's own frame must be identical before and after the hover -- a tooltip must never move anything in the panel")
         XCTAssertFalse(payloadExpanded.exists, "hovering the payload body must never show the tap-to-pin-expanded text")
+
+        // Hovering a point clearly outside the panel must dismiss the
+        // tooltip -- relative to the panel window itself (`app`'s own
+        // frame is unusable here: XCUIApplication has no real frame,
+        // and `app.coordinate(withNormalizedOffset:)` crashes with
+        // "point.x != INFINITY").
+        panelWindow.coordinate(withNormalizedOffset: CGVector(dx: -1, dy: 2)).hover()
+        waitForNonExistence(tooltip, timeout: 2)
 
         denyViaOptionsMenu()
 

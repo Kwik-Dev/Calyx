@@ -24,7 +24,7 @@ import SwiftUI
 /// (`ApprovalPanelArranger.panelWidth(for:visibleFrame:)` -- `fixedWidth`
 /// or `wideWidth`, whichever that request wants), read by
 /// `ApprovalPanelContentView`'s root `.frame(width:)` -- the WINDOW
-/// itself is `ApprovalPanelArranger.dismissGutter` points wider, see
+/// itself is `2 * ApprovalPanelArranger.gutter` points wider, see
 /// `ApprovalPanelController.measureFrame(hostingController:)`'s own doc
 /// comment. `heightCap`
 /// mirrors `ApprovalPanelArranger.heightCap(visibleFrame:)` for the
@@ -84,6 +84,10 @@ final class ApprovalPanelController: NSObject {
     /// compiling unchanged.
     private let targetTabTitle: (UUID) -> String?
     private let layout = ApprovalPanelLayout()
+    /// One tooltip presenter for the app-wide panel, handed to
+    /// `ApprovalPanelContentView` through `\.approvalTooltipPresenter` --
+    /// see `ApprovalTooltipPresenter`'s own header.
+    private let tooltipPresenter = ApprovalTooltipPresenter()
 
     private(set) var panel: ApprovalPanelWindow?
     private(set) var isTornDown = false
@@ -214,6 +218,7 @@ final class ApprovalPanelController: NSObject {
         guard let request = model.current else {
             if let panel {
                 handOffKeyIfNeeded()
+                tooltipPresenter.hide()
                 performOrderOut(panel: panel)
             }
             lastRenderedRequestID = nil
@@ -223,6 +228,7 @@ final class ApprovalPanelController: NSObject {
 
         if request.id != lastRenderedRequestID {
             handOffKeyIfNeeded()
+            tooltipPresenter.hide()
         }
         lastRenderedRequestID = request.id
         lastRenderedTargetSurfaceID = request.targetSurfaceID
@@ -278,6 +284,7 @@ final class ApprovalPanelController: NSObject {
         panel?.orderOut(nil)
         panel?.contentViewController = nil
         panel?.close()
+        tooltipPresenter.tearDown()
         NotificationCenter.default.removeObserver(self)
         isTornDown = true
     }
@@ -307,19 +314,17 @@ final class ApprovalPanelController: NSObject {
             model: model,
             layout: layout,
             targetTabTitle: targetTabTitle,
+            tooltipPresenter: tooltipPresenter,
             onContentSizeChange: { [weak self] size in self?.applyContentHeight(size) },
-            onRequestChange: { [weak self] in self?.handleRequestChange() },
-            panelHoverChanged: { [weak self] in self?.panel?.invalidateShadow() }
+            onRequestChange: { [weak self] in self?.handleRequestChange() }
         )
         let hostingController = NSHostingController(rootView: content)
-        // Excludes the titled window's own titlebar safe area from this
-        // content: `.fullSizeContentView` + `.titled` reserves a
-        // titlebar-height top inset for ANY content view controller's
-        // view, even with `titleVisibility = .hidden` and no visible
-        // traffic lights -- measured directly (a stray, constant +32pt
-        // folded into every `sizeThatFits(in:)` height otherwise), and
-        // it would also push the panel's own top edge that same 32pt
-        // below the screen's visible top once shown.
+        // ApprovalPanelWindow carries no title bar (no `.titled` in its
+        // styleMask), so there is no title bar inset to exclude here --
+        // this instead ensures the hosting controller reserves no safe
+        // area of its own at all, so `measureFrame(hostingController:)`'s
+        // own `sizeThatFits(in:)` measures exactly the sheet's own
+        // content height, with nothing else folded in.
         hostingController.safeAreaRegions = []
         thePanel.contentViewController = hostingController
         panel = thePanel
@@ -346,19 +351,19 @@ final class ApprovalPanelController: NSObject {
     /// or not either was actually reassigned just now.
     ///
     /// `hostingController.sizeThatFits(in:)` measures the WHOLE content
-    /// view, which includes `ApprovalPanelContentView`'s own
-    /// `dismissGutter` padding (top and leading) around the sheet -- its
-    /// returned height is therefore `sheetHeight + dismissGutter`, one
-    /// `dismissGutter` taller than the sheet itself, so `dismissGutter`
-    /// is subtracted back out here before this measurement's own
-    /// `heightCap` (a SHEET-height cap) clamps it, and before it is
-    /// handed to `ApprovalPanelArranger.windowFrame(sheetSize:visibleFrame:)`,
-    /// which itself re-adds that same gutter to compute the WINDOW's own
-    /// frame. `lastAppliedContentHeight` is set to the SHEET height (not
-    /// the gutter-inflated one), matching what `ApprovalPanelContentView`'s
-    /// own `onGeometryChange` -- attached to the pre-padding node, see
-    /// that file's own header -- reports back through
-    /// `onContentSizeChange` -> `applyContentHeight(_:)`.
+    /// view, which includes `ApprovalPanelContentView`'s own `gutter`
+    /// padding on all four sides around the sheet -- its returned height
+    /// is therefore `sheetHeight + 2*gutter`, and its returned width
+    /// `sheetWidth + 2*gutter`, so `2*gutter` is subtracted back out of
+    /// the height here before this measurement's own `heightCap` (a
+    /// SHEET-height cap) clamps it, and before it is handed to
+    /// `ApprovalPanelArranger.windowFrame(sheetSize:visibleFrame:)`,
+    /// which itself re-adds that same `2*gutter` to compute the WINDOW's
+    /// own frame. `lastAppliedContentHeight` is set to the SHEET height
+    /// (not the gutter-inflated one), matching what
+    /// `ApprovalPanelContentView`'s own `onGeometryChange` -- attached to
+    /// the pre-padding node, see that file's own header -- reports back
+    /// through `onContentSizeChange` -> `applyContentHeight(_:)`.
     private func measureFrame(hostingController: NSHostingController<ApprovalPanelContentView>) -> NSRect {
         let frame = visibleFrame()
         let heightCap = ApprovalPanelArranger.heightCap(visibleFrame: frame)
@@ -373,13 +378,14 @@ final class ApprovalPanelController: NSObject {
         hostingController.view.needsLayout = true
         hostingController.view.layoutSubtreeIfNeeded()
         // The content view includes `ApprovalPanelContentView`'s own
-        // `dismissGutter` padding, so the size proposed to `sizeThatFits(in:)`
-        // carries that gutter on both axes, matching what the content
-        // view actually occupies at the SHEET's own `width`/`heightCap`.
+        // `gutter` padding on all four sides, so the size proposed to
+        // `sizeThatFits(in:)` carries `2*gutter` on both axes, matching
+        // what the content view actually occupies at the SHEET's own
+        // `width`/`heightCap`.
         let measuredSize = hostingController.sizeThatFits(
-            in: CGSize(width: width + ApprovalPanelArranger.dismissGutter, height: heightCap + ApprovalPanelArranger.dismissGutter)
+            in: CGSize(width: width + (2 * ApprovalPanelArranger.gutter), height: heightCap + (2 * ApprovalPanelArranger.gutter))
         )
-        let sheetHeight = min(measuredSize.height - ApprovalPanelArranger.dismissGutter, heightCap)
+        let sheetHeight = min(measuredSize.height - (2 * ApprovalPanelArranger.gutter), heightCap)
         let sheetSize = CGSize(width: width, height: sheetHeight)
 
         // Set here (not left for `applyContentHeight(_:)`'s own first

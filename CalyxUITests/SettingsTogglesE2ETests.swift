@@ -140,6 +140,7 @@ final class SettingsTogglesE2ETests: CalyxUITestCase {
         app.launchEnvironment["CALYX_UITEST_SESSION_DIR"] = sessionDir
         app.launchEnvironment["CALYX_UITEST_DEFAULTS_SUITE"] = defaultsSuiteName
         app.launchEnvironment["HOME"] = homeDir
+        terminateStaleAppUnderTestInstances()
         app.launch()
     }
 

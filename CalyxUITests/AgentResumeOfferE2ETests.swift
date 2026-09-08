@@ -127,6 +127,7 @@ final class AgentResumeOfferE2ETests: CalyxUITestCase {
         app.launchEnvironment["CALYX_UITEST_SESSION_DIR"] = sessionDir
         app.launchEnvironment["HOME"] = homeDir
         app.launchEnvironment["CALYX_SESSION_BIN"] = CalyxUITestCase.builtSessionBinaryPath
+        terminateStaleAppUnderTestInstances()
         app.launch()
     }
 

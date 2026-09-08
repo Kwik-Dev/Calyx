@@ -14,10 +14,12 @@
 // doc comment in ApprovalBannerModel.swift) -- this view is that reader.
 //
 // The root shape -- `ScrollView` clamped to `layout.heightCap +
-// dismissGutter`, `.fixedSize(horizontal: false, vertical: true)` before
-// `.frame(width: layout.width + dismissGutter)` -- now spans the SHEET
-// plus the gutter on every axis (see the dismiss-button paragraph below
-// for why the gutter has to live INSIDE the `ScrollView` at all). The
+// 2*gutter`, `.fixedSize(horizontal: false, vertical: true)` before
+// `.frame(width: layout.width + 2*gutter)` -- now spans the SHEET plus
+// `ApprovalPanelArranger.gutter` on EVERY axis, UNIFORMLY (see the
+// dismiss-button paragraph below for why the gutter has to live INSIDE
+// the `ScrollView` at all, and `ApprovalPanelWindow`'s own header for why
+// the gutter is uniform rather than top/left-only now). The
 // `onGeometryChange` that reports content height to
 // `onContentSizeChange` stays attached to `glassWrapped(request:)`
 // itself, the pre-padding, pre-gutter node, so it still reports the
@@ -26,12 +28,11 @@
 // content itself, see `ApprovalPanelArranger.panelWidth(for:
 // visibleFrame:)`), matching what
 // `ApprovalPanelController.measureFrame(hostingController:)` expects
-// back through `applyContentHeight(_:)`; the `dismissGutter` padding
-// (top and leading) is applied AFTER that node, inside the `ScrollView`,
-// so `NSHostingController.sizeThatFits(in:)` -- which measures the
-// WHOLE content view -- still sees the same gutter-inflated total it
-// always did, just assembled inside the `ScrollView` now instead of
-// outside it.
+// back through `applyContentHeight(_:)`; the `gutter` padding (all four
+// sides) is applied AFTER that node, inside the `ScrollView`, so
+// `NSHostingController.sizeThatFits(in:)` -- which measures the WHOLE
+// content view -- still sees the same gutter-inflated total it always
+// did, just assembled inside the `ScrollView` now instead of outside it.
 //
 // The dismiss button (`dismissButton`, `isPanelHovered`) lives HERE, not
 // on `ApprovalBannerView`'s own root, but it is applied as an
@@ -41,13 +42,16 @@
 // outside the container. A `ScrollView` clips its content to its own
 // bounds, so the gutter the × straddles into must be PART of that
 // content, not outside it: the `ScrollView`'s own frame is therefore
-// widened by `dismissGutter` on every axis (above), and
-// `glassWrapped(request:)`'s own `dismissGutter` padding (top and
-// leading, applied at the call site in `body`) shifts the sheet -- ×
-// included, since it travels with it as an overlay -- into the bottom-
-// right corner of that widened frame, leaving exactly `dismissGutter`
-// of transparent, still-in-bounds space above and to its left for the ×
-// to straddle into.
+// widened by `gutter` on every axis (above), and `glassWrapped(request:)`'s
+// own `gutter` padding (all four sides, applied at the call site in
+// `body`) centers the sheet -- × included, since it travels with it as
+// an overlay -- inside that widened frame, leaving exactly `gutter` of
+// transparent, still-in-bounds space on every side. All four gutters
+// stay unpainted (`ApprovalPanelWindow` is non-opaque, so the window
+// server routes a click there to whatever window sits behind the panel,
+// not the panel itself) -- the top and left ones also give the dismiss
+// disc room to straddle the sheet's own top-left corner without getting
+// clipped.
 //
 // Z-order: a view's Liquid Glass content -- anything placed INSIDE a
 // `GlassEffectContainer`'s own content closure -- composites ABOVE that
@@ -76,22 +80,25 @@
 // Glass: the panel uses the same untinted regular glass as macOS
 // notification banners, independent of the Calyx theme -- a `Color.clear`
 // `.glassEffect(.regular, in: .rect(cornerRadius: 20))` behind the
-// content, `.ignoresSafeArea()` and `.allowsHitTesting(false)`. The
-// `reduceTransparency` path fills the same rounded rect with
+// content. The `reduceTransparency` path fills the same rounded rect with
 // `.windowBackgroundColor` instead. No theme-color tint, no atmosphere
 // layer, no inactive-window dimming: unlike the main window, this panel
 // never reads the Calyx theme at all.
 //
-// Rounded outline ownership: `ApprovalPanelWindow` stays `.titled`
-// because `.glassEffect` needs a titled window to render at all (see
-// `QuickTerminalWindow` for the sibling panel this mirrors), but its
-// background is `.clear` with `isOpaque = false`, so the titled frame's
-// own corner mask -- smaller than this view's 20pt radius -- clips
-// nothing this view draws. The `.rect(cornerRadius: 20)` shape below is
-// therefore the panel's entire visible outline, the window shadow
-// (`hasShadow = true`) follows that same shape, and the
-// `reduceTransparency` fill reuses the identical 20pt shape so both
-// paths show the same corners.
+// Rim: `ApprovalPanelWindow.hasShadow` is `false` (see that file's own
+// header for why) and this sheet draws no shadow of its own either -- a
+// drawn shadow would paint pixels into the transparent gutter, and
+// `ApprovalPanelWindow` routes a click by pixel alpha, so a painted
+// gutter would capture a click meant for whatever window sits behind
+// the panel instead of passing it through. The sheet draws only its OWN
+// 1pt rim -- a `strokeBorder` on TOP of the glass fill, at the SAME 20pt
+// corner radius as the glass shape -- so it still reads as a distinct
+// surface without the system shadow's own outline. The
+// `reduceTransparency` path keeps the same rim on top of its solid fill.
+// `.rect(cornerRadius: 20)`/`RoundedRectangle(cornerRadius: 20)` is
+// therefore the panel's entire visible outline in every appearance and
+// every `reduceTransparency` state alike -- `ApprovalPanelWindow` itself
+// carries no shadow or outline of its own at all.
 
 import SwiftUI
 import AppKit
@@ -103,15 +110,12 @@ struct ApprovalPanelContentView: View {
     /// targeted request -- see `ApprovalPanelController`'s own stored
     /// property of the same name for the full chain.
     let targetTabTitle: (UUID) -> String?
+    /// Handed to `ExpandableBodyText` (through `AgentQuestionBannerView`/
+    /// `ApprovalBannerView`) via `\.approvalTooltipPresenter` -- see
+    /// `ApprovalTooltipPresenter`'s own header.
+    let tooltipPresenter: ApprovalTooltipPresenter
     let onContentSizeChange: (CGSize) -> Void
     let onRequestChange: () -> Void
-    /// Called whenever `isPanelHovered` changes -- see that property's
-    /// own doc comment for why the window's shadow needs recomputing on
-    /// this same edge. `{}` by default so every existing test-only
-    /// construction of this view keeps compiling unchanged;
-    /// `ApprovalPanelController` supplies the real
-    /// `panel?.invalidateShadow()` call.
-    var panelHoverChanged: () -> Void = {}
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
@@ -157,12 +161,11 @@ struct ApprovalPanelContentView: View {
                                 onContentSizeChange(size)
                             }
                         }
-                        .padding(.top, ApprovalPanelArranger.dismissGutter)
-                        .padding(.leading, ApprovalPanelArranger.dismissGutter)
+                        .padding(ApprovalPanelArranger.gutter)
                 }
-                .frame(maxHeight: layout.heightCap + ApprovalPanelArranger.dismissGutter)
+                .frame(maxHeight: layout.heightCap + (2 * ApprovalPanelArranger.gutter))
                 .fixedSize(horizontal: false, vertical: true)
-                .frame(width: layout.width + ApprovalPanelArranger.dismissGutter)
+                .frame(width: layout.width + (2 * ApprovalPanelArranger.gutter))
                 .onChange(of: request.id) {
                     Task { @MainActor in
                         onRequestChange()
@@ -172,9 +175,7 @@ struct ApprovalPanelContentView: View {
                 EmptyView()
             }
         }
-        .onChange(of: isPanelHovered) {
-            panelHoverChanged()
-        }
+        .environment(\.approvalTooltipPresenter, tooltipPresenter)
     }
 
     /// The panel's own top-left ×, styled like a macOS notification's
@@ -186,24 +187,34 @@ struct ApprovalPanelContentView: View {
     /// Calyx declines to. For a non-dismissible request (grok/pi, whose
     /// gate is their own only prompt), the button stays in the SAME spot
     /// rather than disappearing (`.disabled(true)`, its glyph greyed to
-    /// `.tertiary`), with a tooltip (`.help`) and accessibility hint
-    /// explaining why -- never a caption under the body, which would
-    /// shift every OTHER source's layout too. `dismissButton` identifies
-    /// both states alike, so a test can assert `isEnabled` directly.
+    /// `.tertiary`), with an accessibility hint explaining why and, on
+    /// hover, the same Calyx-drawn tooltip `ExpandableBodyText` uses
+    /// (`glassWrapped(request:)`'s own `onChange(of: dismissButtonHovered)`
+    /// calls `tooltipPresenter.scheduleShow(text:)`/`.hide()` directly --
+    /// `ApprovalPanelWindow` never becomes key on hover, so AppKit's own
+    /// `.help` tooltip would never arm here either) -- never a caption
+    /// under the body, which would shift every OTHER source's layout
+    /// too. `dismissButton` identifies both states alike, so a test can
+    /// assert `isEnabled` directly.
     ///
-    /// A 22pt circle whose center sits at `(sheet.minX + 3, sheet.top +
-    /// 7)` -- 8pt of the disc left of the sheet's own left edge and 4pt
-    /// above its top edge, both distances inside the 12pt
-    /// `dismissGutter`, matching a macOS notification banner's own ×
-    /// placement. `glassWrapped(request:)`'s own `.overlay(alignment:
+    /// A 20pt circle whose center sits at `(sheet.minX + 4, sheet.top +
+    /// 5)` -- matching a 1x pixel dump of macOS's own native notification
+    /// × placement. `glassWrapped(request:)`'s own `.overlay(alignment:
     /// .topLeading)` places the button's own top-left corner AT the
     /// sheet's (`ApprovalBannerView`'s, the overlay's base), and the
-    /// `.offset(x: -8, y: -4)` there then shifts it there (the circle's
-    /// own top-left corner, 11pt above and left of its center, lands at
-    /// `3 - 11 = -8` and `7 - 11 = -4`).
+    /// `.offset(x: -6, y: -5)` there then shifts it there (the circle's
+    /// own top-left corner, 10pt above and left of its center, lands at
+    /// `4 - 10 = -6` and `5 - 10 = -5`).
     ///
-    /// Show-on-hover (`isPanelHovered`) fades the fill/border/glyph via
-    /// `.clear` rather than `.opacity`: `.opacity` also zeroes the
+    /// The disc is drawn OPAQUE (`discFillColor`, `41/255` white in dark
+    /// appearance) so it keeps its own contrast against the translucent
+    /// sheet over any background, with a faint 1pt INNER highlight
+    /// (`discInnerHighlightColor`) just inside its own edge -- matching a
+    /// macOS notification's own ×, which reads as a separate, physically
+    /// distinct control rather than a tinted region of the sheet itself.
+    ///
+    /// Show-on-hover (`isPanelHovered`) fades the fill/highlight/glyph
+    /// via `.clear` rather than `.opacity`: `.opacity` also zeroes the
     /// element's accessibility geometry, which would remove the button
     /// from hit-testing and from assistive technology entirely. Color
     /// alpha leaves the `Button`'s layout frame, and therefore its
@@ -219,23 +230,26 @@ struct ApprovalPanelContentView: View {
     @ViewBuilder
     private func dismissButton(request: ApprovalRequest) -> some View {
         let fillStyle: AnyShapeStyle = isPanelHovered
-            ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor))
+            ? AnyShapeStyle(Self.discFillColor)
             : AnyShapeStyle(.clear)
-        let borderStyle: AnyShapeStyle = isPanelHovered ? AnyShapeStyle(Color(nsColor: .separatorColor)) : AnyShapeStyle(.clear)
+        let innerHighlightStyle: AnyShapeStyle = isPanelHovered
+            ? AnyShapeStyle(Self.discInnerHighlightColor)
+            : AnyShapeStyle(.clear)
+        let glyphOpacity: Double = request.isDismissible ? 1 : 0.4
         let glyphStyle: AnyShapeStyle = isPanelHovered
-            ? (request.isDismissible ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tertiary))
+            ? AnyShapeStyle(Self.discGlyphColor.opacity(glyphOpacity))
             : AnyShapeStyle(.clear)
 
         let button = Button(action: { model.dismiss(id: request.id) }) {
             Circle()
                 .fill(fillStyle)
-                .overlay(Circle().strokeBorder(borderStyle, lineWidth: 1))
+                .overlay(Circle().strokeBorder(innerHighlightStyle, lineWidth: 1))
                 .overlay {
                     Image(systemName: "xmark")
-                        .font(.system(size: 10, weight: .bold))
+                        .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(glyphStyle)
                 }
-                .frame(width: 22, height: 22)
+                .frame(width: 20, height: 20)
                 .animation(.easeInOut(duration: 0.15), value: isPanelHovered)
         }
         .buttonStyle(.plain)
@@ -247,7 +261,6 @@ struct ApprovalPanelContentView: View {
             button
         } else {
             button
-                .help(Self.notDismissibleHint)
                 .accessibilityHint(Self.notDismissibleHint)
         }
     }
@@ -255,6 +268,46 @@ struct ApprovalPanelContentView: View {
     /// `dismissButton(request:)`'s own tooltip/accessibility hint for a
     /// non-dismissible (grok/pi) request.
     private static let notDismissibleHint = "This CLI has no prompt of its own; choose Allow or an option here."
+
+    /// `dismissButton(request:)`'s own opaque disc fill, matching a 1x
+    /// pixel dump of macOS's own native notification × values:
+    /// `NSColor(white: 41/255, alpha: 1)` in dark appearance, `NSColor
+    /// (white: 0.93, alpha: 1)` in light. An `NSColor(name:content:)`
+    /// dynamic provider, not a `@Environment(\.colorScheme)` read, so it
+    /// resolves against whatever `NSAppearance` is actually active for
+    /// this view at draw time (including an app-wide override), the same
+    /// mechanism `.windowBackgroundColor`/`.separatorColor` elsewhere in
+    /// this file already rely on.
+    private static let discFillColor = Color(nsColor: .dynamic(
+        dark: NSColor(white: 41.0 / 255.0, alpha: 1),
+        light: NSColor(white: 0.93, alpha: 1)
+    ))
+
+    /// `dismissButton(request:)`'s own 1pt inner highlight, drawn just
+    /// inside the fill's own edge: `Color.white.opacity(0.06)` in dark
+    /// appearance, `Color.black.opacity(0.08)` in light.
+    private static let discInnerHighlightColor = Color(nsColor: .dynamic(
+        dark: NSColor.white.withAlphaComponent(0.06),
+        light: NSColor.black.withAlphaComponent(0.08)
+    ))
+
+    /// `dismissButton(request:)`'s own glyph color before the
+    /// non-dismissible `glyphOpacity` multiplier: `Color.white.opacity
+    /// (0.58)` in dark appearance, `Color.black.opacity(0.6)` in light.
+    private static let discGlyphColor = Color(nsColor: .dynamic(
+        dark: NSColor.white.withAlphaComponent(0.58),
+        light: NSColor.black.withAlphaComponent(0.6)
+    ))
+
+    /// `glassWrapped(request:)`'s own 1pt rim, drawn on top of the glass
+    /// (or `reduceTransparency` solid) fill: `Color.white.opacity(0.07)`
+    /// in dark appearance, `Color.black.opacity(0.10)` in light -- the
+    /// sheet's own substitute for the system window shadow's rim, now
+    /// that `ApprovalPanelWindow.hasShadow` is `false`.
+    private static let rimColor = Color(nsColor: .dynamic(
+        dark: NSColor.white.withAlphaComponent(0.07),
+        light: NSColor.black.withAlphaComponent(0.10)
+    ))
 
     /// `layout.hostWindowController?.activeTabDisplayTitle` (its active
     /// tab's own title) falling back to the window's own `title`, then to
@@ -277,17 +330,28 @@ struct ApprovalPanelContentView: View {
             .overlay(alignment: .topLeading) {
                 dismissButton(request: request)
                     .onAssumeInsideHover($dismissButtonHovered, recheckToken: layout.hoverRecheckToken)
-                    .offset(x: -8, y: -4)
+                    .offset(x: -6, y: -5)
+            }
+            .onChange(of: dismissButtonHovered) {
+                guard !request.isDismissible else { return }
+                if dismissButtonHovered {
+                    tooltipPresenter.scheduleShow(text: Self.notDismissibleHint)
+                } else {
+                    tooltipPresenter.hide()
+                }
             }
             .id(request.id)
         }
         .background {
-            Group {
-                if reduceTransparency {
-                    RoundedRectangle(cornerRadius: 20).fill(Color(nsColor: .windowBackgroundColor))
-                } else {
-                    Color.clear.glassEffect(.regular, in: .rect(cornerRadius: 20))
+            ZStack {
+                Group {
+                    if reduceTransparency {
+                        RoundedRectangle(cornerRadius: 20).fill(Color(nsColor: .windowBackgroundColor))
+                    } else {
+                        Color.clear.glassEffect(.regular, in: .rect(cornerRadius: 20))
+                    }
                 }
+                RoundedRectangle(cornerRadius: 20).strokeBorder(Self.rimColor, lineWidth: 1)
             }
             .ignoresSafeArea()
             .allowsHitTesting(false)

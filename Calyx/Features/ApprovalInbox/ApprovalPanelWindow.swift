@@ -22,6 +22,16 @@
 // `NSWindow+CalyxClose.swift`'s own header comment for the full
 // mis-routing writeup this mirrors).
 //
+// `styleMask` is `.borderless` (no `.titled`) and `hasShadow = false`:
+// the system shadow of a non-opaque window draws a bright outline along
+// the window's own alpha silhouette, which a real macOS notification
+// banner does not have, so the panel carries no system shadow and the
+// sheet (`ApprovalPanelContentView.glassWrapped(request:)`) draws its
+// OWN 1pt rim instead; Liquid Glass still renders correctly without
+// `.titled`. `canBecomeKey` below is overridden explicitly (not
+// inherited from a titled style) so the borderless panel can still take
+// key for the question form's free-text field.
+//
 // See CalyxTests/Features/ApprovalPanelWindowTests.swift for the
 // specced configuration, and QuickTerminalWindow.swift for the sibling
 // non-activating panel this is modeled on.
@@ -35,8 +45,7 @@ final class ApprovalPanelWindow: NSPanel {
     convenience init() {
         self.init(
             contentRect: NSRect(x: 0, y: 0, width: 360, height: 100),
-            // `.titled` stays for glass rendering; the content sheet rounds the visible corners.
-            styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel],
+            styleMask: [.borderless, .fullSizeContentView, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
@@ -47,11 +56,9 @@ final class ApprovalPanelWindow: NSPanel {
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         isRestorable = false
         isReleasedWhenClosed = false
-        hasShadow = true
+        hasShadow = false
         isOpaque = false
         backgroundColor = .clear
-        titlebarAppearsTransparent = true
-        titleVisibility = .hidden
         title = "Approval"
         isMovable = false
         identifier = NSUserInterfaceItemIdentifier("com.calyx.approvalPanel")

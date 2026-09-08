@@ -216,12 +216,19 @@ enum AccessibilityID {
         /// The panel's own top-left ×, straddling the glass sheet's
         /// top-left corner (`ApprovalPanelContentView`'s own
         /// `.overlay(alignment: .topLeading)`, drawn into the window's
-        /// transparent `ApprovalPanelArranger.dismissGutter`), shown only
+        /// transparent `ApprovalPanelArranger.gutter`), shown only
         /// while the panel is hovered. Resolves `.dismissed` for a
         /// dismissible request (`ApprovalRequest.isDismissible`);
         /// disabled (but still present, same identifier) for one that
         /// isn't.
         static let dismissButton = "calyx.approvalBanner.dismissButton"
+        /// `ApprovalTooltipWindow`'s own content -- the Calyx-drawn
+        /// tooltip `ExpandableBodyText`'s `collapsedText` shows on
+        /// hover, in place of AppKit's own `.help` (the panel is a
+        /// non-activating panel that never becomes key on hover, so a
+        /// pointer entering it elsewhere and sliding onto the text never
+        /// arms the system tooltip).
+        static let tooltip = "calyx.approvalBanner.tooltip"
     }
     enum Diff {
         static let container = "calyx.diff"

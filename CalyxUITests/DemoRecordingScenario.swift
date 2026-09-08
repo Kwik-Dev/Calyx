@@ -123,6 +123,11 @@ final class DemoRecordingScenario: CalyxUITestCase {
         // CALYX_DEMO_RECORDING guard skips before `app` is ever assigned,
         // that force-unwrap would crash. Terminate/clean up only this
         // scenario's own state, guarding against a never-assigned `app`.
+        //
+        // Also does not call super.tearDown(), so restoring the
+        // developer's keyboard input source (normally done there) must
+        // happen explicitly here.
+        restoreInputSource()
         if let app {
             app.terminate()
         }
@@ -170,6 +175,7 @@ final class DemoRecordingScenario: CalyxUITestCase {
         ]
         app.launchEnvironment["CALYX_UITEST_SESSION_DIR"] = tempDir
         app.launchEnvironment["CALYX_UITEST_DEFAULTS_SUITE"] = suiteName
+        terminateStaleAppUnderTestInstances()
         app.launch()
 
         // MARK: - PRE-ROLL

@@ -4,8 +4,15 @@
 // The 2-line, tap-to-pin-expanded body shared by `ApprovalBannerView`
 // (`.mcpTool`/`.agentHook`'s payload) and `AgentQuestionBannerView`
 // (`.agentQuestion`'s current question text). A stationary hover shows
-// the full text in the system tooltip (`.help`) while collapsed; nothing
-// in the panel moves on hover.
+// the full text in a Calyx-drawn tooltip (`ApprovalTooltipWindow`, via
+// `ApprovalTooltipPresenter`) while collapsed; nothing in the panel
+// moves on hover. AppKit's own `.help` tooltip cannot be used here: it
+// is armed only when the first cursor registration on the window lands
+// on the tooltip's own view, and `ApprovalPanelWindow` is a
+// non-activating panel that never becomes key on hover -- a pointer
+// entering the panel elsewhere (e.g. over the Allow button) and sliding
+// onto this text never gets that first registration, so the system
+// tooltip never appears.
 //
 // `text` is already rendered (`ControlCharacterDisplay.render`, run once
 // by the caller per body evaluation) -- this view never re-renders it,
@@ -30,10 +37,16 @@ struct ExpandableBodyText: View {
     let expandedFont: Font
     let collapsedForegroundIsSecondary: Bool
 
+    @Environment(\.approvalTooltipPresenter) private var tooltipPresenter
+
     /// Whether a click has pinned the expanded text open -- stays set
     /// until this view itself is torn down (the caller's own
     /// `.id(request.id)` resets it per request).
     @State private var isExpanded = false
+    /// Whether the pointer is currently over `collapsedText`, tracked
+    /// via `onAssumeInsideHover` (this panel uses `.activeAlways`
+    /// tracking -- see that helper's own doc comment).
+    @State private var isHoveringText = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -41,6 +54,20 @@ struct ExpandableBodyText: View {
             if isExpanded {
                 expandedText
             }
+        }
+        .onChange(of: isHoveringText) {
+            if isHoveringText, !isExpanded {
+                tooltipPresenter?.scheduleShow(text: text)
+            } else {
+                tooltipPresenter?.hide()
+            }
+        }
+        // The caller's own `.id(request.id)` tears this view down when
+        // the displayed request changes -- a pending or already-shown
+        // tooltip for the OLD text must never linger once that text is
+        // gone.
+        .onDisappear {
+            tooltipPresenter?.hide()
         }
     }
 
@@ -54,34 +81,20 @@ struct ExpandableBodyText: View {
     /// `.onTapGesture` or otherwise -- ever sees the click. The full text
     /// stays selectable via `expandedText`, which this tap reveals.
     ///
-    /// `.help(text)` shows the same full text in the system tooltip on a
-    /// stationary hover -- unlike the tap, this never mutates any state,
-    /// so hovering never moves anything else in the panel. Applied only
-    /// while `!isExpanded`: once the tap has pinned the full text open
-    /// below, a tooltip repeating that same text over the collapsed clip
-    /// would pop over already-visible content. Apple's `help(_:)`
-    /// documentation states it "configures the view's accessibility hint
-    /// and its help tag (tooltip)" -- that hint duplicates VoiceOver's own
-    /// label announcement (already the full text, via
-    /// `.accessibilityLabel` above) rather than describing the tap
-    /// action. Apple's docs do not state whether a later
-    /// `.accessibilityHint` overrides the hint `.help` sets; applying it
-    /// AFTER `.help` here follows SwiftUI's general later-applied-modifier-
-    /// wins pattern for a single-value property (documented for other
-    /// modifiers, e.g. `.disabled(_:)`, where an outer/later value wins
-    /// over an inner/earlier one). Applied identically in both branches
-    /// below so the hint reads the same whether or not `.help` is also
-    /// present.
-    @ViewBuilder
+    /// A stationary hover over this text schedules the Calyx-drawn
+    /// tooltip (`tooltipPresenter.scheduleShow(text:)`, via
+    /// `onAssumeInsideHover` below and `body`'s own `onChange(of:
+    /// isHoveringText)`); unlike the tap, hovering never mutates
+    /// `isExpanded` or moves anything else in the panel. Hover tracking
+    /// stays attached regardless of `isExpanded` (`onAssumeInsideHover`
+    /// itself has no bearing on layout), but scheduling a tooltip is
+    /// skipped while `isExpanded`: once the tap has pinned the full text
+    /// open below, a tooltip repeating that same text over the collapsed
+    /// clip would pop over already-visible content.
     private var collapsedText: some View {
-        if isExpanded {
-            collapsedTextBase
-                .accessibilityHint("Click to expand the full text")
-        } else {
-            collapsedTextBase
-                .help(text)
-                .accessibilityHint("Click to expand the full text")
-        }
+        collapsedTextBase
+            .accessibilityHint("Click to expand the full text")
+            .onAssumeInsideHover($isHoveringText)
     }
 
     private var collapsedTextBase: some View {
@@ -95,6 +108,7 @@ struct ExpandableBodyText: View {
             .contentShape(Rectangle())
             .onTapGesture {
                 isExpanded.toggle()
+                tooltipPresenter?.hide()
             }
     }
 

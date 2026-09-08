@@ -46,11 +46,11 @@ final class ApprovalPanelWindowTests: XCTestCase {
 
     // MARK: - styleMask / signal lights
 
-    func test_styleMask_isTitledFullSizeContentViewNonactivatingPanel() {
+    func test_styleMask_isBorderlessFullSizeContentViewNonactivatingPanel() {
         let panel = makePanel()
 
-        XCTAssertEqual(panel.styleMask, [.titled, .fullSizeContentView, .nonactivatingPanel],
-                       "styleMask must be exactly [.titled, .fullSizeContentView, .nonactivatingPanel] -- .titled is required for the glass effect, and no closable/miniaturizable/resizable bit may be present")
+        XCTAssertEqual(panel.styleMask, [.borderless, .fullSizeContentView, .nonactivatingPanel],
+                       "styleMask must be exactly [.borderless, .fullSizeContentView, .nonactivatingPanel] -- .titled is dropped so the system window shadow's own bright 1px alpha-silhouette outline never shows, and no closable/miniaturizable/resizable bit may be present")
     }
 
     func test_standardCloseButton_isNil() {
@@ -122,10 +122,10 @@ final class ApprovalPanelWindowTests: XCTestCase {
                        "the panel must survive its own close() (tearDown() calls close() but the controller keeps its own reference alive)")
     }
 
-    func test_hasShadow_isTrue() {
+    func test_hasShadow_isFalse() {
         let panel = makePanel()
 
-        XCTAssertTrue(panel.hasShadow, "the panel must cast a shadow, matching a real notification/floating panel's appearance")
+        XCTAssertFalse(panel.hasShadow, "the panel must not cast the system window shadow -- it draws its own soft shadow and rim in ApprovalPanelContentView.glassWrapped(request:) instead, since the system shadow of a non-opaque dark window adds its own bright alpha-silhouette outline that a real notification banner does not have")
     }
 
     func test_isOpaque_isFalse() {

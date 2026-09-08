@@ -18,10 +18,10 @@
 //    visibleFrame.maxX/maxY, never hardcoded against a screen at the
 //    origin.
 //  - windowFrame(sheetSize:visibleFrame:margin:): the WINDOW's own frame
-//    for a glass sheet of a given size -- dismissGutter points wider and
-//    taller than the sheet, its right edge unaffected by the gutter (no
-//    gutter on the right), its top edge pushed dismissGutter further
-//    above the sheet's own top edge (the gutter on top).
+//    for a glass sheet of a given size -- 2*gutter points wider and
+//    taller than the sheet (gutter on every side), its right and top
+//    edges each pushed gutter further past the sheet's own right/top
+//    edges.
 //  - panelWidth(for:visibleFrame:margin:): the notification-style panel
 //    is one of exactly two fixed widths, never content-dependent -- nil
 //    or a non-wide request reads fixedWidth (344pt), a request whose
@@ -72,35 +72,35 @@ final class ApprovalPanelArrangerTests: XCTestCase {
     // MARK: - windowFrame
 
     /// For a 400x300 sheet against the same non-origin visibleFrame:
-    /// window width = 400 + 12 = 412, height = 300 + 12 = 312;
-    /// maxX = 1540 - 12 = 1528 (unaffected by the gutter, right side);
-    /// maxY = 900 - 12 + 12 = 900 (the gutter's full 12pt reappears on
-    /// top, since margin and dismissGutter are both 12 here).
+    /// window width = 400 + 24 = 424, height = 300 + 24 = 324;
+    /// maxX = 1540 - 12 + 12 = 1540 (margin cancels gutter, both 12 here);
+    /// maxY = 900 - 12 + 12 = 900 (same cancellation).
     func test_windowFrame_isSheetSizePlusGutter_topRightAnchored() {
         let sheetSize = CGSize(width: 400, height: 300)
 
         let rect = ApprovalPanelArranger.windowFrame(sheetSize: sheetSize, visibleFrame: visibleFrame)
 
-        XCTAssertEqual(rect.width, 412, accuracy: 0.001, "window width must be sheetSize.width + dismissGutter")
-        XCTAssertEqual(rect.height, 312, accuracy: 0.001, "window height must be sheetSize.height + dismissGutter")
-        XCTAssertEqual(rect.maxX, 1528, accuracy: 0.001,
-                       "window maxX must be visibleFrame.maxX - margin, unaffected by the gutter (none on the right)")
-        XCTAssertEqual(rect.maxY, visibleFrame.maxY - ApprovalPanelArranger.margin + ApprovalPanelArranger.dismissGutter,
-                       accuracy: 0.001, "window maxY must be visibleFrame.maxY - margin + dismissGutter")
+        XCTAssertEqual(rect.width, 424, accuracy: 0.001, "window width must be sheetSize.width + 2*gutter")
+        XCTAssertEqual(rect.height, 324, accuracy: 0.001, "window height must be sheetSize.height + 2*gutter")
+        XCTAssertEqual(rect.maxX, visibleFrame.maxX - ApprovalPanelArranger.margin + ApprovalPanelArranger.gutter,
+                       accuracy: 0.001, "window maxX must be visibleFrame.maxX - margin + gutter")
+        XCTAssertEqual(rect.maxY, visibleFrame.maxY - ApprovalPanelArranger.margin + ApprovalPanelArranger.gutter,
+                       accuracy: 0.001, "window maxY must be visibleFrame.maxY - margin + gutter")
     }
 
-    /// The SHEET's own top-right corner (window.maxX, window.maxY -
-    /// dismissGutter) must land exactly where `anchor(size:visibleFrame:)`
-    /// would have placed a same-sized rect -- the gutter must never move
-    /// the sheet itself, only enlarge the window around it.
+    /// The SHEET's own top-right corner (window.maxX - gutter,
+    /// window.maxY - gutter) must land exactly where
+    /// `anchor(size:visibleFrame:)` would have placed a same-sized rect
+    /// -- the gutter must never move the sheet itself, only enlarge the
+    /// window around it, uniformly on every side.
     func test_windowFrame_sheetTopRightCorner_matchesAnchor() {
         let sheetSize = CGSize(width: 400, height: 300)
 
         let windowRect = ApprovalPanelArranger.windowFrame(sheetSize: sheetSize, visibleFrame: visibleFrame)
         let anchoredRect = ApprovalPanelArranger.anchor(size: sheetSize, visibleFrame: visibleFrame)
 
-        XCTAssertEqual(windowRect.maxX, anchoredRect.maxX, accuracy: 0.001)
-        XCTAssertEqual(windowRect.maxY - ApprovalPanelArranger.dismissGutter, anchoredRect.maxY, accuracy: 0.001)
+        XCTAssertEqual(windowRect.maxX - ApprovalPanelArranger.gutter, anchoredRect.maxX, accuracy: 0.001)
+        XCTAssertEqual(windowRect.maxY - ApprovalPanelArranger.gutter, anchoredRect.maxY, accuracy: 0.001)
     }
 
     // MARK: - panelWidth
@@ -210,8 +210,8 @@ final class ApprovalPanelArrangerTests: XCTestCase {
         XCTAssertEqual(ApprovalPanelArranger.margin, 12, accuracy: 0.001)
         XCTAssertEqual(ApprovalPanelArranger.fixedWidth, 344, accuracy: 0.001)
         XCTAssertEqual(ApprovalPanelArranger.wideWidth, 640, accuracy: 0.001)
-        XCTAssertEqual(ApprovalPanelArranger.dismissGutter, 12, accuracy: 0.001)
-        XCTAssertEqual(ApprovalPanelArranger.dismissGutter, ApprovalPanelArranger.margin, accuracy: 0.001,
-                       "dismissGutter is defined as margin, so the window's own top edge lands exactly on visibleFrame's own top edge")
+        XCTAssertEqual(ApprovalPanelArranger.gutter, 12, accuracy: 0.001)
+        XCTAssertEqual(ApprovalPanelArranger.gutter, ApprovalPanelArranger.margin, accuracy: 0.001,
+                       "gutter is defined as margin, so the window's own top and right edges land exactly on visibleFrame's own top and right edges")
     }
 }
