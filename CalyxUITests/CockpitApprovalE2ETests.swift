@@ -568,11 +568,20 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
         let payloadExpanded = app.staticTexts[Self.approvalBannerPayloadExpandedID]
         XCTAssertFalse(payloadExpanded.exists, "the expanded payload must not exist before the body is clicked")
 
-        let sheet = app.scrollViews
+        // The `ScrollView` itself now spans the glass sheet PLUS the
+        // `dismissGutter` (the gutter moved inside it so the × has
+        // in-bounds room to straddle the sheet's own corner -- see
+        // ApprovalPanelContentView's own header), so its own
+        // accessibility frame is no longer the 344pt sheet width; the
+        // panel WINDOW's own frame is checked instead, same width
+        // relationship `test_dismissButton_returnsStatusDismissed_removesBanner`
+        // already asserts for its own geometry.
+        let panelWindow = app.windows
             .containing(.any, identifier: Self.approvalBannerContainerID)
             .firstMatch
-        XCTAssertTrue(waitFor(sheet, timeout: 5), "the floating approval panel's glass sheet never appeared")
-        XCTAssertEqual(sheet.frame.width, 344, accuracy: 1, "the glass sheet must be the fixed 344pt panel width (the panel WINDOW is 12pt wider, the dismissGutter)")
+        XCTAssertTrue(waitFor(panelWindow, timeout: 5), "the floating approval panel window never appeared")
+        XCTAssertEqual(panelWindow.frame.width, 344 + 12, accuracy: 1,
+                       "the panel window must be the fixed 344pt sheet width plus the 12pt dismissGutter")
 
         payloadText.click()
 
@@ -598,7 +607,7 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
     /// resolve the gated `pane_run` call with `{"status":"dismissed"}`
     /// and remove the banner -- the tool call is never told allow or
     /// deny, since Calyx never answers the question at all. The button
-    /// itself is a 20pt circle straddling the glass sheet's own top-left
+    /// itself is a 22pt circle straddling the glass sheet's own top-left
     /// corner, drawn into the WINDOW's transparent `dismissGutter` (12pt,
     /// top and left only) -- its own frame and the panel window's own
     /// frame are both `XCUIElement.frame` (the same top-left-origin
@@ -631,12 +640,14 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
         XCTAssertTrue(waitFor(panelWindow, timeout: 5), "the floating approval panel window never appeared")
 
         let buttonFrame = dismissButton.frame
-        XCTAssertEqual(buttonFrame.width, 20, accuracy: 1, "the dismiss button must be a 20pt circle")
-        XCTAssertEqual(buttonFrame.height, 20, accuracy: 1, "the dismiss button must be a 20pt circle")
+        XCTAssertEqual(buttonFrame.width, 22, accuracy: 1, "the dismiss button must be a 22pt circle")
+        XCTAssertEqual(buttonFrame.height, 22, accuracy: 1, "the dismiss button must be a 22pt circle")
 
         // The glass sheet's own top-left corner sits `dismissGutter`
         // (12pt) inside the window's own top-left corner; the circle's
-        // center sits 1pt further inside that corner on both axes.
+        // center sits at `(sheet.minX + 3, sheet.top + 7)` -- 8pt of the
+        // disc left of the sheet and 4pt above it, both inside the 12pt
+        // gutter, matching a macOS notification banner's own × placement.
         // `panelWindow.frame`/`buttonFrame` are both `XCUIElement.frame`
         // (top-left-origin -- `minY` is the TOP edge, same convention
         // `test_approvalBanner_isPositionedAtVisibleFrameTopRightCorner`
@@ -645,12 +656,12 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
         // maxY - 12)` (an AppKit bottom-up reading of "top-left" that
         // does not apply to `XCUIElement.frame`).
         let sheetCorner = CGPoint(x: panelWindow.frame.minX + 12, y: panelWindow.frame.minY + 12)
-        let expectedCenter = CGPoint(x: sheetCorner.x + 1, y: sheetCorner.y + 1)
+        let expectedCenter = CGPoint(x: sheetCorner.x + 3, y: sheetCorner.y + 7)
         let buttonCenter = CGPoint(x: buttonFrame.midX, y: buttonFrame.midY)
-        XCTAssertEqual(buttonCenter.x, expectedCenter.x, accuracy: 3,
-                       "the dismiss button's center must sit 1pt inside the glass sheet's top-left corner on the x axis")
-        XCTAssertEqual(buttonCenter.y, expectedCenter.y, accuracy: 3,
-                       "the dismiss button's center must sit 1pt inside the glass sheet's top-left corner on the y axis")
+        XCTAssertEqual(buttonCenter.x, expectedCenter.x, accuracy: 2,
+                       "the dismiss button's center must sit 3pt right of the glass sheet's top-left corner on the x axis")
+        XCTAssertEqual(buttonCenter.y, expectedCenter.y, accuracy: 2,
+                       "the dismiss button's center must sit 7pt below the glass sheet's top-left corner on the y axis")
 
         // The dismiss button is unpainted (`.clear`) until the glass
         // sheet is hovered; `ApprovalPanelWindow` is non-opaque, so a
@@ -660,6 +671,24 @@ final class CockpitApprovalE2ETests: CalyxUITestCase {
         let payloadText = app.staticTexts[Self.approvalBannerPayloadID]
         XCTAssertTrue(waitFor(payloadText, timeout: 5), "the approval banner's payload text never appeared")
         payloadText.hover()
+
+        // `isPanelHovered` is `@State`, so hovering only schedules the ×'s
+        // repaint on the next main-queue turn -- wait for it before the
+        // screenshot, or the attachment can still show the × unpainted.
+        Thread.sleep(forTimeInterval: 0.5)
+
+        // Permanent diagnostic aid, not a temporary print: attaches the
+        // hovered (×-visible, pre-click) panel to the test result itself,
+        // unconditionally -- an environment-variable-gated file write
+        // does not reach this out-of-process UI test runner, but an
+        // `XCTAttachment` always lands in the run's own `.xcresult`
+        // bundle (`.keepAlways` so it survives a passing run, not only a
+        // failure), exportable with `xcrun xcresulttool export attachments`.
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        attachment.name = "dismiss-hovered"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+
         dismissButton.click()
 
         let resultText = waitForFileContent(atPath: outFile)

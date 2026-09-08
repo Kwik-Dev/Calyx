@@ -43,11 +43,12 @@ nonisolated enum ApprovalPanelArranger {
     /// readable minimum width side by side.
     static let wideWidth: CGFloat = 640
     /// The transparent gutter the WINDOW carries beyond the glass sheet
-    /// on its top and left sides only -- lets the dismiss button's 20pt
-    /// circle straddle the sheet's own top-left corner (its center 1pt
-    /// inside that corner on both axes, so most of the disc lies outside
-    /// the painted sheet, into the corner's own 20pt rounded-corner
-    /// cutout) while still drawing and hit-testing, since a window clips
+    /// on its top and left sides only -- lets the dismiss button's 22pt
+    /// circle straddle the sheet's own top-left corner (its center at
+    /// `(sheet.minX + 3, sheet.top + 7)`, 8pt of the disc left of the
+    /// sheet and 4pt above it, so most of the disc lies outside the
+    /// painted sheet, into the corner's own 20pt rounded-corner cutout)
+    /// while still drawing and hit-testing, since a window clips
     /// everything outside its own frame. No gutter on the bottom or
     /// right: the sheet's own bottom-right corner still meets the
     /// window's own bottom-right corner exactly, as it did before this

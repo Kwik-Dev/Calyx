@@ -13,31 +13,58 @@
 // `current` inside its own `body` to re-render (see `selectNext()`'s own
 // doc comment in ApprovalBannerModel.swift) -- this view is that reader.
 //
-// The root shape -- `ScrollView` clamped to `layout.heightCap`,
-// `.fixedSize(horizontal: false, vertical: true)` before `.frame(width:
-// layout.width)` -- reports this view's own content height at the
-// glass SHEET's own width for the displayed request (`layout.width`, one
-// of `ApprovalPanelArranger.fixedWidth`/`wideWidth`, never measured from
+// The root shape -- `ScrollView` clamped to `layout.heightCap +
+// dismissGutter`, `.fixedSize(horizontal: false, vertical: true)` before
+// `.frame(width: layout.width + dismissGutter)` -- now spans the SHEET
+// plus the gutter on every axis (see the dismiss-button paragraph below
+// for why the gutter has to live INSIDE the `ScrollView` at all). The
+// `onGeometryChange` that reports content height to
+// `onContentSizeChange` stays attached to `glassWrapped(request:)`
+// itself, the pre-padding, pre-gutter node, so it still reports the
+// SHEET's own size for the displayed request (`layout.width`, one of
+// `ApprovalPanelArranger.fixedWidth`/`wideWidth`, never measured from
 // content itself, see `ApprovalPanelArranger.panelWidth(for:
-// visibleFrame:)`), so `ApprovalPanelController.render()`'s single
-// measurement pass sees the content's actual height at that width.
-// `onGeometryChange` (below) is attached to that SAME pre-padding node,
-// so it reports the sheet's own size, never the gutter-inflated one --
-// `dismissGutter` padding wraps this whole `Group` from OUTSIDE that
-// node (top and leading only), so it never reaches `onContentSizeChange`
-// at all; only `NSHostingController.sizeThatFits(in:)`, read directly by
-// `ApprovalPanelController.measureFrame(hostingController:)`, sees the
-// gutter-inflated total.
+// visibleFrame:)`), matching what
+// `ApprovalPanelController.measureFrame(hostingController:)` expects
+// back through `applyContentHeight(_:)`; the `dismissGutter` padding
+// (top and leading) is applied AFTER that node, inside the `ScrollView`,
+// so `NSHostingController.sizeThatFits(in:)` -- which measures the
+// WHOLE content view -- still sees the same gutter-inflated total it
+// always did, just assembled inside the `ScrollView` now instead of
+// outside it.
 //
 // The dismiss button (`dismissButton`, `isPanelHovered`) lives HERE, not
-// on `ApprovalBannerView`'s own root: it must draw and hit-test OUTSIDE
-// the glass sheet (straddling its top-left corner, into the transparent
-// gutter `ApprovalPanelArranger.dismissGutter` reserves in the WINDOW),
-// and a `ScrollView` clips its content to its own bounds -- an overlay
-// on anything inside `glassWrapped(request:)` would be clipped by the
-// `ScrollView` around it. Anchored to the `ScrollView`'s own frame
-// instead (the sheet itself), which the window's gutter surrounds on
-// its top and left, so nothing here clips it.
+// on `ApprovalBannerView`'s own root, but it is applied as an
+// `.overlay` INSIDE `glassWrapped(request:)`'s own `GlassEffectContainer`
+// (on `ApprovalBannerView` itself, before `.id(request.id)`) -- see the
+// z-order paragraph below for why it has to sit there rather than
+// outside the container. A `ScrollView` clips its content to its own
+// bounds, so the gutter the × straddles into must be PART of that
+// content, not outside it: the `ScrollView`'s own frame is therefore
+// widened by `dismissGutter` on every axis (above), and
+// `glassWrapped(request:)`'s own `dismissGutter` padding (top and
+// leading, applied at the call site in `body`) shifts the sheet -- ×
+// included, since it travels with it as an overlay -- into the bottom-
+// right corner of that widened frame, leaving exactly `dismissGutter`
+// of transparent, still-in-bounds space above and to its left for the ×
+// to straddle into.
+//
+// Z-order: a view's Liquid Glass content -- anything placed INSIDE a
+// `GlassEffectContainer`'s own content closure -- composites ABOVE that
+// container's glass background; a view placed OUTSIDE the container (a
+// sibling `.overlay` on the container itself, even a later, "higher" one
+// in SwiftUI's own declaration order) composites BENEATH it instead
+// (confirmed by screenshot across two failed attempts: field-verified,
+// not a documentation inference -- an `.overlay` on the container drew
+// only the sliver of the × outside the sheet's own corner, and a plain-
+// color disc in that same position drew nothing at all). The × is
+// therefore inside `glassWrapped(request:)`'s `GlassEffectContainer`
+// content, alongside `ApprovalBannerView`, not on the `ScrollView`
+// around it. It is drawn with PLAIN colors (`Circle().fill(...)`/
+// `.strokeBorder(...)`), not `.glassEffect`/`.thinMaterial`/any other
+// backdrop-based fill, so it does not blend with the container's own
+// glass background the way a second glass shape sharing that container
+// would.
 //
 // `ApprovalPanelWindow` is non-opaque with a `.clear` background, so the
 // window server delivers mouse events only over painted pixels -- the
@@ -96,9 +123,11 @@ struct ApprovalPanelContentView: View {
     /// receives one (except over the × once it is shown), so tracking a
     /// single region spanning the padded root (gutter included) would
     /// never see the pointer enter that gutter at all. Two separate
-    /// `onAssumeInsideHover` calls instead, one on the sheet
-    /// (`ScrollView`, always painted) and one on the dismiss button
-    /// itself (painted only once `isPanelHovered` is already true) --
+    /// `onAssumeInsideHover` calls instead, one on the sheet itself
+    /// (`glassWrapped(request:)`'s own node at the `body` call site,
+    /// always painted -- NOT the `ScrollView` around it, which now also
+    /// spans the gutter) and one on the dismiss button itself (painted
+    /// only once `isPanelHovered` is already true) --
     /// moving the pointer FROM the sheet ONTO the now-painted × keeps the
     /// × shown (`dismissButtonHovered` picks up where `sheetHovered` left
     /// off); moving it outward, off both regions, hides it. Before the ×
@@ -120,23 +149,20 @@ struct ApprovalPanelContentView: View {
             if let request = model.current {
                 ScrollView(.vertical) {
                     glassWrapped(request: request)
+                        .onAssumeInsideHover($sheetHovered, recheckToken: layout.hoverRecheckToken)
+                        .onGeometryChange(for: CGSize.self) { proxy in
+                            proxy.size
+                        } action: { size in
+                            Task { @MainActor in
+                                onContentSizeChange(size)
+                            }
+                        }
+                        .padding(.top, ApprovalPanelArranger.dismissGutter)
+                        .padding(.leading, ApprovalPanelArranger.dismissGutter)
                 }
-                .frame(maxHeight: layout.heightCap)
+                .frame(maxHeight: layout.heightCap + ApprovalPanelArranger.dismissGutter)
                 .fixedSize(horizontal: false, vertical: true)
-                .frame(width: layout.width)
-                .onAssumeInsideHover($sheetHovered, recheckToken: layout.hoverRecheckToken)
-                .overlay(alignment: .topLeading) {
-                    dismissButton(request: request)
-                        .onAssumeInsideHover($dismissButtonHovered, recheckToken: layout.hoverRecheckToken)
-                        .offset(x: -10 + 1, y: -10 + 1)
-                }
-                .onGeometryChange(for: CGSize.self) { proxy in
-                    proxy.size
-                } action: { size in
-                    Task { @MainActor in
-                        onContentSizeChange(size)
-                    }
-                }
+                .frame(width: layout.width + ApprovalPanelArranger.dismissGutter)
                 .onChange(of: request.id) {
                     Task { @MainActor in
                         onRequestChange()
@@ -146,8 +172,6 @@ struct ApprovalPanelContentView: View {
                 EmptyView()
             }
         }
-        .padding(.top, ApprovalPanelArranger.dismissGutter)
-        .padding(.leading, ApprovalPanelArranger.dismissGutter)
         .onChange(of: isPanelHovered) {
             panelHoverChanged()
         }
@@ -167,14 +191,16 @@ struct ApprovalPanelContentView: View {
     /// shift every OTHER source's layout too. `dismissButton` identifies
     /// both states alike, so a test can assert `isEnabled` directly.
     ///
-    /// A 20pt circle, its center 1pt inside the sheet's own top-left
-    /// corner on both axes -- that corner itself lies inside the sheet's
-    /// own 20pt rounded-corner cutout, so most of the disc lies outside
-    /// the painted sheet, into the window's transparent `dismissGutter`.
-    /// `.overlay(alignment: .topLeading)` places the button's own
-    /// top-left corner AT the sheet's, and the `.offset(x: -10 + 1, y:
-    /// -10 + 1)` above then shifts it by minus the circle's own radius
-    /// plus that 1pt inset.
+    /// A 22pt circle whose center sits at `(sheet.minX + 3, sheet.top +
+    /// 7)` -- 8pt of the disc left of the sheet's own left edge and 4pt
+    /// above its top edge, both distances inside the 12pt
+    /// `dismissGutter`, matching a macOS notification banner's own ×
+    /// placement. `glassWrapped(request:)`'s own `.overlay(alignment:
+    /// .topLeading)` places the button's own top-left corner AT the
+    /// sheet's (`ApprovalBannerView`'s, the overlay's base), and the
+    /// `.offset(x: -8, y: -4)` there then shifts it there (the circle's
+    /// own top-left corner, 11pt above and left of its center, lands at
+    /// `3 - 11 = -8` and `7 - 11 = -4`).
     ///
     /// Show-on-hover (`isPanelHovered`) fades the fill/border/glyph via
     /// `.clear` rather than `.opacity`: `.opacity` also zeroes the
@@ -193,9 +219,9 @@ struct ApprovalPanelContentView: View {
     @ViewBuilder
     private func dismissButton(request: ApprovalRequest) -> some View {
         let fillStyle: AnyShapeStyle = isPanelHovered
-            ? (reduceTransparency ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor)) : AnyShapeStyle(.thinMaterial))
+            ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor))
             : AnyShapeStyle(.clear)
-        let borderStyle: AnyShapeStyle = isPanelHovered ? AnyShapeStyle(.separator) : AnyShapeStyle(.clear)
+        let borderStyle: AnyShapeStyle = isPanelHovered ? AnyShapeStyle(Color(nsColor: .separatorColor)) : AnyShapeStyle(.clear)
         let glyphStyle: AnyShapeStyle = isPanelHovered
             ? (request.isDismissible ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tertiary))
             : AnyShapeStyle(.clear)
@@ -203,13 +229,13 @@ struct ApprovalPanelContentView: View {
         let button = Button(action: { model.dismiss(id: request.id) }) {
             Circle()
                 .fill(fillStyle)
-                .overlay(Circle().strokeBorder(borderStyle, lineWidth: 0.5))
+                .overlay(Circle().strokeBorder(borderStyle, lineWidth: 1))
                 .overlay {
                     Image(systemName: "xmark")
-                        .font(.system(size: 9, weight: .bold))
+                        .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(glyphStyle)
                 }
-                .frame(width: 20, height: 20)
+                .frame(width: 22, height: 22)
                 .animation(.easeInOut(duration: 0.15), value: isPanelHovered)
         }
         .buttonStyle(.plain)
@@ -248,6 +274,11 @@ struct ApprovalPanelContentView: View {
                 model: model, request: request,
                 hostWindowTitle: ControlCharacterDisplay.render(title), targetTabTitle: targetTabTitle
             )
+            .overlay(alignment: .topLeading) {
+                dismissButton(request: request)
+                    .onAssumeInsideHover($dismissButtonHovered, recheckToken: layout.hoverRecheckToken)
+                    .offset(x: -8, y: -4)
+            }
             .id(request.id)
         }
         .background {
