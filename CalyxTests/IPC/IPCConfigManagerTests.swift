@@ -13,19 +13,11 @@ final class IPCConfigManagerTests: XCTestCase {
         let result = IPCConfigResult(
             claudeCode: .success,
             codex: .success,
-<<<<<<< New base: Add Crush IPC issue to handoff
-            openCode: .skipped(reason: "not installed"),
-            hermes: .skipped(reason: "not installed"),
-            grok: .skipped(reason: "not installed")
-||||||| Common ancestor
-            openCode: .skipped(reason: "not installed"),
-            hermes: .skipped(reason: "not installed")
-=======
             openCode: Self.skipped,
             hermes: Self.skipped,
+            grok: Self.skipped,
             pi: Self.skipped,
             crush: Self.skipped
->>>>>>> Current commit: feat(ipc): add Crush & pi support and docs updatesIntroduce native Crush agent M
         )
         XCTAssertTrue(result.anySucceeded)
     }
@@ -33,22 +25,12 @@ final class IPCConfigManagerTests: XCTestCase {
     func test_anySucceeded_oneSuccess() {
         let result = IPCConfigResult(
             claudeCode: .success,
-<<<<<<< New base: Add Crush IPC issue to handoff
-            codex: .skipped(reason: "not installed"),
-            openCode: .skipped(reason: "not installed"),
-            hermes: .skipped(reason: "not installed"),
-            grok: .skipped(reason: "not installed")
-||||||| Common ancestor
-            codex: .skipped(reason: "not installed"),
-            openCode: .skipped(reason: "not installed"),
-            hermes: .skipped(reason: "not installed")
-=======
             codex: Self.skipped,
             openCode: Self.skipped,
             hermes: Self.skipped,
+            grok: Self.skipped,
             pi: Self.skipped,
             crush: Self.skipped
->>>>>>> Current commit: feat(ipc): add Crush & pi support and docs updatesIntroduce native Crush agent M
         )
         XCTAssertTrue(result.anySucceeded)
     }
@@ -57,44 +39,24 @@ final class IPCConfigManagerTests: XCTestCase {
         let result = IPCConfigResult(
             claudeCode: Self.skipped,
             codex: .success,
-<<<<<<< New base: Add Crush IPC issue to handoff
-            openCode: .skipped(reason: "not installed"),
-            hermes: .skipped(reason: "not installed"),
-            grok: .skipped(reason: "not installed")
-||||||| Common ancestor
-            openCode: .skipped(reason: "not installed"),
-            hermes: .skipped(reason: "not installed")
-=======
             openCode: Self.skipped,
             hermes: Self.skipped,
+            grok: Self.skipped,
             pi: Self.skipped,
             crush: Self.skipped
->>>>>>> Current commit: feat(ipc): add Crush & pi support and docs updatesIntroduce native Crush agent M
         )
         XCTAssertTrue(result.anySucceeded)
     }
 
     func test_anySucceeded_noneSuccess() {
         let result = IPCConfigResult(
-<<<<<<< New base: Add Crush IPC issue to handoff
-            claudeCode: .skipped(reason: "not installed"),
-            codex: .skipped(reason: "not installed"),
-            openCode: .skipped(reason: "not installed"),
-            hermes: .skipped(reason: "not installed"),
-            grok: .skipped(reason: "not installed")
-||||||| Common ancestor
-            claudeCode: .skipped(reason: "not installed"),
-            codex: .skipped(reason: "not installed"),
-            openCode: .skipped(reason: "not installed"),
-            hermes: .skipped(reason: "not installed")
-=======
             claudeCode: Self.skipped,
             codex: Self.skipped,
             openCode: Self.skipped,
             hermes: Self.skipped,
+            grok: Self.skipped,
             pi: Self.skipped,
             crush: Self.skipped
->>>>>>> Current commit: feat(ipc): add Crush & pi support and docs updatesIntroduce native Crush agent M
         )
         XCTAssertFalse(result.anySucceeded)
     }
@@ -103,84 +65,55 @@ final class IPCConfigManagerTests: XCTestCase {
         let error = NSError(domain: "test", code: 1)
         let result = IPCConfigResult(
             claudeCode: .failed(error),
-<<<<<<< New base: Add Crush IPC issue to handoff
-            codex: .skipped(reason: "not installed"),
-            openCode: .skipped(reason: "not installed"),
-            hermes: .skipped(reason: "not installed"),
-            grok: .skipped(reason: "not installed")
-||||||| Common ancestor
-            codex: .skipped(reason: "not installed"),
-            openCode: .skipped(reason: "not installed"),
-            hermes: .skipped(reason: "not installed")
-=======
             codex: Self.skipped,
             openCode: Self.skipped,
             hermes: Self.skipped,
+            grok: Self.skipped,
             pi: Self.skipped,
             crush: Self.skipped
->>>>>>> Current commit: feat(ipc): add Crush & pi support and docs updatesIntroduce native Crush agent M
         )
         XCTAssertFalse(result.anySucceeded)
     }
 
-    // MARK: - all six axes
+    // MARK: - all seven axes
 
     func test_anySucceeded_onlyOpenCode() {
         let result = IPCConfigResult(
             claudeCode: Self.skipped,
             codex: Self.skipped,
             openCode: .success,
-<<<<<<< New base: Add Crush IPC issue to handoff
-            hermes: .skipped(reason: "not installed"),
-            grok: .skipped(reason: "not installed")
-||||||| Common ancestor
-            hermes: .skipped(reason: "not installed")
-=======
             hermes: Self.skipped,
+            grok: Self.skipped,
             pi: Self.skipped,
             crush: Self.skipped
->>>>>>> Current commit: feat(ipc): add Crush & pi support and docs updatesIntroduce native Crush agent M
         )
         XCTAssertTrue(result.anySucceeded)
     }
 
     func test_anySucceeded_onlyHermes() {
         let result = IPCConfigResult(
-<<<<<<< New base: Add Crush IPC issue to handoff
-            claudeCode: .skipped(reason: "not installed"),
-            codex: .skipped(reason: "not installed"),
-            openCode: .skipped(reason: "not installed"),
-            hermes: .skipped(reason: "not installed"),
-            grok: .skipped(reason: "not installed")
-||||||| Common ancestor
-            claudeCode: .skipped(reason: "not installed"),
-            codex: .skipped(reason: "not installed"),
-            openCode: .skipped(reason: "not installed"),
-            hermes: .skipped(reason: "not installed")
-=======
             claudeCode: Self.skipped,
             codex: Self.skipped,
             openCode: Self.skipped,
             hermes: .success,
+            grok: Self.skipped,
             pi: Self.skipped,
             crush: Self.skipped
->>>>>>> Current commit: feat(ipc): add Crush & pi support and docs updatesIntroduce native Crush agent M
         )
-<<<<<<< New base: Add Crush IPC issue to handoff
-        // Then
-        XCTAssertFalse(result.anySucceeded,
-                       "anySucceeded should return false when all four are skipped")
+        XCTAssertTrue(result.anySucceeded)
     }
 
     func test_anySucceeded_openCodeFailedOthersSkipped() {
         // Given: openCode failed, others skipped
         let error = NSError(domain: "test", code: 2)
         let result = IPCConfigResult(
-            claudeCode: .skipped(reason: "not installed"),
-            codex: .skipped(reason: "not installed"),
+            claudeCode: Self.skipped,
+            codex: Self.skipped,
             openCode: .failed(error),
-            hermes: .skipped(reason: "not installed"),
-            grok: .skipped(reason: "not installed")
+            hermes: Self.skipped,
+            grok: Self.skipped,
+            pi: Self.skipped,
+            crush: Self.skipped
         )
         // Then
         XCTAssertFalse(result.anySucceeded,
@@ -195,114 +128,51 @@ final class IPCConfigManagerTests: XCTestCase {
             codex: .failed(error),
             openCode: .success,
             hermes: .failed(error),
-            grok: .skipped(reason: "not installed")
+            grok: Self.skipped,
+            pi: Self.skipped,
+            crush: Self.skipped
         )
         // Then
         XCTAssertTrue(result.anySucceeded,
                       "anySucceeded should return true when openCode succeeded despite other failures")
-||||||| Common ancestor
-        // Then
-        XCTAssertFalse(result.anySucceeded,
-                       "anySucceeded should return false when all four are skipped")
-    }
-
-    func test_anySucceeded_openCodeFailedOthersSkipped() {
-        // Given: openCode failed, others skipped
-        let error = NSError(domain: "test", code: 2)
-        let result = IPCConfigResult(
-            claudeCode: .skipped(reason: "not installed"),
-            codex: .skipped(reason: "not installed"),
-            openCode: .failed(error),
-            hermes: .skipped(reason: "not installed")
-        )
-        // Then
-        XCTAssertFalse(result.anySucceeded,
-                       "anySucceeded should return false when openCode failed and others skipped")
-    }
-
-    func test_anySucceeded_openCodeSuccessOthersFailed() {
-        // Given: openCode success, others failed
-        let error = NSError(domain: "test", code: 3)
-        let result = IPCConfigResult(
-            claudeCode: .failed(error),
-            codex: .failed(error),
-            openCode: .success,
-            hermes: .failed(error)
-        )
-        // Then
-        XCTAssertTrue(result.anySucceeded,
-                      "anySucceeded should return true when openCode succeeded despite other failures")
-=======
-        XCTAssertTrue(result.anySucceeded)
->>>>>>> Current commit: feat(ipc): add Crush & pi support and docs updatesIntroduce native Crush agent M
     }
 
     func test_anySucceeded_onlyPi() {
         let result = IPCConfigResult(
-<<<<<<< New base: Add Crush IPC issue to handoff
-            claudeCode: .skipped(reason: "not installed"),
-            codex: .skipped(reason: "not installed"),
-            openCode: .skipped(reason: "not installed"),
-            hermes: .success,
-            grok: .skipped(reason: "not installed")
-||||||| Common ancestor
-            claudeCode: .skipped(reason: "not installed"),
-            codex: .skipped(reason: "not installed"),
-            openCode: .skipped(reason: "not installed"),
-            hermes: .success
-=======
             claudeCode: Self.skipped,
             codex: Self.skipped,
             openCode: Self.skipped,
             hermes: Self.skipped,
+            grok: Self.skipped,
             pi: .success,
             crush: Self.skipped
->>>>>>> Current commit: feat(ipc): add Crush & pi support and docs updatesIntroduce native Crush agent M
         )
         XCTAssertTrue(result.anySucceeded)
     }
 
     func test_anySucceeded_onlyCrush() {
         let result = IPCConfigResult(
-<<<<<<< New base: Add Crush IPC issue to handoff
-            claudeCode: .skipped(reason: "not installed"),
-            codex: .skipped(reason: "not installed"),
-            openCode: .skipped(reason: "not installed"),
-            hermes: .failed(error),
-            grok: .skipped(reason: "not installed")
-||||||| Common ancestor
-            claudeCode: .skipped(reason: "not installed"),
-            codex: .skipped(reason: "not installed"),
-            openCode: .skipped(reason: "not installed"),
-            hermes: .failed(error)
-=======
             claudeCode: Self.skipped,
             codex: Self.skipped,
             openCode: Self.skipped,
             hermes: Self.skipped,
+            grok: Self.skipped,
             pi: Self.skipped,
             crush: .success
->>>>>>> Current commit: feat(ipc): add Crush & pi support and docs updatesIntroduce native Crush agent M
         )
         XCTAssertTrue(result.anySucceeded)
     }
 
-    func test_anySucceeded_allSixFail() {
+    func test_anySucceeded_allSevenFail() {
         let error = NSError(domain: "test", code: 1)
         let result = IPCConfigResult(
             claudeCode: .failed(error),
             codex: .failed(error),
             openCode: .failed(error),
-<<<<<<< New base: Add Crush IPC issue to handoff
-            hermes: .success,
-            grok: .skipped(reason: "not installed")
-||||||| Common ancestor
-            hermes: .success
-=======
             hermes: .failed(error),
+            grok: Self.skipped,
             pi: .failed(error),
             crush: .failed(error)
->>>>>>> Current commit: feat(ipc): add Crush & pi support and docs updatesIntroduce native Crush agent M
         )
         XCTAssertFalse(result.anySucceeded)
     }
@@ -311,11 +181,13 @@ final class IPCConfigManagerTests: XCTestCase {
 
     func test_anySucceeded_onlyGrok() {
         let result = IPCConfigResult(
-            claudeCode: .skipped(reason: "not installed"),
-            codex: .skipped(reason: "not installed"),
-            openCode: .skipped(reason: "not installed"),
-            hermes: .skipped(reason: "not installed"),
-            grok: .success
+            claudeCode: Self.skipped,
+            codex: Self.skipped,
+            openCode: Self.skipped,
+            hermes: Self.skipped,
+            grok: .success,
+            pi: Self.skipped,
+            crush: Self.skipped
         )
 
         XCTAssertTrue(result.anySucceeded,
@@ -326,11 +198,13 @@ final class IPCConfigManagerTests: XCTestCase {
 
     func test_anySucceeded_grokFailedOthersSkipped() {
         let result = IPCConfigResult(
-            claudeCode: .skipped(reason: "not installed"),
-            codex: .skipped(reason: "not installed"),
-            openCode: .skipped(reason: "not installed"),
-            hermes: .skipped(reason: "not installed"),
-            grok: .failed(NSError(domain: "test", code: 6))
+            claudeCode: Self.skipped,
+            codex: Self.skipped,
+            openCode: Self.skipped,
+            hermes: Self.skipped,
+            grok: .failed(NSError(domain: "test", code: 6)),
+            pi: Self.skipped,
+            crush: Self.skipped
         )
 
         XCTAssertFalse(result.anySucceeded, "A failure is not a success on the grok axis either")
@@ -343,7 +217,9 @@ final class IPCConfigManagerTests: XCTestCase {
             codex: .failed(error),
             openCode: .failed(error),
             hermes: .failed(error),
-            grok: .success
+            grok: .success,
+            pi: Self.skipped,
+            crush: Self.skipped
         )
 
         XCTAssertTrue(result.anySucceeded)
@@ -354,10 +230,12 @@ final class IPCConfigManagerTests: XCTestCase {
     func test_configIssueMessages_claudeCodeFailure_isReportedWithItsAxisName() {
         let result = IPCConfigResult(
             claudeCode: .failed(NSError(domain: "test", code: 20, userInfo: [NSLocalizedDescriptionKey: "boom"])),
-            codex: .skipped(reason: "not installed"),
-            openCode: .skipped(reason: "not installed"),
-            hermes: .skipped(reason: "not installed"),
-            grok: .skipped(reason: "not installed")
+            codex: Self.skipped,
+            openCode: Self.skipped,
+            hermes: Self.skipped,
+            grok: Self.skipped,
+            pi: Self.skipped,
+            crush: Self.skipped
         )
 
         XCTAssertEqual(result.issueMessages, ["Claude Code config: boom"],
@@ -367,11 +245,13 @@ final class IPCConfigManagerTests: XCTestCase {
 
     func test_configIssueMessages_codexFailure_isReportedWithItsAxisName() {
         let result = IPCConfigResult(
-            claudeCode: .skipped(reason: "not installed"),
+            claudeCode: Self.skipped,
             codex: .failed(NSError(domain: "test", code: 21, userInfo: [NSLocalizedDescriptionKey: "boom"])),
-            openCode: .skipped(reason: "not installed"),
-            hermes: .skipped(reason: "not installed"),
-            grok: .skipped(reason: "not installed")
+            openCode: Self.skipped,
+            hermes: Self.skipped,
+            grok: Self.skipped,
+            pi: Self.skipped,
+            crush: Self.skipped
         )
 
         XCTAssertEqual(result.issueMessages, ["Codex config: boom"],
@@ -380,11 +260,13 @@ final class IPCConfigManagerTests: XCTestCase {
 
     func test_configIssueMessages_openCodeFailure_isReportedWithItsAxisName() {
         let result = IPCConfigResult(
-            claudeCode: .skipped(reason: "not installed"),
-            codex: .skipped(reason: "not installed"),
+            claudeCode: Self.skipped,
+            codex: Self.skipped,
             openCode: .failed(NSError(domain: "test", code: 22, userInfo: [NSLocalizedDescriptionKey: "boom"])),
-            hermes: .skipped(reason: "not installed"),
-            grok: .skipped(reason: "not installed")
+            hermes: Self.skipped,
+            grok: Self.skipped,
+            pi: Self.skipped,
+            crush: Self.skipped
         )
 
         XCTAssertEqual(result.issueMessages, ["OpenCode config: boom"],
@@ -393,11 +275,13 @@ final class IPCConfigManagerTests: XCTestCase {
 
     func test_configIssueMessages_hermesFailure_isReportedWithItsAxisName() {
         let result = IPCConfigResult(
-            claudeCode: .skipped(reason: "not installed"),
-            codex: .skipped(reason: "not installed"),
-            openCode: .skipped(reason: "not installed"),
+            claudeCode: Self.skipped,
+            codex: Self.skipped,
+            openCode: Self.skipped,
             hermes: .failed(NSError(domain: "test", code: 23, userInfo: [NSLocalizedDescriptionKey: "boom"])),
-            grok: .skipped(reason: "not installed")
+            grok: Self.skipped,
+            pi: Self.skipped,
+            crush: Self.skipped
         )
 
         XCTAssertEqual(result.issueMessages, ["Hermes config: boom"],
@@ -406,24 +290,58 @@ final class IPCConfigManagerTests: XCTestCase {
 
     func test_configIssueMessages_grokFailure_isReportedWithItsAxisName() {
         let result = IPCConfigResult(
-            claudeCode: .skipped(reason: "not installed"),
-            codex: .skipped(reason: "not installed"),
-            openCode: .skipped(reason: "not installed"),
-            hermes: .skipped(reason: "not installed"),
-            grok: .failed(NSError(domain: "test", code: 24, userInfo: [NSLocalizedDescriptionKey: "boom"]))
+            claudeCode: Self.skipped,
+            codex: Self.skipped,
+            openCode: Self.skipped,
+            hermes: Self.skipped,
+            grok: .failed(NSError(domain: "test", code: 24, userInfo: [NSLocalizedDescriptionKey: "boom"])),
+            pi: Self.skipped,
+            crush: Self.skipped
         )
 
         XCTAssertEqual(result.issueMessages, ["Grok config: boom"],
                        "A failed Grok config write must reach the sidebar banner labeled by its own axis name")
     }
 
+    func test_configIssueMessages_piFailure_isReportedWithItsAxisName() {
+        let result = IPCConfigResult(
+            claudeCode: Self.skipped,
+            codex: Self.skipped,
+            openCode: Self.skipped,
+            hermes: Self.skipped,
+            grok: Self.skipped,
+            pi: .failed(NSError(domain: "test", code: 30, userInfo: [NSLocalizedDescriptionKey: "boom"])),
+            crush: Self.skipped
+        )
+
+        XCTAssertEqual(result.issueMessages, ["pi config: boom"],
+                       "A failed pi config write must reach the sidebar banner labeled by its own axis name")
+    }
+
+    func test_configIssueMessages_crushFailure_isReportedWithItsAxisName() {
+        let result = IPCConfigResult(
+            claudeCode: Self.skipped,
+            codex: Self.skipped,
+            openCode: Self.skipped,
+            hermes: Self.skipped,
+            grok: Self.skipped,
+            pi: Self.skipped,
+            crush: .failed(NSError(domain: "test", code: 31, userInfo: [NSLocalizedDescriptionKey: "boom"]))
+        )
+
+        XCTAssertEqual(result.issueMessages, ["Crush config: boom"],
+                       "A failed Crush config write must reach the sidebar banner labeled by its own axis name")
+    }
+
     func test_configIssueMessages_nothingFailed_isEmpty() {
         let result = IPCConfigResult(
             claudeCode: .success,
-            codex: .skipped(reason: "not installed"),
-            openCode: .skipped(reason: "not installed"),
-            hermes: .skipped(reason: "not installed"),
-            grok: .skipped(reason: "not installed")
+            codex: Self.skipped,
+            openCode: Self.skipped,
+            hermes: Self.skipped,
+            grok: Self.skipped,
+            pi: Self.skipped,
+            crush: Self.skipped
         )
 
         XCTAssertEqual(result.issueMessages, [], "A mix of success and skipped axes with no failures must raise no banner at all")
@@ -434,10 +352,12 @@ final class IPCConfigManagerTests: XCTestCase {
         let grokError = NSError(domain: "test", code: 26, userInfo: [NSLocalizedDescriptionKey: "grok boom"])
         let result = IPCConfigResult(
             claudeCode: .failed(claudeError),
-            codex: .skipped(reason: "not installed"),
+            codex: Self.skipped,
             openCode: .success,
-            hermes: .skipped(reason: "not installed"),
-            grok: .failed(grokError)
+            hermes: Self.skipped,
+            grok: .failed(grokError),
+            pi: Self.skipped,
+            crush: Self.skipped
         )
 
         XCTAssertEqual(result.issueMessages.count, 2,
@@ -464,10 +384,10 @@ final class IPCConfigManagerTests: XCTestCase {
     func test_issueMessages_grokFailure_isReported() {
         let result = AgentHooksResult(
             claudeCode: .success,
-            codex: .skipped(reason: "not installed"),
-            openCode: .skipped(reason: "not installed"),
+            codex: Self.skipped,
+            openCode: Self.skipped,
             grok: .failed(NSError(domain: "test", code: 8, userInfo: [NSLocalizedDescriptionKey: "boom"])),
-            pi: .skipped(reason: "not installed")
+            pi: Self.skipped
         )
 
         XCTAssertEqual(result.issueMessages, ["Grok hooks: boom"],
@@ -477,9 +397,9 @@ final class IPCConfigManagerTests: XCTestCase {
 
     func test_issueMessages_grokSuccess_addsNothing() {
         let result = AgentHooksResult(
-            claudeCode: .skipped(reason: "not installed"),
-            codex: .skipped(reason: "not installed"),
-            openCode: .skipped(reason: "not installed"),
+            claudeCode: Self.skipped,
+            codex: Self.skipped,
+            openCode: Self.skipped,
             grok: .success,
             pi: .success
         )
@@ -498,9 +418,9 @@ final class IPCConfigManagerTests: XCTestCase {
     func test_issueMessages_piFailure_isReported_andACleanPiInstallAddsNothing() {
         let failed = AgentHooksResult(
             claudeCode: .success,
-            codex: .skipped(reason: "not installed"),
-            openCode: .skipped(reason: "not installed"),
-            grok: .skipped(reason: "not installed"),
+            codex: Self.skipped,
+            openCode: Self.skipped,
+            grok: Self.skipped,
             pi: .failed(NSError(domain: "test", code: 9, userInfo: [NSLocalizedDescriptionKey: "boom"]))
         )
 
@@ -508,10 +428,10 @@ final class IPCConfigManagerTests: XCTestCase {
                        "A failed pi extension install must reach the sidebar banner")
 
         let clean = AgentHooksResult(
-            claudeCode: .skipped(reason: "not installed"),
-            codex: .skipped(reason: "not installed"),
-            openCode: .skipped(reason: "not installed"),
-            grok: .skipped(reason: "not installed"),
+            claudeCode: Self.skipped,
+            codex: Self.skipped,
+            openCode: Self.skipped,
+            grok: Self.skipped,
             pi: .success
         )
 
@@ -525,10 +445,10 @@ final class IPCConfigManagerTests: XCTestCase {
         // Given: pi is the only axis without an IPCConfigResult counterpart;
         // this is the exact case that makes a pi-only machine count as wired.
         let result = AgentHooksResult(
-            claudeCode: .skipped(reason: "not installed"),
-            codex: .skipped(reason: "not installed"),
-            openCode: .skipped(reason: "not installed"),
-            grok: .skipped(reason: "not installed"),
+            claudeCode: Self.skipped,
+            codex: Self.skipped,
+            openCode: Self.skipped,
+            grok: Self.skipped,
             pi: .success
         )
 
@@ -540,10 +460,10 @@ final class IPCConfigManagerTests: XCTestCase {
     func test_hooksAnySucceeded_onlyClaudeCodeSuccess_isTrue() {
         let result = AgentHooksResult(
             claudeCode: .success,
-            codex: .skipped(reason: "not installed"),
-            openCode: .skipped(reason: "not installed"),
-            grok: .skipped(reason: "not installed"),
-            pi: .skipped(reason: "not installed")
+            codex: Self.skipped,
+            openCode: Self.skipped,
+            grok: Self.skipped,
+            pi: Self.skipped
         )
 
         XCTAssertTrue(result.anySucceeded, "anySucceeded must return true when only Claude Code hooks succeeded")
@@ -551,11 +471,11 @@ final class IPCConfigManagerTests: XCTestCase {
 
     func test_hooksAnySucceeded_onlyCodexSuccess_isTrue() {
         let result = AgentHooksResult(
-            claudeCode: .skipped(reason: "not installed"),
+            claudeCode: Self.skipped,
             codex: .success,
-            openCode: .skipped(reason: "not installed"),
-            grok: .skipped(reason: "not installed"),
-            pi: .skipped(reason: "not installed")
+            openCode: Self.skipped,
+            grok: Self.skipped,
+            pi: Self.skipped
         )
 
         XCTAssertTrue(result.anySucceeded, "anySucceeded must return true when only Codex hooks succeeded")
@@ -563,11 +483,11 @@ final class IPCConfigManagerTests: XCTestCase {
 
     func test_hooksAnySucceeded_onlyOpenCodeSuccess_isTrue() {
         let result = AgentHooksResult(
-            claudeCode: .skipped(reason: "not installed"),
-            codex: .skipped(reason: "not installed"),
+            claudeCode: Self.skipped,
+            codex: Self.skipped,
             openCode: .success,
-            grok: .skipped(reason: "not installed"),
-            pi: .skipped(reason: "not installed")
+            grok: Self.skipped,
+            pi: Self.skipped
         )
 
         XCTAssertTrue(result.anySucceeded, "anySucceeded must return true when only the OpenCode plugin succeeded")
@@ -575,11 +495,11 @@ final class IPCConfigManagerTests: XCTestCase {
 
     func test_hooksAnySucceeded_onlyGrokSuccess_isTrue() {
         let result = AgentHooksResult(
-            claudeCode: .skipped(reason: "not installed"),
-            codex: .skipped(reason: "not installed"),
-            openCode: .skipped(reason: "not installed"),
+            claudeCode: Self.skipped,
+            codex: Self.skipped,
+            openCode: Self.skipped,
             grok: .success,
-            pi: .skipped(reason: "not installed")
+            pi: Self.skipped
         )
 
         XCTAssertTrue(result.anySucceeded, "anySucceeded must return true when only Grok hooks succeeded")
@@ -587,11 +507,11 @@ final class IPCConfigManagerTests: XCTestCase {
 
     func test_hooksAnySucceeded_allSkipped_isFalse() {
         let result = AgentHooksResult(
-            claudeCode: .skipped(reason: "not installed"),
-            codex: .skipped(reason: "not installed"),
-            openCode: .skipped(reason: "not installed"),
-            grok: .skipped(reason: "not installed"),
-            pi: .skipped(reason: "not installed")
+            claudeCode: Self.skipped,
+            codex: Self.skipped,
+            openCode: Self.skipped,
+            grok: Self.skipped,
+            pi: Self.skipped
         )
 
         XCTAssertFalse(result.anySucceeded, "anySucceeded must return false when every axis, pi included, is skipped")
@@ -600,9 +520,9 @@ final class IPCConfigManagerTests: XCTestCase {
     func test_hooksAnySucceeded_mixOfSkippedAndFailed_isFalse() {
         let result = AgentHooksResult(
             claudeCode: .failed(NSError(domain: "test", code: 27)),
-            codex: .skipped(reason: "not installed"),
+            codex: Self.skipped,
             openCode: .failed(NSError(domain: "test", code: 28)),
-            grok: .skipped(reason: "not installed"),
+            grok: Self.skipped,
             pi: .failed(NSError(domain: "test", code: 29))
         )
 
@@ -652,14 +572,15 @@ final class IPCConfigManagerTests: XCTestCase {
         }
     }
 
-    // MARK: - allSixSkipped
+    // MARK: - allSevenSkipped
 
-    func test_allSixSkipped_isFalse() {
+    func test_allSevenSkipped_isFalse() {
         let result = IPCConfigResult(
             claudeCode: Self.skipped,
             codex: Self.skipped,
             openCode: Self.skipped,
             hermes: Self.skipped,
+            grok: Self.skipped,
             pi: Self.skipped,
             crush: Self.skipped
         )

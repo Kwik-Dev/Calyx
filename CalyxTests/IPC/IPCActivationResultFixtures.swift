@@ -22,9 +22,11 @@ func configResult(
     codex: ConfigStatus = .skipped(reason: "not installed"),
     openCode: ConfigStatus = .skipped(reason: "not installed"),
     hermes: ConfigStatus = .skipped(reason: "not installed"),
-    grok: ConfigStatus = .skipped(reason: "not installed")
+    grok: ConfigStatus = .skipped(reason: "not installed"),
+    pi: ConfigStatus = .skipped(reason: "not installed"),
+    crush: ConfigStatus = .skipped(reason: "not installed")
 ) -> IPCConfigResult {
-    IPCConfigResult(claudeCode: claudeCode, codex: codex, openCode: openCode, hermes: hermes, grok: grok)
+    IPCConfigResult(claudeCode: claudeCode, codex: codex, openCode: openCode, hermes: hermes, grok: grok, pi: pi, crush: crush)
 }
 
 /// Builds an AgentHooksResult with every axis skipped by default,
